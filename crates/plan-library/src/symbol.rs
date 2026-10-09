@@ -213,6 +213,41 @@ impl Symbol2d {
                 .collect(),
         }
     }
+
+    /// Returns a copy stretched by `sx` along X and `sy` along Y about the
+    /// origin (a resized library item). Circles and arcs keep a circular
+    /// shape and scale by the geometric mean of the two factors.
+    pub fn scaled_xy(&self, sx: f64, sy: f64) -> Symbol2d {
+        let p = |q: &Point| Point::new(q.x * sx, q.y * sy);
+        let k = (sx * sy).abs().sqrt();
+        Symbol2d {
+            strokes: self
+                .strokes
+                .iter()
+                .map(|st| match st {
+                    Stroke::Polyline { points, closed } => Stroke::Polyline {
+                        points: points.iter().map(p).collect(),
+                        closed: *closed,
+                    },
+                    Stroke::Circle { center, radius } => Stroke::Circle {
+                        center: p(center),
+                        radius: radius * k,
+                    },
+                    Stroke::Arc {
+                        center,
+                        radius,
+                        start_deg,
+                        end_deg,
+                    } => Stroke::Arc {
+                        center: p(center),
+                        radius: radius * k,
+                        start_deg: *start_deg,
+                        end_deg: *end_deg,
+                    },
+                })
+                .collect(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -335,5 +370,24 @@ mod tests {
         let json = serde_json::to_string(&s).unwrap();
         assert!(json.contains("\"type\":\"circle\""), "{json}");
         assert_eq!(serde_json::from_str::<Stroke>(&json).unwrap(), s);
+    }
+
+    #[test]
+    fn scaled_xy_stretches_the_drawing() {
+        let r = rect_symbol(10.0, 20.0).scaled_xy(2.0, 0.5);
+        let b = r.bounds().unwrap();
+        assert!(close(b.width(), 20.0) && close(b.height(), 10.0));
+        let c = Symbol2d::new(vec![Stroke::Circle {
+            center: Point::new(1.0, 1.0),
+            radius: 4.0,
+        }])
+        .scaled_xy(4.0, 1.0);
+        match &c.strokes[0] {
+            Stroke::Circle { center, radius } => {
+                assert!(close(center.x, 4.0) && close(center.y, 1.0));
+                assert!(close(*radius, 8.0));
+            }
+            _ => unreachable!(),
+        }
     }
 }

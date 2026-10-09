@@ -6,7 +6,7 @@
 //! tested without a window; the panel calls them every frame.
 
 use plan_3d::{Mesh, Scene};
-use plan_core::camera_view::{BackdropKind, CameraView, FloorsDisplayed, Lighting, ViewQuality};
+use plan_core::camera_view::{BackdropKind, CameraView, Lighting, ViewQuality};
 use plan_core::{CameraKind, CameraObject, Project};
 use plan_materials::RenderingTechnique;
 use plan_view3d::ViewSettings;
@@ -39,7 +39,15 @@ pub struct CameraScope {
     pub floor: Option<usize>,
     /// Nothing above this height (the Floor Camera's ceiling), inches.
     pub clip_above: Option<f64>,
+    /// Nothing centred below this height (the lowest floor of a pick),
+    /// inches.
+    pub clip_below: Option<f64>,
 }
+
+/// How far under a picked floor's finished elevation the cut falls, so its
+/// floor system stays and the ceiling and walls of the floor below go,
+/// inches.
+pub const FLOOR_SYSTEM_SLACK: f64 = 14.0;
 
 /// The scope camera `c` has: Floors Displayed, and for a Floor Camera the
 /// floor's own ceiling as the top.
@@ -49,12 +57,20 @@ pub fn scope_of(project: &Project, c: &CameraObject) -> CameraScope {
         CameraKind::FloorCamera => CameraScope {
             floor: Some(c.floor),
             clip_above: floor.map(|f| f.elevation + f.ceiling_height + CEILING_SLACK),
+            clip_below: None,
         },
-        _ if c.view.floors == FloorsDisplayed::ThisAndBelow => CameraScope {
-            floor: Some(c.floor),
-            clip_above: None,
+        _ => match c.view.floors.range(c.floor, project.floors.len()) {
+            None => CameraScope::default(),
+            Some((from, to)) => CameraScope {
+                // Everything above the top floor is left out of the build.
+                floor: (to + 1 < project.floors.len()).then_some(to),
+                clip_above: None,
+                clip_below: (from > 0)
+                    .then(|| project.floors.get(from))
+                    .flatten()
+                    .map(|f| f.elevation - FLOOR_SYSTEM_SLACK),
+            },
         },
-        _ => CameraScope::default(),
     }
 }
 
@@ -85,6 +101,87 @@ pub fn clip_above(scene: &Scene, limit: f64) -> Scene {
         }
     }
     out
+}
+
+/// How the path tracer draws a technique: its own Clay or Physically Based
+/// shading and, for the techniques it has no shader for, the look the
+/// post-process (`plan_render::stylize`) puts on the picture.
+pub fn render_look(t: RenderingTechnique) -> (plan_render::Technique, Option<plan_render::Style>) {
+    use plan_render::{Style, Technique};
+    match t {
+        RenderingTechnique::Clay => (Technique::Clay, None),
+        RenderingTechnique::VectorView => (Technique::Clay, Some(Style::VectorView)),
+        RenderingTechnique::LineDrawing => (Technique::Clay, Some(Style::LineDrawing)),
+        RenderingTechnique::TechnicalIllustration => (
+            Technique::PhysicallyBased,
+            Some(Style::TechnicalIllustration),
+        ),
+        RenderingTechnique::Watercolor => (Technique::PhysicallyBased, Some(Style::Watercolor)),
+        RenderingTechnique::Standard
+        | RenderingTechnique::PhysicallyBased
+        | RenderingTechnique::GlassHouse
+        | RenderingTechnique::Duotone => (Technique::PhysicallyBased, None),
+    }
+}
+
+/// Drops the triangles centred below `limit` (scene Y, inches): the floors
+/// under the lowest one a camera picks.
+pub fn clip_below(scene: &Scene, limit: f64) -> Scene {
+    let limit = limit as f32;
+    let mut out = Scene::default();
+    for m in &scene.meshes {
+        let mut indices = Vec::with_capacity(m.indices.len());
+        for tri in m.indices.as_chunks::<3>().0 {
+            let centre = tri
+                .iter()
+                .map(|&i| m.vertices[i as usize].position[1])
+                .sum::<f32>()
+                / 3.0;
+            if centre >= limit {
+                indices.extend_from_slice(tri);
+            }
+        }
+        if !indices.is_empty() {
+            out.meshes.push(Mesh {
+                vertices: m.vertices.clone(),
+                indices,
+                material: m.material,
+                object_id: m.object_id,
+                color: m.color,
+            });
+        }
+    }
+    out
+}
+
+/// What lies below the horizon for a camera's Backdrop tab, display-encoded.
+pub fn ground_of(view: Option<&CameraView>) -> plan_view3d::Ground {
+    use plan_core::camera_view::GroundKind;
+    let Some(v) = view else {
+        return plan_view3d::Ground::Fade;
+    };
+    match v.backdrop.ground {
+        GroundKind::Default => plan_view3d::Ground::Fade,
+        GroundKind::Color => {
+            plan_view3d::Ground::Solid(v.backdrop.ground_color.map(|c| f32::from(c) / 255.0))
+        }
+        GroundKind::None => plan_view3d::Ground::Sky,
+    }
+}
+
+/// The distance haze of a camera's Backdrop tab.
+pub fn fog_of(view: Option<&CameraView>) -> plan_view3d::Fog {
+    let Some(v) = view else {
+        return plan_view3d::Fog::default();
+    };
+    plan_view3d::Fog {
+        density: v.backdrop.fog.density_per_inch(),
+        color: v
+            .backdrop
+            .fog
+            .color
+            .map(|c| c.map(|b| f32::from(b) / 255.0)),
+    }
 }
 
 /// The sky colour of a Sky color backdrop, display-encoded.
@@ -151,6 +248,7 @@ pub fn settings_for(quality: ViewQuality, exposure: f32, shadows: bool) -> ViewS
 #[cfg(test)]
 mod tests {
     use super::*;
+    use plan_core::camera_view::FloorsDisplayed;
     use plan_core::geometry::Point;
     use plan_core::WallKind;
 
@@ -196,7 +294,8 @@ mod tests {
             scope_of(&p, &c),
             CameraScope {
                 floor: Some(0),
-                clip_above: None
+                clip_above: None,
+                clip_below: None,
             }
         );
         let mut f = CameraObject::new(CameraKind::FloorCamera, Point::ZERO, 0.0, "Fl", 1);
@@ -251,7 +350,7 @@ mod tests {
         let r = rig(&plan, None, None, true);
         assert_eq!((r.ambient, r.key), (1.0, 0.0));
         // The sun sits where the Lighting dialog put it.
-        let mut moved = plan;
+        let mut moved = plan.clone();
         moved.sun_azimuth_deg = 90.0;
         moved.sun_altitude_deg = 10.0;
         assert!(rig(&moved, None, None, false).key_dir[0] > 0.9);
@@ -277,5 +376,109 @@ mod tests {
         let c = sky_color(&v).unwrap();
         assert_eq!((c[0], c[1], c[3]), (1.0, 0.0, 1.0));
         assert!((c[2] - 0.2).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_picked_range_of_floors_builds_up_to_the_top_floor_and_cuts_below_the_lowest() {
+        let mut p = two_storey();
+        p.build_new_floor(false);
+        assert_eq!(p.floors.len(), 3);
+        let mut c = CameraObject::new(CameraKind::FullCamera, Point::ZERO, 0.0, "F", 0);
+        c.view.floors = FloorsDisplayed::Picked { from: 1, to: 1 };
+        let s = scope_of(&p, &c);
+        assert_eq!(s.floor, Some(1), "the third floor is left out");
+        assert_eq!(
+            s.clip_below,
+            Some(p.floors[1].elevation - FLOOR_SYSTEM_SLACK)
+        );
+        // Picking up to the top floor needs no cut above; from the ground, none below.
+        c.view.floors = FloorsDisplayed::Picked { from: 0, to: 2 };
+        assert_eq!(scope_of(&p, &c), CameraScope::default());
+        // A pick given the wrong way round still works.
+        c.view.floors = FloorsDisplayed::Picked { from: 2, to: 1 };
+        let s = scope_of(&p, &c);
+        assert_eq!((s.floor, s.clip_below.is_some()), (None, true));
+    }
+
+    #[test]
+    fn clipping_below_drops_what_is_centred_under_the_limit() {
+        let mut p = Project::new("House");
+        let c = [
+            Point::new(0.0, 0.0),
+            Point::new(240.0, 0.0),
+            Point::new(240.0, 192.0),
+            Point::new(0.0, 192.0),
+        ];
+        for i in 0..4 {
+            p.add_wall(0, c[i], c[(i + 1) % 4], 6.5, 109.125, WallKind::Exterior);
+        }
+        let scene = plan_3d::build_scene(&p);
+        let n = scene.triangle_count();
+        assert_eq!(clip_below(&scene, -1.0e6).triangle_count(), n);
+        assert_eq!(clip_below(&scene, 1.0e6).triangle_count(), 0);
+        let half = clip_below(&scene, 50.0);
+        assert!(half.triangle_count() < n && half.triangle_count() > 0);
+        // What is left is centred at or above the limit: the bounds rise.
+        assert!(half.bounds().unwrap().1[1] >= 100.0);
+    }
+
+    #[test]
+    fn ground_and_fog_come_from_the_backdrop_tab() {
+        use plan_core::camera_view::{Fog, GroundKind};
+        assert_eq!(ground_of(None), plan_view3d::Ground::Fade);
+        assert_eq!(fog_of(None), plan_view3d::Fog::default());
+        let mut v = CameraView::default();
+        assert_eq!(ground_of(Some(&v)), plan_view3d::Ground::Fade);
+        v.backdrop.ground = GroundKind::Color;
+        v.backdrop.ground_color = [255, 0, 51];
+        let plan_view3d::Ground::Solid(c) = ground_of(Some(&v)) else {
+            panic!("a flat ground");
+        };
+        assert_eq!((c[0], c[1]), (1.0, 0.0));
+        v.backdrop.ground = GroundKind::None;
+        assert_eq!(ground_of(Some(&v)), plan_view3d::Ground::Sky);
+        assert!(!fog_of(Some(&v)).is_on());
+        v.backdrop.fog = Fog {
+            on: true,
+            distance_ft: 100.0,
+            color: Some([255, 255, 255]),
+        };
+        let f = fog_of(Some(&v));
+        assert!(f.is_on() && (f.density - 1.0 / 1200.0).abs() < 1e-9);
+        assert_eq!(f.color, Some([1.0, 1.0, 1.0]));
+    }
+
+    #[test]
+    fn techniques_map_to_a_tracer_shading_and_a_look() {
+        use plan_render::{Style, Technique};
+        assert_eq!(
+            render_look(RenderingTechnique::Clay),
+            (Technique::Clay, None)
+        );
+        assert_eq!(
+            render_look(RenderingTechnique::VectorView),
+            (Technique::Clay, Some(Style::VectorView))
+        );
+        assert_eq!(
+            render_look(RenderingTechnique::Watercolor).1,
+            Some(Style::Watercolor)
+        );
+        assert_eq!(render_look(RenderingTechnique::Standard).1, None);
+        // Every look the post-process has is reached by exactly one technique name.
+        for st in Style::ALL {
+            let n = RenderingTechnique::ALL
+                .into_iter()
+                .filter(|t| render_look(*t).1 == Some(st))
+                .count();
+            assert_eq!(n, 1, "{st:?}");
+        }
+        for t in RenderingTechnique::ALL {
+            assert_eq!(
+                Style::from_technique_name(t.label()),
+                render_look(t).1,
+                "{}",
+                t.label()
+            );
+        }
     }
 }

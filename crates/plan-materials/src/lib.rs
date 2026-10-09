@@ -10,7 +10,9 @@ mod blend;
 mod library;
 mod material;
 mod noise;
+pub mod package;
 mod painter;
+pub mod pbr;
 mod pattern;
 mod sun;
 mod takeoff;
@@ -25,6 +27,10 @@ pub use library::{core_library, MaterialLibrary};
 pub use material::{
     scene_surface, MaterialClass, MaterialDef, PriceUnit, ProceduralKind, SceneSurface,
     SurfaceProps, Texture,
+};
+pub use package::{
+    classify as classify_map, parse_metadata, size_from_metadata, DecodedImage, ImportedPackage,
+    MapKind, MaterialPackage, PackageFile, ReadOptions,
 };
 pub use painter::{build_material, nearest_by_color, scene_material, PaintMode, PaintScope};
 pub use pattern::{

@@ -56,6 +56,8 @@ struct PlanApp {
     path: Option<PathBuf>,
     camera: Camera,
     zoom_history: Vec<Camera>,
+    /// Tiling, the rubber-band Zoom and the open views (`shell::view_commands`).
+    shell_views: shell::view_commands::ViewShell,
     toolbars: Toolbars,
     dock: Option<Dock>,
     hotkeys: shell::hotkeys::HotkeyState,
@@ -107,6 +109,8 @@ impl PlanApp {
         let mut defaults = defaults;
         editor::code::seed_new_plan(&mut defaults);
         let mut cx = EditorContext::new(defaults);
+        // The snap, Edit Type and Replicate defaults saved in Preferences.
+        dialogs::preferences::pages::apply_editing(&mut cx.defaults.editing);
         cx.status = note.unwrap_or_default();
         cx.palette = settings.theme.palette();
         Self {
@@ -115,6 +119,7 @@ impl PlanApp {
             path: None,
             camera: Camera::default_view(),
             zoom_history: Vec::new(),
+            shell_views: Default::default(),
             toolbars: Toolbars::new(),
             dock: None,
             hotkeys: shell::hotkeys::HotkeyState::default(),
@@ -191,11 +196,14 @@ impl PlanApp {
             parts.push("Chief templates found".into());
         }
         if !own && found.defaults != self.cx.defaults {
+            let mut seeded = editor::code::seeded(plan_defaults::embedded());
+            dialogs::preferences::pages::apply_editing(&mut seeded.editing);
             let untouched = self.path.is_none()
                 && !self.cx.can_undo()
-                && self.cx.defaults == plan_defaults::embedded()
+                && self.cx.defaults == seeded
                 && self.cx.project.floors.iter().all(|f| f.walls.is_empty());
             self.cx.defaults = found.defaults;
+            dialogs::preferences::pages::apply_editing(&mut self.cx.defaults.editing);
             if untouched {
                 self.new_project();
             }
@@ -227,27 +235,12 @@ impl PlanApp {
         self.camera.px_per_in = (self.camera.px_per_in * factor).clamp(0.05, 50.0);
     }
 
+    /// Fill Window: everything visible on the floor; the building alone when
+    /// nothing else is drawn.
     fn fill_window(&mut self) {
-        self.push_zoom_history();
-        let points: Vec<Point> = self
-            .cx
-            .floor()
-            .walls
-            .iter()
-            .flat_map(|w| w.footprint())
-            .collect();
-        if points.is_empty() {
-            let rect = self.camera.rect;
-            self.camera = Camera::default_view();
-            self.camera.rect = rect;
-            return;
-        }
-        let (mut lo, mut hi) = (points[0], points[0]);
-        for p in &points {
-            lo = Point::new(lo.x.min(p.x), lo.y.min(p.y));
-            hi = Point::new(hi.x.max(p.x), hi.y.max(p.y));
-        }
-        self.fit_camera(lo, hi);
+        let bounds = shell::view_commands::all_bounds(&self.cx)
+            .or_else(|| shell::view_commands::building_bounds(&self.cx));
+        self.fit_to(bounds);
     }
 
     /// Frames the rectangle `lo`..`hi` (Fill Window Selected Objects).
@@ -257,16 +250,7 @@ impl PlanApp {
     }
 
     fn fit_camera(&mut self, lo: Point, hi: Point) {
-        // 10% margin on every side.
-        let w = ((hi.x - lo.x) * 1.2).max(1.0);
-        let h = ((hi.y - lo.y) * 1.2).max(1.0);
-        let r = self.camera.rect;
-        let scale = (r.width() as f64 / w).min(r.height() as f64 / h);
-        self.camera = Camera {
-            center: Point::new((lo.x + hi.x) * 0.5, (lo.y + hi.y) * 0.5),
-            px_per_in: scale.clamp(0.05, 50.0),
-            rect: r,
-        };
+        self.camera = shell::view_commands::fit_camera(&self.camera, lo, hi);
     }
 
     fn change_floor(&mut self, up: bool) {
@@ -317,6 +301,12 @@ impl PlanApp {
             // Property Manager and the Excel property exchange.
             Action::Custom(id) if dialogs::property_manager::is_command(id) => {
                 dialogs::property_manager::run_command(&mut self.cx, id);
+            }
+            // Zoom, Reverse Plan, Rotate Plan View, tiling and tabs.
+            Action::Custom(id) if shell::view_commands::is_command(id) => self.view_command(id),
+            // Edit > Replace Fonts opens the Text Styles list (Replace Fonts section).
+            Action::Custom(menus::REPLACE_FONTS) => {
+                self.open_defaults_entry(DefaultsEntry::TextStyles)
             }
             Action::Custom(id) => {
                 // The Edit commands work on the plan, not on the 3D or layout view.
@@ -545,6 +535,7 @@ impl PlanApp {
 
     fn new_project(&mut self) {
         editor::code::seed_new_plan(&mut self.cx.defaults);
+        dialogs::preferences::pages::apply_editing(&mut self.cx.defaults.editing);
         let project = Project::from_defaults("Untitled", &self.cx.defaults);
         self.cx.set_project(project);
         self.cx.seed_template_plan_views();
@@ -1267,8 +1258,12 @@ impl PlanApp {
         self.cx.cursor_world = new_cursor;
         self.cx.px_per_in = self.camera.px_per_in;
         self.auto_scroll(ctx);
-        self.dispatch_pointer(ctx, &resp);
-        if resp.hovered() {
+        // The rubber-band Zoom (Window > Zoom) takes the pointer while armed.
+        let zooming = self.shell_views.zoom_armed;
+        if !zooming {
+            self.dispatch_pointer(ctx, &resp);
+        }
+        if resp.hovered() && !zooming {
             ui.ctx().set_cursor_icon(self.tools.active().cursor());
             // The name of the object under the pointer, after a short rest.
             if self.tools.active_id().base() == ToolId::Select && !self.pressed_in_canvas {
@@ -1284,6 +1279,7 @@ impl PlanApp {
             .active()
             .draw_overlay(&self.cx, &painter, &self.camera);
         render::draw_crosshairs(&self.cx, &painter, &self.camera);
+        self.zoom_window_input(ctx, &resp, &painter);
     }
 
     /// A Select Objects drag whose pointer reaches the edge of the canvas
@@ -1401,8 +1397,17 @@ impl PlanApp {
             .get(&id)
             .cloned()
             .unwrap_or_default();
+        let layers: Vec<String> = self
+            .cx
+            .project
+            .layers
+            .layers
+            .iter()
+            .map(|l| l.name.clone())
+            .collect();
         let dialog = OpeningDialog::for_opening(opening, &wall, others, extras)
-            .with_label_defaults(&self.cx.defaults.opening_labels);
+            .with_label_defaults(&self.cx.defaults.opening_labels)
+            .with_layer_choices(layers);
         self.dialog = Some(ActiveDialog::Opening(Box::new(dialog)));
         self.spec.arm_main_props(&self.cx, ObjectRef::Opening(id));
     }
@@ -1484,18 +1489,21 @@ impl PlanApp {
     fn dialogs(&mut self, ctx: &egui::Context) {
         if let Some(mut dialog) = self.dialog.take() {
             // The Properties tab of the plan's own walls and openings.
-            let outcome = dialogs::property_manager::with_current(self.spec.main_props(), || {
-                match &mut dialog {
+            let props = self.spec.main_props().cloned();
+            let prev_info = dialogs::object_info::set_current(self.spec.main_info().cloned());
+            let outcome =
+                dialogs::property_manager::with_current(props.as_ref(), || match &mut dialog {
                     ActiveDialog::Wall(d) => d.show(ctx),
                     ActiveDialog::Opening(d) => d.show(ctx),
-                }
-            });
+                });
+            dialogs::object_info::set_current(prev_info);
             match outcome {
                 Outcome::Open => self.dialog = Some(dialog),
                 Outcome::Cancel => {
                     self.spec.take_main_props();
                 }
                 Outcome::Ok => {
+                    let info = self.spec.take_main_info();
                     let props = self.spec.take_main_props();
                     let depth = dialogs::property_manager::before_apply(&self.cx);
                     match &dialog {
@@ -1503,6 +1511,7 @@ impl PlanApp {
                         ActiveDialog::Opening(d) => self.apply_opening_dialog(d),
                     }
                     dialogs::property_manager::after_apply(&mut self.cx, props.as_ref(), depth);
+                    dialogs::object_info::after_apply(&mut self.cx, info.as_ref(), depth);
                     self.cx.mark_dirty();
                 }
             }
@@ -1548,6 +1557,15 @@ impl PlanApp {
                 self.cx.begin_change("Wall Specification");
                 let fl = self.cx.floor;
                 let orig = self.cx.floor().wall(id).cloned();
+                let orig_wall = orig.clone();
+                let orig_materials = orig.as_ref().map(|w| w.spec.materials.clone());
+                let orig_offsets: Vec<(plan_core::Id, f64)> = self
+                    .cx
+                    .floor()
+                    .openings
+                    .iter()
+                    .map(|o| (o.id, o.center_offset))
+                    .collect();
                 let floor = &mut self.cx.project.floors[fl];
                 if let Some(w) = floor.wall_mut(id) {
                     *w = draft.clone();
@@ -1570,6 +1588,32 @@ impl PlanApp {
                         let about = draft.resize_about;
                         self.cx.project.set_wall_type(fl, id, &def, about);
                     }
+                }
+                // Generate Between Platforms may have been switched, and the
+                // Materials tab hands its paint to the project.
+                self.cx.project.sync_platform_walls();
+                if let Some(orig) = &orig_materials {
+                    self.cx.project.sync_wall_materials_from(id, orig);
+                }
+                // OK with nothing edited leaves no undo step.
+                let same_wall = match (&orig_wall, self.cx.floor().wall(id)) {
+                    (Some(a), Some(b)) => {
+                        plan_core::walls_equal(std::slice::from_ref(a), std::slice::from_ref(b))
+                    }
+                    _ => false,
+                };
+                if same_wall
+                    && self
+                        .cx
+                        .floor()
+                        .openings
+                        .iter()
+                        .map(|o| (o.id, o.center_offset))
+                        .collect::<Vec<_>>()
+                        == orig_offsets
+                    && d.edited_types().is_empty()
+                {
+                    self.cx.cancel_change();
                 }
             }
             WallTarget::DefaultExterior
@@ -1610,6 +1654,8 @@ impl PlanApp {
                 if let Some(o) = floor.openings.iter_mut().find(|o| o.id == id) {
                     *o = draft;
                 }
+                // The Materials tab reaches the per-object paint too.
+                self.cx.project.sync_opening_materials(id);
             }
             OpeningTarget::DefaultDoor => {
                 let base = &self.cx.defaults.interior_door;
@@ -1665,9 +1711,18 @@ impl eframe::App for PlanApp {
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.cx.refresh();
-        if editor::roof_view::auto_rebuild(&mut self.cx) {
+        // Preferences > Architectural > Auto Rebuild Roofs is the global switch;
+        // each roof also has its own.
+        if dialogs::preferences::pages::current()
+            .architectural
+            .auto_rebuild_roofs
+            && editor::roof_view::auto_rebuild(&mut self.cx)
+        {
             self.cx.refresh();
         }
+        // Framing groups with Auto rebuild on follow the walls (it refreshes
+        // the context itself when it rebuilds).
+        editor::framing_view::auto_rebuild(&mut self.cx);
         // Code minimums for the dialogs and the live Plan Check count.
         editor::code::frame(&mut self.cx);
         if !ctx.input(|i| i.pointer.any_down()) {
@@ -1678,6 +1733,20 @@ impl eframe::App for PlanApp {
         // Refresh Display.
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::F5)) {
             actions.push(Action::Custom(dialogs::app_info::REFRESH));
+        }
+        // Select Next/Previous Tab (Ctrl+Tab) and Swap Views (F7).
+        if ctx.input_mut(|i| {
+            i.consume_key(
+                egui::Modifiers::CTRL | egui::Modifiers::SHIFT,
+                egui::Key::Tab,
+            )
+        }) {
+            actions.push(Action::Custom(shell::view_commands::PREVIOUS_TAB));
+        } else if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::Tab)) {
+            actions.push(Action::Custom(shell::view_commands::NEXT_TAB));
+        }
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::F7)) {
+            actions.push(Action::Custom(shell::view_commands::SWAP_VIEWS));
         }
         // F6: the keyboard focus into the dock, or back out to the canvas.
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::F6)) {
@@ -1713,6 +1782,8 @@ impl eframe::App for PlanApp {
                 shell::docks::set_central_rect(ctx, ui.max_rect());
                 if shell::layout_window::is_active() {
                     shell::layout_window::show_central(ctx, ui, &mut self.cx);
+                } else if self.tiled_central(ctx, ui) {
+                    // Window > Tile: the plan and the 3D view share the window.
                 } else if self.view3d.frame(ctx, &mut self.cx) {
                     // Dragging a selected object in the 3D view needs the
                     // Select tool.
@@ -2303,7 +2374,10 @@ mod tests {
         // The user's own template wins over the scan.
         let mut b = app();
         b.apply_detection_with(detection(120.0, true), true);
-        assert_eq!(b.cx.defaults, plan_defaults::embedded());
+        assert_eq!(
+            b.cx.defaults,
+            editor::code::seeded(plan_defaults::embedded())
+        );
         // Nothing found, and a settings file that could not be written, are said.
         let mut c = app();
         let mut found = detection(109.125, false);

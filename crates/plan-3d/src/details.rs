@@ -555,7 +555,7 @@ pub fn solid_mesh(s: &Solid3d, floor_elev: f64) -> Option<Mesh> {
 /// Every mesh of one floor's [`DetailsLayer`].
 pub fn floor_detail_meshes(floor: &Floor) -> Vec<Mesh> {
     let layer = DetailsLayer::load(floor);
-    if layer.is_empty() {
+    if layer.is_empty() && floor.solid_layer.compounds.is_empty() {
         return Vec::new();
     }
     let e = floor.elevation;
@@ -568,9 +568,11 @@ pub fn floor_detail_meshes(floor: &Floor) -> Vec<Mesh> {
     );
     out.extend(layer.quoins.iter().filter_map(|q| quoin_mesh(q, e)));
     out.extend(layer.moldings.iter().filter_map(|m| molding_mesh(m, e)));
-    out.extend(layer.regions.iter().filter_map(|r| region_mesh(r, floor)));
+    // Layered regions, solids with extra spec fields and compound solids
+    // (Boolean results) have their own passes.
+    out.extend(crate::material_region::region_meshes(floor, &layer.regions));
     out.extend(layer.decks.iter().flat_map(|d| deck_meshes(d, e)));
-    out.extend(layer.solids.iter().filter_map(|s| solid_mesh(s, e)));
+    out.extend(crate::solids::solid_meshes(floor, &layer.solids, e));
     out
 }
 

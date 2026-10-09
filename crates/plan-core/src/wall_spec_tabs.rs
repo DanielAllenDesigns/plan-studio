@@ -331,7 +331,11 @@ pub enum RailFill {
 }
 
 impl RailFill {
-    pub const ALL: [RailFill; 3] = [RailFill::Balusters, RailFill::GlassPanel, RailFill::SolidPanel];
+    pub const ALL: [RailFill; 3] = [
+        RailFill::Balusters,
+        RailFill::GlassPanel,
+        RailFill::SolidPanel,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -454,7 +458,11 @@ impl WallRailing {
         } else {
             self.rail_top() - self.top_rail_height
         };
-        t + if self.newel_cap { NEWEL_CAP_HEIGHT } else { 0.0 }
+        t + if self.newel_cap {
+            NEWEL_CAP_HEIGHT
+        } else {
+            0.0
+        }
     }
 
     /// Newels along a run of `length`: one at each end when asked, none
@@ -509,9 +517,17 @@ impl WallRailing {
         let mut out = Vec::new();
         match self.balusters_per_bay {
             Some(n) if n > 0 => {
-                let mut edges: Vec<f64> = vec![0.0];
+                // The bays are between neighbouring newels; the run's ends
+                // bound a bay only where there is no newel standing there.
+                let half = self.newel_size * 0.5;
+                let mut edges: Vec<f64> = Vec::new();
+                if newels.first().is_none_or(|f| *f - half > 0.5) {
+                    edges.push(0.0);
+                }
                 edges.extend(newels.iter().copied());
-                edges.push(length);
+                if newels.last().is_none_or(|l| length - *l - half > 0.5) {
+                    edges.push(length);
+                }
                 edges.dedup_by(|a, b| (*a - *b).abs() < 1e-6);
                 for w in edges.windows(2) {
                     let (a, b) = (w[0], w[1]);
@@ -648,6 +664,32 @@ impl Project {
         }
         changed
     }
+
+    /// [`Project::sync_wall_materials`] after the tab was edited from
+    /// `before`: a part the tab cleared is also taken off the object's paint.
+    pub fn sync_wall_materials_from(&mut self, id: Id, before: &WallMaterials) -> bool {
+        let now: Vec<String> = self
+            .floors
+            .iter()
+            .flat_map(|f| &f.walls)
+            .find(|w| w.id == id)
+            .map(|w| {
+                w.spec
+                    .materials
+                    .parts
+                    .iter()
+                    .map(|p| p.part.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut changed = false;
+        for p in &before.parts {
+            if !now.contains(&p.part) {
+                changed |= self.clear_object_material(id, Some(&p.part));
+            }
+        }
+        changed | self.sync_wall_materials(id)
+    }
 }
 
 // ----- Object Information and Schedule -----
@@ -708,7 +750,10 @@ pub fn drawing_group_name(group: u32) -> String {
     DRAWING_GROUPS
         .iter()
         .find(|(n, _)| *n == group)
-        .map_or_else(|| format!("{group}"), |(n, name)| format!("{n} \u{2013} {name}"))
+        .map_or_else(
+            || format!("{group}"),
+            |(n, name)| format!("{n} \u{2013} {name}"),
+        )
 }
 
 // ----- Components -----
@@ -873,7 +918,10 @@ mod tests {
         let def = molding_def(&c.base).unwrap();
         assert_eq!((base.lo, base.hi), (0.0, def.height()));
         assert_eq!(base.depth, def.projection());
-        let chair = bands.iter().find(|b| b.kind == BandKind::ChairRail).unwrap();
+        let chair = bands
+            .iter()
+            .find(|b| b.kind == BandKind::ChairRail)
+            .unwrap();
         assert_eq!(chair.lo, CHAIR_RAIL_HEIGHT);
         let crown = bands.iter().find(|b| b.kind == BandKind::Crown).unwrap();
         assert_eq!(crown.hi, 96.0);
@@ -914,10 +962,12 @@ mod tests {
         assert_eq!(newels.first().copied(), Some(1.75));
         assert_eq!(newels.last().copied(), Some(238.25));
         let balusters = r.baluster_centers(240.0, &newels);
-        assert!(balusters.iter().all(|b| newels
+        assert!(balusters
             .iter()
-            .all(|n| (b - n).abs() >= 3.5 * 0.5 + 0.375)));
-        assert_eq!(balusters[0], 2.0 + 2.0);
+            .all(|b| newels.iter().all(|n| (b - n).abs() >= 3.5 * 0.5 + 0.375)));
+        // As before the tabs: the first sits half a spacing in, and the one
+        // at 2" is inside the end post.
+        assert_eq!(balusters[0], 2.0 + 4.0);
         assert!(r.widest_gap(240.0) < 4.0 + 1e-9, "{}", r.widest_gap(240.0));
     }
 
@@ -1012,9 +1062,22 @@ mod tests {
             .materials
             .set("Exterior Wall Surface", Some(("Brick", [160, 70, 50])));
         assert!(p.sync_wall_materials(id));
-        assert_eq!(p.object_material(id, "Exterior Wall Surface"), Some("Brick"));
+        assert_eq!(
+            p.object_material(id, "Exterior Wall Surface"),
+            Some("Brick")
+        );
         assert!(!p.sync_wall_materials(id));
         assert!(!p.sync_wall_materials(9999));
+        // Clearing the part in the tab takes the paint off too.
+        let before = p.floors[0].wall(id).unwrap().spec.materials.clone();
+        p.floors[0]
+            .wall_mut(id)
+            .unwrap()
+            .spec
+            .materials
+            .set("Exterior Wall Surface", None);
+        assert!(p.sync_wall_materials_from(id, &before));
+        assert_eq!(p.object_material(id, "Exterior Wall Surface"), None);
     }
 
     #[test]
@@ -1032,7 +1095,11 @@ mod tests {
         let f = &p.floors[0];
         let w = f.wall(id).unwrap().clone();
         let o: Vec<Opening> = f.openings.clone();
-        let hole = o.iter().find(|x| x.id == door).map(|d| d.width * d.height).unwrap();
+        let hole = o
+            .iter()
+            .find(|x| x.id == door)
+            .map(|d| d.width * d.height)
+            .unwrap();
         let ty = WallTypeDef {
             name: "T".into(),
             layers: vec![
@@ -1079,9 +1146,16 @@ mod tests {
         let open = p.floors[0].openings.clone();
         let d = &open[0];
         let rows = wall_components(&w, None, &open);
-        let wains = rows.iter().find(|r| r.name.starts_with("Wainscot")).unwrap();
+        let wains = rows
+            .iter()
+            .find(|r| r.name.starts_with("Wainscot"))
+            .unwrap();
         let want = (120.0 * 36.0 - d.width * 36.0_f64.min(d.height)) / 144.0;
-        assert!((wains.area_sq_ft - want).abs() < 1e-9, "{}", wains.area_sq_ft);
+        assert!(
+            (wains.area_sq_ft - want).abs() < 1e-9,
+            "{}",
+            wains.area_sq_ft
+        );
     }
 
     #[test]

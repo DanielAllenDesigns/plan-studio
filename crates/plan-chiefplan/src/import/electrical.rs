@@ -98,8 +98,17 @@ pub fn kind_of(name: &str, tags: &[String], mount: Mount) -> Option<&'static str
         "Gfci"
     } else if n.contains("quad") {
         "Outlet110Quad"
-    } else if n == "220v" || has("220v") {
+    } else if n == "220v" || has("220v") || (n.contains("220") && n.contains("outlet")) {
         "Outlet220"
+    } else if n.contains("weatherproof")
+        || n.contains("waterproof")
+        || (n.contains("outdoor") && (n.contains("outlet") || n.contains("receptacle")))
+        || has("weatherproof")
+        || n.split_whitespace().any(|w| w == "wp")
+    {
+        "OutletWp"
+    } else if n.contains("dedicated") || has("dedicated") {
+        "OutletDedicated"
     } else if n.contains("duplex") || n.contains("outlet") || n.contains("receptacle") {
         if n.contains("floor") {
             "OutletFloor"
@@ -162,6 +171,8 @@ pub fn kind_is_wall_mounted(kind: &str) -> bool {
         "Outlet110"
             | "Outlet110Quad"
             | "Outlet220"
+            | "OutletWp"
+            | "OutletDedicated"
             | "Gfci"
             | "Switch"
             | "Switch3Way"
@@ -181,7 +192,9 @@ pub fn kind_is_wall_mounted(kind: &str) -> bool {
 /// `DeviceKind::default_height`); `ceiling` is the floor's ceiling height.
 pub fn default_height(kind: &str, ceiling: f64) -> f64 {
     match kind {
-        "Outlet110" | "Outlet110Quad" | "Outlet220" | "Gfci" | "DataJack" | "PhoneJack" => 12.0,
+        "Outlet110" | "Outlet110Quad" | "Outlet220" | "OutletDedicated" | "Gfci" | "DataJack"
+        | "PhoneJack" => 12.0,
+        "OutletWp" => 18.0,
         "OutletFloor" => 0.0,
         "Switch" | "Switch3Way" | "Switch4Way" | "SwitchDimmer" | "Doorbell" | "TvJack" => 48.0,
         "Thermostat" => 52.0,
@@ -521,6 +534,26 @@ pub(crate) mod tests {
             Some("WallSconce")
         );
         assert_eq!(kind_of("220V", &t("220V"), Mount::Wall), Some("Outlet220"));
+        // Weatherproof and dedicated receptacles have kinds of their own.
+        assert_eq!(
+            kind_of("Weatherproof Duplex", &t("110V"), Mount::Wall),
+            Some("OutletWp")
+        );
+        assert_eq!(
+            kind_of("WP Outlet", &t("Outlets"), Mount::Wall),
+            Some("OutletWp")
+        );
+        assert_eq!(
+            kind_of("Dedicated Outlet", &t("110V"), Mount::Wall),
+            Some("OutletDedicated")
+        );
+        assert_eq!(
+            kind_of("220V Outlet", &t("Outlets"), Mount::Wall),
+            Some("Outlet220")
+        );
+        assert_eq!(kind_of("Duplex", &t("110V"), Mount::Wall), Some("Outlet110"));
+        assert!(kind_is_wall_mounted("OutletWp") && kind_is_wall_mounted("OutletDedicated"));
+        assert_eq!(default_height("OutletWp", 109.0), 18.0);
         assert_eq!(kind_of("Mystery", &[], Mount::Other), None);
         assert!(kind_is_wall_mounted("Gfci") && !kind_is_wall_mounted("RecessedCan"));
         assert_eq!(default_height("Outlet110", 109.0), 12.0);

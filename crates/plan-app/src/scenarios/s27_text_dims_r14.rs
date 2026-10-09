@@ -434,13 +434,15 @@ fn a_dimension_keeps_its_own_format_arrow_and_extension_lines() {
     // Through the Dimension Specification.
     assert!(sim.open_spec(ObjectRef::Dimension(id)));
     sim.dialog_frame(false);
-    let mut look = DimOverrides::default();
-    look.units = Some(plan_core::units::LengthUnit::Inches);
-    look.fraction = Some(8);
-    look.arrow = Some(DimArrow::Arrow);
-    look.arrow_filled = Some(false);
-    look.ext_gap = Some(2.0);
-    look.ext_past = Some(3.0);
+    let look = DimOverrides {
+        units: Some(plan_core::units::LengthUnit::Inches),
+        fraction: Some(8),
+        arrow: Some(DimArrow::Arrow),
+        arrow_filled: Some(false),
+        ext_gap: Some(2.0),
+        ext_past: Some(3.0),
+        ..DimOverrides::default()
+    };
     // The dialog's draft is private to its tests; edit the object the way its
     // OK does and check the look the plan draws and prints.
     sim.app.cx.begin_change("Change Dimension");

@@ -31,10 +31,10 @@ use crate::schedule::{
 };
 use crate::Schedule as Table;
 use plan_cabinets::{auto_label, Cabinet, CabinetKind};
+use plan_core::props::{PropDef, PropKey, PropKind};
 use plan_core::schedules::{
     FloorScope, Numbering, Schedule, ScheduleKind, ScheduleLayer, SortSpec,
 };
-use plan_core::props::{PropDef, PropKey, PropKind};
 use plan_core::units::fmt_ft_in;
 use plan_core::{detect_rooms, Id, MoldingKind, OpeningKind, PlacedSymbol, Point, Project, Room};
 use plan_electrical::ElectricalLayer;
@@ -239,11 +239,37 @@ fn walls(project: &Project) -> Vec<Entry> {
                 ("area", format!("{:.1}", w.length() * w.height / 144.0)),
                 ("openings", f.openings_on(w.id).count().to_string()),
                 ("floor", f.name.clone()),
+                ("wall_type", w.wall_type.clone().unwrap_or_default()),
+                ("interior_covering", covering_text(&w.spec.covering.interior)),
+                ("exterior_covering", covering_text(&w.spec.covering.exterior)),
+                ("code", w.spec.info.id.clone()),
+                ("description", w.spec.info.description.clone()),
+                ("manufacturer", w.spec.schedule.manufacturer.clone()),
+                ("model", w.spec.schedule.model.clone()),
+                ("supplier", w.spec.schedule.supplier.clone()),
+                ("comment", w.spec.schedule.comment.clone()),
             ];
             out.push(e);
         }
     }
     out
+}
+
+/// The coverings on one face of a wall as a schedule cell: the materials
+/// and molding profile names, covering first.
+fn covering_text(side: &plan_core::walls::SideCovering) -> String {
+    [
+        &side.covering,
+        &side.wainscot,
+        &side.chair_rail,
+        &side.base,
+        &side.crown,
+    ]
+        .into_iter()
+        .filter(|n| !n.is_empty())
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn rooms(project: &Project, active: ActiveRooms) -> Vec<Entry> {
@@ -440,6 +466,26 @@ fn notes(project: &Project) -> Vec<Entry> {
             keyed.push(((type_order, n, fi), e));
         }
     }
+    // The Note objects (callouts tied to the schedule), numbered per type
+    // in draw order (`Project::note_rows`).
+    for r in project.note_rows() {
+        let mut e = new_entry(r.floor, r.id, r.pos, ScheduleKind::Note);
+        e.mark_override = Some(r.mark.clone());
+        e.name = r.text.clone();
+        e.size = String::new();
+        e.cells = vec![
+            ("mark", String::new()),
+            ("type", r.note_type.clone()),
+            ("note", r.text.clone()),
+            ("floor", project.floors[r.floor].name.clone()),
+        ];
+        let type_order = types
+            .types
+            .iter()
+            .position(|t| t.name == r.note_type)
+            .unwrap_or(0);
+        keyed.push(((type_order, r.number, r.floor), e));
+    }
     keyed.sort_by_key(|(k, e)| (*k, e.id));
     keyed.into_iter().map(|(_, e)| e).collect()
 }
@@ -538,6 +584,16 @@ fn electrical(project: &Project) -> Vec<Entry> {
                     "circuit",
                     d.circuit.map(|c| c.to_string()).unwrap_or_default(),
                 ),
+                // Hidden columns: the voltage (outlets) and the flags the
+                // device schedule shows after the type ("110V, GFCI, WP").
+                (
+                    "voltage",
+                    d.kind
+                        .voltage()
+                        .map(|v| format!("{v}V"))
+                        .unwrap_or_default(),
+                ),
+                ("flags", d.kind.flags().join(", ")),
                 (
                     "wall",
                     d.wall_id
@@ -796,8 +852,46 @@ fn general(project: &Project) -> Vec<Entry> {
             out.push(g);
         }
     }
+    out.extend(terrain_objects(project));
     out.sort_by_key(|e| (e.floor, reading_key(e.position), e.id));
     out
+}
+
+/// The terrain and road objects of the site (Terrain Perimeter, Driveways,
+/// Medians, Roads, Road Markings, Terrain Paths and Terrain Features, each
+/// under the category its Schedule panel names), one row per object. They
+/// belong to the site, so they sit on the first floor's list.
+fn terrain_objects(project: &Project) -> Vec<Entry> {
+    let Some(t) = crate::terrain_report::terrain_of(project) else {
+        return Vec::new();
+    };
+    let floor_name = project
+        .floors
+        .first()
+        .map(|f| f.name.clone())
+        .unwrap_or_default();
+    plan_terrain::terrain_schedule(&t)
+        .into_iter()
+        .map(|row| {
+            let at = plan_terrain::anchor_of(&t, row.key).unwrap_or(Point::ZERO);
+            let size = if row.area > 0.0 {
+                format!("{:.0} sq ft", row.area / 144.0)
+            } else {
+                fmt_ft_in(row.length)
+            };
+            let mut e = new_entry(0, 0, at, ScheduleKind::General);
+            e.name = row.name.clone();
+            e.size = size.clone();
+            e.cells = vec![
+                ("mark", String::new()),
+                ("category", row.category.name().to_string()),
+                ("name", row.name),
+                ("size", size),
+                ("floor", floor_name.clone()),
+            ];
+            e
+        })
+        .collect()
 }
 
 /// The objects of `kind` on every floor, floor by floor, in reading order
@@ -1074,13 +1168,19 @@ pub fn effective_columns(
     };
     let mut cols: Vec<plan_core::schedules::ColumnSpec> = def
         .visible_columns()
-        .filter(|c| def.kind.fields().iter().any(|f| f.id == c.field) || prop_def(&c.field).is_some())
+        .filter(|c| {
+            def.kind.fields().iter().any(|f| f.id == c.field) || prop_def(&c.field).is_some()
+        })
         .cloned()
         .collect();
     if let Some(pk) = pk {
         for d in project.props.defs_for(pk).filter(|d| d.show_in_schedule) {
             if !def.columns.iter().any(|c| c.field == d.column_id()) {
-                cols.push(plan_core::schedules::ColumnSpec::new(&d.column_id(), &d.name, true));
+                cols.push(plan_core::schedules::ColumnSpec::new(
+                    &d.column_id(),
+                    &d.name,
+                    true,
+                ));
             }
         }
     }
@@ -1611,6 +1711,44 @@ mod tests {
     }
 
     #[test]
+    fn the_wall_schedule_follows_the_object_information_and_schedule_tabs() {
+        let mut p = Project::new("W");
+        rect_walls(&mut p, 240.0, 120.0, 4.5, WallKind::Exterior);
+        let ids: Vec<_> = p.floors[0].walls.iter().map(|w| w.id).collect();
+        {
+            let w = p.floors[0].wall_mut(ids[0]).unwrap();
+            w.spec.info.id = "W-1".into();
+            w.spec.info.description = "Garage wall".into();
+            w.spec.schedule.supplier = "Acme".into();
+            w.spec.covering.interior.wainscot = "Beadboard".into();
+            w.spec.covering.interior.chair_rail = "Chair Rail".into();
+        }
+        let mut d = def(ScheduleKind::Wall);
+        for id in [
+            "code",
+            "description",
+            "supplier",
+            "interior_covering",
+            "wall_type",
+        ] {
+            d.columns.push(ColumnSpec::new(id, id, true));
+        }
+        let t = table(&p, &d, 0, None);
+        assert_eq!(t.rows.len(), 4);
+        let ix = |name: &str| t.columns.iter().position(|c| c == name).unwrap();
+        let row = t.rows.iter().find(|r| r[ix("code")] == "W-1").unwrap();
+        assert_eq!(row[ix("description")], "Garage wall");
+        assert_eq!(row[ix("supplier")], "Acme");
+        assert_eq!(row[ix("interior_covering")], "Beadboard, Chair Rail");
+        // A cleared Include in Schedule leaves the wall out.
+        p.floors[0].wall_mut(ids[1]).unwrap().spec.schedule.include = false;
+        assert_eq!(table(&p, &d, 0, None).rows.len(), 3);
+        // So does a generated invisible wall.
+        p.floors[0].wall_mut(ids[2]).unwrap().flags.auto_generated = true;
+        assert_eq!(table(&p, &d, 0, None).rows.len(), 2);
+    }
+
+    #[test]
     fn rooms_use_the_active_floors_detection() {
         let mut p = Project::new("R");
         rect_walls(&mut p, 240.0, 120.0, 4.5, WallKind::Interior);
@@ -2013,7 +2151,9 @@ mod tests {
             .find(|r| r.iter().any(|c| c == "Entry door"))
             .expect("the description is listed");
         let o = p.floors[0].openings.iter().find(|o| o.id == first).unwrap();
-        assert!(row.iter().any(|c| *c == size_text(o.width + 2.0, o.height + 2.5)));
+        assert!(row
+            .iter()
+            .any(|c| *c == size_text(o.width + 2.0, o.height + 2.5)));
         assert!(row.iter().any(|c| c == "0.27"));
         assert!(row.iter().any(|c| c == "0.20"));
         assert!(row.iter().any(|c| c == "E-1"));

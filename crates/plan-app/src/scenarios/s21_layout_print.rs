@@ -99,7 +99,8 @@ fn new_layout_makes_a_template_page_and_page_one_and_a_second_one_reopens_it() {
     );
     // The plan's Drawing Sheet follows the layout's sheet.
     assert_eq!(sim.app.cx.sheet.size, layout.sheet);
-    // A second New Layout opens the same one instead of making another.
+    // A second New Layout asks for the name of a second layout file (the
+    // first is parked once it is made) instead of replacing the layout.
     lw::deactivate();
     sim.action(Action::FileNewLayout);
     assert!(
@@ -107,7 +108,9 @@ fn new_layout_makes_a_template_page_and_page_one_and_a_second_one_reopens_it() {
         "{}",
         sim.app.cx.status
     );
+    assert!(lw::is_active() && lw::dialog_open(), "the name dialog is up");
     assert_eq!(lw::load(&sim.app.cx.project).unwrap().pages.len(), 2);
+    assert!(sim.app.cx.project.layout_files.is_empty());
     // Plan edits and layout edits share one undo stack: the layout step undoes.
     assert!(sim.app.cx.can_undo());
 }

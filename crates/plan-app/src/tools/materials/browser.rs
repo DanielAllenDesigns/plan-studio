@@ -162,7 +162,7 @@ pub fn list(ui: &mut egui::Ui, lib: &MaterialLibrary, salt: &str) {
 
 /// The Library dock's Materials filter: the list, with New..., the active
 /// material and a Paint button.
-pub fn panel(ui: &mut egui::Ui, _cx: &mut EditorContext) {
+pub fn panel(ui: &mut egui::Ui, cx: &mut EditorContext) {
     let lib = library();
     ui.horizontal(|ui| {
         if ui.button("New Material...").clicked() {
@@ -188,6 +188,7 @@ pub fn panel(ui: &mut egui::Ui, _cx: &mut EditorContext) {
             ui.weak("No active material");
         }
     }
+    super::package::lightbeans_folder(ui, cx);
     list(ui, &lib, "dock");
 }
 

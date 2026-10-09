@@ -311,7 +311,7 @@ impl Project {
     fn top_normal_floor(&self) -> Option<usize> {
         self.floors
             .iter()
-            .rposition(|f| f.kind == FloorKind::Normal)
+            .rposition(|f| f.kind == FloorKind::Normal && !f.is_cad_detail())
     }
 
     /// Shift camera floor indices at or above `from` by `delta`.
@@ -604,7 +604,27 @@ impl Project {
             .cloned()
             .collect();
         let height = opts.total_height();
-        let mut floor = Floor::new("Foundation", -height);
+        // Rebuilding keeps what was drawn on the foundation floor (dimensions,
+        // CAD, symbols, hand-drawn walls and their openings, renamed rooms):
+        // only the walls and objects the build makes are replaced.
+        let mut floor = if has_foundation {
+            let mut old = self.floors[0].clone();
+            let made: Vec<Id> = old
+                .walls
+                .iter()
+                .filter(|w| w.flags.foundation)
+                .map(|w| w.id)
+                .collect();
+            old.walls.retain(|w| !w.flags.foundation);
+            old.openings.retain(|o| !made.contains(&o.wall_id));
+            old.room_names.retain(|n| {
+                !(n.name == n.room_type && matches!(n.room_type.as_str(), "Basement" | "Crawl Space"))
+            });
+            old.elevation = -height;
+            old
+        } else {
+            Floor::new("Foundation", -height)
+        };
         floor.kind = FloorKind::Foundation;
         floor.ceiling_height = height;
         let footed = matches!(opts.kind, FoundationKind::StemWall { .. })
@@ -747,8 +767,14 @@ impl Project {
         floor.kind = FloorKind::Attic;
         floor.ceiling_height = ATTIC_CEILING_HEIGHT;
         floor.settings = self.floors[top].settings.without_foundation();
-        self.floors.push(floor);
-        let idx = self.floors.len() - 1;
+        // The attic goes above the building, ahead of any CAD details.
+        let idx = self
+            .floors
+            .iter()
+            .position(Floor::is_cad_detail)
+            .unwrap_or(self.floors.len());
+        self.floors.insert(idx, floor);
+        self.shift_cameras(idx, 1);
         self.floors[idx].name = self.auto_floor_name(idx);
         self.restack_floors();
         self.refresh_attic_floor();
@@ -1071,6 +1097,42 @@ mod tests {
         assert!(!p.delete_floor(0));
         assert!(!p.delete_floor(5));
         assert_eq!(p.floors.len(), 1);
+    }
+
+    #[test]
+    fn rebuilding_the_foundation_keeps_what_was_drawn_on_it() {
+        let mut p = house();
+        p.build_foundation(FoundationKind::StemWall { height: 36.0 });
+        // A partition drawn on the foundation floor, a renamed room and a
+        // note survive a rebuild; the foundation walls are made again.
+        let part = p.add_wall(
+            0,
+            Point::new(120.0, 0.0),
+            Point::new(120.0, 120.0),
+            4.5,
+            36.0,
+            WallKind::Interior,
+        );
+        let kept = p.floors[0].room_names.len();
+        let mut mine = RoomName::new(Point::new(10.0, 10.0), "Wine Cellar", "Basement");
+        mine.floor_height_offset = 2.0;
+        p.floors[0].room_names.push(mine);
+        let old_ids: Vec<Id> = p.floors[0]
+            .walls
+            .iter()
+            .filter(|w| w.flags.foundation)
+            .map(|w| w.id)
+            .collect();
+        assert_eq!(p.build_foundation(FoundationKind::StemWall { height: 48.0 }), 0);
+        assert_eq!(p.floors.len(), 2, "rebuilt in place");
+        let f = &p.floors[0];
+        assert!(f.walls.iter().any(|w| w.id == part), "the partition stays");
+        let foundation: Vec<_> = f.walls.iter().filter(|w| w.flags.foundation).collect();
+        assert_eq!(foundation.len(), 4);
+        assert!(foundation.iter().all(|w| w.height == 48.0 && !old_ids.contains(&w.id)));
+        assert_eq!(f.elevation, -48.0);
+        assert!(f.room_names.iter().any(|n| n.name == "Wine Cellar"));
+        assert!(f.room_names.len() >= kept, "{} rooms", f.room_names.len());
     }
 
     #[test]

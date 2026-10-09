@@ -25,6 +25,7 @@ pub mod opening_edit;
 pub mod opening_view;
 pub mod ops;
 pub mod placed;
+pub mod plan_overlay;
 pub mod plan_tabs;
 pub mod render;
 pub mod restyle;
@@ -247,6 +248,22 @@ impl EditorContext {
         self.history.end_merge();
     }
 
+    /// Runs `f`, a command that may change several kinds of object (each
+    /// family opening its own [`begin_change`](Self::begin_change)), as ONE
+    /// undo step named after the first change; a command that changed nothing
+    /// leaves no step at all (QA-24, QA-26). Groups nest.
+    pub fn undo_group<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        self.history.begin_group();
+        let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(self)));
+        if self.history.end_group(&self.project) {
+            self.touch();
+        }
+        match run {
+            Ok(r) => r,
+            Err(e) => std::panic::resume_unwind(e),
+        }
+    }
+
     /// Records `before` (the project as it was before a change made outside
     /// the context, such as an edit in the layout window) as the undo step
     /// `label` of the one shared history.
@@ -373,6 +390,9 @@ impl EditorContext {
             for f in &mut self.project.floors {
                 f.sync_dimension_anchors();
             }
+            // Callouts, markers and notes: moved groups, linked views and the
+            // notes' numbers are brought up to date (`plan_core::callout`).
+            self.project.sync_annotations();
             let walls = &self.project.floors[self.floor].walls;
             let types = if self.project.wall_types.is_empty() {
                 &self.defaults.wall_types

@@ -95,6 +95,60 @@ pub fn place_scale_bar(cx: &mut EditorContext, start: Point, end: Point) -> bool
     true
 }
 
+/// Radius of a GPS marker drawn on the plan, inches.
+const GPS_MARKER_RADIUS: f64 = 12.0;
+
+/// Import GPS Data Assistant: stores the draft (elevation data, perimeter)
+/// and draws the markers and the polyline as CAD on the Site Plan layer, in
+/// one undo step named `label`.
+pub fn apply_gps_import(
+    cx: &mut EditorContext,
+    label: &str,
+    draft: &super::TerrainRecord,
+    gps: &plan_terrain::GpsResult,
+) {
+    use plan_core::cad::CadItem;
+    let floor = cx.floor;
+    cx.begin_change(label);
+    ensure_site_plan_layer(&mut cx.project);
+    let mut rec = load_terrain(&cx.project).unwrap_or_default();
+    rec.apply_spec(draft);
+    for (p, name) in &gps.markers {
+        cx.project.add_cad(
+            floor,
+            SITE_PLAN_LAYER,
+            CadItem::Circle {
+                center: *p,
+                radius: GPS_MARKER_RADIUS,
+            },
+        );
+        if !name.trim().is_empty() {
+            cx.project.add_cad(
+                floor,
+                SITE_PLAN_LAYER,
+                CadItem::Text {
+                    pos: Point::new(p.x + GPS_MARKER_RADIUS * 1.5, p.y),
+                    text: name.trim().to_string(),
+                    height: 8.0,
+                    angle: 0.0,
+                },
+            );
+        }
+    }
+    if gps.polyline.len() >= 2 {
+        cx.project.add_cad(
+            floor,
+            SITE_PLAN_LAYER,
+            CadItem::Polyline {
+                points: gps.polyline.clone(),
+                closed: false,
+            },
+        );
+    }
+    save_terrain(&mut cx.project, &rec);
+    cx.mark_dirty();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

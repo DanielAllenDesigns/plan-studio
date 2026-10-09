@@ -426,11 +426,14 @@ impl RoofTool {
                 }
             }
         }
+        let attic = s.build_attic_floor;
         match rebuild(&mut cx.project, fi, s, false) {
             Ok(rep) => {
+                // "Build attic floor": the roof and the attic floor are one step.
+                let attic = attic && cx.project.build_attic_floor().is_some();
                 cx.mark_dirty();
                 cx.status = format!(
-                    "Built {} roof plane{} over {}{}",
+                    "Built {} roof plane{} over {}{}{}",
                     rep.planes,
                     if rep.planes == 1 { "" } else { "s" },
                     cx.project.floors[fi].name,
@@ -438,7 +441,8 @@ impl RoofTool {
                         " (approximated: the footprint is too complex for an exact roof)"
                     } else {
                         ""
-                    }
+                    },
+                    if attic { " and the attic floor" } else { "" }
                 );
                 Some("Build Roof".into())
             }
@@ -2763,6 +2767,31 @@ mod tests {
         t.pointer_move(&mut cx, p);
         assert_eq!(planes(&cx).len(), 1, "a shed roof is one plane");
         assert_eq!(wall_kinds(&cx)[0], RoofWallKind::HighShedGable);
+    }
+
+    #[test]
+    fn build_roof_with_the_attic_check_adds_the_attic_floor_in_one_undo_step() {
+        let mut cx = new_cx();
+        house(&mut cx);
+        let floors = cx.project.floors.len();
+        let mut t = RoofTool::default();
+        let mut s = RoofSettings::from_defaults(&cx.defaults);
+        s.build_attic_floor = true;
+        t.cmds.borrow_mut().push(Cmd::ApplyBuild(s, None));
+        let p = PointerEvent::at(&cx, Point::new(10.0, 10.0));
+        t.pointer_move(&mut cx, p);
+        assert_eq!(cx.project.floors.len(), floors + 1);
+        assert!(cx
+            .project
+            .floors
+            .iter()
+            .any(|f| f.kind == plan_core::floors::FloorKind::Attic));
+        assert!(cx.status.contains("attic floor"), "{}", cx.status);
+        // The check box is not stored: a rebuild from the stored roof adds none.
+        let (stored, at) = RoofTool::current_settings(&cx);
+        assert!(at.is_some() && !stored.build_attic_floor);
+        cx.undo();
+        assert_eq!(cx.project.floors.len(), floors, "one undo step");
     }
 
     #[test]

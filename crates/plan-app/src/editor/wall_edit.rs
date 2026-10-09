@@ -32,6 +32,60 @@ pub fn cancel_break() -> bool {
     BREAK_PENDING.with(|b| b.replace(false))
 }
 
+/// Two straight walls that cross in the middle and were left whole (Walls
+/// Connect with Split Walls at T-Intersections off) draw as one shape (W-36):
+/// the lines of each inside the other are covered with the main fill and the
+/// outline of the pair is drawn over. `joins::crossing_merges` finds them.
+pub fn draw_crossing_merges(
+    cx: &EditorContext,
+    painter: &eframe::egui::Painter,
+    cam: &super::Camera,
+) {
+    use eframe::egui::{Shape, Stroke};
+    // Splitting is the default; only the plan that opted out has crossings.
+    if cx.defaults.walls_connect.split_on_tee {
+        return;
+    }
+    let walls = &cx.floor().walls;
+    if walls.len() < 2 {
+        return;
+    }
+    let pal = &cx.palette;
+    for m in plan_core::joins::crossing_merges(walls, 0.5) {
+        let (a, b) = (
+            cx.floor().wall(m.wall_ids[0]),
+            cx.floor().wall(m.wall_ids[1]),
+        );
+        let (Some(a), Some(b)) = (a, b) else { continue };
+        if !cx.layers().is_visible(&a.layer) || !cx.layers().is_visible(&b.layer) {
+            continue;
+        }
+        let thick = if a.thickness >= b.thickness { a } else { b };
+        let fill = match thick.kind {
+            plan_core::WallKind::Exterior => pal.wall_fill_exterior,
+            plan_core::WallKind::Interior => pal.wall_fill_interior,
+        };
+        let fill = if cam.px_per_in >= 1.0 {
+            crate::theme::scale(fill, 0.78)
+        } else {
+            fill
+        };
+        let pts = |poly: &[Point]| -> Vec<eframe::egui::Pos2> {
+            poly.iter().map(|p| cam.world_to_screen(*p)).collect()
+        };
+        // The stroke in the fill color wipes the overlap's own edges.
+        painter.add(Shape::convex_polygon(
+            pts(&m.overlap),
+            fill,
+            Stroke::new(2.0_f32, fill),
+        ));
+        painter.add(Shape::closed_line(
+            pts(&m.outline),
+            Stroke::new(1.5_f32, pal.wall_stroke),
+        ));
+    }
+}
+
 /// The wall buttons of the Edit toolbar for the current selection: Reverse
 /// Layers for any number of walls, the others for one wall (Make Arc Tangent
 /// only for a curved one).
@@ -806,7 +860,13 @@ mod tests {
             .project
             .add_opening(0, id, 180.0, OpeningKind::Window)
             .unwrap();
-        let o = cx.floor().openings.iter().find(|o| o.id == win).unwrap().clone();
+        let o = cx
+            .floor()
+            .openings
+            .iter()
+            .find(|o| o.id == win)
+            .unwrap()
+            .clone();
         let min = o.end_offset() + plan_core::walls::OPENING_JAMB_MARGIN;
         // Long enough: untouched, no warning.
         assert_eq!(clamp_length(&mut cx, id, 200.0), 200.0);
@@ -825,7 +885,13 @@ mod tests {
         let to = clamp_end_for_openings(&mut cx, id, WallEnd::Start, Point::new(200.0, 0.0));
         assert!(to.x < 200.0, "{to:?}");
         let start_min = 240.0 - to.x;
-        assert!((start_min - cx.project.min_wall_length(0, id, plan_core::walls::LengthLock::End)).abs() < 1e-9);
+        assert!(
+            (start_min
+                - cx.project
+                    .min_wall_length(0, id, plan_core::walls::LengthLock::End))
+            .abs()
+                < 1e-9
+        );
         // A wall with no openings is never held.
         let (mut cx2, id2) = cx_with_wall();
         assert_eq!(clamp_length(&mut cx2, id2, 2.0), 2.0);
@@ -838,8 +904,22 @@ mod tests {
     #[test]
     fn follow_moved_ends_drags_the_joined_walls_with_a_dialog_edit() {
         let mut cx = EditorContext::new(plan_defaults::embedded());
-        let a = cx.project.add_wall(0, Point::new(0.0, 0.0), Point::new(240.0, 0.0), 6.0, 100.0, WallKind::Exterior);
-        let b = cx.project.add_wall(0, Point::new(240.0, 0.0), Point::new(240.0, 144.0), 6.0, 100.0, WallKind::Exterior);
+        let a = cx.project.add_wall(
+            0,
+            Point::new(0.0, 0.0),
+            Point::new(240.0, 0.0),
+            6.0,
+            100.0,
+            WallKind::Exterior,
+        );
+        let b = cx.project.add_wall(
+            0,
+            Point::new(240.0, 0.0),
+            Point::new(240.0, 144.0),
+            6.0,
+            100.0,
+            WallKind::Exterior,
+        );
         let before = cx.floor().wall(a).unwrap().clone();
         // The dialog turned wall a about its start: its end is now at (0, 240).
         cx.project.floors[0].wall_mut(a).unwrap().end = Point::new(0.0, 240.0);

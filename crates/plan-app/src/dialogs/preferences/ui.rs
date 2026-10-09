@@ -187,6 +187,32 @@ pub(super) fn render(ui: &mut egui::Ui) {
     ui.weak(
         "A 3D view opened from now on starts with these; the Shading menu changes the view itself.",
     );
+    ui.add_space(8.0);
+    ui.strong("Material packages (Lightbeans)");
+    edit_pages(|pg| {
+        let r = &mut pg.render;
+        ui.checkbox(
+            &mut r.pbr_maps,
+            "PBR maps: draw normal, roughness, metallic, occlusion and opacity maps",
+        );
+        ui.horizontal(|ui| {
+            ui.label("Max texture size");
+            egui::ComboBox::from_id_salt("prefs_pbr_max_texture")
+                .selected_text(format!("{} px", r.max_texture_side))
+                .show_ui(ui, |ui| {
+                    for side in [1024_u32, 2048, 4096, 8192] {
+                        ui.selectable_value(&mut r.max_texture_side, side, format!("{side} px"));
+                    }
+                });
+        });
+        ui.checkbox(
+            &mut r.watch_downloads,
+            "Watch Downloads folder for new material packages",
+        );
+    });
+    ui.weak(
+        "Larger maps are shrunk for the 3D view; the ray tracer keeps up to 4096 px. Packages are never downloaded by Plan Studio.",
+    );
 }
 
 // ----- Materials List -----

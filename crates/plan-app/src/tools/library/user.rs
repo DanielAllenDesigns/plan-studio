@@ -30,6 +30,7 @@ use plan_core::geometry::Point;
 use plan_core::{Id, PlacedSymbol};
 use plan_import::{ModelOptions, UpAxis};
 use plan_library::manage::{self, UserMeta, USER_ROOT};
+use plan_library::trash::Trash;
 use plan_library::{archive, CatalogItem, ItemKind, Model3d, Placement};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -38,6 +39,8 @@ use std::sync::Arc;
 
 /// File name of the folders / favorites / recents file.
 pub const META_FILE: &str = "user-library-meta.json";
+/// File (next to the library file) of the Trash.
+pub const TRASH_FILE: &str = "user-library-trash.json";
 /// Folder (next to the library file) of the model files.
 pub const MODEL_DIR: &str = archive::MODEL_DIR;
 
@@ -55,6 +58,8 @@ struct State {
     /// The library path the data was loaded for.
     key: Option<Option<PathBuf>>,
     meta: UserMeta,
+    /// Deleted items that can still be restored.
+    trash: Trash,
     models: HashMap<String, Arc<Model3d>>,
     /// Requests for the Library Browser (windows to open).
     requests: Vec<UiRequest>,
@@ -78,6 +83,10 @@ pub enum UiRequest {
     ImportModel(PathBuf),
     /// Open Object Information for this item.
     ObjectInfo(String),
+    /// Open the Library Object Specification (Open Object) for this item.
+    OpenObject(String),
+    /// A Chief catalog was added or removed: scan again.
+    RescanChief,
 }
 
 /// The folder the library file lives in.
@@ -96,6 +105,12 @@ fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> R {
                 .and_then(|p| p.parent().map(|d| d.join(META_FILE)))
                 .and_then(|p| std::fs::read_to_string(p).ok())
                 .map(|t| UserMeta::from_json(&t))
+                .unwrap_or_default();
+            s.trash = key
+                .as_ref()
+                .and_then(|p| p.parent().map(|d| d.join(TRASH_FILE)))
+                .and_then(|p| std::fs::read_to_string(p).ok())
+                .map(|t| Trash::from_json(&t))
                 .unwrap_or_default();
             s.key = Some(key);
         }
@@ -192,7 +207,19 @@ fn store_model(path: &str, model: &Model3d) -> Result<(), String> {
 
 /// Removes model files no item refers to any more.
 fn prune_models(items: &[CatalogItem]) {
-    let used: Vec<&str> = items.iter().filter_map(|i| i.model3d.as_deref()).collect();
+    // A trashed item keeps its model until the trash is emptied.
+    let trashed: Vec<String> = with_state(|s| {
+        s.trash
+            .model_paths()
+            .into_iter()
+            .map(str::to_string)
+            .collect()
+    });
+    let used: Vec<&str> = items
+        .iter()
+        .filter_map(|i| i.model3d.as_deref())
+        .chain(trashed.iter().map(String::as_str))
+        .collect();
     with_state(|s| s.models.retain(|p, _| used.contains(&p.as_str())));
     if let Some(dir) = library_dir() {
         if let Ok(rd) = std::fs::read_dir(dir.join(MODEL_DIR.trim_end_matches('/'))) {
@@ -254,14 +281,74 @@ pub fn update(item: CatalogItem) -> Result<Arc<CatalogItem>, String> {
     images::register_user_item(item)
 }
 
-/// Deletes an item and its model file (unless a copy still uses it).
+/// Seconds since the Unix epoch.
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+fn save_trash(trash: &Trash) {
+    if let Some(dir) = library_dir() {
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::write(dir.join(TRASH_FILE), trash.to_json());
+    }
+}
+
+/// Edits the trash and saves it.
+fn edit_trash<R>(f: impl FnOnce(&mut Trash) -> R) -> R {
+    with_state(|s| {
+        let r = f(&mut s.trash);
+        save_trash(&s.trash);
+        r
+    })
+}
+
+/// The deleted items that can be restored.
+pub fn trash() -> Trash {
+    with_state(|s| s.trash.clone())
+}
+
+/// How many items are in the Trash (without copying them).
+pub fn trash_len() -> usize {
+    with_state(|s| s.trash.len())
+}
+
+/// Moves an item to the Trash (Delete in the Library Browser). Its 3D model
+/// file stays until the trash is emptied. False for an unknown id.
 pub fn delete(id: &str) -> Result<bool, String> {
-    let removed = images::remove_user_item(id)?;
-    if removed {
+    let mut all = items();
+    let moved = edit_trash(|t| t.discard(&mut all, id, now_secs()));
+    if moved {
+        images::set_user_items(all.clone())?;
         edit_meta(|m| m.forget(id));
+        prune_models(&all);
+    }
+    Ok(moved)
+}
+
+/// Puts a trashed item back in its folder; returns its id.
+pub fn restore(id: &str) -> Result<String, String> {
+    let mut all = items();
+    let back = edit_trash(|t| t.restore(&mut all, id)).ok_or("That item is not in the Trash")?;
+    images::set_user_items(all)?;
+    Ok(back)
+}
+
+/// Erases one trashed item for good.
+pub fn purge(id: &str) -> Result<bool, String> {
+    let gone = edit_trash(|t| t.purge(id)).is_some();
+    if gone {
         prune_models(&items());
     }
-    Ok(removed)
+    Ok(gone)
+}
+
+/// Erases everything in the Trash for good; returns the number of items.
+pub fn empty_trash() -> Result<usize, String> {
+    let gone = edit_trash(Trash::empty);
+    prune_models(&items());
+    Ok(gone.len())
 }
 
 /// Renames an item.
@@ -317,11 +404,23 @@ pub fn move_folder(path: &[String], new_parent: &[String]) -> Result<usize, Stri
     Ok(n)
 }
 
-/// Deletes the folder at `path` with everything inside; returns the number of
-/// items removed.
+/// Deletes the folder at `path`; the items inside go to the Trash. Returns
+/// the number of items moved.
 pub fn delete_folder(path: &[String]) -> Result<usize, String> {
-    let mut all = items();
+    let before = items();
+    let mut all = before.clone();
     let gone = edit_meta(|m| m.delete_folder(&mut all, path));
+    let moved: Vec<CatalogItem> = before
+        .into_iter()
+        .filter(|i| gone.contains(&i.id))
+        .collect();
+    let now = now_secs();
+    edit_trash(|t| {
+        for item in &moved {
+            let mut tmp = vec![item.clone()];
+            t.discard(&mut tmp, &item.id, now);
+        }
+    });
     images::set_user_items(all.clone())?;
     prune_models(&all);
     Ok(gone.len())
@@ -562,30 +661,54 @@ pub fn import_model_file(path: &Path, settings: &ModelImport) -> Result<Arc<Cata
 
 // ----- export and import of the whole library -----
 
-/// The user library as an export archive (see [`plan_library::archive`]).
+fn model_bytes_of(p: &str) -> Option<Vec<u8>> {
+    if let Some(m) = with_state(|s| s.models.get(p).cloned()) {
+        return Some(m.to_bytes());
+    }
+    std::fs::read(library_dir()?.join(p)).ok()
+}
+
+/// The user library as an export archive in Plan Studio's older zip format
+/// (see [`plan_library::archive`]); kept so old exports and tests round-trip.
+/// Library > Export Library writes JSON ([`export_json_text`]).
 pub fn export_bytes() -> Result<Vec<u8>, String> {
     let all = items();
     let meta = meta();
-    archive::export_library(&all, &meta, &|p| {
-        if let Some(m) = with_state(|s| s.models.get(p).cloned()) {
-            return Some(m.to_bytes());
-        }
-        std::fs::read(library_dir()?.join(p)).ok()
-    })
-    .map_err(|e| e.0)
+    archive::export_library(&all, &meta, &model_bytes_of).map_err(|e| e.0)
 }
 
-/// Writes the export archive to `path` (a `.calibz` file).
+/// The user library as Plan Studio's JSON export text (the items, folders,
+/// favorites and the 3D models in base 64). Never a Chief `.calib`.
+pub fn export_json_text() -> Result<String, String> {
+    let all = items();
+    let meta = meta();
+    archive::export_json(&all, &meta, &model_bytes_of).map_err(|e| e.0)
+}
+
+/// Writes the JSON export to `path`. Chief's `.calib` / `.calibz` names are
+/// refused: Plan Studio does not write Chief catalogs. Returns the number of
+/// items written.
 pub fn export_library_to(path: &Path) -> Result<usize, String> {
-    let bytes = export_bytes()?;
-    std::fs::write(path, &bytes).map_err(|e| format!("Cannot write {}: {e}", path.display()))?;
+    let ext = path
+        .extension()
+        .map(|e| e.to_string_lossy().to_ascii_lowercase());
+    if matches!(ext.as_deref(), Some("calib" | "calibz")) {
+        return Err(
+            "Plan Studio saves its library as a JSON file; it does not write Chief Architect \
+             .calib or .calibz catalogs. Choose a .json name"
+                .into(),
+        );
+    }
+    let text = export_json_text()?;
+    std::fs::write(path, text).map_err(|e| format!("Cannot write {}: {e}", path.display()))?;
     Ok(items().len())
 }
 
-/// Merges an export archive into the library: items with the same id are
-/// replaced, folders and favorites are added. Returns the number of items.
+/// Merges an export into the library (JSON, or the older zip): items with the
+/// same id are replaced, folders and favorites are added. Returns the number
+/// of items.
 pub fn import_bytes(bytes: &[u8]) -> Result<usize, String> {
-    let a = archive::import_library(bytes).map_err(|e| e.0)?;
+    let a = archive::import_any(bytes).map_err(|e| e.0)?;
     for (path, data) in &a.models {
         let m = Model3d::from_bytes(data).map_err(|e| e.0)?;
         store_model(path, &m)?;
@@ -609,10 +732,60 @@ pub fn import_bytes(bytes: &[u8]) -> Result<usize, String> {
     Ok(a.items.len())
 }
 
-/// Imports an export archive file.
+/// Imports a Plan Studio export file (JSON or zip).
 pub fn import_library_from(path: &Path) -> Result<usize, String> {
     let bytes = std::fs::read(path).map_err(|e| format!("Cannot read {}: {e}", path.display()))?;
     import_bytes(&bytes)
+}
+
+/// What Import Library did with a file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ImportOutcome {
+    /// A Plan Studio export: this many items joined the User Catalog.
+    Items(usize),
+    /// A Chief `.calib` / `.calibz`: added to the browser, read-only and in
+    /// place, under this name.
+    Catalog(String),
+}
+
+/// Largest file read whole to tell a Plan Studio zip from a Chief `.calibz`.
+const SNIFF_ZIP_MAX: u64 = 64 * 1024 * 1024;
+
+/// Library > Import Library: a Plan Studio export (JSON or zip) is merged into
+/// the User Catalog; a Chief `.calib` / `.calibz` is added to the browser as a
+/// read-only catalog (never copied or converted).
+pub fn import_library_file(path: &Path) -> Result<ImportOutcome, String> {
+    use std::io::Read;
+    let mut head = [0u8; 16];
+    let n = std::fs::File::open(path)
+        .and_then(|mut f| f.read(&mut head))
+        .map_err(|e| format!("Cannot read {}: {e}", path.display()))?;
+    match archive::sniff(&head[..n]) {
+        archive::Container::ChiefCatalog => register_chief(path),
+        archive::Container::Json => import_library_from(path).map(ImportOutcome::Items),
+        archive::Container::Zip => {
+            let size = std::fs::metadata(path).map_or(u64::MAX, |m| m.len());
+            if size <= SNIFF_ZIP_MAX {
+                let bytes = std::fs::read(path)
+                    .map_err(|e| format!("Cannot read {}: {e}", path.display()))?;
+                if archive::is_plan_studio_zip(&bytes) {
+                    return import_bytes(&bytes).map(ImportOutcome::Items);
+                }
+            }
+            register_chief(path)
+        }
+        archive::Container::Unknown => Err(format!(
+            "{} is neither a Plan Studio library (.json) nor a Chief Architect catalog \
+             (.calib, .calibz)",
+            path.display()
+        )),
+    }
+}
+
+fn register_chief(path: &Path) -> Result<ImportOutcome, String> {
+    let name = super::chief::register_catalog(path)?;
+    push_request(UiRequest::RescanChief);
+    Ok(ImportOutcome::Catalog(name))
 }
 
 // ----- placing -----
@@ -838,6 +1011,18 @@ fn replace_device(cx: &mut EditorContext, id: Id, item: &CatalogItem) -> bool {
 
 // ----- commands -----
 
+/// Imports `path` and describes the result for the status bar.
+pub fn import_status(path: &Path) -> String {
+    match import_library_file(path) {
+        Ok(ImportOutcome::Items(n)) => format!("Imported {n} item(s) into the User Catalog"),
+        Ok(ImportOutcome::Catalog(name)) => format!(
+            "Added the Chief Architect catalog \"{name}\" to the Library Browser (read-only; \
+             the file is read in place)"
+        ),
+        Err(e) => e,
+    }
+}
+
 /// Runs a Library menu command by id; false when the id is not ours.
 pub fn run_command(cx: &mut EditorContext, id: &str) -> bool {
     match id {
@@ -876,16 +1061,16 @@ pub fn run_command(cx: &mut EditorContext, id: &str) -> bool {
         EXPORT_LIBRARY => {
             cx.status = match rfd::FileDialog::new()
                 .set_title("Export Library")
-                .set_file_name("plan-studio-library.calibz")
+                .set_file_name("plan-studio-library.json")
                 .add_filter(
-                    "Plan Studio library (Chief Architect cannot open it)",
-                    &["calibz"],
+                    "Plan Studio library (JSON; Chief Architect cannot open it)",
+                    &["json"],
                 )
                 .save_file()
             {
                 Some(path) => match export_library_to(&path) {
                     Ok(n) => format!(
-                        "Exported {n} item(s) to {} (Plan Studio only; Chief cannot read it)",
+                        "Exported {n} user item(s) to {} (Plan Studio only; Chief cannot read it)",
                         path.display()
                     ),
                     Err(e) => e,
@@ -896,17 +1081,17 @@ pub fn run_command(cx: &mut EditorContext, id: &str) -> bool {
         IMPORT_LIBRARY => {
             cx.status = match rfd::FileDialog::new()
                 .set_title("Import Library")
-                .add_filter("Plan Studio library", &["calibz", "calib", "zip"])
+                .add_filter(
+                    "Libraries (Plan Studio .json, Chief .calib, .calibz)",
+                    &["json", "calib", "calibz", "zip"],
+                )
                 .pick_file()
             {
-                Some(path) => match import_library_from(&path) {
-                    Ok(n) => format!("Imported {n} item(s) into the User Catalog"),
-                    Err(e) => e,
-                },
+                Some(path) => import_status(&path),
                 None => "Import cancelled".into(),
             };
         }
-        _ => return false,
+        _ => return super::convert::run_command(cx, id),
     }
     true
 }
@@ -970,10 +1155,15 @@ mod tests {
         assert!(dir.join(model_file_name(&id)).exists());
         assert!(delete(&copy).unwrap());
         assert!(
-            !dir.join(model_file_name(&id)).exists(),
-            "orphaned model removed"
+            dir.join(model_file_name(&id)).exists(),
+            "a trashed item keeps its model"
         );
         assert!(!delete(&copy).unwrap());
+        assert_eq!(empty_trash().unwrap(), 2);
+        assert!(
+            !dir.join(model_file_name(&id)).exists(),
+            "orphaned model removed when the trash is emptied"
+        );
         images::set_user_library_path(None);
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -1007,6 +1197,11 @@ mod tests {
         assert_eq!(delete_folder(&folder(&["User", "Cooking"])).unwrap(), 1);
         assert!(self::item(&id).is_none());
         assert!(!meta().is_favorite(&id));
+        // The folder's items wait in the Trash, model included, until it is
+        // emptied.
+        assert!(trash().contains(&id));
+        assert!(dir.join(model_file_name(&id)).exists());
+        assert_eq!(empty_trash().unwrap(), 1);
         assert!(!dir.join(model_file_name(&id)).exists());
         images::set_user_library_path(None);
         let _ = std::fs::remove_dir_all(dir);
@@ -1057,6 +1252,73 @@ mod tests {
             .unwrap_err()
             .contains("Chief"));
         images::set_user_library_path(None);
+    }
+
+    #[test]
+    fn delete_goes_to_the_trash_and_restore_puts_it_back() {
+        let dir = fresh(true).unwrap();
+        let (item, model) = box_item("Ottoman", &["User", "Furniture"]);
+        let id = item.id.clone();
+        add(item, Some(&model)).unwrap();
+        toggle_favorite(&id);
+        assert!(delete(&id).unwrap());
+        assert!(self::item(&id).is_none());
+        let t = trash();
+        assert_eq!(t.len(), 1);
+        assert!(t.contains(&id));
+        assert!(!meta().is_favorite(&id), "a trashed item is not a favorite");
+
+        // The trash survives a restart.
+        images::set_user_library_path(Some(Some(dir.join("user-library.json"))));
+        forget_cache();
+        assert!(trash().contains(&id));
+        assert_eq!(restore(&id).unwrap(), id);
+        assert!(trash().is_empty());
+        let back = self::item(&id).expect("restored");
+        assert_eq!(back.category, folder(&["User", "Furniture"]));
+        assert!(model_of(&back).is_some(), "the model came back with it");
+        assert!(restore(&id).is_err());
+
+        // A deleted folder's items go to the trash too, and purge erases one.
+        create_folder(&folder(&["User", "Box"])).unwrap();
+        let (b, mb) = box_item("Crate", &["User", "Box"]);
+        let bid = b.id.clone();
+        add(b, Some(&mb)).unwrap();
+        assert_eq!(delete_folder(&folder(&["User", "Box"])).unwrap(), 1);
+        assert!(self::item(&bid).is_none() && trash().contains(&bid));
+        assert!(purge(&bid).unwrap());
+        assert!(!purge(&bid).unwrap());
+        assert!(trash().is_empty());
+        images::set_user_library_path(None);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn export_writes_json_never_calib_and_import_accepts_it() {
+        let dir = fresh(true).unwrap();
+        let (a, ma) = box_item("Chair", &["User", "Furniture"]);
+        let aid = a.id.clone();
+        add(a, Some(&ma)).unwrap();
+        let out = dir.join("lib.json");
+        assert_eq!(export_library_to(&out).unwrap(), 1);
+        let text = std::fs::read_to_string(&out).unwrap();
+        assert!(text.trim_start().starts_with('{'), "plain JSON");
+        for bad in ["x.calib", "x.calibz"] {
+            let e = export_library_to(&dir.join(bad)).unwrap_err();
+            assert!(e.contains("does not write"), "{e}");
+            assert!(!dir.join(bad).exists());
+        }
+        // Into an empty library, through the same door the menu uses.
+        fresh(false);
+        assert_eq!(import_library_file(&out).unwrap(), ImportOutcome::Items(1));
+        assert!(model_of(&self::item(&aid).unwrap()).is_some());
+        assert!(import_status(&out).starts_with("Imported 1 item"));
+        // A file that is neither kind is refused with a reason.
+        let junk = dir.join("junk.txt");
+        std::fs::write(&junk, "hello").unwrap();
+        assert!(import_library_file(&junk).unwrap_err().contains("neither"));
+        images::set_user_library_path(None);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

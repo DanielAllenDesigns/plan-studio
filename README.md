@@ -51,7 +51,7 @@ real project": the manual QA pass in the [release checklist](docs/release-checkl
 
 That window is from 2026-10-07, early in the project, and is the only screenshot in the repository today. The program
 has far more working buttons, dialogs and docks now. Current screenshots are expected under `docs/screenshots/` with
-these names (the folder does not exist until they are captured):
+these names (the folder holds only a README until they are captured):
 
 | File | What it shows |
 |---|---|
@@ -127,9 +127,14 @@ must never be committed.
 
 **Plan Studio works without Chief installed.** It then uses its built-in defaults (a Chief-style template, about 145
 built-in symbols and generated textures). Lookup of the Chief folders is tested on macOS, where Chief keeps them under
-`~/Documents/Chief Architect Premier X18 Data` and `~/Library/Application Support`; on Windows and Linux the
-Chief-reading features find nothing unless the same folder layout exists, and you get the built-in defaults.
-`PLAN_STUDIO_TEXTURES` can name an extra texture folder.
+`~/Documents/Chief Architect Premier X18 Data`, `~/Library/Application Support` (the catalog registry) and
+`/Library/Application Support` (the installed libraries and referenced files). The code uses those macOS paths only:
+the catalog registry (`plan-calib` `registry.rs`) and the texture folders (`plan-materials` `textures.rs`) start from
+`$HOME` (not `USERPROFILE`) and the fixed `/Library/Application Support` install folder, and the template lookup
+(`plan-config` `templates.rs`) reads `~/Documents/...Data/Templates` and `~/.config/Chief Architect Inc/*.ini` from
+`HOME`, else `USERPROFILE`. On Windows and Linux the Chief-reading features therefore find nothing unless that same
+folder layout exists, and you get the built-in defaults. `PLAN_STUDIO_TEXTURES` can name an extra texture folder, and
+Preferences > Folders sets the template and autosave folders.
 
 ## Download
 
@@ -236,7 +241,7 @@ test fit together.
 
 [docs/README.md](docs/README.md) is the index of everything under `docs/`. The main entry points:
 
-- [Reference manual](docs/manual/00-index.md): 19 chapters from first launch to contributor notes, built into the program.
+- [Reference manual](docs/manual/00-index.md): 20 chapters from first launch to contributor notes, built into the program.
 - [Architecture of the tools](docs/architecture-tools.md) and [contributor notes](docs/manual/14-architecture-for-contributors.md).
 - [Parity specifications](docs/parity/) and the [parity status](docs/parity-status.md) table that counts them.
 - [DECISIONS.md](DECISIONS.md): open and settled decisions, one row each, with the assumption built into the code.

@@ -148,7 +148,7 @@ pub(crate) fn build_pads(t: &Terrain, model: &ElevationModel) -> Vec<Pad> {
             if usable(&footprint) {
                 let polygon = offset_polygon(&footprint, b.margin.max(0.0));
                 let top = match b.first_floor {
-                    Some(ff) => ff - t.subfloor_height_above_terrain,
+                    Some(ff) => ff - t.effective_subfloor_distance(),
                     None => model.mean_ground(&polygon),
                 };
                 pads.push(make_pad(

@@ -158,6 +158,7 @@ pub fn snapshot() -> State {
 }
 
 /// Changes the window's state (the inputs), for tests and presets.
+#[cfg(test)]
 pub fn edit(f: impl FnOnce(&mut State)) {
     state(f);
 }
@@ -168,6 +169,7 @@ pub fn is_open() -> bool {
 }
 
 /// Closes the window.
+#[cfg(test)]
 pub fn close() {
     state(|s| s.open = false);
 }
@@ -446,7 +448,12 @@ fn apply_hint(tab: Tab) -> &'static str {
 fn length(ui: &mut egui::Ui, label: &str, v: &mut f64, speed: f64) {
     ui.label(label);
     ui.horizontal(|ui| {
-        ui.add(egui::DragValue::new(v).speed(speed).range(0.0..=4000.0).suffix("\""));
+        ui.add(
+            egui::DragValue::new(v)
+                .speed(speed)
+                .range(0.0..=4000.0)
+                .suffix("\""),
+        );
         ui.weak(fmt_ft_in(*v));
     });
     ui.end_row();
@@ -507,16 +514,32 @@ fn material_row(ui: &mut egui::Ui, m: &mut Material) {
     };
     if let Material::Custom(c) = m {
         ui.label("Fb (psi)");
-        ui.add(egui::DragValue::new(&mut c.fb).speed(10.0).range(100.0..=4000.0));
+        ui.add(
+            egui::DragValue::new(&mut c.fb)
+                .speed(10.0)
+                .range(100.0..=4000.0),
+        );
         ui.end_row();
         ui.label("E (psi)");
-        ui.add(egui::DragValue::new(&mut c.e).speed(10_000.0).range(0.5e6..=3.0e6));
+        ui.add(
+            egui::DragValue::new(&mut c.e)
+                .speed(10_000.0)
+                .range(0.5e6..=3.0e6),
+        );
         ui.end_row();
         ui.label("Fv (psi)");
-        ui.add(egui::DragValue::new(&mut c.fv).speed(1.0).range(50.0..=500.0));
+        ui.add(
+            egui::DragValue::new(&mut c.fv)
+                .speed(1.0)
+                .range(50.0..=500.0),
+        );
         ui.end_row();
         ui.label("Fc perp (psi)");
-        ui.add(egui::DragValue::new(&mut c.fc_perp).speed(5.0).range(100.0..=1500.0));
+        ui.add(
+            egui::DragValue::new(&mut c.fc_perp)
+                .speed(5.0)
+                .range(100.0..=1500.0),
+        );
         ui.end_row();
         ui.label("");
         ui.weak("Typed values; Southern Pine from the NDS Supplement");
@@ -547,16 +570,46 @@ fn span_table(ui: &mut egui::Ui, id: &str, rows: &[t::SpanRow], mark: Option<&st
 }
 
 fn header_tab(ui: &mut egui::Ui, st: &mut State) {
-    egui::Grid::new("calc_header_in").num_columns(2).show(ui, |ui| {
-        material_row(ui, &mut st.material);
-        length(ui, "Opening width", &mut st.header.span, 1.0);
-        choose(ui, "calc_snow", "Ground snow load", &mut st.header.ground_snow, &[20.0, 30.0, 50.0, 70.0], " psf");
-        choose(ui, "calc_bw", "Building width", &mut st.header.building_width_ft, &[20.0, 28.0, 36.0], " ft");
-        let mut floors = f64::from(st.header.floors_above);
-        choose(ui, "calc_fl", "Floors bearing above", &mut floors, &[0.0, 1.0], "");
-        st.header.floors_above = floors as u32;
-        choose(ui, "calc_wd", "Wall depth", &mut st.header.wall_depth, &[3.5, 5.5], "\"");
-    });
+    egui::Grid::new("calc_header_in")
+        .num_columns(2)
+        .show(ui, |ui| {
+            material_row(ui, &mut st.material);
+            length(ui, "Opening width", &mut st.header.span, 1.0);
+            choose(
+                ui,
+                "calc_snow",
+                "Ground snow load",
+                &mut st.header.ground_snow,
+                &[20.0, 30.0, 50.0, 70.0],
+                " psf",
+            );
+            choose(
+                ui,
+                "calc_bw",
+                "Building width",
+                &mut st.header.building_width_ft,
+                &[20.0, 28.0, 36.0],
+                " ft",
+            );
+            let mut floors = f64::from(st.header.floors_above);
+            choose(
+                ui,
+                "calc_fl",
+                "Floors bearing above",
+                &mut floors,
+                &[0.0, 1.0],
+                "",
+            );
+            st.header.floors_above = floors as u32;
+            choose(
+                ui,
+                "calc_wd",
+                "Wall depth",
+                &mut st.header.wall_depth,
+                &[3.5, 5.5],
+                "\"",
+            );
+        });
     ui.separator();
     let input = st.header_input();
     match t::header_recommend(&input) {
@@ -575,38 +628,68 @@ fn header_tab(ui: &mut egui::Ui, st: &mut State) {
         None => {
             ui.colored_label(
                 egui::Color32::from_rgb(200, 60, 40),
-                format!("No header in the table carries {}: use an engineered beam", fmt_ft_in(input.span)),
+                format!(
+                    "No header in the table carries {}: use an engineered beam",
+                    fmt_ft_in(input.span)
+                ),
             );
         }
     }
     ui.add_space(4.0);
-    egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
-        egui::Grid::new("calc_header_out").striped(true).show(ui, |ui| {
-            for h in ["Section", "Longest span", "Governs", "Jacks", ""] {
-                ui.label(RichText::new(h).strong());
-            }
-            ui.end_row();
-            for o in t::header_options(&input) {
-                ui.label(&o.label);
-                ui.label(o.span.text());
-                ui.label(o.span.governs.name());
-                ui.label(o.jacks.to_string());
-                ui.label(if o.passes { "carries" } else { "" });
-                ui.end_row();
-            }
+    egui::ScrollArea::vertical()
+        .max_height(220.0)
+        .show(ui, |ui| {
+            egui::Grid::new("calc_header_out")
+                .striped(true)
+                .show(ui, |ui| {
+                    for h in ["Section", "Longest span", "Governs", "Jacks", ""] {
+                        ui.label(RichText::new(h).strong());
+                    }
+                    ui.end_row();
+                    for o in t::header_options(&input) {
+                        ui.label(&o.label);
+                        ui.label(o.span.text());
+                        ui.label(o.span.governs.name());
+                        ui.label(o.jacks.to_string());
+                        ui.label(if o.passes { "carries" } else { "" });
+                        ui.end_row();
+                    }
+                });
         });
-    });
     ui.weak("Computed from the NDS design values with a roof of 15 psf dead load, a 2' overhang and, with a floor above, 30 psf live and 10 psf dead. Check the printed table of the adopted code.");
 }
 
 fn joist_tab(ui: &mut egui::Ui, st: &mut State) {
-    egui::Grid::new("calc_joist_in").num_columns(2).show(ui, |ui| {
-        material_row(ui, &mut st.material);
-        choose(ui, "calc_jl", "Live load", &mut st.joist.live, &[30.0, 40.0], " psf");
-        choose(ui, "calc_jd", "Dead load", &mut st.joist.dead, &[10.0, 20.0], " psf");
-        choose(ui, "calc_js", "Spacing", &mut st.joist.spacing, &t::SPACINGS, "\"");
-        length(ui, "Span to make", &mut st.joist_span, 1.0);
-    });
+    egui::Grid::new("calc_joist_in")
+        .num_columns(2)
+        .show(ui, |ui| {
+            material_row(ui, &mut st.material);
+            choose(
+                ui,
+                "calc_jl",
+                "Live load",
+                &mut st.joist.live,
+                &[30.0, 40.0],
+                " psf",
+            );
+            choose(
+                ui,
+                "calc_jd",
+                "Dead load",
+                &mut st.joist.dead,
+                &[10.0, 20.0],
+                " psf",
+            );
+            choose(
+                ui,
+                "calc_js",
+                "Spacing",
+                &mut st.joist.spacing,
+                &t::SPACINGS,
+                "\"",
+            );
+            length(ui, "Span to make", &mut st.joist_span, 1.0);
+        });
     ui.separator();
     let input = st.joist_input();
     match t::joist_size_for(&input, st.joist_span) {
@@ -614,7 +697,11 @@ fn joist_tab(ui: &mut egui::Ui, st: &mut State) {
             RichText::new(format!(
                 "2x{n} at {}\" on centre spans {} (needs {})",
                 input.spacing,
-                t::joist_span(&JoistInput { nominal: n, ..input }).text(),
+                t::joist_span(&JoistInput {
+                    nominal: n,
+                    ..input
+                })
+                .text(),
                 fmt_ft_in(st.joist_span)
             ))
             .strong(),
@@ -626,24 +713,57 @@ fn joist_tab(ui: &mut egui::Ui, st: &mut State) {
     };
     ui.add_space(4.0);
     let mark = t::joist_size_for(&input, st.joist_span).map(|n| format!("2x{n}"));
-    span_table(ui, "calc_joist_out", &t::joist_table(&input), mark.as_deref());
+    span_table(
+        ui,
+        "calc_joist_out",
+        &t::joist_table(&input),
+        mark.as_deref(),
+    );
     ui.weak("Longest span of each size, L/360 live load, L/240 total load. Check the printed table of the adopted code.");
 }
 
 fn rafter_tab(ui: &mut egui::Ui, st: &mut State) {
-    egui::Grid::new("calc_rafter_in").num_columns(2).show(ui, |ui| {
-        material_row(ui, &mut st.material);
-        choose(ui, "calc_rs", "Ground snow load", &mut st.rafter.ground_snow, &[0.0, 20.0, 30.0, 50.0, 70.0], " psf");
-        choose(ui, "calc_rd", "Dead load", &mut st.rafter.dead, &[10.0, 15.0, 20.0], " psf");
-        choose(ui, "calc_rsp", "Spacing", &mut st.rafter.spacing, &t::SPACINGS, "\"");
-        ui.label("Pitch");
-        ui.add(egui::DragValue::new(&mut st.rafter.pitch).speed(0.1).range(0.0..=24.0).suffix(":12"));
-        ui.end_row();
-        ui.label("Finished ceiling attached");
-        ui.checkbox(&mut st.rafter.ceiling_attached, "");
-        ui.end_row();
-        length(ui, "Run to make (plan)", &mut st.rafter_run, 1.0);
-    });
+    egui::Grid::new("calc_rafter_in")
+        .num_columns(2)
+        .show(ui, |ui| {
+            material_row(ui, &mut st.material);
+            choose(
+                ui,
+                "calc_rs",
+                "Ground snow load",
+                &mut st.rafter.ground_snow,
+                &[0.0, 20.0, 30.0, 50.0, 70.0],
+                " psf",
+            );
+            choose(
+                ui,
+                "calc_rd",
+                "Dead load",
+                &mut st.rafter.dead,
+                &[10.0, 15.0, 20.0],
+                " psf",
+            );
+            choose(
+                ui,
+                "calc_rsp",
+                "Spacing",
+                &mut st.rafter.spacing,
+                &t::SPACINGS,
+                "\"",
+            );
+            ui.label("Pitch");
+            ui.add(
+                egui::DragValue::new(&mut st.rafter.pitch)
+                    .speed(0.1)
+                    .range(0.0..=24.0)
+                    .suffix(":12"),
+            );
+            ui.end_row();
+            ui.label("Finished ceiling attached");
+            ui.checkbox(&mut st.rafter.ceiling_attached, "");
+            ui.end_row();
+            length(ui, "Run to make (plan)", &mut st.rafter_run, 1.0);
+        });
     ui.separator();
     let input = st.rafter_input();
     match t::rafter_size_for(&input, st.rafter_run) {
@@ -651,7 +771,11 @@ fn rafter_tab(ui: &mut egui::Ui, st: &mut State) {
             RichText::new(format!(
                 "2x{n} at {}\" on centre runs {} of plan (needs {})",
                 input.spacing,
-                t::rafter_span(&RafterInput { nominal: n, ..input }).text(),
+                t::rafter_span(&RafterInput {
+                    nominal: n,
+                    ..input
+                })
+                .text(),
                 fmt_ft_in(st.rafter_run)
             ))
             .strong(),
@@ -663,28 +787,66 @@ fn rafter_tab(ui: &mut egui::Ui, st: &mut State) {
     };
     ui.add_space(4.0);
     let mark = t::rafter_size_for(&input, st.rafter_run).map(|n| format!("2x{n}"));
-    span_table(ui, "calc_rafter_out", &t::rafter_table(&input), mark.as_deref());
+    span_table(
+        ui,
+        "calc_rafter_out",
+        &t::rafter_table(&input),
+        mark.as_deref(),
+    );
     ui.weak("Span of the horizontal projection; snow load 0.7 x ground snow, at least 20 psf. Check the printed table of the adopted code.");
 }
 
 fn stair_tab(ui: &mut egui::Ui, st: &mut State) {
-    egui::Grid::new("calc_stair_in").num_columns(2).show(ui, |ui| {
-        length(ui, "Total rise (floor to floor)", &mut st.stair.total_rise, 0.25);
-        ui.label("Riser aimed at");
-        ui.add(egui::DragValue::new(&mut st.stair.target_riser).speed(0.05).range(4.0..=8.0).suffix("\""));
-        ui.end_row();
-        ui.label("Tread depth");
-        ui.add(egui::DragValue::new(&mut st.stair.tread).speed(0.05).range(6.0..=16.0).suffix("\""));
-        ui.end_row();
-    });
+    egui::Grid::new("calc_stair_in")
+        .num_columns(2)
+        .show(ui, |ui| {
+            length(
+                ui,
+                "Total rise (floor to floor)",
+                &mut st.stair.total_rise,
+                0.25,
+            );
+            ui.label("Riser aimed at");
+            ui.add(
+                egui::DragValue::new(&mut st.stair.target_riser)
+                    .speed(0.05)
+                    .range(4.0..=8.0)
+                    .suffix("\""),
+            );
+            ui.end_row();
+            ui.label("Tread depth");
+            ui.add(
+                egui::DragValue::new(&mut st.stair.tread)
+                    .speed(0.05)
+                    .range(6.0..=16.0)
+                    .suffix("\""),
+            );
+            ui.end_row();
+        });
     ui.separator();
     match t::stair_layout(&st.stair) {
         Some(r) => {
-            ui.label(RichText::new(format!("{} risers of {:.3}\", {} treads of {:.2}\"", r.risers, r.riser_height, r.treads, r.tread_depth)).strong());
-            ui.label(format!("Run {}, stringer {}, angle {:.1} degrees, 2R + T = {:.2}\"", fmt_ft_in(r.total_run), fmt_ft_in(r.stringer), r.angle_deg, r.two_r_plus_t));
+            ui.label(
+                RichText::new(format!(
+                    "{} risers of {:.3}\", {} treads of {:.2}\"",
+                    r.risers, r.riser_height, r.treads, r.tread_depth
+                ))
+                .strong(),
+            );
+            ui.label(format!(
+                "Run {}, stringer {}, angle {:.1} degrees, 2R + T = {:.2}\"",
+                fmt_ft_in(r.total_run),
+                fmt_ft_in(r.stringer),
+                r.angle_deg,
+                r.two_r_plus_t
+            ));
             ui.add_space(4.0);
             for n in &r.notes {
-                let c = if n.ok { egui::Color32::from_rgb(60, 140, 70) } else { egui::Color32::from_rgb(200, 60, 40) };
+                let c = if n.ok {
+                    egui::Color32::from_rgb(60, 140, 70)
+                } else {
+                    egui::Color32::from_rgb(200, 60, 40)
+                };
                 ui.colored_label(c, format!("{} {}", if n.ok { "ok" } else { "no" }, n.text));
             }
         }
@@ -695,30 +857,105 @@ fn stair_tab(ui: &mut egui::Ui, st: &mut State) {
 }
 
 fn deck_tab(ui: &mut egui::Ui, st: &mut State) {
-    egui::Grid::new("calc_deck_in").num_columns(2).show(ui, |ui| {
-        material_row(ui, &mut st.material);
-        let mut jn = f64::from(st.deck.joist_nominal);
-        choose(ui, "calc_dj", "Joist size (2x)", &mut jn, &[6.0, 8.0, 10.0, 12.0], "");
-        st.deck.joist_nominal = jn as u32;
-        choose(ui, "calc_djs", "Joist spacing", &mut st.deck.joist_spacing, &t::SPACINGS, "\"");
-        let mut bn = f64::from(st.deck.beam_nominal);
-        choose(ui, "calc_db", "Beam size (2x)", &mut bn, &[6.0, 8.0, 10.0, 12.0], "");
-        st.deck.beam_nominal = bn as u32;
-        let mut plies = f64::from(st.deck.beam_plies);
-        choose(ui, "calc_dp", "Beam plies", &mut plies, &[2.0, 3.0], "");
-        st.deck.beam_plies = plies as u32;
-        length(ui, "Joist span (ledger to beam)", &mut st.deck.joist_span, 1.0);
-        length(ui, "Joist overhang past the beam", &mut st.deck.cantilever, 1.0);
-        choose(ui, "calc_ds", "Soil bearing", &mut st.deck.soil_bearing, &[1000.0, 1500.0, 2000.0, 3000.0], " psf");
-    });
+    egui::Grid::new("calc_deck_in")
+        .num_columns(2)
+        .show(ui, |ui| {
+            material_row(ui, &mut st.material);
+            let mut jn = f64::from(st.deck.joist_nominal);
+            choose(
+                ui,
+                "calc_dj",
+                "Joist size (2x)",
+                &mut jn,
+                &[6.0, 8.0, 10.0, 12.0],
+                "",
+            );
+            st.deck.joist_nominal = jn as u32;
+            choose(
+                ui,
+                "calc_djs",
+                "Joist spacing",
+                &mut st.deck.joist_spacing,
+                &t::SPACINGS,
+                "\"",
+            );
+            let mut bn = f64::from(st.deck.beam_nominal);
+            choose(
+                ui,
+                "calc_db",
+                "Beam size (2x)",
+                &mut bn,
+                &[6.0, 8.0, 10.0, 12.0],
+                "",
+            );
+            st.deck.beam_nominal = bn as u32;
+            let mut plies = f64::from(st.deck.beam_plies);
+            choose(ui, "calc_dp", "Beam plies", &mut plies, &[2.0, 3.0], "");
+            st.deck.beam_plies = plies as u32;
+            length(
+                ui,
+                "Joist span (ledger to beam)",
+                &mut st.deck.joist_span,
+                1.0,
+            );
+            length(
+                ui,
+                "Joist overhang past the beam",
+                &mut st.deck.cantilever,
+                1.0,
+            );
+            choose(
+                ui,
+                "calc_ds",
+                "Soil bearing",
+                &mut st.deck.soil_bearing,
+                &[1000.0, 1500.0, 2000.0, 3000.0],
+                " psf",
+            );
+        });
     ui.separator();
     let d = st.deck_input();
     let r = t::deck_design(&d);
-    let ok = |b: bool| if b { egui::Color32::from_rgb(60, 140, 70) } else { egui::Color32::from_rgb(200, 60, 40) };
-    ui.colored_label(ok(r.joist_ok), format!("Joists 2x{} at {}\" span {} ({}); the deck needs {}", d.joist_nominal, d.joist_spacing, r.joist.text(), r.joist.governs.name(), fmt_ft_in(d.joist_span)));
-    ui.colored_label(ok(r.cantilever_ok), format!("Overhang {} of at most {} (a quarter of the joist span)", fmt_ft_in(d.cantilever), fmt_ft_in(r.cantilever_max)));
-    ui.label(RichText::new(format!("Beam {}-2x{}: posts up to {} apart ({})", d.beam_plies, d.beam_nominal, r.beam.text(), r.beam.governs.name())).strong());
-    ui.label(format!("Load on a post {:.0} lb; footing {:.0}\" square at {} psf", r.post_load, r.footing_side, d.soil_bearing));
+    let ok = |b: bool| {
+        if b {
+            egui::Color32::from_rgb(60, 140, 70)
+        } else {
+            egui::Color32::from_rgb(200, 60, 40)
+        }
+    };
+    ui.colored_label(
+        ok(r.joist_ok),
+        format!(
+            "Joists 2x{} at {}\" span {} ({}); the deck needs {}",
+            d.joist_nominal,
+            d.joist_spacing,
+            r.joist.text(),
+            r.joist.governs.name(),
+            fmt_ft_in(d.joist_span)
+        ),
+    );
+    ui.colored_label(
+        ok(r.cantilever_ok),
+        format!(
+            "Overhang {} of at most {} (a quarter of the joist span)",
+            fmt_ft_in(d.cantilever),
+            fmt_ft_in(r.cantilever_max)
+        ),
+    );
+    ui.label(
+        RichText::new(format!(
+            "Beam {}-2x{}: posts up to {} apart ({})",
+            d.beam_plies,
+            d.beam_nominal,
+            r.beam.text(),
+            r.beam.governs.name()
+        ))
+        .strong(),
+    );
+    ui.label(format!(
+        "Load on a post {:.0} lb; footing {:.0}\" square at {} psf",
+        r.post_load, r.footing_side, d.soil_bearing
+    ));
     ui.weak("Pressure-treated, incised lumber in wet service; 40 psf live, 10 psf dead. Check DCA 6 and the adopted code.");
 }
 

@@ -115,6 +115,64 @@ pub struct AutoOutletOptions {
     /// `min_wall_segment` still gets one receptacle when it is at least this
     /// long and the room would otherwise have none, inches.
     pub min_wet_segment: f64,
+    /// The footprints of the plan's counter-carrying cabinets (base, corner,
+    /// blind and filler cabinets, countertops), plan inches. Counter-height
+    /// outlets go only on the wall spaces a run of these stands against; a
+    /// room with no cabinet on its walls keeps outlets on every wall. Empty
+    /// (the default) ignores cabinets; the application supplies it because
+    /// this crate does not depend on `plan-cabinets`.
+    #[serde(default)]
+    pub counter_runs: Vec<Vec<Point>>,
+}
+
+/// How far from a wall's face a cabinet may stand and still count as against
+/// it, inches.
+const COUNTER_AGAINST_WALL: f64 = 6.0;
+/// The deepest a counter run reaches from the wall face (a 25.5" base cabinet
+/// plus overhang), inches; a bigger polygon is an island, not a run.
+const COUNTER_MAX_DEPTH: f64 = 40.0;
+/// The shortest stretch of counter that gets an outlet, inches.
+const COUNTER_MIN_RUN: f64 = 12.0;
+
+/// The stretches of `wall` (offsets along it) a run of `counters` stands
+/// against: each polygon with a side within [`COUNTER_AGAINST_WALL`] of the
+/// wall face and no deeper than [`COUNTER_MAX_DEPTH`], by its extent along
+/// the wall.
+fn counter_intervals(wall: &Wall, counters: &[Vec<Point>]) -> Vec<(f64, f64)> {
+    let dir = wall.direction();
+    let normal = dir.perp();
+    let half = wall.thickness * 0.5;
+    let mut out: Vec<(f64, f64)> = Vec::new();
+    for poly in counters {
+        if poly.len() < 3 {
+            continue;
+        }
+        let (mut near, mut far) = (f64::MAX, 0.0_f64);
+        let (mut t0, mut t1) = (f64::MAX, f64::MIN);
+        for v in poly {
+            let d = v.sub(wall.start);
+            let off = d.dot(normal).abs() - half;
+            near = near.min(off);
+            far = far.max(off);
+            let t = d.dot(dir);
+            t0 = t0.min(t);
+            t1 = t1.max(t);
+        }
+        if near <= COUNTER_AGAINST_WALL && far <= COUNTER_MAX_DEPTH && t1 > 0.0 && t0 < wall.length()
+        {
+            out.push((t0.max(0.0), t1.min(wall.length())));
+        }
+    }
+    out.sort_by(|a, b| a.0.total_cmp(&b.0));
+    // Join neighbours that touch.
+    let mut joined: Vec<(f64, f64)> = Vec::new();
+    for (a, b) in out {
+        match joined.last_mut() {
+            Some(last) if a <= last.1 + 1.0 => last.1 = last.1.max(b),
+            _ => joined.push((a, b)),
+        }
+    }
+    joined
 }
 
 impl AutoOutletOptions {
@@ -143,6 +201,7 @@ impl Default for AutoOutletOptions {
             wp_height: crate::device::WP_OUTLET_HEIGHT,
             exterior_wp: true,
             min_wet_segment: 12.0,
+            counter_runs: Vec::new(),
         }
     }
 }
@@ -369,17 +428,41 @@ pub fn auto_place_outlets(
             (false, false) => (DeviceKind::Outlet110, opts.outlet_height, opts.max_spacing),
         };
 
+        // Counter outlets follow the cabinets when the room's walls have
+        // any: only the spaces a run of base cabinets stands against.
+        let counter_cover: Vec<Vec<(f64, f64)>> = runs
+            .iter()
+            .map(|r| {
+                if counters {
+                    counter_intervals(r.wall, &opts.counter_runs)
+                } else {
+                    Vec::new()
+                }
+            })
+            .collect();
+        let follow_cabinets = counter_cover.iter().any(|c| !c.is_empty());
         let collect = |min_len: f64| -> Vec<Span> {
             let mut spans: Vec<Span> = Vec::new();
-            for run in &runs {
+            for (ri, run) in runs.iter().enumerate() {
                 for (a, b) in wall_spaces(floor, run.wall, run.lo, run.hi, min_len) {
-                    spans.push(Span {
-                        wall: run.wall,
-                        side: run.side,
-                        a,
-                        b,
-                        at: spread(a, b, max_gap, opts.from_opening),
-                    });
+                    let pieces: Vec<(f64, f64)> = if follow_cabinets {
+                        counter_cover[ri]
+                            .iter()
+                            .map(|&(c0, c1)| (a.max(c0), b.min(c1)))
+                            .filter(|(x, y)| y - x >= COUNTER_MIN_RUN)
+                            .collect()
+                    } else {
+                        vec![(a, b)]
+                    };
+                    for (a, b) in pieces {
+                        spans.push(Span {
+                            wall: run.wall,
+                            side: run.side,
+                            a,
+                            b,
+                            at: spread(a, b, max_gap, opts.from_opening),
+                        });
+                    }
                 }
             }
             spans

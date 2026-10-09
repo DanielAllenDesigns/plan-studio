@@ -3,6 +3,7 @@
 use crate::annot::{PageLeader, RevisionCloud};
 use crate::layers::{LayoutLayers, LAYER_CAD, LAYER_TEXT};
 use crate::textfit::TextFit;
+use crate::pages::{PageNumbers, PageRevision};
 use crate::titleblock::{TitleBlockStyle, TitleBlockTemplate};
 use plan_core::{CadItem, CadObject, Id, Point};
 use plan_docs::{Scale, SheetSize};
@@ -125,6 +126,14 @@ pub enum BoxSource {
     /// The sheet index as a table (sheet number and title of every printed
     /// page), kept up to date as pages are added, renamed or reordered.
     SheetIndex,
+    /// The Layout Page Table: label, title and description of every page
+    /// that is listed (Include in Layout Table) and has data. On a page
+    /// template it shows on every page that uses the template.
+    PageTable,
+    /// The Layout Revision Table: the revisions of the page it is drawn on.
+    /// Placed on a page template it lists the revisions of each page that
+    /// uses the template.
+    RevisionTable,
 }
 
 /// `ImageData` pixels in JSON: base64 text, or (older files) a list of bytes.
@@ -371,6 +380,34 @@ pub struct LayoutPage {
     /// block (a full-page picture or a cover).
     #[serde(default)]
     pub no_title_block: bool,
+    /// Page Information: the label. Text with a `#` is a numbering pattern
+    /// (`A-#`, `A0.#`): `#` becomes the next free number among the pages
+    /// with the same pattern (see [`crate::resolve_labels`]). Empty keeps the
+    /// plain sheet number `A-{number}`. Duplicate labels are legal.
+    #[serde(default)]
+    pub label: String,
+    /// Page Information: the description (layout tables and macros).
+    #[serde(default)]
+    pub description: String,
+    /// Page Information: free comments (macros).
+    #[serde(default)]
+    pub comments: String,
+    /// Page Information: list this page in a Layout Page Table (cleared for
+    /// page templates).
+    #[serde(default = "yes")]
+    pub in_layout_table: bool,
+    /// The page template assigned to this page: the `number` of a template
+    /// page. `None` is the default template (the first template page, like
+    /// Chief's page zero). Template pages have none.
+    #[serde(default)]
+    pub template: Option<u32>,
+    /// Revisions of this page (Page Information > Page Revisions).
+    #[serde(default)]
+    pub revisions: Vec<PageRevision>,
+    /// The numbers of this page frozen while the layout is printed with a
+    /// range (see [`Layout::bake_numbering`]); never stored.
+    #[serde(skip)]
+    pub baked: Option<PageNumbers>,
 }
 
 impl LayoutPage {
@@ -430,9 +467,27 @@ impl LayoutPage {
         })
     }
 
-    /// Sheet number text, e.g. `A-2`.
+    /// Sheet number text without the layout around it: the frozen label of a
+    /// printed range, a fixed label as typed, else `A-2` (a `#` pattern needs
+    /// the other pages: use [`Layout::sheet_number_of`]).
     pub fn sheet_number(&self) -> String {
-        format!("A-{}", self.number)
+        if let Some(b) = &self.baked {
+            return b.label.clone();
+        }
+        let l = self.label.trim();
+        if l.is_empty() {
+            format!("A-{}", self.number)
+        } else {
+            l.replace('#', &self.number.to_string())
+        }
+    }
+
+    /// Does the page have anything on it? A page without data does not print.
+    pub fn has_data(&self) -> bool {
+        !(self.boxes.is_empty()
+            && self.cad.is_empty()
+            && self.leaders.is_empty()
+            && self.clouds.is_empty())
     }
 }
 
@@ -473,6 +528,23 @@ pub struct Layout {
     /// standard size for the plan's Drawing Sheet).
     #[serde(default)]
     pub custom_sheet: Option<CustomSheetSize>,
+    /// General Layout Defaults: drags snap to the grid.
+    #[serde(default = "yes")]
+    pub snap_grid: bool,
+    /// General Layout Defaults: the Grid Snap Unit, paper inches. It is also
+    /// the step of an arrow-key nudge.
+    #[serde(default = "default_snap_unit")]
+    pub snap_unit_in: f64,
+}
+
+/// The Grid Snap Unit a layout starts with: 1/16 in.
+pub const DEFAULT_SNAP_UNIT_IN: f64 = 1.0 / 16.0;
+/// Smallest and largest Grid Snap Unit General Layout Defaults accepts.
+pub const MIN_SNAP_UNIT_IN: f64 = 1.0 / 64.0;
+pub const MAX_SNAP_UNIT_IN: f64 = 12.0;
+
+fn default_snap_unit() -> f64 {
+    DEFAULT_SNAP_UNIT_IN
 }
 
 /// Smallest and largest sheet side Customize Sheet Sizes accepts, inches.
@@ -590,6 +662,8 @@ impl Layout {
             custom_sizes: Vec::new(),
             hidden_sizes: Vec::new(),
             custom_sheet: None,
+            snap_grid: true,
+            snap_unit_in: DEFAULT_SNAP_UNIT_IN,
         }
     }
 
@@ -629,6 +703,13 @@ impl Layout {
             clouds: Vec::new(),
             size_override_in: None,
             no_title_block: false,
+            label: String::new(),
+            description: String::new(),
+            comments: String::new(),
+            in_layout_table: true,
+            template: None,
+            revisions: Vec::new(),
+            baked: None,
         });
         self.pages.last_mut().expect("just pushed")
     }
@@ -760,24 +841,6 @@ impl Layout {
         if let Some(p) = self.pages.get_mut(index) {
             p.size_override_in = size;
         }
-    }
-
-    /// Gives page `index` the sheet number `number`. Refused (with the
-    /// reason) when another page already has it.
-    pub fn set_page_number(&mut self, index: usize, number: u32) -> Result<(), &'static str> {
-        if index >= self.pages.len() {
-            return Err("There is no such page");
-        }
-        if self
-            .pages
-            .iter()
-            .enumerate()
-            .any(|(i, p)| i != index && p.number == number)
-        {
-            return Err("Another page already has that sheet number");
-        }
-        self.pages[index].number = number;
-        Ok(())
     }
 }
 

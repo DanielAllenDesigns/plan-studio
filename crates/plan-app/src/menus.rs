@@ -12,6 +12,10 @@ use crate::tools::cad::CadMode;
 use crate::tools::ToolId;
 use eframe::egui;
 
+/// Edit > Replace Fonts: opens the Text Styles list, whose Replace Fonts section
+/// does the work (Chief TXT-12).
+pub const REPLACE_FONTS: &str = "edit.replace_fonts";
+
 /// Draws the menu bar contents; actions are appended to `out`.
 pub fn bar(
     ui: &mut egui::Ui,
@@ -59,8 +63,27 @@ pub fn bar(
             Action::Custom(ulib::ADD_MATERIAL),
             out,
         );
+        live(
+            ui,
+            "Convert to Symbol",
+            "",
+            false,
+            Action::Custom(crate::tools::library::convert::CONVERT_TO_SYMBOL),
+            out,
+        );
+        live(
+            ui,
+            "Replace From Library",
+            "",
+            false,
+            Action::Custom(crate::tools::library::convert::REPLACE_FROM_LIBRARY),
+            out,
+        );
         // The import window lives in the Library Browser: open that first.
-        if ui.button("Import 3D Model (STL, 3DS, DAE, OBJ, glTF)\u{2026}").clicked() {
+        if ui
+            .button("Import 3D Model (STL, 3DS, DAE, OBJ, glTF)\u{2026}")
+            .clicked()
+        {
             if state.dock != Some(Dock::Library) {
                 out.push(Action::ToggleDock(Dock::Library));
             }
@@ -70,7 +93,7 @@ pub fn bar(
         ui.separator();
         live(
             ui,
-            "Export Library (Plan Studio only)\u{2026}",
+            "Export Library (Plan Studio JSON)\u{2026}",
             "",
             false,
             Action::Custom(ulib::EXPORT_LIBRARY),
@@ -78,7 +101,7 @@ pub fn bar(
         );
         live(
             ui,
-            "Import Library\u{2026}",
+            "Import Library (Plan Studio JSON, Chief .calib, .calibz)\u{2026}",
             "",
             false,
             Action::Custom(ulib::IMPORT_LIBRARY),
@@ -253,7 +276,23 @@ fn file_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
         "Close View",
         "",
         false,
-        Action::Layout(LayoutCommand::ShowPlan),
+        Action::Custom(crate::shell::view_commands::CLOSE_VIEW),
+        out,
+    );
+    live(
+        ui,
+        "Close All 3D Views",
+        "",
+        false,
+        Action::Custom(crate::shell::view_commands::CLOSE_ALL_3D),
+        out,
+    );
+    live(
+        ui,
+        "Close All Views",
+        "",
+        false,
+        Action::Custom(crate::shell::view_commands::CLOSE_ALL_VIEWS),
         out,
     );
     live(
@@ -370,10 +409,30 @@ fn file_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
     ui.menu_button("Import", |ui| {
         live(
             ui,
-            "Import Drawing (DXF)\u{2026}",
+            "Import Drawing (DWG/DXF)\u{2026}",
             "",
             false,
             Action::File(FileCommand::ImportDxf),
+            out,
+        );
+        live(
+            ui,
+            "Terrain Data\u{2026}",
+            "",
+            false,
+            Action::SetTool(ToolId::TerrainVariant(
+                crate::tools::terrain::TerrainVariant::ImportData,
+            )),
+            out,
+        );
+        live(
+            ui,
+            "GPS Data\u{2026}",
+            "",
+            false,
+            Action::SetTool(ToolId::TerrainVariant(
+                crate::tools::terrain::TerrainVariant::ImportGps,
+            )),
             out,
         );
         live(
@@ -398,6 +457,14 @@ fn file_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
             "",
             false,
             Action::Custom(crate::tools::images::IMPORT_PICTURE),
+            out,
+        );
+        live(
+            ui,
+            "Material Package (Lightbeans zip)\u{2026}",
+            "",
+            false,
+            Action::Custom(crate::tools::materials::package::IMPORT_PACKAGE),
             out,
         );
         live(
@@ -523,13 +590,36 @@ fn edit_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
     ui.menu_button("Arc Creation Modes", |ui| {
         let current = crate::tools::cad::current_arc_mode();
         for m in crate::tools::cad::ArcMode::ALL {
-            live(ui, m.name(), "", m == current, Action::Custom(m.command()), out);
+            live(
+                ui,
+                m.name(),
+                "",
+                m == current,
+                Action::Custom(m.command()),
+                out,
+            );
         }
     });
+    // Moving a cabinet into its neighbours: Bump, Push or Pass Through (CB-4).
+    live(
+        ui,
+        crate::tools::cabinet::bump_mode().toolbar_label(),
+        "",
+        false,
+        Action::Custom(crate::tools::cabinet::BUMP_MODE_COMMAND),
+        out,
+    );
     ui.separator();
     ui.menu_button("Edit Area", |ui| {
         use crate::tools::select as sel;
-        live(ui, "Edit Area", "", false, Action::Custom(sel::EDIT_AREA), out);
+        live(
+            ui,
+            "Edit Area",
+            "",
+            false,
+            Action::Custom(sel::EDIT_AREA),
+            out,
+        );
         live(
             ui,
             "Edit Area Visible",
@@ -550,7 +640,14 @@ fn edit_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
     ui.menu_button("Marquee Selection", |ui| {
         let current = crate::tools::select::marquee_mode();
         for m in crate::tools::select::MarqueeMode::ALL {
-            live(ui, m.label(), "", m == current, Action::Custom(m.command()), out);
+            live(
+                ui,
+                m.label(),
+                "",
+                m == current,
+                Action::Custom(m.command()),
+                out,
+            );
         }
     });
     ui.separator();
@@ -562,13 +659,29 @@ fn edit_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
         Action::FindReplaceText,
         out,
     );
-    inert(ui, &["Replace Fonts\u{2026}", "-"]);
+    live(
+        ui,
+        "Replace Fonts\u{2026}",
+        "",
+        false,
+        Action::Custom(REPLACE_FONTS),
+        out,
+    );
+    ui.separator();
     live(
         ui,
         "Default Settings\u{2026}",
         "",
         false,
         Action::DefaultSettings,
+        out,
+    );
+    edit_row(
+        ui,
+        state,
+        "Drawing Groups\u{2026}",
+        "Drawing Groups",
+        crate::tools::cad_ops::DG_DEFAULTS,
         out,
     );
     live(
@@ -581,21 +694,39 @@ fn edit_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
     );
     live(
         ui,
+        "Material Defaults\u{2026}",
+        "",
+        false,
+        Action::Custom(crate::tools::materials::DEFAULTS),
+        out,
+    );
+    live(
+        ui,
         "Preferences\u{2026}",
         "\u{2318},",
         false,
         Action::Custom(crate::dialogs::preferences::OPEN),
         out,
     );
+    live(
+        ui,
+        "Reset to Defaults",
+        "",
+        false,
+        Action::Custom(crate::dialogs::defaults::RESET_TO_DEFAULTS),
+        out,
+    );
+    live(
+        ui,
+        "Reverse Plan",
+        "",
+        false,
+        Action::Custom(crate::shell::view_commands::REVERSE_PLAN),
+        out,
+    );
     inert(
         ui,
-        &[
-            "Reset to Defaults\u{2026}",
-            "-",
-            "AutoFill>",
-            "Start Dictation",
-            "Emoji & Symbols",
-        ],
+        &["-", "AutoFill>", "Start Dictation", "Emoji & Symbols"],
     );
 }
 
@@ -786,6 +917,34 @@ fn edit_select_rows(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) 
     );
     edit_row(ui, state, "Move to Front", "Move to Front", ids::FRONT, out);
     edit_row(ui, state, "Move to Back", "Move to Back", ids::BACK, out);
+    edit_row(
+        ui,
+        state,
+        "Multiple Copy\u{2026}",
+        "Multiple Copy",
+        crate::tools::cad_ops::MULTIPLE_COPY,
+        out,
+    );
+    ui.menu_button("Drawing Group", |ui| {
+        use crate::tools::cad_ops as ops;
+        edit_row(
+            ui,
+            state,
+            "Bring to Front",
+            "Bring to Front",
+            ops::DG_FRONT,
+            out,
+        );
+        edit_row(ui, state, "Send to Back", "Send to Back", ops::DG_BACK, out);
+        edit_row(
+            ui,
+            state,
+            "Set Drawing Group\u{2026}",
+            "Set Drawing Group",
+            ops::DG_SET,
+            out,
+        );
+    });
     ui.separator();
     edit_row(ui, state, "Lock", "Lock Selection", ids::LOCK, out);
     edit_row(ui, state, "Unlock", "Unlock Selection", ids::UNLOCK, out);
@@ -847,8 +1006,14 @@ fn framing_rows(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
     }
     // CB-86: the framing of the deck rooms of the floor.
     for (label, id) in [
-        ("Build Deck Framing", crate::editor::fireplace_view::cmd::BUILD_DECK),
-        ("Delete Deck Framing", crate::editor::fireplace_view::cmd::CLEAR_DECK),
+        (
+            "Build Deck Framing",
+            crate::editor::fireplace_view::cmd::BUILD_DECK,
+        ),
+        (
+            "Delete Deck Framing",
+            crate::editor::fireplace_view::cmd::CLEAR_DECK,
+        ),
     ] {
         live(ui, label, "", false, Action::Custom(id), out);
     }
@@ -1089,6 +1254,30 @@ fn three_d_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
         );
         live(
             ui,
+            "Object Eyedropper",
+            "",
+            mat::is_mode_active(mat::OBJECT_EYEDROPPER),
+            Action::Custom(mat::OBJECT_EYEDROPPER),
+            out,
+        );
+        live(
+            ui,
+            "Use Default Material",
+            "",
+            mat::is_mode_active(mat::USE_DEFAULT),
+            Action::Custom(mat::USE_DEFAULT),
+            out,
+        );
+        live(
+            ui,
+            "Adjust Material Definition",
+            "",
+            mat::is_mode_active(mat::ADJUST_DEFINITION),
+            Action::Custom(mat::ADJUST_DEFINITION),
+            out,
+        );
+        live(
+            ui,
             "Adjust Materials\u{2026}",
             "",
             false,
@@ -1128,11 +1317,22 @@ fn three_d_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
         out,
     );
     live(ui, "Rebuild 3D", "", false, cmd(C::Rebuild), out);
+    live(ui, "Refresh", "", false, cmd(C::Refresh), out);
+    live(ui, "Undo Zoom", "", false, cmd(C::UndoZoom), out);
     live(ui, "Save Camera", "", false, cmd(C::SaveCamera), out);
     ui.menu_button("View Quality", |ui| {
         for q in plan_core::camera_view::ViewQuality::ALL {
             live(ui, q.label(), "", false, cmd(C::Quality(q)), out);
         }
+        ui.separator();
+        live(
+            ui,
+            "Path-traced Final View",
+            "",
+            false,
+            cmd(C::FinalViewToggle),
+            out,
+        );
     });
     live(
         ui,
@@ -1152,6 +1352,14 @@ fn three_d_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
     );
     ui.menu_button("Export", |ui| {
         live(ui, "glTF\u{2026}", "", false, cmd(C::ExportGltf), out);
+        live(
+            ui,
+            "360 Panorama\u{2026}",
+            "",
+            false,
+            cmd(C::ExportPanorama),
+            out,
+        );
     });
     ui.separator();
     live(
@@ -1285,6 +1493,66 @@ fn cad_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
         ] {
             cad_mode(ui, m.name(), m, out);
         }
+        // Closed polylines become polygon soffits (CB-17).
+        live(
+            ui,
+            "Convert Polyline to Soffit",
+            "",
+            false,
+            Action::Custom(crate::editor::placed::SOFFIT_FROM_POLYLINE),
+            out,
+        );
+        ui.separator();
+        use crate::tools::cad_ops as ops;
+        edit_row(
+            ui,
+            state,
+            "Polyline Union",
+            "Polyline Union",
+            ops::UNION,
+            out,
+        );
+        edit_row(
+            ui,
+            state,
+            "Polyline Subtract",
+            "Polyline Subtract",
+            ops::SUBTRACT,
+            out,
+        );
+        edit_row(
+            ui,
+            state,
+            "Polyline Intersect",
+            "Polyline Intersect",
+            ops::INTERSECT,
+            out,
+        );
+        ui.separator();
+        edit_row(
+            ui,
+            state,
+            "Trim to Boundary",
+            "Trim to Boundary",
+            ops::TRIM_BOUNDARY,
+            out,
+        );
+        edit_row(
+            ui,
+            state,
+            "Extend to Boundary",
+            "Extend to Boundary",
+            ops::EXTEND_BOUNDARY,
+            out,
+        );
+        edit_row(
+            ui,
+            state,
+            "Insert Point",
+            "Insert Point",
+            ops::INSERT_POINT,
+            out,
+        );
     });
     ui.separator();
     live(
@@ -1482,7 +1750,34 @@ fn tools_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
             Action::DoorWindowCheck,
             out,
         );
+        live(
+            ui,
+            "Kitchen and Bath Report",
+            "",
+            false,
+            Action::Custom(crate::dialogs::plan_check::NKBA_REPORT),
+            out,
+        );
+        live(
+            ui,
+            "Kitchen and Bath Report to Excel\u{2026}",
+            "",
+            false,
+            Action::Custom(crate::dialogs::plan_check::NKBA_XLSX),
+            out,
+        );
         live(ui, "Plan Footprint", "", false, Action::PlanFootprint, out);
+    });
+    ui.menu_button("Calculators", |ui| {
+        for (label, id) in [
+            ("Header/Beam\u{2026}", crate::dialogs::calculators::HEADER),
+            ("Joist Span\u{2026}", crate::dialogs::calculators::JOIST),
+            ("Rafter Span\u{2026}", crate::dialogs::calculators::RAFTER),
+            ("Stair\u{2026}", crate::dialogs::calculators::STAIR),
+            ("Deck Beam/Joist\u{2026}", crate::dialogs::calculators::DECK),
+        ] {
+            live(ui, label, "", false, Action::Custom(id), out);
+        }
     });
     ui.menu_button("Toolbars and Hotkeys", |ui| {
         live(
@@ -1576,14 +1871,139 @@ fn tools_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
             out,
         );
     });
-    live(
-        ui,
-        "Materials List\u{2026}",
-        "",
-        false,
-        Action::MaterialsList,
-        out,
-    );
+    ui.menu_button("Materials List", |ui| {
+        use crate::dialogs::materials_list::cmd;
+        live(
+            ui,
+            "Calculate Materials for All Floors",
+            "",
+            false,
+            Action::Custom(cmd::ALL),
+            out,
+        );
+        live(
+            ui,
+            "Calculate Materials From Selection",
+            "",
+            false,
+            Action::Custom(cmd::SELECTION),
+            out,
+        );
+        live(
+            ui,
+            "Calculate Materials in Room",
+            "",
+            false,
+            Action::Custom(cmd::ROOM),
+            out,
+        );
+        live(
+            ui,
+            "Materials List Polyline",
+            "",
+            state.tool == ToolId::MaterialsPolyline,
+            Action::SetTool(ToolId::MaterialsPolyline),
+            out,
+        );
+        live(
+            ui,
+            "Materials List Polyline Defaults\u{2026}",
+            "",
+            false,
+            Action::Custom(cmd::POLYLINE_DEFAULTS),
+            out,
+        );
+        ui.separator();
+        live(
+            ui,
+            "Master List",
+            "",
+            false,
+            Action::Custom(cmd::MASTER),
+            out,
+        );
+        live(
+            ui,
+            "Materials List Management\u{2026}",
+            "",
+            false,
+            Action::Custom(cmd::MANAGE),
+            out,
+        );
+        live(
+            ui,
+            "Generate a Report",
+            "",
+            false,
+            Action::Custom(cmd::REPORT),
+            out,
+        );
+        ui.separator();
+        live(
+            ui,
+            "Open Materials List\u{2026}",
+            "",
+            false,
+            Action::MaterialsList,
+            out,
+        );
+        live(
+            ui,
+            "Edit Active View\u{2026}",
+            "",
+            false,
+            Action::Custom(cmd::EDIT_VIEW),
+            out,
+        );
+        live(
+            ui,
+            "Save Active View",
+            "",
+            false,
+            Action::Custom(cmd::SAVE),
+            out,
+        );
+        live(
+            ui,
+            "Save Active View As\u{2026}",
+            "",
+            false,
+            Action::Custom(cmd::SAVE_AS),
+            out,
+        );
+        live(
+            ui,
+            "Update From Master List",
+            "",
+            false,
+            Action::Custom(cmd::UPDATE_FROM),
+            out,
+        );
+        live(
+            ui,
+            "Update To Master List",
+            "",
+            false,
+            Action::Custom(cmd::UPDATE_TO),
+            out,
+        );
+        live(
+            ui,
+            "Export Materials List\u{2026}",
+            "",
+            false,
+            Action::Custom(cmd::EXPORT),
+            out,
+        );
+        live(
+            ui,
+            "Print Materials List\u{2026}",
+            "",
+            false,
+            Action::Custom(cmd::PRINT),
+            out,
+        );
+    });
     ui.menu_button("Layer Painter", |ui| {
         use crate::tools::painters::PainterMode as P;
         for m in [P::LayerPaint, P::LayerEyedropper] {
@@ -1828,9 +2248,16 @@ fn view_menu(
     });
 }
 
+/// A Window or File row that runs the view command `id`.
+fn vrow(ui: &mut egui::Ui, label: &str, hk: &str, id: &'static str, out: &mut Vec<Action>) {
+    live(ui, label, hk, false, Action::Custom(id), out);
+}
+
 fn window_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
     // Daniel's "-" is Zoom In; the labels follow the live hotkey map.
     let key = |name: &str| state.hotkey(name, "");
+    use crate::shell::view_commands as vc;
+    vrow(ui, "Zoom", &key("Zoom"), vc::ZOOM_WINDOW, out);
     live(
         ui,
         "Zoom Out",
@@ -1848,6 +2275,7 @@ fn window_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
         Action::UndoZoom,
         out,
     );
+    vrow(ui, "Zoom Previous", "", vc::ZOOM_PREVIOUS, out);
     live(
         ui,
         "Fill Window Selected Objects",
@@ -1856,6 +2284,7 @@ fn window_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
         Action::Custom(crate::dialogs::app_info::FILL_SELECTED),
         out,
     );
+    vrow(ui, "Fill Window Building Only", "", vc::FILL_BUILDING, out);
     live(
         ui,
         "Fill Window",
@@ -1870,6 +2299,24 @@ fn window_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
         &state.hotkey("Pan Window", "H"),
         state.tool == ToolId::Pan,
         Action::TogglePan,
+        out,
+    );
+    ui.menu_button("Rotate Plan View", |ui| {
+        vrow(ui, "90 Degrees Left", "", vc::ROTATE_LEFT, out);
+        vrow(ui, "90 Degrees Right", "", vc::ROTATE_RIGHT, out);
+        vrow(ui, "Back to North Up", "", vc::ROTATE_RESET, out);
+    });
+    ui.separator();
+    vrow(ui, "Swap Views", "F7", vc::SWAP_VIEWS, out);
+    vrow(ui, "Tile Horizontally", "", vc::TILE_HORIZONTALLY, out);
+    vrow(ui, "Tile Vertically", "", vc::TILE_VERTICALLY, out);
+    vrow(ui, "Tab Windows", "", vc::TAB_WINDOWS, out);
+    vrow(ui, "Select Next Tab", "\u{2303}\u{21E5}", vc::NEXT_TAB, out);
+    vrow(
+        ui,
+        "Select Previous Tab",
+        "\u{21E7}\u{2303}\u{21E5}",
+        vc::PREVIOUS_TAB,
         out,
     );
     ui.separator();
@@ -1950,7 +2397,12 @@ fn layout_menu(ui: &mut egui::Ui, out: &mut Vec<Action>) {
     row(ui, "Page Specification\u{2026}", C::PageSpecification, out);
     ui.separator();
     row(ui, "Page Setup\u{2026}", C::PageSetup, out);
-    row(ui, "Customize Sheet Sizes\u{2026}", C::CustomizeSheetSizes, out);
+    row(
+        ui,
+        "Customize Sheet Sizes\u{2026}",
+        C::CustomizeSheetSizes,
+        out,
+    );
     row(ui, "Project Information\u{2026}", C::ProjectInfo, out);
     row(ui, "Fit Page in Window", C::FitPage, out);
     row(ui, "Layer Display Options\u{2026}", C::LayerDisplay, out);
@@ -1961,7 +2413,12 @@ fn layout_menu(ui: &mut egui::Ui, out: &mut Vec<Action>) {
     row(ui, "New Layout File\u{2026}", C::NewLayoutFile, out);
     ui.separator();
     row(ui, "Export Table as CSV\u{2026}", C::ExportTableCsv, out);
-    row(ui, "Export Table to Excel\u{2026}", C::ExportTableExcel, out);
+    row(
+        ui,
+        "Export Table to Excel\u{2026}",
+        C::ExportTableExcel,
+        out,
+    );
     ui.separator();
     row(ui, "Print Model\u{2026}", C::PrintModel, out);
     row(ui, "Print Layout\u{2026}", C::Print, out);

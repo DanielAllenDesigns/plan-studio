@@ -483,19 +483,19 @@ One row per Chief feature, grouped as in the summary table. Source "cap" is a ca
 
 | # | Chief feature | Src | Parity | Status | Evidence |
 |---|---|---|---|---|---|
-| 1 | Library >> Import Library (.calib, .calibz)… | cap | CB-59 | Differs-by-design | DECISIONS.md #3: Chief catalogs read in place via plan-calib Gap: Chief files are read in place, not imported. Library > Export/Import Libr… |
+| 1 | Library >> Import Library (.calib, .calibz)… | cap | CB-59 | Works | tools/library/chief.rs register_catalog (a .calib or .calibz is added read-only and read in place, under the User Catalog node), user.rs import_library_file (Plan Studio JSON); DECISIONS.md #3 and LR1: Chief content is never copied |
 | 2 | Library >> Get Additional Content… | cap | NO SPEC (CB-78) | Missing | not in menus.rs (needs Chief's online content service) |
 | 3 | Library >> Install Core Content | cap | NO SPEC (CB-79) | Differs-by-design | Plan Studio reads the user's installed Chief catalogs at runtime and ships its own starter catalog; it never installs or bundles Chief cont… |
 | 4 | Library >> Update Library Catalogs | cap | NO SPEC (CB-80) | Partial | Library > Catalog Settings… rescans the folder; no automatic update check (CB-53) |
-| 5 | Library >> Library Browser (Cmd+L) | cap | CB-53, CB-54, CB-61 | Works | shell/library_browser.rs |
+| 5 | Library >> Library Browser (Cmd+L) | cap | CB-53, CB-54, CB-61 | Works | shell/library_panel.rs, shell/library_browser.rs |
 | 6 | Library >> Add selection to User Library (not captured) | n | CB-58 | Works | tools/library/user.rs, make.rs; ~/.plan-studio/user-library.json |
 | 7 | Library >> Add Active Material to Library (not captured) | n | CB-58 | Works | tools/library/user.rs, make.rs; ~/.plan-studio/user-library.json |
 | 8 | Library >> Import 3D Model (OBJ, glTF) (not captured) | n | NO SPEC (CB-81) | Works | menus.rs; tools/library/make.rs; plan-import obj.rs, gltf.rs |
 | 9 | Library >> Import 3D Model (3DS, SKP, DAE, STL formats) (not captured) | n | NO SPEC (CB-82) | Missing | plan-import has OBJ and glTF only |
 | 10 | Library >> Library items with 3D models / catalog link | cap | CB-60 | Partial | plan-calib decoded meshes; user models (OBJ, glTF) in tools/library/user.rs placed_meshes Gap: Imported models carry a mesh, unit/up-axis o… |
 | 11 | Library >> Manufacturer catalogs, 3D Warehouse, bonus catalogs (not captured) | n | NO SPEC (CB-83) | Missing | no manufacturer content service; 3D Warehouse login is out of scope |
-| 12 | Library >> Library Browser: search, favorites, list/thumbnail (not captured) | n | CB-54, CB-61 | Works | plan-library browse.rs, shell/library_browser/user_ui.rs |
-| 13 | Library >> Replace From Library, Library Data in dialogs (Library… buttons) (not captured) | n | CB-57 | Works | tools/library/user.rs replace_other |
+| 12 | Library >> Library Browser: search, favorites, list/thumbnail (not captured) | n | CB-54, CB-61 | Works | plan-library browse.rs and types.rs (twelve-type filter), shell/library_browser/user_ui.rs (List, Grid, Names), library_panel/thumbs.rs (path-traced cached thumbnails) |
+| 13 | Library >> Replace From Library, Library Data in dialogs (Library… buttons) (not captured) | n | CB-57 | Works | tools/library/convert.rs replace_selected (the whole selection, one undo step); user.rs replace_other (cabinet, device) |
 
 ### 3D menu
 
@@ -628,7 +628,7 @@ One row per Chief feature, grouped as in the summary table. Source "cap" is a ca
 | 10 | Tools >> Checks ▸ Plan Check Settings (jurisdiction, rule groups) (not captured) | n | NO SPEC (APP-27) | Works | plan-check settings.rs; dialogs/plan_check.rs |
 | 11 | Tools >> Toolbars and Hotkeys ▸ Customize Toolbars… | cap | TB-1, TB-2, TB-3, TB-4, TB-5 | Works | `dialogs/customize_toolbars.rs`; `ticking_a_button_adds_it_after_the_pick_and_unticking_removes_it`, `move_remove_and_separators_act_on_the… |
 | 12 | Tools >> Toolbars and Hotkeys ▸ Customize Hotkeys… | cap | HK-1, HK-2, HK-3, HK-5, HK-6, HK-7 | Works | `dialogs/hotkeys.rs menu_of`, `grouped_commands`; `the_list_is_grouped_by_menu_and_the_search_narrows_it`. The menu of a command is read fr… |
-| 13 | Tools >> Symbol ▸ (Symbol Specification, Replace From Library, Edit Library Symbol) | cap | CB-57 | Works | tools/library/user.rs replace_other |
+| 13 | Tools >> Symbol ▸ (Symbol Specification, Replace From Library, Edit Library Symbol) | cap | CB-57 | Works | tools/library/convert.rs replace_selected; dialogs/symbol.rs |
 | 14 | Tools >> Space Planning ▸ Space Planning Assistant… | cap | NO SPEC (R-79) | Works | plan-spaceplan crate (questionnaire, room boxes, bump, validate, build_house); menus.rs tools_menu |
 | 15 | Tools >> Space Planning ▸ Room Planner / Space Planning Configuration toolbar (not captured) | n | NO SPEC (R-80) | Partial | room boxes exist; the Space Planning toolbar configuration toggle is a stub (toolbar.rs config_space_planning) |
 | 16 | Tools >> Plan Database ▸ | cap | NO SPEC (APP-28) | Missing | toolbar button "Plan Database" is a stub; menus.rs has no row |
@@ -662,7 +662,7 @@ One row per Chief feature, grouped as in the summary table. Source "cap" is a ca
 | # | Chief feature | Src | Parity | Status | Evidence |
 |---|---|---|---|---|---|
 | 1 | View >> Refresh Display (F5) | cap | NO SPEC (APP-34) | Works | app_info::REFRESH; menus.rs view_menu |
-| 2 | View >> Library Browser (Cmd+L) | cap | CB-53 | Works | shell/library_browser.rs |
+| 2 | View >> Library Browser (Cmd+L) | cap | CB-53 | Works | shell/library_panel.rs |
 | 3 | View >> Project Browser | cap | NO SPEC (APP-35) | Works | shell/docks.rs Project dock (views, layouts, cameras, schedules); main.rs |
 | 4 | View >> Tool Palette | cap | NO SPEC (APP-36) | Missing | no floating tool palette (toolbars and flyouts only) |
 | 5 | View >> Active Layer Display Options | cap | LAY-3 | Works | dialogs/layer_display.rs (dock and modal); shell/docks.rs `edit_layers` |
@@ -797,7 +797,7 @@ One row per Chief feature, grouped as in the summary table. Source "cap" is a ca
 
 | # | Chief feature | Src | Parity | Status | Evidence |
 |---|---|---|---|---|---|
-| 1 | Right bar >> Library Browser toggle | cap | CB-53 | Works | shell/library_browser.rs |
+| 1 | Right bar >> Library Browser toggle | cap | CB-53 | Works | shell/library_panel.rs |
 | 2 | Right bar >> Project Browser toggle | cap | NO SPEC (APP-54) | Works | toolbar.rs view_slots Dock::Project; shell/docks.rs |
 | 3 | Right bar >> Active Layer Display Options toggle | cap | LAY-3 | Works | dialogs/layer_display.rs (dock and modal); shell/docks.rs `edit_layers` |
 | 4 | Right bar >> Zoom toggle | cap | NO SPEC (LAY-30) | Partial | toolbar.rs "Zoom" stub; wheel and Zoom In/Out buttons work |
@@ -889,15 +889,15 @@ One row per Chief feature, grouped as in the summary table. Source "cap" is a ca
 | 4 | Wall dialog >> Foundation tab (footing, slab chamfer, sill plate) | cap | W-52 | Partial, In progress (Round 14) | walls/wall_spec.rs WallFoundation; dialogs/wall.rs Foundation tab (footing, slab chamfers, sill plate); plan-3d wall.rs spec_meshes; tests… |
 | 5 | Wall dialog >> Wall Types tab (type, pony wall) | cap | W-46, W-47, W-53, W-79 | Partial | dialogs/wall_types.rs Gap: Wall Types Library button disabled. |
 | 6 | Wall dialog >> Wall Cap tab (profile table, position) | cap | NO SPEC (W-114) | Partial | dialogs/wall.rs "Wall Cap" tab live for half walls (W-54 cap); profile library and Add to Library are not wired |
-| 7 | Wall dialog >> Wall Covering tab (coverings, position, options) | cap | NO SPEC (W-115) | Missing | tab disabled in WALL_TABS |
+| 7 | Wall dialog >> Wall Covering tab (coverings, position, options) | cap | NO SPEC (W-115) | Works | dialogs/wall/tabs.rs wall_covering; wall_spec_tabs.rs; plan-3d wall.rs covering_meshes; s49 |
 | 8 | Wall dialog >> Rail Style tab | cap | W-56 | Partial | dialogs/wall.rs rail_style: Railing Height and a fixed description (posts, rails, 3/4 in balusters); no style choices |
-| 9 | Wall dialog >> Newels/Balusters tab (railing wall) | cap | NO SPEC (W-116) | Missing | tab disabled |
-| 10 | Wall dialog >> Rails tab (railing wall) | cap | NO SPEC (W-117) | Missing | tab disabled |
+| 9 | Wall dialog >> Newels/Balusters tab (railing wall) | cap | NO SPEC (W-116) | Works | dialogs/wall/tabs.rs newels_balusters; plan-3d railing.rs; s49 |
+| 10 | Wall dialog >> Rails tab (railing wall) | cap | NO SPEC (W-117) | Works | dialogs/wall/tabs.rs rails; plan-3d railing.rs; s49 |
 | 11 | Wall dialog >> Layer tab (layer, drawing group) | cap | W-80 | Partial, In progress (Round 14) | dialogs/wall.rs Gap: Drawing Group disabled. |
 | 12 | Wall dialog >> Materials tab (component tree, material per layer) | cap | C-60 | Partial | tab disabled in the Wall dialog (room, stairs and electrical dialogs have it); per-surface wall materials are set with the Material Painter… |
 | 13 | Wall dialog >> Label tab (label content, appearance, position) | cap | W-81 | Partial | dialogs/wall.rs Label Gap: Border/text style/alignment disabled. |
 | 14 | Wall dialog >> Components tab (materials list rows per wall layer) | cap | L-35 | Missing, In progress (Round 14) | tab disabled in the Wall dialog |
-| 15 | Wall dialog >> Object Information tab (code, comment, manufacturer, supplier) | cap | NO SPEC (W-118) | Missing | tab disabled in the Wall dialog (the Room dialog has it) |
+| 15 | Wall dialog >> Object Information tab (code, comment, manufacturer, supplier) | cap | NO SPEC (W-118) | Works | dialogs/wall/tabs.rs object_information; Wall schedule columns; plan-docs test |
 | 16 | Wall dialog >> Schedule tab (include in schedule, callout, category) | cap | L-29 | Missing, In progress (Round 14) | tab disabled in the Wall dialog |
 
 ### Door Specification tabs
@@ -1009,7 +1009,7 @@ One row per Chief feature, grouped as in the summary table. Source "cap" is a ca
 | 16 | Other dialogs >> Terrain object dialogs (hill, garden bed, plant, road, driveway, sidewalk, sprinkler) (not captured) | n | CB-45, CB-48, CB-49, CB-50 | Partial, In progress (Round 14) | plant runs (`Landscape`); Plant Chooser (`tools/terrain/scape.rs plant_categories, plants_in`; dialogs/terrain/object.rs `plant_chooser`);… |
 | 17 | Other dialogs >> Text Specification (Text, Text Style, Appearance, Layer) (not captured) | n | TXT-16 | Partial, In progress (Round 14) | dialogs/text.rs Appearance tab: alignment left/center/right and top/middle/bottom, wrap width, minimum height, border (margin, weight), bac… |
 | 18 | Other dialogs >> CAD object specifications (line, arc, circle, polyline, spline) (not captured) | n | CAD-38 | Works | dialogs/cad.rs |
-| 19 | Other dialogs >> Symbol (library object) Specification (General, Options, 3D, Layer, Label) (not captured) | n | CB-57 | Partial | dialogs/symbol.rs "3D", "Components" and "Object Information" tabs disabled |
+| 19 | Other dialogs >> Symbol (library object) Specification (General, Options, 3D, Layer, Label) (not captured) | n | CB-57, CB-60 | Partial | dialogs/symbol.rs Library Object Specification: General (Keep aspect, Reflect), Options, Materials, Label, Layer, Object Information, Schedule; dialogs/library_object.rs (Open Object) Gap: the 3D and Components tabs are disabled; Options and Schedule choices are stored, not yet used by 3D or schedules |
 | 20 | Other dialogs >> Image / Distributed Object specification (not captured) | n | NO SPEC (CAD-60) | Works | dialogs/images.rs IMAGE_TABS, DIST_TABS |
 | 21 | Other dialogs >> Layout Box Specification (not captured) | n | L-4 | Partial | dialogs/layout.rs General/Source/Line Style; quarter-turn Rotation, rotate knob on the selected box, hit test and outline use the turned co… |
 | 22 | Other dialogs >> Page Specification / Page Setup / Customize Sheet Sizes (not captured) | n | L-7, L-8 | Works | `PageSpecDialog` (title, sheet number, Page Template flag, own sheet size and orientation, no title block), `LayoutView::apply_page_spec`,… |
@@ -1396,7 +1396,7 @@ One row per Chief feature, grouped as in the summary table. Source "cap" is a ca
 | 78 | File menu details >> Print ▸ Drawing Sheet Setup… (not captured) | n | L-19 | Works | Print Preview window (`PrintPreviewDialog`, `plan_layout::layout_print_preview` / `plan_view_print_preview`): the pages as the Print dialog… |
 | 79 | File menu details >> Import ▸ Underlay Picture (PNG, JPEG, PDF)… (not captured) | n | L-46 | Partial, In progress (Round 14) | `plan_core::underlay`, `tools/underlay.rs` (+ `pdf.rs`, `inflate.rs`, `trace.rs`), `dialogs/underlay.rs`: PNG and JPEG (baseline and progre… |
 | 80 | Library menu details >> Add Selection to Library (not captured) | n | CB-58 | Works | tools/library/user.rs, make.rs; ~/.plan-studio/user-library.json |
-| 81 | Library menu details >> Export Library (Plan Studio only)… (not captured) | n | CB-58 | Works | tools/library/user.rs, make.rs; ~/.plan-studio/user-library.json |
+| 81 | Library menu details >> Export Library (Plan Studio JSON)… (not captured) | n | CB-58 | Works | tools/library/user.rs export_library_to (user items only, plan-studio-library.json; a .calib name is refused) |
 
 ### Additional product features (not captured)
 

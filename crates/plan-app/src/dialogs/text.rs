@@ -16,7 +16,13 @@
 
 #![allow(dead_code)]
 
+pub mod annot;
+pub mod callout;
+pub mod defaults;
+pub mod editbar;
 pub mod manage;
+pub mod marker;
+pub mod note;
 
 use super::{
     fmt_short, on, pv_text, row, section, Fields, Outcome, SpecDialog, SpecPages, Tab, PV_FAINT,
@@ -58,6 +64,10 @@ struct TextForm {
     style_defs: plan_core::TextStyles,
     layer_style: String,
     ipf: f64,
+    /// The Rich Text Edit Bar (TXT-29): its state and the font families it
+    /// offers.
+    bar: editbar::EditBarState,
+    families: Vec<String>,
 }
 
 impl TextDialog {
@@ -81,6 +91,8 @@ impl TextDialog {
                 style_defs: plan_core::TextStyles::default(),
                 layer_style: String::new(),
                 ipf: 0.25,
+                bar: editbar::EditBarState::default(),
+                families: Vec::new(),
             },
         }
     }
@@ -109,6 +121,12 @@ impl TextDialog {
         self.form.style_defs = styles.clone();
         self.form.layer_style = layer_style.to_string();
         self.form.ipf = ipf;
+        self
+    }
+
+    /// The font families the Rich Text Edit Bar offers.
+    pub fn with_families(mut self, families: Vec<String>) -> Self {
+        self.form.families = families;
         self
     }
 
@@ -203,14 +221,23 @@ pub fn open_for(cx: &EditorContext, o: ObjectRef) -> Option<TextDialog> {
                 &cx.project.text_styles,
                 &layer_style,
                 cx.sheet.scale.inches_per_foot(),
-            ),
+            )
+            .with_families(crate::fonts::catalog().families()),
     )
 }
 
 /// The runs worth keeping: none when no run carries a format.
 fn normalized(runs: Vec<RichRun>) -> Vec<RichRun> {
     let formatted = runs.iter().any(|r| {
-        r.bold || r.italic || r.underline || (r.scale - 1.0).abs() > 1e-9 || r.color.is_some()
+        r.bold
+            || r.italic
+            || r.underline
+            || r.strike
+            || r.upper
+            || (r.scale - 1.0).abs() > 1e-9
+            || r.color.is_some()
+            || r.font.is_some()
+            || r.link.is_some()
     });
     if formatted {
         runs
@@ -250,18 +277,67 @@ impl TextForm {
             self.rich = rich;
             self.sync_text();
         }
+        // The Rich Text Edit Bar: formats the selected words (TXT-29).
+        if self.rich {
+            let base = match &self.draft.item {
+                CadItem::Text { height, .. } => *height,
+                _ => 6.0,
+            };
+            let env = editbar::BarEnv {
+                base,
+                ipf: self.ipf,
+                families: &self.families,
+            };
+            let before = self.attrs.text_box.halign;
+            let edited = editbar::show(
+                ui,
+                &mut self.markup,
+                &mut self.attrs.text_box.halign,
+                &mut self.bar,
+                &env,
+            );
+            if edited {
+                self.sync_text();
+                // Keep the words the format landed on selected.
+                let id = ui.make_persistent_id("rich_markup");
+                if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), id) {
+                    let (a, b) = self.bar.sel;
+                    state.cursor.set_char_range(Some(egui::text::CCursorRange::two(
+                        egui::text::CCursor::new(a),
+                        egui::text::CCursor::new(b),
+                    )));
+                    state.store(ui.ctx(), id);
+                }
+            }
+            let _ = before;
+        }
         // Misspelled words are underlined in red (TXT-21).
         let mut underline = super::spell_check::layouter(self.rich);
-        let changed = ui
-            .add(
-                egui::TextEdit::multiline(&mut self.markup)
-                    .desired_rows(5)
-                    .desired_width(f32::INFINITY)
-                    .layouter(&mut underline),
-            )
-            .changed();
-        if changed {
+        let id = ui.make_persistent_id("rich_markup");
+        let out = egui::TextEdit::multiline(&mut self.markup)
+            .id(id)
+            .desired_rows(5)
+            .desired_width(f32::INFINITY)
+            .layouter(&mut underline)
+            .show(ui);
+        if let Some(r) = out.cursor_range {
+            let (p, q) = (r.primary.ccursor.index, r.secondary.ccursor.index);
+            self.bar.sel = (p.min(q), p.max(q));
+        }
+        if out.response.changed() {
             self.sync_text();
+        }
+        // Hyperlinks open from here (Follow Hyperlink).
+        if self.rich {
+            for (t, a) in editbar::links_of(&self.markup) {
+                if ui
+                    .small_button(format!("Follow Hyperlink: {t}"))
+                    .on_hover_text(a.clone())
+                    .clicked()
+                {
+                    let _ = crate::tools::text::follow_hyperlink(&a);
+                }
+            }
         }
         if super::spell_check::local_controls(ui, &mut self.markup, self.rich) {
             self.sync_text();

@@ -160,7 +160,7 @@ const ROW1_GROUPS: [&str; 11] = [
     "Materials",
     "Toolbar Configurations",
 ];
-const ROW2_GROUPS: [&str; 11] = [
+const ROW2_GROUPS: [&str; 12] = [
     "Select",
     "Walls and Railings",
     "Doors and Windows",
@@ -172,6 +172,7 @@ const ROW2_GROUPS: [&str; 11] = [
     "Text and Notes",
     "CAD Drawing",
     "Detail",
+    "Painters",
 ];
 const VIEW_GROUPS: [&str; 4] = ["Browsers", "Zoom", "Navigation", "Display Toggles"];
 
@@ -230,6 +231,16 @@ fn layout_slots() -> Vec<Slot> {
         layout_item("floor_up", "Next Page", L::NextPage),
         layout_item("plan_database", "Page Table", L::PageTable),
         layout_item("default_settings", "Page Setup", L::PageSetup),
+        layout_item(
+            "default_settings",
+            "Page Specification",
+            L::PageSpecification,
+        ),
+        layout_item("drawing_sheet", "Customize Sheet Sizes", L::CustomizeSheetSizes),
+        layout_item("file_new", "New Layout File", L::NewLayoutFile),
+        layout_item("view_plan", "Open Source View", L::OpenSourceView),
+        layout_item("drawing_sheet", "Copy Layout Box to Page", L::CopyBoxToPage),
+        layout_item("file_save", "Export Table to Excel", L::ExportTableExcel),
         layout_item("view_save", "Update Layout Views", L::UpdateViews),
         layout_item("fill_window", "Fit Page in Window", L::FitPage),
         layout_item("note", "Add Text Box", L::AddTextBox),

@@ -13,6 +13,8 @@ use plan_core::{Point, WallCurve};
 use serde::{Deserialize, Serialize};
 
 use crate::geom::flatten_spline;
+use crate::plants::{Distribution, GrassBlades, GrassLook, PlantImage};
+use crate::spec::ObjectExtras;
 
 /// Default layer of the terrain features (rectangular, kidney, spline).
 pub const LAYER_FEATURES: &str = "Terrain, Features";
@@ -74,6 +76,13 @@ pub struct TerrainBreak {
     /// Elevation of the break line, inches.
     pub z: f64,
     pub style: ObjectStyle,
+    /// How far from the break its effect reaches, inches (0 = the whole data set).
+    pub transition: f64,
+    /// The break holds no elevation of its own: it keeps the crease sharp
+    /// along the ground as it is (the break of a Retaining Wall).
+    pub follow_ground: bool,
+    /// Label, schedule category and object information.
+    pub extras: ObjectExtras,
 }
 
 impl Default for TerrainBreak {
@@ -82,6 +91,9 @@ impl Default for TerrainBreak {
             points: Vec::new(),
             z: 0.0,
             style: ObjectStyle::default(),
+            transition: 0.0,
+            follow_ground: false,
+            extras: ObjectExtras::default(),
         }
     }
 }
@@ -128,7 +140,12 @@ pub struct TerrainWall {
     pub stepped: bool,
     /// Height of one course of a stepped wall, inches.
     pub step: f64,
+    /// Label, schedule category and object information.
+    pub extras: ObjectExtras,
 }
+
+/// Default height of a terrain wall above the ground: 5 ft (Chief's default).
+pub const DEFAULT_WALL_HEIGHT: f64 = 60.0;
 
 /// Height of one course of a stepped wall until the specification changes it
 /// (a standard 8" block).
@@ -140,7 +157,7 @@ pub const WALL_SLOPE_RATIO: f64 = 4.0;
 impl TerrainWall {
     pub fn new(kind: WallKind, points: Vec<Point>, curved: bool) -> Self {
         let (height, depth, thickness) = match kind {
-            WallKind::Wall => (36.0, 12.0, 8.0),
+            WallKind::Wall => (DEFAULT_WALL_HEIGHT, 12.0, 8.0),
             WallKind::Curb => (6.0, 4.0, 6.0),
         };
         TerrainWall {
@@ -156,6 +173,7 @@ impl TerrainWall {
             cut: true,
             stepped: false,
             step: DEFAULT_WALL_STEP,
+            extras: ObjectExtras::default(),
         }
     }
 
@@ -185,6 +203,9 @@ pub enum LandscapeKind {
     SteppingStones,
     Plants,
     Sprinklers,
+    /// A Sprinkler Line: 2D irrigation pipe drawn as a line or spline. It
+    /// is not shown in 3D.
+    SprinklerLine,
 }
 
 /// How the outline was drawn.
@@ -283,6 +304,24 @@ pub struct Landscape {
     pub control: Vec<Point>,
     /// How a plant is built in 3D.
     pub form: PlantForm,
+    /// Grass Region: blade options.
+    pub blades: GrassBlades,
+    /// Grass Region: colours, noise and mowing.
+    pub grass_look: GrassLook,
+    /// Garden Bed: plants spread over the bed.
+    pub distribution: Option<Distribution>,
+    /// Plants: the run is made of plant images (billboards with seasons).
+    pub image: Option<PlantImage>,
+    /// Plants: height at maturity, inches (0 = no growth data).
+    pub mature_height: f64,
+    /// Plants: canopy width at maturity, inches.
+    pub mature_width: f64,
+    /// Plants: months from planting to maturity.
+    pub maturity_months: f64,
+    /// Plants: share of the mature size at planting, 0 to 1.
+    pub start_fraction: f64,
+    /// Label, schedule category and object information.
+    pub extras: ObjectExtras,
 }
 
 impl Landscape {
@@ -315,6 +354,15 @@ impl Landscape {
             style: ObjectStyle::default(),
             control: Vec::new(),
             form: PlantForm::Auto,
+            blades: GrassBlades::default(),
+            grass_look: GrassLook::default(),
+            distribution: None,
+            image: None,
+            mature_height: 0.0,
+            mature_width: 0.0,
+            maturity_months: 0.0,
+            start_fraction: 0.5,
+            extras: ObjectExtras::default(),
         };
         match kind {
             LandscapeKind::GardenBed => Landscape {
@@ -356,6 +404,11 @@ impl Landscape {
                 spacing: 144.0,
                 ..base
             },
+            LandscapeKind::SprinklerLine => Landscape {
+                material: "PVC".into(),
+                size: 2.0,
+                ..base
+            },
         }
     }
 
@@ -374,7 +427,7 @@ impl Landscape {
             LandscapeKind::WaterFeature => LAYER_WATER,
             LandscapeKind::SteppingStones => LAYER_STONES,
             LandscapeKind::Plants => LAYER_PLANTS,
-            LandscapeKind::Sprinklers => LAYER_SPRINKLERS,
+            LandscapeKind::Sprinklers | LandscapeKind::SprinklerLine => LAYER_SPRINKLERS,
         }
     }
 
@@ -390,6 +443,7 @@ impl Landscape {
             LandscapeKind::SteppingStones => "Stepping Stones",
             LandscapeKind::Plants => "Plants",
             LandscapeKind::Sprinklers => "Sprinklers",
+            LandscapeKind::SprinklerLine => "Sprinkler Line",
         }
     }
 

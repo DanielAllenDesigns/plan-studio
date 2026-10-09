@@ -9,8 +9,8 @@
 //! events.
 
 use super::{draw_shell, Sim};
-use crate::dialogs::OpeningDialog;
 use crate::dialogs::stairs::StairDialog;
+use crate::dialogs::OpeningDialog;
 use crate::editor::code;
 use crate::editor::stairs_view::{self, StairKind};
 use crate::tools::ToolId;
@@ -660,7 +660,7 @@ fn the_live_check_is_quiet_when_switched_off() {
 #[test]
 fn the_status_bar_names_the_code_while_the_settings_are_open() {
     let sim = house();
-    assert!(code::status_text(&sim.app.cx).map_or(true, |t| !t.contains("Code:")));
+    assert!(code::status_text(&sim.app.cx).is_none_or(|t| !t.contains("Code:")));
     code::note_settings_open();
     let t = code::status_text(&sim.app.cx).unwrap();
     assert!(t.contains("Code: IRC 2021"), "{t}");
@@ -772,6 +772,11 @@ fn live_check_stays_fast_on_a_full_house() {
         check.push(t.elapsed().as_secs_f64() * 1000.0);
     }
     check.sort_by(|a, b| a.total_cmp(b));
-    println!("the whole Plan Check alone: median {:.3} ms", check[check.len() / 2]);
+    println!(
+        "the whole Plan Check alone: median {:.3} ms",
+        check[check.len() / 2]
+    );
     assert!(code::live_summary().runs > first.runs);
+    // The budget is 1 ms; the gate only guards against a blow-up on a busy machine.
+    assert!(median < 25.0, "live check took {median:.2} ms");
 }

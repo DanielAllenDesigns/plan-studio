@@ -53,7 +53,8 @@ fn header_color(header: &[u8]) -> Option<[u8; 3]> {
 fn parse_binary(bytes: &[u8]) -> Result<(Welder, Option<[u8; 3]>), ModelError> {
     let n = u32::from_le_bytes([bytes[80], bytes[81], bytes[82], bytes[83]]) as usize;
     let mut w = Welder::default();
-    let f = |at: usize| f32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]);
+    let f =
+        |at: usize| f32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]);
     for k in 0..n {
         let base = 84 + k * 50 + 12; // skip the normal
         for v in 0..3 {

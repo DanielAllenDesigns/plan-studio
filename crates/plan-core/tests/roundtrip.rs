@@ -144,14 +144,14 @@ fn rich_project() -> Project {
                     .find(|o| o.id == id)
                     .unwrap();
                 o.style = *style;
-                o.swing_flipped = n % 2 == 0;
-                o.hinge_at_end = n % 3 == 0;
-                o.label_override = (n % 4 == 0).then(|| format!("L{n}"));
+                o.swing_flipped = n.is_multiple_of(2);
+                o.hinge_at_end = n.is_multiple_of(3);
+                o.label_override = (n.is_multiple_of(4)).then(|| format!("L{n}"));
                 o.schedule_number = Some(format!("S{n}"));
                 o.lites = (n % 3 + 1, n % 2 + 1);
-                o.egress = n % 5 == 0;
+                o.egress = n.is_multiple_of(5);
                 o.tempered = n % 2 == 1;
-                o.mull_group = (n % 6 == 0).then_some(900 + u64::from(n));
+                o.mull_group = (n.is_multiple_of(6)).then_some(900 + u64::from(n));
                 o.casing = Some(plan_core::Casing::default());
                 n += 1;
             }
@@ -437,6 +437,8 @@ fn rich_project() -> Project {
         prefix: "X".into(),
         style: "Custom".into(),
     });
+    p.annot_defaults.saved_name = "Mine".into();
+    p.annot_defaults.text.height = 5.0;
     p.info.client_name = "Client \u{c9}".into();
     p.info.client_address = vec!["1 Main St".into(), "Atlanta".into()];
     p.info.revisions = vec![("1".into(), "2026-10-01".into(), "Issued".into())];
@@ -468,6 +470,9 @@ fn rich_project() -> Project {
     p.layout = Some(json!({"name": "Layout", "pages": [{"boxes": [{"kind": "Plan"}]}]}));
     p.layout_files = vec![json!({"name": "Second"})];
     p.electrical_defaults = Some(json!({"outlet_height": 16.0}));
+    // Some fixture records carry literal ids; a loaded plan repairs `next_id`
+    // above them (QA-22), so the fixture starts out repaired too.
+    p.repair_ids();
     p
 }
 
@@ -720,7 +725,6 @@ fn unknown_extra_keys_do_not_stop_a_file_from_loading() {
 }
 
 #[test]
-#[ignore = "QA-20"]
 fn unknown_extra_keys_are_kept_when_the_plan_is_saved_again() {
     // Forward compatibility: open a newer build's plan, save it, and the
     // newer build's data must still be there.
@@ -742,7 +746,6 @@ fn unknown_extra_keys_are_kept_when_the_plan_is_saved_again() {
 }
 
 #[test]
-#[ignore = "QA-21"]
 fn an_empty_json_object_loads_as_an_empty_plan() {
     // `name`, `floors` and `next_id` have no serde default, so `{}` (an empty
     // or truncated-to-braces file) is an error rather than an empty plan.
@@ -766,7 +769,6 @@ fn a_file_missing_its_floors_is_an_error_not_a_panic() {
 }
 
 #[test]
-#[ignore = "QA-22"]
 fn a_stale_next_id_does_not_hand_out_an_id_that_is_in_use() {
     // Files written by an older build, or edited by hand, can carry a
     // `next_id` at or below the ids already used.
@@ -781,7 +783,6 @@ fn a_stale_next_id_does_not_hand_out_an_id_that_is_in_use() {
 }
 
 #[test]
-#[ignore = "QA-23"]
 fn a_non_finite_number_never_makes_the_saved_plan_unreadable() {
     // serde_json writes NaN and infinity as `null`, and `null` is not a valid
     // f64 on the way back in: one stray NaN (a zero-length division in a tool)
@@ -858,6 +859,7 @@ fn a_wall_that_lost_its_opening_host_still_loads_and_saves() {
         id: 888_889,
         members: vec![ObjectRef::Wall(gone), ObjectRef::Cabinet(gone)],
     });
+    p.repair_ids();
     let a = json_of(&p);
     let q = Project::from_json(&a).unwrap();
     assert_eq!(a, json_of(&q));
@@ -879,4 +881,137 @@ fn wall_helpers_do_not_misbehave_on_a_zero_length_wall() {
     ] {
         assert!(v.is_finite(), "{v}");
     }
+}
+
+// ----- data safety: foreign keys, ids, non-finite numbers (QA-20..QA-23) -----
+
+#[test]
+fn foreign_keys_at_every_level_survive_and_the_second_save_is_byte_stable() {
+    let mut v = serde_json::to_value(rich_project()).unwrap();
+    v["from_the_future"] = json!({"a": [1, 2, 3]});
+    v["floors"][1]["future_slot"] = json!("x");
+    v["floors"][1]["walls"][0]["future_wall_field"] = json!(1.5);
+    v["floors"][1]["openings"][0]["future_opening_field"] = json!({"deep": [true]});
+    v["floors"][1]["dimensions"][0]["future_dim_field"] = json!([1]);
+    v["floors"][1]["cad"][0]["future_cad_field"] = json!("c");
+    v["floors"][1]["room_names"][0]["future_room_field"] = json!(7);
+    v["floors"][1]["symbols"][0]["future_symbol_field"] = json!("s");
+    v["floors"][1]["groups"][0]["future_group_field"] = json!("g");
+    v["floors"][1]["settings"]["future_setting"] = json!(3);
+    v["cameras"][0]["future_camera_field"] = json!(true);
+    v["info"]["future_info"] = json!("i");
+    let p = Project::from_json(&v.to_string()).unwrap();
+    assert!(p.foreign_key_count() >= 12, "{}", p.foreign_key_count());
+    let a = json_of(&p);
+    let saved: Value = serde_json::from_str(&a).unwrap();
+    for path in [
+        "/from_the_future",
+        "/floors/1/future_slot",
+        "/floors/1/walls/0/future_wall_field",
+        "/floors/1/openings/0/future_opening_field",
+        "/floors/1/dimensions/0/future_dim_field",
+        "/floors/1/cad/0/future_cad_field",
+        "/floors/1/room_names/0/future_room_field",
+        "/floors/1/symbols/0/future_symbol_field",
+        "/floors/1/groups/0/future_group_field",
+        "/floors/1/settings/future_setting",
+        "/cameras/0/future_camera_field",
+        "/info/future_info",
+    ] {
+        assert_eq!(saved.pointer(path), v.pointer(path), "{path} was lost");
+    }
+    // Loading what was saved and saving again changes nothing.
+    let q = Project::from_json(&a).unwrap();
+    assert_eq!(a, json_of(&q));
+    assert_eq!(q.foreign_key_count(), p.foreign_key_count());
+}
+
+#[test]
+fn a_foreign_key_stays_with_its_wall_when_the_walls_around_it_change() {
+    let mut v = serde_json::to_value(rich_project()).unwrap();
+    let first = v["floors"][1]["walls"][0]["id"].as_u64().unwrap();
+    v["floors"][1]["walls"][0]["future_wall_field"] = json!("mine");
+    let mut p = Project::from_json(&v.to_string()).unwrap();
+    // Add a wall in front and delete a different wall: the key is still on its own wall.
+    let other = p.floors[1].walls[1].id;
+    p.remove_wall(1, other);
+    let moved = p.floors[1].walls.remove(0);
+    p.floors[1].walls.push(moved);
+    let saved: Value = serde_json::from_str(&json_of(&p)).unwrap();
+    let walls = saved["floors"][1]["walls"].as_array().unwrap();
+    for w in walls {
+        let has = w.get("future_wall_field").is_some();
+        assert_eq!(has, w["id"].as_u64() == Some(first), "wall {}", w["id"]);
+    }
+    // Deleting the wall takes its foreign key with it, and nothing else breaks.
+    p.remove_wall(1, first);
+    let saved = json_of(&p);
+    assert!(!saved.contains("future_wall_field"));
+    Project::from_json(&saved).unwrap();
+}
+
+#[test]
+fn null_in_a_number_field_reads_as_the_default() {
+    // What a plan damaged by a NaN looks like on disk.
+    let mut v = serde_json::to_value(rich_project()).unwrap();
+    v["floors"][1]["walls"][0]["start"]["x"] = Value::Null;
+    v["floors"][1]["walls"][0]["thickness"] = Value::Null;
+    v["floors"][1]["walls"][0]["height"] = Value::Null;
+    v["floors"][1]["elevation"] = Value::Null;
+    v["floors"][1]["ceiling_height"] = Value::Null;
+    let p = Project::from_json(&v.to_string()).expect("null numbers load");
+    let w = &p.floors[1].walls[0];
+    assert_eq!(w.start.x, 0.0);
+    assert!(w.thickness > 0.0 && w.height > 0.0);
+    assert_eq!(p.floors[1].elevation, 0.0);
+    assert!(p.floors[1].ceiling_height > 0.0);
+}
+
+#[test]
+fn sanitize_repairs_the_plan_and_a_save_never_writes_null_for_a_number() {
+    let mut p = Project::new("nan");
+    let w = p.add_wall(0, pt(0.0, 0.0), pt(f64::NAN, 5.0), 6.5, 109.0, WallKind::Exterior);
+    p.add_wall(0, pt(1.0, 1.0), pt(f64::INFINITY, 5.0), 6.5, f64::NEG_INFINITY, WallKind::Exterior);
+    assert_eq!(p.non_finite_count(), 3);
+    let text = json_of(&p);
+    let back = Project::from_json(&text).expect("what was written loads again");
+    assert_eq!(back.floors[0].wall(w).unwrap().end.x, 0.0);
+    assert_eq!(p.sanitize(), 3);
+    assert_eq!(p.non_finite_count(), 0);
+    assert_eq!(p.floors[0].wall(w).unwrap().end.x, 0.0);
+    assert_eq!(p.sanitize(), 0);
+    // The repaired plan is what was written.
+    assert_eq!(json_of(&p), text);
+    Project::from_json(&text).unwrap();
+}
+
+#[test]
+fn a_plan_missing_everything_loads_with_one_named_floor_and_a_sound_counter() {
+    let mut p = Project::from_json("{}").unwrap();
+    assert_eq!(p.floors.len(), 1);
+    assert!(!p.floors[0].name.is_empty());
+    assert!(p.validate_ids().is_empty());
+    let first = p.alloc_id();
+    assert!(first >= 1);
+    let q = Project::from_json("{\"floors\": []}").unwrap();
+    assert_eq!(q.floors.len(), 1, "a plan always has a floor");
+}
+
+#[test]
+fn validate_ids_names_a_stale_counter_and_repair_fixes_it() {
+    let mut p = rich_project();
+    assert!(p.validate_ids().is_empty(), "{:?}", p.validate_ids());
+    let high = p.highest_id();
+    // An id from a newer build in an opaque slot, above the counter.
+    p.floors[1].cabinets.push(json!({"id": high + 50, "kind": "Base"}));
+    let problems = p.validate_ids();
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(problems[0].contains("next_id"));
+    assert!(p.repair_ids());
+    assert!(p.validate_ids().is_empty());
+    assert!(p.alloc_id() > high + 50);
+    // Two walls with one id are reported.
+    let dup = p.floors[1].walls[0].clone();
+    p.floors[1].walls.push(dup);
+    assert!(p.validate_ids().iter().any(|m| m.contains("used twice")));
 }

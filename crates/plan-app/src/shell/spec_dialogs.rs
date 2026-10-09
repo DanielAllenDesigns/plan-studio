@@ -13,11 +13,13 @@ use crate::dialogs::dimension::{self, DimensionDialog};
 use crate::dialogs::electrical::ElectricalDialog;
 use crate::dialogs::foundation::FoundationDialog;
 use crate::dialogs::framing::FramingMemberDialog;
+use crate::dialogs::object_info::{self, InfoSession, SharedInfo};
 use crate::dialogs::property_manager::{self, PropSession, SharedSession};
 use crate::dialogs::roof::{CeilingDialog, DormerDialog, RoofPlaneDialog};
 use crate::dialogs::stairs::StairDialog;
 use crate::dialogs::symbol::SymbolDialog;
 use crate::dialogs::terrain::{ObjectDialog, TerrainDialog};
+use crate::dialogs::text::annot::AnnotDialog;
 use crate::dialogs::text::TextDialog;
 use crate::dialogs::WallDialog;
 use crate::dialogs::{cad, text, Outcome};
@@ -48,6 +50,8 @@ enum Active {
     TerrainObject(site_view::TerrainHit, Box<ObjectDialog>),
     Dimension(Box<DimensionDialog>),
     Text(Box<TextDialog>),
+    /// A callout, marker or note (Callout, Marker or Note Specification).
+    Annot(Box<AnnotDialog>),
     Cad(Box<CadDialog>),
     /// The Wall Specification over several selected walls (W-83).
     Walls(Box<WallDialog>),
@@ -61,6 +65,10 @@ pub struct SpecDialogs {
     props: Option<SharedSession>,
     /// The Properties tab of the wall or opening dialog `main.rs` hosts.
     main_props: Option<SharedSession>,
+    /// The Components and Object Information tabs of the open dialog.
+    info: Option<SharedInfo>,
+    /// The same for the wall or opening dialog `main.rs` hosts.
+    main_info: Option<SharedInfo>,
 }
 
 impl SpecDialogs {
@@ -72,6 +80,17 @@ impl SpecDialogs {
     /// hosts (none when the object's kind has no custom properties).
     pub fn arm_main_props(&mut self, cx: &EditorContext, o: ObjectRef) {
         self.main_props = PropSession::for_object(cx, o);
+        self.main_info = InfoSession::for_object(cx, o);
+    }
+
+    /// The Materials List tabs armed for the hosted wall / opening dialog.
+    pub fn main_info(&self) -> Option<&SharedInfo> {
+        self.main_info.as_ref()
+    }
+
+    /// Takes the armed Materials List tabs (OK) or drops them (Cancel).
+    pub fn take_main_info(&mut self) -> Option<SharedInfo> {
+        self.main_info.take()
     }
 
     /// The armed session of the hosted wall / opening dialog.
@@ -81,6 +100,9 @@ impl SpecDialogs {
 
     /// Takes the armed session (OK) or drops it (Cancel).
     pub fn take_main_props(&mut self) -> Option<SharedSession> {
+        // A default dialog or a cancelled one has no Materials List tabs
+        // either; OK takes them first with `take_main_info`.
+        self.main_info = None;
         self.main_props.take()
     }
 
@@ -113,6 +135,15 @@ impl SpecDialogs {
     pub fn text_draft_mut(&mut self) -> Option<&mut plan_core::CadObject> {
         match self.active.as_mut()? {
             Active::Text(d) => Some(d.draft_mut()),
+            _ => None,
+        }
+    }
+
+    /// Test access to the open Callout, Marker or Note Specification.
+    #[cfg(test)]
+    pub fn annot_dialog_mut(&mut self) -> Option<&mut AnnotDialog> {
+        match self.active.as_mut()? {
+            Active::Annot(d) => Some(d),
             _ => None,
         }
     }
@@ -166,6 +197,13 @@ impl SpecDialogs {
     /// no longer exists). Rooms and cameras are handed to the owners of
     /// their dialogs (`dialogs::build_tools`, the 3D panel).
     pub fn open(&mut self, cx: &mut EditorContext, o: ObjectRef) -> bool {
+        // A Materials List Polyline is a CAD polyline with a specification of
+        // its own (the Included Floors/Categories grid).
+        if let ObjectRef::Cad(id) = o {
+            if crate::dialogs::materials_list::open_polyline_spec(cx, id) {
+                return true;
+            }
+        }
         let layer_names = |cx: &EditorContext| -> Vec<String> {
             cx.layers().layers.iter().map(|l| l.name.clone()).collect()
         };
@@ -248,8 +286,9 @@ impl SpecDialogs {
             ObjectRef::Dimension(_) => {
                 dimension::open_for(cx, o).map(|d| Active::Dimension(Box::new(d)))
             }
-            ObjectRef::Cad(_) | ObjectRef::Text(_) => text::open_for(cx, o)
-                .map(|d| Active::Text(Box::new(d)))
+            ObjectRef::Cad(_) | ObjectRef::Text(_) => text::annot::open_for(cx, o)
+                .map(|d| Active::Annot(Box::new(d)))
+                .or_else(|| text::open_for(cx, o).map(|d| Active::Text(Box::new(d))))
                 .or_else(|| cad::open_for(cx, o).map(|d| Active::Cad(Box::new(d)))),
             ObjectRef::Room(idx) => {
                 rooms_edit::request_room_dialog(cx, idx);
@@ -270,15 +309,23 @@ impl SpecDialogs {
         if opened {
             self.active = dialog;
             self.props = PropSession::for_object(cx, o);
+            self.info = InfoSession::for_object(cx, o);
         }
         opened
     }
 
     /// Shows the open dialog and applies an OK.
     pub fn show(&mut self, ctx: &egui::Context, cx: &mut EditorContext) {
+        // A click of the Callout, Marker or Note tool posts its dialog.
+        if self.active.is_none() {
+            if let Some(d) = text::annot::take_posted() {
+                self.active = Some(Active::Annot(Box::new(d)));
+            }
+        }
         let Some(mut a) = self.active.take() else {
             return;
         };
+        let prev_info = object_info::set_current(self.info.clone());
         let outcome = property_manager::with_current(self.props.as_ref(), || match &mut a {
             Active::Stair(d) => d.show(ctx),
             Active::Cabinet(d) => d.show(ctx),
@@ -294,18 +341,26 @@ impl SpecDialogs {
             Active::TerrainObject(_, d) => d.show(ctx),
             Active::Dimension(d) => d.show(ctx),
             Active::Text(d) => d.show(ctx),
+            Active::Annot(d) => d.show(ctx),
             Active::Cad(d) => d.show(ctx),
             Active::Walls(d) => d.show(ctx),
         });
+        object_info::set_current(prev_info);
         match outcome {
             Outcome::Open => self.active = Some(a),
-            Outcome::Cancel => self.props = None,
+            Outcome::Cancel => {
+                self.props = None;
+                self.info = None;
+            }
             Outcome::Ok => {
-                // The dialog and its Properties tab are one undo step.
+                // The dialog and its Properties and Materials List tabs are
+                // one undo step.
                 let depth = property_manager::before_apply(cx);
                 apply(cx, &a);
                 property_manager::after_apply(cx, self.props.as_ref(), depth);
+                object_info::after_apply(cx, self.info.as_ref(), depth);
                 self.props = None;
+                self.info = None;
                 cx.mark_dirty();
             }
         }
@@ -401,6 +456,9 @@ fn apply(cx: &mut EditorContext, a: &Active) {
         Active::Text(d) => {
             d.apply(cx);
         }
+        Active::Annot(d) => {
+            d.apply(cx);
+        }
         Active::Cad(d) => {
             d.apply(cx);
         }
@@ -411,6 +469,7 @@ fn apply(cx: &mut EditorContext, a: &Active) {
                 cx.cancel_change();
                 cx.status = "Wall Specification: nothing was changed".into();
             } else {
+                cx.project.sync_platform_walls();
                 cx.refresh();
             }
         }

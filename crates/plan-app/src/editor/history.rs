@@ -11,6 +11,19 @@ pub struct ChangeHistory {
     future: Vec<Option<String>>,
     /// The newest step may absorb further `begin_change_merged` calls.
     merge_open: bool,
+    /// An open undo group (see [`begin_group`](Self::begin_group)).
+    group: Group,
+}
+
+/// Everything done between `begin_group` and `end_group` is one undo step
+/// (QA-24), and none when it changed nothing (QA-26).
+#[derive(Debug, Default)]
+struct Group {
+    /// How many `begin_group` calls are open (groups nest).
+    depth: usize,
+    /// The plan before the first change of the group.
+    before: Option<Project>,
+    label: Option<String>,
 }
 
 impl ChangeHistory {
@@ -22,11 +35,45 @@ impl ChangeHistory {
             past: Vec::new(),
             future: Vec::new(),
             merge_open: false,
+            group: Group::default(),
         }
+    }
+
+    /// Opens an undo group: every `begin` until the matching
+    /// [`end_group`](Self::end_group) is folded into one step.
+    pub fn begin_group(&mut self) {
+        self.group.depth += 1;
+    }
+
+    /// Closes the group opened by [`begin_group`](Self::begin_group). When the
+    /// outermost group ends, one step (named after the first change in it) is
+    /// recorded if `current` differs from the plan before the group's first
+    /// change; a group that changed nothing leaves no step and keeps the redo
+    /// steps. Returns whether a step was recorded.
+    pub fn end_group(&mut self, current: &Project) -> bool {
+        self.group.depth = self.group.depth.saturating_sub(1);
+        if self.group.depth > 0 {
+            return false;
+        }
+        let (Some(before), label) = (self.group.before.take(), self.group.label.take()) else {
+            return false;
+        };
+        if before.to_json().ok() == current.to_json().ok() {
+            return false;
+        }
+        self.begin(&before, label.as_deref().unwrap_or("Edit"));
+        true
     }
 
     /// Records `project` (the state before a change) as the step `label`.
     pub fn begin(&mut self, project: &Project, label: &str) {
+        if self.group.depth > 0 {
+            if self.group.before.is_none() {
+                self.group.before = Some(project.clone());
+                self.group.label = Some(label.to_string());
+            }
+            return;
+        }
         self.history.push(project);
         self.past.push(Some(label.to_string()));
         self.future.clear();
@@ -41,6 +88,10 @@ impl ChangeHistory {
     /// (a slider drag) is one step. Call [`end_merge`](Self::end_merge) when
     /// the gesture is over.
     pub fn begin_merged(&mut self, project: &Project, label: &str) {
+        if self.group.depth > 0 {
+            self.begin(project, label);
+            return;
+        }
         let same = self.merge_open
             && matches!(self.past.last(), Some(Some(l)) if l == label)
             && self.future.is_empty();
@@ -57,6 +108,10 @@ impl ChangeHistory {
     /// Marks the newest step as a no-op (the change turned out to be refused).
     /// The step is skipped by undo and redo.
     pub fn cancel(&mut self) {
+        // A group decides at its end by comparing the plan.
+        if self.group.depth > 0 {
+            return;
+        }
         if let Some(last) = self.past.last_mut() {
             *last = None;
         }
@@ -93,6 +148,10 @@ impl ChangeHistory {
     /// Renames the newest step (a command that ran several steps and merged
     /// them calls this).
     pub fn relabel_last(&mut self, label: &str) {
+        if self.group.depth > 0 && self.group.before.is_some() {
+            self.group.label = Some(label.to_string());
+            return;
+        }
         if let Some(l) = self.past.iter_mut().rev().find(|l| l.is_some()) {
             *l = Some(label.to_string());
         }
@@ -136,6 +195,7 @@ impl ChangeHistory {
         self.past.clear();
         self.future.clear();
         self.merge_open = false;
+        self.group = Group::default();
     }
 }
 
@@ -174,6 +234,55 @@ mod tests {
         assert_eq!(h.redo(&mut p).as_deref(), Some("Real"));
         assert_eq!(p.name, "b");
         assert!(!h.can_redo());
+    }
+
+    #[test]
+    fn a_group_is_one_step_named_after_its_first_change() {
+        let mut h = ChangeHistory::new();
+        let mut p = Project::new("a");
+        h.begin_group();
+        h.begin(&p, "Delete");
+        p.name = "b".into();
+        h.begin(&p, "Delete Cabinet");
+        p.name = "c".into();
+        h.begin_merged(&p, "Delete Stair");
+        p.name = "d".into();
+        assert!(h.end_group(&p));
+        assert_eq!(h.depth(), 1);
+        assert_eq!(h.undo_label(), Some("Delete"));
+        assert_eq!(h.undo(&mut p).as_deref(), Some("Delete"));
+        assert_eq!(p.name, "a");
+        assert!(!h.can_undo());
+    }
+
+    #[test]
+    fn a_group_that_changed_nothing_leaves_no_step_and_keeps_redo() {
+        let mut h = ChangeHistory::new();
+        let mut p = Project::new("a");
+        h.begin(&p, "Real");
+        p.name = "b".into();
+        h.undo(&mut p);
+        assert!(h.can_redo());
+        h.begin_group();
+        h.begin(&p, "Unlock");
+        h.cancel();
+        assert!(!h.end_group(&p));
+        assert_eq!(h.depth(), 0);
+        assert!(h.can_redo(), "a no-op must not drop the redo steps");
+    }
+
+    #[test]
+    fn nested_groups_close_with_the_outermost() {
+        let mut h = ChangeHistory::new();
+        let mut p = Project::new("a");
+        h.begin_group();
+        h.begin_group();
+        h.begin(&p, "Inner");
+        p.name = "b".into();
+        assert!(!h.end_group(&p));
+        assert_eq!(h.depth(), 0);
+        assert!(h.end_group(&p));
+        assert_eq!(h.depth(), 1);
     }
 
     #[test]

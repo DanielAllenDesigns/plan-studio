@@ -71,12 +71,18 @@ pub fn object_key(cx: &EditorContext, o: ObjectRef) -> Option<(PropKey, PropKind
     let f = cx.floor();
     match o {
         ObjectRef::Wall(id) => f.wall(id).map(|_| (PropKey::wall(id), PropKind::Wall)),
-        ObjectRef::Opening(id) => f.openings.iter().find(|x| x.id == id).map(|x| match x.kind {
-            OpeningKind::Door => (PropKey::door(id), PropKind::Door),
-            OpeningKind::Window => (PropKey::window(id), PropKind::Window),
-        }),
+        ObjectRef::Opening(id) => f
+            .openings
+            .iter()
+            .find(|x| x.id == id)
+            .map(|x| match x.kind {
+                OpeningKind::Door => (PropKey::door(id), PropKind::Door),
+                OpeningKind::Window => (PropKey::window(id), PropKind::Window),
+            }),
         ObjectRef::Cabinet(id) => Some((PropKey::cabinet(id), PropKind::Cabinet)),
-        ObjectRef::Symbol(id) => f.symbol(id).map(|_| (PropKey::symbol(id), PropKind::Symbol)),
+        ObjectRef::Symbol(id) => f
+            .symbol(id)
+            .map(|_| (PropKey::symbol(id), PropKind::Symbol)),
         ObjectRef::Stair(id) => Some((PropKey::stair(id), PropKind::Stair)),
         ObjectRef::RoofPlane(id) => Some((PropKey::roof(id), PropKind::RoofPlane)),
         ObjectRef::Framing(id) => Some((PropKey::framing(id), PropKind::Framing)),
@@ -445,9 +451,14 @@ impl PropSession {
         self.texts != self.original
     }
 
-    /// Edits field `i` (for tests and keyboard shortcuts).
+    /// Edits the field called `name` (tests).
+    #[cfg(test)]
     pub fn set_text(&mut self, name: &str, text: &str) -> bool {
-        match self.defs.iter().position(|d| d.name.eq_ignore_ascii_case(name)) {
+        match self
+            .defs
+            .iter()
+            .position(|d| d.name.eq_ignore_ascii_case(name))
+        {
             Some(i) => {
                 self.texts[i] = text.to_string();
                 true
@@ -456,6 +467,7 @@ impl PropSession {
         }
     }
 
+    #[cfg(test)]
     pub fn text(&self, name: &str) -> Option<&str> {
         self.defs
             .iter()
@@ -531,7 +543,11 @@ pub fn page(ui: &mut egui::Ui, s: &mut PropSession) {
             }
             PropType::Bool => {
                 egui::ComboBox::from_id_salt(("prop_page", i))
-                    .selected_text(if s.texts[i].is_empty() { "(none)" } else { &s.texts[i] })
+                    .selected_text(if s.texts[i].is_empty() {
+                        "(none)"
+                    } else {
+                        &s.texts[i]
+                    })
                     .show_ui(ui, |ui| {
                         ui.selectable_value(&mut s.texts[i], String::new(), "(none)");
                         ui.selectable_value(&mut s.texts[i], "Yes".to_string(), "Yes");
@@ -642,7 +658,11 @@ pub fn export_set(cx: &EditorContext) -> Vec<(usize, Schedule)> {
 }
 
 /// The workbook for `set`, with `plan_path` recorded in `_meta`.
-pub fn build_workbook(cx: &mut EditorContext, set: &[(usize, Schedule)], plan_path: &str) -> Vec<u8> {
+pub fn build_workbook(
+    cx: &mut EditorContext,
+    set: &[(usize, Schedule)],
+    plan_path: &str,
+) -> Vec<u8> {
     cx.refresh();
     let list: Vec<ExportSchedule> = set
         .iter()
@@ -656,7 +676,12 @@ pub fn build_workbook(cx: &mut EditorContext, set: &[(usize, Schedule)], plan_pa
         exported_at: utc_stamp(SystemTime::now()),
         all_props: true,
     };
-    props_exchange::export_workbook(&cx.project, &list, Some((cx.floor, cx.rooms.as_slice())), &opts)
+    props_exchange::export_workbook(
+        &cx.project,
+        &list,
+        Some((cx.floor, cx.rooms.as_slice())),
+        &opts,
+    )
 }
 
 /// Reads a workbook or CSV `bytes` into the review dialog.
@@ -676,11 +701,8 @@ pub fn begin_import(
         read_xlsx(bytes)?
     };
     cx.refresh();
-    let plan = props_exchange::plan_import(
-        &cx.project,
-        &sheets,
-        Some((cx.floor, cx.rooms.as_slice())),
-    )?;
+    let plan =
+        props_exchange::plan_import(&cx.project, &sheets, Some((cx.floor, cx.rooms.as_slice())))?;
     state(|s| s.review = Some(ImportReview::new(plan, file_name)));
     Ok(())
 }
@@ -750,7 +772,11 @@ pub fn run_command(cx: &mut EditorContext, id: &str) -> bool {
             });
             state(|s| {
                 s.selected = sel;
-                s.pending.push(if sel.is_some() { EXPORT_SELECTED } else { EXPORT_ALL });
+                s.pending.push(if sel.is_some() {
+                    EXPORT_SELECTED
+                } else {
+                    EXPORT_ALL
+                });
             });
         }
         IMPORT => state(|s| s.pending.push(IMPORT)),
@@ -782,7 +808,13 @@ fn file_stem(cx: &EditorContext) -> String {
         .project
         .name
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     if n.trim_matches('_').is_empty() {
         "Plan".into()
@@ -819,7 +851,9 @@ pub fn export_to_path(
     plan: Option<&Path>,
 ) -> String {
     let plan_text = plan.map(|p| p.display().to_string()).unwrap_or_default();
-    let is_csv = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("csv"));
+    let is_csv = path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("csv"));
     let bytes = if is_csv {
         cx.refresh();
         let (f, s) = &set[0];
@@ -849,7 +883,10 @@ pub fn export_to_path(
                 });
             });
             if is_csv && set.len() > 1 {
-                format!("Saved {} (CSV holds the first schedule only)", path.display())
+                format!(
+                    "Saved {} (CSV holds the first schedule only)",
+                    path.display()
+                )
             } else {
                 format!(
                     "Saved {}. Edit it in Excel, then Tools > Import Property Data",
@@ -867,7 +904,9 @@ pub fn import_path(cx: &mut EditorContext, path: &Path) {
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let is_csv = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("csv"));
+    let is_csv = path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("csv"));
     match std::fs::read(path) {
         Ok(bytes) => match begin_import(cx, &bytes, &name, is_csv) {
             Ok(()) => state(|s| s.review_path = Some(path.to_path_buf())),
@@ -956,7 +995,9 @@ fn watch_frame(ctx: &egui::Context, cx: &mut EditorContext, plan: Option<&Path>)
         }
         ctx.request_repaint_after(POLL);
     });
-    let Some(when) = state(|s| s.offer) else { return };
+    let Some(when) = state(|s| s.offer) else {
+        return;
+    };
     let mut dismiss = false;
     egui::Area::new(egui::Id::new("workbook_changed"))
         .anchor(egui::Align2::LEFT_BOTTOM, [8.0, -34.0])
@@ -1069,8 +1110,11 @@ mod tests {
     #[test]
     fn stamps_are_utc_dates() {
         assert_eq!(utc_stamp(at(0)), "1970-01-01 00:00 UTC");
-        assert_eq!(utc_stamp(at(1_791_450_000)), "2026-10-08 08:20 UTC");
-        assert_eq!(utc_stamp(at(951_782_400 + 3600 * 5 + 60 * 7)), "2000-02-29 05:07 UTC");
+        assert_eq!(utc_stamp(at(1_791_450_000)), "2026-10-08 09:00 UTC");
+        assert_eq!(
+            utc_stamp(at(951_782_400 + 3600 * 5 + 60 * 7)),
+            "2000-02-29 05:07 UTC"
+        );
     }
 
     #[test]
@@ -1080,12 +1124,21 @@ mod tests {
         d.options = vec!["None".into(), "20 min".into()];
         add_property(&mut cx, d.clone()).unwrap();
         assert_eq!(cx.undo_label(), Some("Add Property"));
-        assert!(add_property(&mut cx, d.clone()).unwrap_err().contains("already"));
-        assert_eq!(cx.undo_label(), Some("Add Property"), "a refused add leaves no step");
+        assert!(add_property(&mut cx, d.clone())
+            .unwrap_err()
+            .contains("already"));
+        assert_eq!(
+            cx.undo_label(),
+            Some("Add Property"),
+            "a refused add leaves no step"
+        );
         let depth = cx.undo_depth();
         let mut renamed = d.clone();
         renamed.name = "Rating".into();
-        assert_eq!(update_property(&mut cx, PropKind::Door, "Fire Rating", renamed).unwrap(), 0);
+        assert_eq!(
+            update_property(&mut cx, PropKind::Door, "Fire Rating", renamed).unwrap(),
+            0
+        );
         assert_eq!(cx.undo_depth(), depth + 1);
         assert!(cx.project.props.def(PropKind::Door, "Rating").is_some());
         assert!(delete_property(&mut cx, PropKind::Door, "Rating"));
@@ -1126,8 +1179,15 @@ mod tests {
             109.125,
             plan_core::WallKind::Exterior,
         );
-        let door = cx.project.add_opening(0, w, 100.0, OpeningKind::Door).unwrap();
-        for (name, ty) in [("Note", PropType::Text), ("Keyed", PropType::Bool), ("Gauge", PropType::Number)] {
+        let door = cx
+            .project
+            .add_opening(0, w, 100.0, OpeningKind::Door)
+            .unwrap();
+        for (name, ty) in [
+            ("Note", PropType::Text),
+            ("Keyed", PropType::Bool),
+            ("Gauge", PropType::Number),
+        ] {
             add_property(&mut cx, PropDef::new(PropKind::Door, name, ty)).unwrap();
         }
         let mut list = PropDef::new(PropKind::Door, "Rating", PropType::List);

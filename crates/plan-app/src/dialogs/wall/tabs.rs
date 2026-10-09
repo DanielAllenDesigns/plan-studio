@@ -42,14 +42,20 @@ fn material_pick(
                     .hint_text("Search materials")
                     .desired_width(220.0),
             );
-            if ui.selectable_label(current.is_empty(), none_label).clicked() {
+            if ui
+                .selectable_label(current.is_empty(), none_label)
+                .clicked()
+            {
                 picked = Some(None);
             }
             egui::ScrollArea::vertical()
                 .max_height(220.0)
                 .show(ui, |ui| {
                     for def in lib.search(filter).into_iter().take(MATERIAL_ROWS) {
-                        if ui.selectable_label(current == def.name, &def.name).clicked() {
+                        if ui
+                            .selectable_label(current == def.name, &def.name)
+                            .clicked()
+                        {
                             picked = Some(Some((def.name.clone(), def.color)));
                         }
                     }
@@ -152,7 +158,12 @@ impl WallForm {
             );
         }
         row(ui, "Chair Rail", |ui| {
-            molding_combo(ui, pick("wc_chair_i", "wc_chair_e"), MoldingKind::Chair, &mut c.chair_rail)
+            molding_combo(
+                ui,
+                pick("wc_chair_i", "wc_chair_e"),
+                MoldingKind::Chair,
+                &mut c.chair_rail,
+            )
         });
         if !c.chair_rail.is_empty() {
             self.fields.length_row(
@@ -163,10 +174,20 @@ impl WallForm {
             );
         }
         row(ui, "Base Molding", |ui| {
-            molding_combo(ui, pick("wc_base_i", "wc_base_e"), MoldingKind::Base, &mut c.base)
+            molding_combo(
+                ui,
+                pick("wc_base_i", "wc_base_e"),
+                MoldingKind::Base,
+                &mut c.base,
+            )
         });
         row(ui, "Crown Molding", |ui| {
-            molding_combo(ui, pick("wc_crown_i", "wc_crown_e"), MoldingKind::Crown, &mut c.crown)
+            molding_combo(
+                ui,
+                pick("wc_crown_i", "wc_crown_e"),
+                MoldingKind::Crown,
+                &mut c.crown,
+            )
         });
         if !(c.chair_rail.is_empty() && c.base.is_empty() && c.crown.is_empty()) {
             row(ui, "Molding Material", |ui| {
@@ -427,7 +448,10 @@ impl WallForm {
                         egui::vec2(18.0, 18.0),
                     );
                 }
-                let cur = paint.as_ref().map(|p| p.material.clone()).unwrap_or_default();
+                let cur = paint
+                    .as_ref()
+                    .map(|p| p.material.clone())
+                    .unwrap_or_default();
                 if let Some(pick) = material_pick(
                     ui,
                     &format!("wall_mat_{i}"),
@@ -460,7 +484,13 @@ impl WallForm {
         egui::Grid::new("wall_components")
             .striped(true)
             .show(ui, |ui| {
-                for h in ["Component", "Material", "Thickness", "Area (sq ft)", "Volume (cu ft)"] {
+                for h in [
+                    "Component",
+                    "Material",
+                    "Thickness",
+                    "Area (sq ft)",
+                    "Volume (cu ft)",
+                ] {
                     ui.strong(h);
                 }
                 ui.end_row();
@@ -533,11 +563,10 @@ impl WallForm {
     /// row reads.
     pub(super) fn schedule_tab(&mut self, ui: &mut Ui) {
         section(ui, "Wall Schedule");
-        ui.checkbox(
-            &mut self.draft.spec.schedule.include,
-            "Include in Schedule",
-        )
-        .on_hover_text("A cleared box leaves the wall out of the Wall schedule and its numbering");
+        ui.checkbox(&mut self.draft.spec.schedule.include, "Include in Schedule")
+            .on_hover_text(
+                "A cleared box leaves the wall out of the Wall schedule and its numbering",
+            );
         let w = &self.draft;
         let net = (w.path_length() * w.covering_height()
             - plan_core::walls::openings_area(w, &self.openings))
@@ -561,7 +590,11 @@ impl WallForm {
 
     /// The Drawing Group row of the Layer tab.
     pub(super) fn drawing_group_row(&mut self, ui: &mut Ui) {
-        let cur = self.draft.spec.drawing_group.unwrap_or(DEFAULT_DRAWING_GROUP);
+        let cur = self
+            .draft
+            .spec
+            .drawing_group
+            .unwrap_or(DEFAULT_DRAWING_GROUP);
         row(ui, "Drawing Group", |ui| {
             let default = self.draft.spec.drawing_group.is_none();
             let text = if default {

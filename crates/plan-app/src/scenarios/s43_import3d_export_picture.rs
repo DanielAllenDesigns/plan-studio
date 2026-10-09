@@ -216,7 +216,10 @@ fn an_stl_in_millimeters_is_imported_and_placed() {
     // In the User Catalog with the model and a plan symbol.
     let id = active_item().expect("the new symbol is the Library tool's item");
     let item = store::item(&id).expect("in the user catalog");
-    assert_eq!((item.name.as_str(), item.kind), ("Tall Cabinet", ItemKind::Model));
+    assert_eq!(
+        (item.name.as_str(), item.kind),
+        ("Tall Cabinet", ItemKind::Model)
+    );
     assert!((item.width - 23.62).abs() < 0.01 && (item.depth - 23.62).abs() < 0.01);
     assert!((item.height - 78.74).abs() < 0.01);
     assert!(!item.symbol.is_empty());
@@ -261,14 +264,19 @@ fn facing_size_and_units_reshape_the_symbol() {
     // Facing right swaps width and depth.
     crate::dialogs::symbol::with_import(|s| s.set_facing(Facing::Right));
     let n = crate::dialogs::symbol::with_import(|s| s.natural_size().unwrap()).unwrap();
-    assert!((n[0] - 10.0).abs() < 1e-3 && (n[1] - 30.0).abs() < 1e-3, "{n:?}");
+    assert!(
+        (n[0] - 10.0).abs() < 1e-3 && (n[1] - 30.0).abs() < 1e-3,
+        "{n:?}"
+    );
     // Resize proportionally from the height: 40 in high is 2x.
     crate::dialogs::symbol::with_import(|s| {
         s.set_facing(Facing::Front);
         s.resize = true;
         s.set_side(crate::dialogs::symbol::Side::Height, 40.0);
     });
-    let shaped = crate::dialogs::symbol::with_import(|s| s.shaped().and_then(|m| m.extent())).unwrap().unwrap();
+    let shaped = crate::dialogs::symbol::with_import(|s| s.shaped().and_then(|m| m.extent()))
+        .unwrap()
+        .unwrap();
     assert!((shaped[0] - 60.0).abs() < 0.01 && (shaped[1] - 40.0).abs() < 0.01);
     crate::dialogs::symbol::with_import(|s| {
         s.name = "Bench".into();
@@ -325,9 +333,17 @@ fn a_collada_file_brings_its_own_units_axis_and_transform() {
         )
     })
     .unwrap();
-    assert_eq!((unit.as_str(), up, from_file), ("Centimeters", UpAxis::Z, true));
+    assert_eq!(
+        (unit.as_str(), up, from_file),
+        ("Centimeters", UpAxis::Z, true)
+    );
     let n = crate::dialogs::symbol::with_import(|s| s.natural_size().unwrap()).unwrap();
-    assert!((n[0] - 19.685).abs() < 0.01 && (n[1] - 15.748).abs() < 0.01 && (n[2] - 35.433).abs() < 0.01, "{n:?}");
+    assert!(
+        (n[0] - 19.685).abs() < 0.01
+            && (n[1] - 15.748).abs() < 0.01
+            && (n[2] - 35.433).abs() < 0.01,
+        "{n:?}"
+    );
     assert!(crate::dialogs::symbol::accept_import(sim.cx()));
     let item = store::item(&active_item().unwrap()).unwrap();
     assert!((item.height - 35.433).abs() < 0.01);
@@ -343,7 +359,9 @@ fn sketchup_files_say_how_to_export() {
     std::fs::write(&path, b"SketchUp Model\x00\x01").unwrap();
     crate::dialogs::symbol::open_path(sim.cx(), &path);
     assert!(
-        sim.cx().status.starts_with("Export from SketchUp as COLLADA (.dae) or OBJ"),
+        sim.cx()
+            .status
+            .starts_with("Export from SketchUp as COLLADA (.dae) or OBJ"),
         "{}",
         sim.cx().status
     );
@@ -430,7 +448,11 @@ fn export_picture_covers_elevations_and_refuses_an_empty_view() {
     // Nothing drawn: the plan has nothing to export.
     sim.action(crate::toolbar::Action::Custom(ep::EXPORT_PICTURE));
     assert!(!ep::accept(sim.cx()));
-    assert!(sim.cx().status.contains("nothing to draw"), "{}", sim.cx().status);
+    assert!(
+        sim.cx().status.contains("nothing to draw"),
+        "{}",
+        sim.cx().status
+    );
     assert!(ep::is_open(), "the window stays for another try");
     ep::close();
 

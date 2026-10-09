@@ -236,6 +236,24 @@ impl EditorContext {
         v.extend(roof_view::wall_edit_actions(self));
         // Fireplace Specification, deck framing and steps at level changes.
         v.extend(super::fireplace_view::edit_actions(self));
+        // Polyline Boolean, Trim/Extend to Boundary, Insert Point, Multiple Copy.
+        v.extend(crate::tools::cad_ops::edit_actions(self));
+        // Callout links, Note Schedules, Convert Text to Note, hyperlinks.
+        v.extend(crate::tools::text::edit_actions(self));
+        // Selected 3D solids become a User Catalog symbol.
+        if crate::tools::library::convert::can_convert(self) {
+            let label = "Convert to Symbol";
+            v.push(EditAction {
+                kind: EditActionKind::Custom {
+                    id: crate::tools::library::convert::CONVERT_TO_SYMBOL,
+                    label,
+                    icon: "",
+                },
+                label,
+                icon: None,
+                enabled: true,
+            });
+        }
         let Some(one) = self.selection.single() else {
             return v;
         };
@@ -305,9 +323,18 @@ impl EditorContext {
 
     /// Runs a [`EditActionKind::Custom`] command on the selection.
     pub fn run_custom(&mut self, id: &str) {
+        // One command is one undo step, whatever families it touches.
+        self.undo_group(|cx| cx.run_custom_ungrouped(id));
+    }
+
+    fn run_custom_ungrouped(&mut self, id: &str) {
         // Clipboard, selection, transform and the other `edit.*` commands.
         if id.starts_with("edit.") {
             self.run_edit_command(id);
+            return;
+        }
+        // Tools > Materials List and the Calculate Materials buttons.
+        if crate::dialogs::materials_list::run_command(self, id) {
             return;
         }
         if let Some(c) = stair_command(id) {
@@ -315,6 +342,11 @@ impl EditorContext {
             return;
         }
         if super::wall_edit::run_command(self, id) {
+            return;
+        }
+        // Polyline Union/Subtract/Intersect, Trim/Extend to Boundary, Insert
+        // Point, Multiple Copy, Drawing Group, outer-face Plan Footprint.
+        if crate::tools::cad_ops::run_command(self, id) {
             return;
         }
         // Match Properties and Object Painter Modes.
@@ -325,6 +357,9 @@ impl EditorContext {
         }
         // Fireplace Specification, Build Deck Framing, Add Steps (CB-86, CB-87, R-86).
         if super::fireplace_view::run_command(self, id) {
+            return;
+        }
+        if crate::tools::text::run_command(self, id) {
             return;
         }
         if super::opening_edit::run_command(self, id) {
@@ -436,33 +471,11 @@ impl EditorContext {
         }
     }
 
-    /// Replace From Library (CB-57): the symbol takes the catalog item
-    /// picked in the Library Browser.
+    /// Replace From Library (CB-57): every selected symbol takes the catalog
+    /// item picked in the Library Browser, in one undo step (cabinets and
+    /// devices one at a time; see `tools::library::convert`).
     fn replace_symbol_from_library(&mut self) {
-        // Cabinets and electrical devices swap from the User Catalog too.
-        if let Some(sel @ (ObjectRef::Cabinet(_) | ObjectRef::Device(_))) = self.selection.single()
-        {
-            crate::tools::library::user::replace_other(self, sel);
-            return;
-        }
-        let Some(ObjectRef::Symbol(id)) = self.selection.single() else {
-            return;
-        };
-        let Some(item) = crate::tools::library::active_item() else {
-            self.status =
-                "Pick an item in the Library Browser, then choose Replace From Library".into();
-            return;
-        };
-        let Some(mut sym) = self.floor().symbol(id).cloned() else {
-            return;
-        };
-        if sym.catalog_id == item {
-            self.status = "The symbol already is that library item".into();
-            return;
-        }
-        sym.catalog_id = item;
-        placed::apply_symbol(self, &sym);
-        self.status = "Replaced the symbol from the library".into();
+        crate::tools::library::convert::replace_selected(self);
     }
 
     fn edit_selected_device(

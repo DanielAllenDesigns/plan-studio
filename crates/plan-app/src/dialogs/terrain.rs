@@ -1,21 +1,29 @@
-//! Terrain Specification (Terrain > Terrain Specification; CB-51) and its two
-//! single-purpose forms, the Terrain Cut and Fill Report and Import Terrain Data.
+//! Terrain Specification (Terrain > Terrain Specification; CB-51) and its
+//! single-purpose forms: the Terrain Cut and Fill Report, the Import Terrain
+//! Assistant, the Import GPS Data Assistant and Grow Plants.
 //!
-//! Specification pages: General (subfloor height above the terrain, building
-//! pad elevation, level the terrain under the building, contour interval,
-//! grid spacing and subdivision, smoothing, north angle, auto-rebuild),
-//! Contours (interval, major-every, label spacing, and the line style of the
-//! primary and secondary contours: color, weight, dashed, labels), Building
-//! Pad (the pad's margin and slope, with the cut/fill table), Materials
-//! (ground and bare-ground materials), Layer. The dialog edits a
-//! [`TerrainRecord`] draft that the tool stores on OK.
+//! Specification pages: General (Absolute Elevation: Automatic or retain the
+//! surface at the Reference Point or at Contour 0, with the distance, the
+//! Floor 1 subfloor elevation and the reference point; building pad
+//! elevation, Flatten Pad, Hide Terrain Intersected by Building, the Skirt,
+//! Terrain Surface Smoothing, Triangle Count with its readout, contour
+//! interval, grid spacing, north angle, season, auto-rebuild), Contours
+//! (interval, offset, major-every, label spacing and units, highlight
+//! negative elevations, 2D smoothing, and the line style of the primary and
+//! secondary contours: color, weight, dashed, labels), Polyline (the
+//! perimeter's length, area and lines), Building Pad (the pad's margin and
+//! slope, with the cut/fill table), Materials (ground, bare-ground and skirt
+//! materials), Label, Object Information, Schedule (the perimeter's own),
+//! Layer. The dialog edits a [`TerrainRecord`] draft that the tool stores on
+//! OK.
 //!
 //! The Cut and Fill Report lists every graded pad in cubic yards, with the
 //! totals and the soil to haul away or bring in, and copies itself as CSV. It
-//! only reports: OK and Cancel store nothing. Import Terrain Data reads
-//! survey points from DXF, GPX or XYZ text (a file or pasted text,
-//! `plan_terrain::import_points`) into the elevation data of the draft; OK
-//! stores them as one undo step. [`ObjectDialog`] is the specification of one
+//! only reports: OK and Cancel store nothing. The Import Terrain Assistant
+//! (Select File, Filter Data, Scale Data) and the Import GPS Data Assistant
+//! (Select File, Import As, Transform Coordinates) read survey points from
+//! DXF, GPX or column text (`plan_terrain::import_assistant`); OK stores
+//! them as one undo step. [`ObjectDialog`] is the specification of one
 //! terrain object (wall, bed, plant run, ...).
 
 use super::{
@@ -26,22 +34,29 @@ use crate::editor::site_view::TerrainRecord;
 use eframe::egui::{self, Align2, Color32, Painter, Pos2, Rect, Stroke, Ui};
 use plan_core::Point;
 use plan_terrain::{
-    cut_fill_report, import_points, ContourStyle, CutFillReport, ImportUnit, ImportedPoints,
-    PRIMARY_CONTOUR_WEIGHT, SECONDARY_CONTOUR_WEIGHT,
+    cut_fill_report, AbsoluteElevation, ContourStyle, CutFillReport, GpsResult, LabelUnits,
+    ObjectKey, Season, SkirtMode, SmoothingLevel, TriangleDetail, PRIMARY_CONTOUR_WEIGHT,
+    SECONDARY_CONTOUR_WEIGHT,
 };
 
+mod assistants;
 mod object;
+mod panels;
 pub use object::ObjectDialog;
 
 const TABS: &[Tab] = &[
     on("General"),
     on("Contours"),
+    on("Polyline"),
+    on("Line Style"),
     on("Building Pad"),
     on("Materials"),
+    on("Label"),
+    on("Object Information"),
+    on("Schedule"),
     on("Layer"),
 ];
 const REPORT_TABS: &[Tab] = &[on("Cut and Fill")];
-const IMPORT_TABS: &[Tab] = &[on("Import")];
 const MAX_SUBDIVISION: u32 = 8;
 const MAX_MAJOR_EVERY: u32 = 50;
 /// Smallest contour interval and grid spacing the build accepts, inches.
@@ -55,10 +70,12 @@ pub const DIRT_MATERIALS: [&str; 4] = ["Dirt", "Gravel", "Mulch", "Stone"];
 
 /// Which form the dialog is.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Mode {
+pub enum Mode {
     Specification,
     CutFill,
     Import,
+    ImportGps,
+    Grow,
 }
 
 pub struct TerrainDialog {
@@ -72,21 +89,13 @@ struct Form {
     fields: Fields,
     /// Cut and fill of the pads as the record was opened.
     report: CutFillReport,
-    import: ImportState,
+    import: assistants::ImportState,
+    gps: assistants::GpsState,
+    grow: assistants::GrowState,
     /// Elevation points the record had when the dialog opened.
     opened_points: usize,
-}
-
-/// The Import Terrain Data form.
-struct ImportState {
-    text: String,
-    unit: ImportUnit,
-    /// Center the points on the terrain perimeter.
-    center: bool,
-    /// Lower the points so the lowest is at elevation 0.
-    zero_lowest: bool,
-    /// What the last Add did: a summary, or why it failed.
-    message: Option<Result<String, String>>,
+    /// Plants of the record when it opened (Grow Plants stores only if they changed).
+    opened_landscape: Vec<plan_terrain::Landscape>,
 }
 
 impl TerrainDialog {
@@ -99,13 +108,10 @@ impl TerrainDialog {
                 fields: Fields::default(),
                 report: cut_fill_report(&record.terrain),
                 opened_points: record.terrain.elevation_points.len(),
-                import: ImportState {
-                    text: String::new(),
-                    unit: ImportUnit::Auto,
-                    center: record.has_perimeter(),
-                    zero_lowest: false,
-                    message: None,
-                },
+                import: assistants::ImportState::new(record.has_perimeter()),
+                gps: assistants::GpsState::new(),
+                grow: assistants::GrowState::new(record),
+                opened_landscape: record.terrain.landscape.clone(),
             },
         }
     }
@@ -129,14 +135,39 @@ impl TerrainDialog {
         )
     }
 
-    /// Import Terrain Data.
+    /// The Import Terrain Assistant (File > Import > Terrain Data).
     pub fn import(record: &TerrainRecord) -> Self {
         Self::build(
             record,
             Mode::Import,
-            "Import Terrain Data",
+            "Import Terrain Assistant",
             "terrain_import",
         )
+    }
+
+    /// The Import GPS Data Assistant (File > Import > GPS Data).
+    pub fn import_gps(record: &TerrainRecord) -> Self {
+        Self::build(
+            record,
+            Mode::ImportGps,
+            "Import GPS Data Assistant",
+            "terrain_import_gps",
+        )
+    }
+
+    /// Terrain > Plant > Grow All Plants.
+    pub fn grow(record: &TerrainRecord) -> Self {
+        Self::build(record, Mode::Grow, "Grow Plants", "terrain_grow")
+    }
+
+    /// Which form this is.
+    pub fn mode(&self) -> Mode {
+        self.form.mode
+    }
+
+    /// What the GPS assistant made (markers and polylines go on the plan).
+    pub fn gps_result(&self) -> Option<&GpsResult> {
+        self.form.gps.result.as_ref()
     }
 
     pub fn show(&mut self, ctx: &egui::Context) -> Outcome {
@@ -156,6 +187,8 @@ impl TerrainDialog {
             Mode::Import => {
                 self.form.draft.terrain.elevation_points.len() > self.form.opened_points
             }
+            Mode::ImportGps => self.form.gps.result.is_some(),
+            Mode::Grow => self.form.draft.terrain.landscape != self.form.opened_landscape,
         }
     }
 
@@ -177,10 +210,37 @@ impl TerrainDialog {
     }
 
     #[cfg(test)]
+    /// Test hook: the Import Terrain Assistant's state.
+    fn import_mut(&mut self) -> &mut assistants::ImportState {
+        &mut self.form.import
+    }
+
+    #[cfg(test)]
     /// Test hook: presses "Add to terrain" and returns the message.
     pub fn press_add(&mut self) -> Option<Result<String, String>> {
-        self.form.add_import();
+        self.form.import.add(&mut self.form.draft);
         self.form.import.message.clone()
+    }
+
+    #[cfg(test)]
+    /// Test hook: types GPX text into the GPS form.
+    pub fn set_gps_text(&mut self, text: &str) {
+        self.form.gps.text = text.into();
+    }
+
+    #[cfg(test)]
+    /// Test hook: presses the GPS assistant's Import button.
+    pub fn press_gps_import(&mut self) -> Option<Result<String, String>> {
+        self.form.gps.run(&mut self.form.draft);
+        self.form.gps.message.clone()
+    }
+
+    #[cfg(test)]
+    /// Test hook: moves the Grow Plants slider.
+    pub fn set_grow_years(&mut self, years: f64) {
+        self.form.grow.years = years;
+        self.form.grow.changed =
+            plan_terrain::grow_plants(&mut self.form.draft.terrain.landscape, years);
     }
 
     #[cfg(test)]
@@ -239,6 +299,8 @@ fn contour_style_rows(
     }
 }
 
+/// The plan's default color of the terrain perimeter (matches `site_view`).
+const PERIMETER_COLOR: [u8; 3] = [0x4F, 0x7F, 0x3A];
 /// The plan's default colors of the two contour families (match `site_view`).
 const PRIMARY_COLOR: [u8; 3] = [0x7A, 0x55, 0x2B];
 const SECONDARY_COLOR: [u8; 3] = [0xA8, 0x8B, 0x63];
@@ -261,12 +323,89 @@ fn material_combo(ui: &mut Ui, salt: &str, value: &mut String, options: &[&str])
 impl Form {
     fn general(&mut self, ui: &mut Ui) {
         section(ui, "General");
-        self.fields.length_row(
-            ui,
-            "Terrain to first floor",
-            "subfloor",
-            &mut self.draft.terrain.subfloor_height_above_terrain,
-        );
+        let auto = self.draft.terrain.absolute_elevation == AbsoluteElevation::Automatic;
+        let mut automatic = auto;
+        if ui
+            .checkbox(&mut automatic, "Absolute elevation: automatic")
+            .changed()
+        {
+            self.draft.terrain.absolute_elevation = if automatic {
+                AbsoluteElevation::Automatic
+            } else {
+                AbsoluteElevation::ReferencePoint
+            };
+        }
+        if automatic {
+            self.fields.length_row(
+                ui,
+                "Terrain to first floor",
+                "subfloor",
+                &mut self.draft.terrain.subfloor_height_above_terrain,
+            );
+            ui.weak(
+                "The distance between Floor 1 and the terrain is set for you (6\"); \
+                 type another to override it.",
+            );
+        } else {
+            row(ui, "Retain surface elevation at", |ui| {
+                ui.radio_value(
+                    &mut self.draft.terrain.absolute_elevation,
+                    AbsoluteElevation::ReferencePoint,
+                    "Reference Point",
+                );
+                ui.radio_value(
+                    &mut self.draft.terrain.absolute_elevation,
+                    AbsoluteElevation::ContourZero,
+                    "Contour 0",
+                );
+            });
+            let at_reference =
+                self.draft.terrain.absolute_elevation == AbsoluteElevation::ReferencePoint;
+            self.fields.length_row(
+                ui,
+                if at_reference {
+                    "Surface at Reference Point"
+                } else {
+                    "Surface at Contour 0"
+                },
+                "surface_offset",
+                &mut self.draft.terrain.surface_offset,
+            );
+            ui.weak("The vertical distance from the Floor 1 subfloor to the surface (normally negative).");
+            self.fields.length_row(
+                ui,
+                "Floor 1 subfloor elevation",
+                "floor_one",
+                &mut self.draft.terrain.floor_one_elevation,
+            );
+            if at_reference {
+                let mut rp = self.draft.terrain.effective_reference_point();
+                if let Some(p) = rp.as_mut() {
+                    let (mut x, mut y) = (p.x, p.y);
+                    let cx = self.fields.length_row(ui, "Reference Point X", "ref_x", &mut x);
+                    let cy = self.fields.length_row(ui, "Reference Point Y", "ref_y", &mut y);
+                    if cx || cy {
+                        self.draft.terrain.reference_point = Some(Point::new(x, y));
+                    }
+                }
+                ui.horizontal(|ui| {
+                    if ui.button("Place at the middle of the perimeter").clicked() {
+                        self.draft.terrain.reference_point = None;
+                        self.draft.terrain.reference_point =
+                            self.draft.terrain.effective_reference_point();
+                    }
+                    if ui
+                        .add_enabled(
+                            self.draft.terrain.reference_point.is_some(),
+                            egui::Button::new("Remove"),
+                        )
+                        .clicked()
+                    {
+                        self.draft.terrain.reference_point = None;
+                    }
+                });
+            }
+        }
         self.fields.length_row(
             ui,
             "Building pad elevation",
@@ -275,30 +414,104 @@ impl Form {
         );
         ui.checkbox(
             &mut self.draft.terrain.flatten_pad,
-            "Level the terrain under the building automatically",
+            "Flatten pad: level the terrain under the building",
         );
+        ui.checkbox(
+            &mut self.draft.terrain.hide_under_building,
+            "Hide terrain intersected by building",
+        );
+        ui.add_space(4.0);
+        section(ui, "Skirt");
+        ui.checkbox(&mut self.draft.terrain.skirt.enabled, "Skirt around the terrain edge");
+        if self.draft.terrain.skirt.enabled {
+            self.fields.length_row(
+                ui,
+                "Thickness",
+                "skirt_t",
+                &mut self.draft.terrain.skirt.thickness,
+            );
+            row(ui, "Bottom", |ui| {
+                for m in [SkirtMode::FlatBase, SkirtMode::FollowTerrain] {
+                    ui.radio_value(&mut self.draft.terrain.skirt.mode, m, m.name());
+                }
+            });
+        }
+        ui.add_space(4.0);
+        section(ui, "Surface");
+        row(ui, "Terrain surface smoothing", |ui| {
+            egui::ComboBox::from_id_salt("terrain_smoothing")
+                .selected_text(self.draft.terrain.smoothing_level.name())
+                .show_ui(ui, |ui| {
+                    for l in SmoothingLevel::ALL {
+                        ui.selectable_value(&mut self.draft.terrain.smoothing_level, l, l.name());
+                    }
+                })
+        });
+        if self.draft.terrain.smoothing_level == SmoothingLevel::Passes {
+            row(ui, "Smoothing passes", |ui| {
+                ui.add(
+                    egui::DragValue::new(&mut self.draft.terrain.smoothing)
+                        .range(0..=MAX_SMOOTHING),
+                )
+            });
+        }
+        row(ui, "Triangle count", |ui| {
+            egui::ComboBox::from_id_salt("terrain_triangles")
+                .selected_text(self.draft.terrain.triangle_detail.name())
+                .show_ui(ui, |ui| {
+                    for d in TriangleDetail::ALL {
+                        ui.selectable_value(&mut self.draft.terrain.triangle_detail, d, d.name());
+                    }
+                })
+        });
+        match self.draft.terrain.triangle_detail {
+            TriangleDetail::Grid => {
+                self.fields.length_row(
+                    ui,
+                    "Grid spacing",
+                    "grid",
+                    &mut self.draft.terrain.grid_spacing,
+                );
+                row(ui, "Subdivision", |ui| {
+                    ui.add(
+                        egui::DragValue::new(&mut self.draft.terrain.subdivision)
+                            .range(1..=MAX_SUBDIVISION)
+                            .suffix(" x"),
+                    )
+                });
+                self.fields.length_row(
+                    ui,
+                    "Maximum triangle size",
+                    "max_tri",
+                    &mut self.draft.terrain.max_triangle_size,
+                );
+                ui.weak("0 uses the grid spacing.");
+            }
+            TriangleDetail::Custom => {
+                row(ui, "Number of triangles", |ui| {
+                    ui.add(
+                        egui::DragValue::new(&mut self.draft.terrain.custom_triangles)
+                            .range(50..=60_000),
+                    )
+                });
+            }
+            _ => {}
+        }
+        let built = self
+            .draft
+            .terrain
+            .last_build
+            .map_or("not built yet".to_string(), |b| format!("{} in the last build", b.triangles));
+        ui.weak(format!(
+            "About {} triangles ({built}). Low 1000, Medium 2000 and High 4000 suit about 20,000 sq ft.",
+            self.draft.terrain.estimated_triangles()
+        ));
         self.fields.length_row(
             ui,
             "Contour interval",
             "interval_general",
             &mut self.draft.contour_interval,
         );
-        self.fields.length_row(
-            ui,
-            "Grid spacing",
-            "grid",
-            &mut self.draft.terrain.grid_spacing,
-        );
-        row(ui, "Subdivision", |ui| {
-            ui.add(
-                egui::DragValue::new(&mut self.draft.terrain.subdivision)
-                    .range(1..=MAX_SUBDIVISION)
-                    .suffix(" x"),
-            )
-        });
-        row(ui, "Smoothing passes", |ui| {
-            ui.add(egui::DragValue::new(&mut self.draft.terrain.smoothing).range(0..=MAX_SMOOTHING))
-        });
         self.fields.degrees_row(
             ui,
             "North angle",
@@ -306,6 +519,15 @@ impl Form {
             &mut self.draft.terrain.north_angle,
         );
         ui.weak("Degrees clockwise from the top of the plan to true north (North Pointer).");
+        row(ui, "Season", |ui| {
+            egui::ComboBox::from_id_salt("terrain_season")
+                .selected_text(self.draft.terrain.season.name())
+                .show_ui(ui, |ui| {
+                    for s in Season::ALL {
+                        ui.selectable_value(&mut self.draft.terrain.season, s, s.name());
+                    }
+                })
+        });
         ui.add_space(4.0);
         ui.checkbox(
             &mut self.draft.auto_rebuild,
@@ -329,6 +551,20 @@ impl Form {
             "interval",
             &mut self.draft.contour_interval,
         );
+        self.fields.length_row(
+            ui,
+            "Offset",
+            "contour_offset",
+            &mut self.draft.terrain.contour_offset,
+        );
+        ui.weak("Shifts which elevation gets a contour: lines fall at the offset plus whole intervals.");
+        ui.weak(format!(
+            "Secondary contours every {}, primary contours every {}.",
+            fmt_short(self.draft.contour_interval),
+            fmt_short(
+                self.draft.contour_interval * f64::from(self.draft.terrain.contour_major_every)
+            )
+        ));
         row(ui, "Major contour every", |ui| {
             ui.add(
                 egui::DragValue::new(&mut self.draft.terrain.contour_major_every)
@@ -336,6 +572,18 @@ impl Form {
                     .suffix(" contours"),
             )
         });
+        ui.checkbox(
+            &mut self.draft.terrain.contour_smoothing,
+            "Smooth the contour lines",
+        );
+        if self.draft.terrain.contour_smoothing {
+            row(ui, "Smoothing passes", |ui| {
+                ui.add(
+                    egui::DragValue::new(&mut self.draft.terrain.contour_smooth_passes)
+                        .range(1..=6),
+                )
+            });
+        }
         self.fields.length_row(
             ui,
             "Label spacing",
@@ -343,6 +591,19 @@ impl Form {
             &mut self.draft.terrain.contour_label_spacing,
         );
         ui.weak("Elevation text along each labeled contour; 0 puts one label on each line.");
+        row(ui, "Label units", |ui| {
+            egui::ComboBox::from_id_salt("contour_label_units")
+                .selected_text(self.draft.terrain.contour_label_units.name())
+                .show_ui(ui, |ui| {
+                    for u in LabelUnits::ALL {
+                        ui.selectable_value(&mut self.draft.terrain.contour_label_units, u, u.name());
+                    }
+                })
+        });
+        ui.checkbox(
+            &mut self.draft.terrain.highlight_negative,
+            "Highlight negative elevations (labels below 0 in red)",
+        );
         ui.add_space(6.0);
         section(ui, "Primary lines (the major contours)");
         contour_style_rows(
@@ -351,10 +612,11 @@ impl Form {
             PRIMARY_COLOR,
             PRIMARY_CONTOUR_WEIGHT,
         );
-        ui.add_enabled(
-            false,
-            egui::Checkbox::new(&mut true, "Labeled with their elevation"),
+        ui.checkbox(
+            &mut self.draft.terrain.label_primary,
+            "Label primary contours with their elevation",
         );
+        ui.weak("Drawn on the \"Terrain, Primary Contours\" layer.");
         ui.add_space(6.0);
         section(ui, "Secondary lines (between the majors)");
         contour_style_rows(
@@ -365,11 +627,77 @@ impl Form {
         );
         let mut labeled = !self.draft.terrain.contour_label_major_only;
         if ui
-            .checkbox(&mut labeled, "Labeled with their elevation")
+            .checkbox(&mut labeled, "Label secondary contours with their elevation")
             .changed()
         {
             self.draft.terrain.contour_label_major_only = !labeled;
         }
+        ui.weak("Drawn on the \"Terrain, Secondary Contours\" layer.");
+    }
+
+    /// Polyline panel of the perimeter: length, area and lines.
+    fn polyline(&mut self, ui: &mut Ui) {
+        section(ui, "Polyline");
+        let pts = &self.draft.terrain.perimeter;
+        if pts.len() < 3 {
+            ui.weak("Draw the Terrain Perimeter first.");
+            return;
+        }
+        let length: f64 = (0..pts.len()).map(|i| pts[i].dist(pts[(i + 1) % pts.len()])).sum();
+        row(ui, "Perimeter", |ui| ui.label(fmt_short(length)));
+        row(ui, "Area", |ui| {
+            ui.label(format!(
+                "{:.0} sq ft",
+                plan_core::geometry::polygon_area(pts).abs() / 144.0
+            ))
+        });
+        row(ui, "Number of Lines", |ui| ui.label(pts.len().to_string()));
+        let holes: f64 = self
+            .draft
+            .terrain
+            .features
+            .iter()
+            .filter(|f| f.kind == plan_terrain::FeatureKind::Hole)
+            .map(|f| plan_core::geometry::polygon_area(&f.polygon).abs() / 144.0)
+            .sum();
+        if holes > 0.0 {
+            ui.weak(format!("Terrain holes take {holes:.0} sq ft out of the area."));
+        }
+    }
+
+    /// Line Style page of the perimeter: its own color, weight and dashes.
+    fn line_style(&mut self, ui: &mut Ui) {
+        section(ui, "Line Style");
+        let st = &mut self.draft.terrain.perimeter_extras.style;
+        color_row(ui, &mut st.line_color, PERIMETER_COLOR);
+        row(ui, "Line weight", |ui| {
+            ui.add(
+                egui::DragValue::new(&mut st.line_weight)
+                    .range(0.0..=8.0)
+                    .speed(0.05)
+                    .suffix(" pt"),
+            )
+        });
+        ui.weak("0 takes the perimeter's own weight (1.5 pt).");
+        ui.checkbox(&mut st.dashed, "Dashed");
+    }
+
+    fn label(&mut self, ui: &mut Ui) {
+        let auto = plan_terrain::auto_label(&self.draft.terrain, ObjectKey::Perimeter);
+        let t = &mut self.draft.terrain;
+        panels::label_panel(ui, &mut self.fields, &mut t.perimeter_extras, &auto);
+    }
+
+    fn info(&mut self, ui: &mut Ui) {
+        panels::info_panel(ui, &mut self.draft.terrain.perimeter_extras);
+    }
+
+    fn schedule(&mut self, ui: &mut Ui) {
+        panels::schedule_panel(
+            ui,
+            &mut self.draft.terrain.perimeter_extras,
+            Some(plan_terrain::ScheduleCategory::TerrainPerimeter),
+        );
     }
 
     fn building_pad(&mut self, ui: &mut Ui) {
@@ -444,9 +772,18 @@ impl Form {
                 &DIRT_MATERIALS,
             )
         });
+        row(ui, "Skirt", |ui| {
+            material_combo(
+                ui,
+                "terrain_skirt",
+                &mut self.draft.terrain.skirt.material,
+                &DIRT_MATERIALS,
+            )
+        });
         ui.weak(
             "The ground material colors the terrain surface in 3D; the bare ground shows on \
-             the cut slopes of graded pads.",
+             the cut slopes of graded pads; the skirt hangs from the terrain edge. These \
+             materials are not counted in the Materials List.",
         );
     }
 
@@ -468,111 +805,6 @@ impl Form {
             ui.ctx().copy_text(self.report.to_csv());
         }
     }
-
-    fn import_page(&mut self, ui: &mut Ui) {
-        section(ui, "Import Terrain Data");
-        ui.weak("Survey points from a DXF drawing, a GPX file or XYZ text (x y z per line).");
-        ui.add_space(4.0);
-        if ui.button("Choose File\u{2026}").clicked() {
-            self.choose_file();
-        }
-        ui.label("Or paste the text here:");
-        ui.add(
-            egui::TextEdit::multiline(&mut self.import.text)
-                .desired_rows(8)
-                .desired_width(f32::INFINITY)
-                .font(egui::TextStyle::Monospace),
-        );
-        row(ui, "Coordinates in", |ui| {
-            egui::ComboBox::from_id_salt("import_unit")
-                .selected_text(self.import.unit.name())
-                .show_ui(ui, |ui| {
-                    for u in ImportUnit::ALL {
-                        ui.selectable_value(&mut self.import.unit, u, u.name());
-                    }
-                })
-        });
-        ui.add_enabled(
-            self.draft.has_perimeter(),
-            egui::Checkbox::new(
-                &mut self.import.center,
-                "Center the points on the terrain perimeter",
-            ),
-        );
-        ui.checkbox(
-            &mut self.import.zero_lowest,
-            "Make the lowest point elevation 0",
-        );
-        ui.add_space(4.0);
-        if ui
-            .add_enabled(
-                !self.import.text.trim().is_empty(),
-                egui::Button::new("Add to terrain"),
-            )
-            .clicked()
-        {
-            self.add_import();
-        }
-        match &self.import.message {
-            Some(Ok(m)) => {
-                ui.label(m);
-            }
-            Some(Err(e)) => {
-                ui.colored_label(Color32::from_rgb(0xB0, 0x30, 0x30), e);
-            }
-            None => {}
-        }
-        ui.weak(format!(
-            "{} elevation points in the terrain",
-            self.draft.terrain.elevation_points.len()
-        ));
-    }
-
-    /// Reads a file into the text box.
-    fn choose_file(&mut self) {
-        let Some(path) = rfd::FileDialog::new()
-            .add_filter("Survey points", &["dxf", "gpx", "txt", "csv", "xyz", "pts"])
-            .pick_file()
-        else {
-            return;
-        };
-        match std::fs::read_to_string(&path) {
-            Ok(text) => {
-                self.import.text = text;
-                self.import.message = None;
-            }
-            Err(e) => {
-                self.import.message = Some(Err(format!("Could not read {}: {e}", path.display())));
-            }
-        }
-    }
-
-    /// Parses the text and adds its points to the draft's elevation data.
-    fn add_import(&mut self) {
-        let result = import_points(&self.import.text, self.import.unit).map(|mut got| {
-            if self.import.center && self.draft.has_perimeter() {
-                got.center_on(perimeter_center(&self.draft.terrain.perimeter));
-            }
-            if self.import.zero_lowest {
-                got.zero_lowest();
-            }
-            got
-        });
-        self.import.message = Some(result.map(|got: ImportedPoints| {
-            let added = self.draft.terrain.add_elevation_points(&got.points);
-            format!("{}; {added} added", got.summary())
-        }));
-    }
-}
-
-/// The middle of the perimeter's bounding box.
-fn perimeter_center(perimeter: &[Point]) -> Point {
-    let (mut lo, mut hi) = (perimeter[0], perimeter[0]);
-    for q in perimeter {
-        lo = Point::new(lo.x.min(q.x), lo.y.min(q.y));
-        hi = Point::new(hi.x.max(q.x), hi.y.max(q.y));
-    }
-    Point::new((lo.x + hi.x) / 2.0, (lo.y + hi.y) / 2.0)
 }
 
 /// The cut and fill table of the pads, with the soil to move.
@@ -621,7 +853,9 @@ impl SpecPages for Form {
         match self.mode {
             Mode::Specification => TABS,
             Mode::CutFill => REPORT_TABS,
-            Mode::Import => IMPORT_TABS,
+            Mode::Import => assistants::IMPORT_TABS,
+            Mode::ImportGps => assistants::GPS_TABS,
+            Mode::Grow => assistants::GROW_TABS,
         }
     }
 
@@ -656,11 +890,24 @@ impl SpecPages for Form {
         match self.tabs()[tab].name {
             "General" => self.general(ui),
             "Contours" => self.contours(ui),
+            "Polyline" => self.polyline(ui),
+            "Line Style" => self.line_style(ui),
             "Building Pad" => self.building_pad(ui),
             "Materials" => self.materials(ui),
+            "Label" => self.label(ui),
+            "Object Information" => self.info(ui),
+            "Schedule" => self.schedule(ui),
             "Layer" => self.layer(ui),
             "Cut and Fill" => self.cut_fill(ui),
-            "Import" => self.import_page(ui),
+            "Select File" if self.mode == Mode::Import => self.import.select_file(ui),
+            "Select File" => self.gps.select_file(ui),
+            "Filter Data" => self.import.filter_data(ui),
+            "Scale Data" => self.import.scale_data(ui, &mut self.fields, &mut self.draft),
+            "Import As" => self.gps.import_as(ui),
+            "Transform Coordinates" => {
+                self.gps.transform(ui, &mut self.fields, &mut self.draft)
+            }
+            "Grow Plants" => self.grow.page(ui, &mut self.draft),
             _ => {}
         }
     }
@@ -813,7 +1060,18 @@ mod tests {
         let spec = TerrainDialog::new(&rec);
         assert_eq!(
             spec.tab_names(),
-            ["General", "Contours", "Building Pad", "Materials", "Layer"]
+            [
+                "General",
+                "Contours",
+                "Polyline",
+                "Line Style",
+                "Building Pad",
+                "Materials",
+                "Label",
+                "Object Information",
+                "Schedule",
+                "Layer"
+            ]
         );
         assert!(spec.stores());
         let report = TerrainDialog::cut_fill(&rec);
@@ -821,12 +1079,24 @@ mod tests {
         assert!(!report.stores(), "the report stores nothing");
         assert_eq!(report.report().items.len(), 1);
         let import = TerrainDialog::import(&rec);
-        assert_eq!(import.tab_names(), ["Import"]);
+        assert_eq!(
+            import.tab_names(),
+            ["Select File", "Filter Data", "Scale Data"]
+        );
         assert!(
             !import.stores(),
             "an import that added nothing stores nothing"
         );
-        for mut d in [spec, report, import] {
+        let gps = TerrainDialog::import_gps(&rec);
+        assert_eq!(
+            gps.tab_names(),
+            ["Select File", "Import As", "Transform Coordinates"]
+        );
+        assert!(!gps.stores());
+        let grow = TerrainDialog::grow(&rec);
+        assert_eq!(grow.tab_names(), ["Grow Plants"]);
+        assert!(!grow.stores());
+        for mut d in [spec, report, import, gps, grow] {
             draw_all_pages(&mut d);
             let ctx = egui::Context::default();
             for _ in 0..2 {
@@ -899,6 +1169,114 @@ mod tests {
         let mut again = stored.clone();
         again.apply_spec(&TerrainRecord::new());
         assert_eq!(again.terrain.elevation_points.len(), 4);
+    }
+
+    #[test]
+    fn the_import_assistant_reads_the_chosen_columns_filters_scales_and_makes_a_perimeter() {
+        let mut rec = TerrainRecord::new();
+        assert!(!rec.has_perimeter());
+        let mut dlg = TerrainDialog::import(&rec);
+        // A survey with a header, point numbers and Y before X, in meters.
+        dlg.set_import_text("ID,N,E,Z\n1,10,20,3\n2,30,40,5\n3,50,60,7\n4,70,80,900\n");
+        {
+            let st = dlg.import_mut();
+            st.layout.order = plan_terrain::ColumnOrder::NYxz;
+            st.layout.skip_lines = 1;
+            st.scale = plan_terrain::ScaleOptions::uniform(plan_terrain::ImportUnit::Meters);
+        }
+        // Draw every page of the assistant with its filter step live.
+        draw_all_pages(&mut dlg);
+        let msg = dlg.press_add().unwrap().unwrap();
+        assert!(msg.contains("4 points read"), "{msg}");
+        assert!(msg.contains("a perimeter was made around the data"), "{msg}");
+        let t = &dlg.draft().terrain;
+        assert_eq!(t.elevation_points.len(), 4);
+        assert!(t.perimeter.len() >= 3);
+        // YXZ: the first column is Y, so the first point is at x = 20 m, y = 10 m.
+        let first = &t.elevation_points[0];
+        assert!((first.pos.x - 20.0 / 0.0254).abs() < 1e-6 && (first.pos.y - 10.0 / 0.0254).abs() < 1e-6);
+        assert!(dlg.stores());
+        // OK stores the new perimeter along with the points.
+        rec.apply_spec(dlg.draft());
+        assert!(rec.has_perimeter());
+        assert_eq!(rec.terrain.elevation_points.len(), 4);
+    }
+
+    #[test]
+    fn the_gps_assistant_adds_way_points_and_a_perimeter_and_keeps_its_markers() {
+        let rec = graded_record();
+        let mut dlg = TerrainDialog::import_gps(&rec);
+        assert!(dlg.press_gps_import().is_none() || dlg.gps_result().is_none());
+        dlg.set_gps_text(
+            r#"<gpx version="1.1"><wpt lat="40.0" lon="-75.0"><ele>100</ele><name>A</name></wpt>
+            <wpt lat="40.0005" lon="-75.0"><ele>102</ele></wpt>
+            <trk><trkseg><trkpt lat="40.0" lon="-75.0"/><trkpt lat="40.0005" lon="-75.0"/>
+            <trkpt lat="40.0005" lon="-74.9995"/></trkseg></trk></gpx>"#,
+        );
+        draw_all_pages(&mut dlg);
+        let msg = dlg.press_gps_import().unwrap().unwrap();
+        assert!(msg.contains("2 elevation points"), "{msg}");
+        let result = dlg.gps_result().expect("a result");
+        assert_eq!(result.perimeter.len(), 3);
+        assert_eq!(dlg.draft().terrain.elevation_points.len(), 2);
+        assert_eq!(dlg.draft().terrain.perimeter.len(), 3);
+        assert!(dlg.stores());
+    }
+
+    #[test]
+    fn grow_plants_scales_the_draft_and_stores_only_when_changed() {
+        let mut rec = graded_record();
+        let mut run = plan_terrain::Landscape::new(
+            plan_terrain::LandscapeKind::Plants,
+            plan_terrain::ShapeKind::Polyline,
+            vec![Point::new(0.0, 0.0), Point::new(200.0, 0.0)],
+        );
+        run.height = 240.0;
+        run.size = 120.0;
+        run.mature_height = 240.0;
+        run.mature_width = 120.0;
+        run.maturity_months = 240.0;
+        rec.terrain.landscape.push(run);
+        let mut dlg = TerrainDialog::grow(&rec);
+        assert!(!dlg.stores());
+        draw_all_pages(&mut dlg);
+        dlg.set_grow_years(0.0);
+        assert!(dlg.stores());
+        assert!(dlg.draft().terrain.landscape[0].height < 240.0);
+        dlg.set_grow_years(20.0);
+        assert_eq!(dlg.draft().terrain.landscape[0].height, 240.0);
+        assert!(!dlg.stores(), "back at its mature size nothing changed");
+    }
+
+    #[test]
+    fn the_general_page_edits_absolute_elevation_skirt_smoothing_and_triangles() {
+        let mut dlg = TerrainDialog::new(&graded_record());
+        {
+            let t = &mut dlg.draft_mut().terrain;
+            t.absolute_elevation = AbsoluteElevation::ReferencePoint;
+            t.reference_point = Some(Point::new(10.0, 20.0));
+            t.surface_offset = -9.0;
+            t.skirt.enabled = true;
+            t.skirt.mode = SkirtMode::FollowTerrain;
+            t.smoothing_level = SmoothingLevel::Medium;
+            t.triangle_detail = TriangleDetail::Custom;
+            t.custom_triangles = 800;
+            t.hide_under_building = true;
+            t.season = Season::Winter;
+            t.contour_label_units = LabelUnits::DecimalFeet;
+            t.perimeter_extras.label.shown = true;
+        }
+        draw_all_pages(&mut dlg);
+        let mut stored = graded_record();
+        stored.apply_spec(dlg.draft());
+        let t = &stored.terrain;
+        assert_eq!(t.absolute_elevation, AbsoluteElevation::ReferencePoint);
+        assert_eq!(t.reference_point, Some(Point::new(10.0, 20.0)));
+        assert_eq!((t.surface_offset, t.skirt.enabled, t.skirt.mode), (-9.0, true, SkirtMode::FollowTerrain));
+        assert_eq!((t.smoothing_level, t.triangle_detail, t.custom_triangles), (SmoothingLevel::Medium, TriangleDetail::Custom, 800));
+        assert!(t.hide_under_building && t.season == Season::Winter);
+        assert_eq!(t.contour_label_units, LabelUnits::DecimalFeet);
+        assert!(t.perimeter_extras.label.shown);
     }
 
     #[test]

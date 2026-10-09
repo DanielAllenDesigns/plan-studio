@@ -54,14 +54,18 @@
 
 pub mod backdrop;
 mod drag;
+pub mod extras;
+pub mod final_view;
 pub mod nudge;
 mod pick;
+pub mod record;
 mod stand_in;
 mod textures;
 pub mod view_settings;
+pub mod zoom_history;
 
 use crate::dialogs::camera::{
-    elevation_options_with_sun, is_elevation_camera, render_elevation_with, render_lights, sun_dir,
+    elevation_options_with_sun, is_elevation_camera, render_elevation_with, sun_dir,
     AdjustLightsDialog, CameraDialog, CameraExtras, LightingDialog, RayTraceDialog, RecordDialog,
     RecordOutcome,
 };
@@ -85,7 +89,7 @@ use std::collections::HashMap;
 use std::f32::consts::FRAC_PI_2;
 use std::fmt::Write as _;
 use std::hash::{Hash, Hasher};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
@@ -211,6 +215,14 @@ pub enum View3dCommand {
     WalkFromCad,
     /// Preview (fast) or Final View (shadows, occlusion) quality.
     Quality(ViewQuality),
+    /// Path-traced Final View on or off (C-53).
+    FinalViewToggle,
+    /// Undo Zoom: back to the camera before the last zoom, pan or move (C-42).
+    UndoZoom,
+    /// Refresh: redraw the 3D view and its vector drawing from the plan.
+    Refresh,
+    /// 3D > Export > 360 Panorama (C-77).
+    ExportPanorama,
 }
 
 /// Runs a [`View3dCommand`]: the one match arm `main.rs` needs.
@@ -258,6 +270,21 @@ pub fn dispatch(
         View3dCommand::Lighting => state.open_lighting(&cx.project),
         View3dCommand::WalkFromCad => state.walk_from_cad(cx),
         View3dCommand::Quality(q) => state.set_quality(q),
+        View3dCommand::FinalViewToggle => {
+            state.final_view.enabled = !state.final_view.enabled;
+            state.final_view.clear();
+            cx.status = if state.final_view.enabled {
+                "Final View is path traced when the camera stops moving".into()
+            } else {
+                "Final View is the shaded view again".into()
+            };
+        }
+        View3dCommand::UndoZoom => state.undo_zoom(cx),
+        View3dCommand::Refresh => {
+            state.refresh();
+            cx.status = "Refreshed the 3D view".into();
+        }
+        View3dCommand::ExportPanorama => state.panorama_dialog(cx),
     }
 }
 
@@ -518,6 +545,8 @@ pub struct ViewScope {
     pub no_images: bool,
     /// Nothing above this height (a Floor Camera's ceiling), inches.
     pub clip_above: Option<f64>,
+    /// Nothing centred below this height (the lowest floor a camera picks).
+    pub clip_below: Option<f64>,
 }
 
 /// The scene a view shows: the scoped floors, any section cut, and the
@@ -587,6 +616,10 @@ pub fn build_view_scene(project: &Project, scope: &ViewScope) -> Scene {
     scene.meshes.extend(stair_meshes(proj));
     let scene = match scope.clip_above {
         Some(y) => view_settings::clip_above(&scene, y),
+        None => scene,
+    };
+    let scene = match scope.clip_below {
+        Some(y) => view_settings::clip_below(&scene, y),
         None => scene,
     };
     let mut scene = match &scope.section {
@@ -1307,7 +1340,9 @@ pub fn walk_frame_count(c: &CameraObject, fps: f64) -> usize {
 /// Renders walkthrough `cam` as numbered PNG frames (`frame_0001.png`, ...) in
 /// `out_dir` with the path tracer (`plan_view3d` has no offscreen GL target),
 /// plus the `make_video.sh` ffmpeg script. `progress(done, total)` returns
-/// `false` to stop early; the number of frames written is returned.
+/// `false` to stop early; the number of frames written is returned. The movie
+/// and the technique looks are [`record::record`].
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub fn record_walkthrough(
     scene: &Scene,
@@ -1317,43 +1352,24 @@ pub fn record_walkthrough(
     env: &plan_render::Environment,
     settings: &plan_render::RenderSettings,
     fps: f64,
-    out_dir: &Path,
+    out_dir: &std::path::Path,
     progress: &mut dyn FnMut(usize, usize) -> bool,
 ) -> std::io::Result<usize> {
-    std::fs::create_dir_all(out_dir)?;
-    let renderer = plan_render::Renderer::new(scene);
-    let total = walk_frame_count(cam, fps);
-    let aspect = settings.width as f32 / settings.height.max(1) as f32;
-    let fov = vertical_fov(cam.fov_deg as f32, aspect);
-    let duration = cam.walk_duration_s();
-    for i in 0..total {
-        // Frames are spread evenly in time from the first node to the last,
-        // so the holds and tilts of the key frames show up as they play.
-        let t = if total > 1 {
-            duration * i as f64 / (total - 1) as f64
-        } else {
-            0.0
-        };
-        let pose = cam.walk_pose_at_time(t);
-        let mut camera = plan_render::Camera::from_plan(
-            pose.position,
-            pose.direction_deg,
-            elevation + pose.eye_height,
-            f64::from(fov),
-        );
-        // The ray tracer's camera looks 100" ahead: raise or lower that point.
-        camera.target[1] += (pose.tilt_deg.to_radians().tan() * 100.0) as f32;
-        let image = renderer.render(&camera, env, lights, settings);
-        std::fs::write(
-            out_dir.join(plan_view3d::export::frame_file_name(i + 1)),
-            plan_render::encode_png(&image),
-        )?;
-        if !progress(i + 1, total) {
-            return Ok(i + 1);
-        }
-    }
-    plan_view3d::export::write_ffmpeg_script(out_dir, fps)?;
-    Ok(total)
+    let job = record::RecordJob {
+        scene,
+        cam,
+        elevation,
+        lights,
+        env,
+        settings,
+        walk: plan_core::camera_view::WalkRecord {
+            fps,
+            format: plan_core::camera_view::RecordFormat::Frames,
+            ..plan_core::camera_view::WalkRecord::default()
+        },
+        style: None,
+    };
+    Ok(record::record(&job, out_dir, progress)?.frames)
 }
 
 /// A walkthrough being recorded on a worker thread.
@@ -1363,21 +1379,53 @@ pub struct Recording {
     cancel: Arc<AtomicBool>,
     result: Arc<Mutex<Option<Result<usize, String>>>>,
     pub dir: PathBuf,
+    /// The movie being written, when the format asks for one.
+    pub video: Option<PathBuf>,
 }
 
 impl Recording {
-    /// Starts recording `cam` into `dir`.
+    /// Starts recording `cam` into `dir` in the camera's own technique.
+    #[cfg(test)]
     pub fn start(
         project: &Project,
         cam: &CameraObject,
         sun: Option<plan_render::Sun>,
         dir: PathBuf,
     ) -> Self {
-        let scene = build_view_scene(project, &ViewScope::default());
+        let technique = view_settings::technique_of(cam).unwrap_or(RenderingTechnique::Standard);
+        Self::start_in(project, cam, sun, dir, technique)
+    }
+
+    /// Starts recording `cam` into `dir` in `technique` (the path tracer's
+    /// Clay or Physically Based, with the Vector View, Technical
+    /// Illustration, Line Drawing or Watercolor look applied on top).
+    pub fn start_in(
+        project: &Project,
+        cam: &CameraObject,
+        sun: Option<plan_render::Sun>,
+        dir: PathBuf,
+        technique: RenderingTechnique,
+    ) -> Self {
+        let scope = view_settings::scope_of(project, cam);
+        let scene = build_view_scene(
+            project,
+            &ViewScope {
+                floor: scope.floor,
+                clip_above: scope.clip_above,
+                clip_below: scope.clip_below,
+                ..ViewScope::default()
+            },
+        );
         let elevation = project.floors.get(cam.floor).map_or(0.0, |f| f.elevation);
-        let lights = render_lights(project);
+        let lights =
+            crate::dialogs::camera::render_lights_in(project, cam.view.light_set.as_deref());
+        let (render_technique, style) = view_settings::render_look(technique);
         let cam = cam.clone();
         let walk = cam.view.walk.clamped();
+        let video = walk
+            .format
+            .video()
+            .then(|| record::video_path(&dir, &cam.name));
         let total = walk_frame_count(&cam, walk.fps);
         let done = Arc::new(AtomicUsize::new(0));
         let cancel = Arc::new(AtomicBool::new(false));
@@ -1396,20 +1444,24 @@ impl Recording {
                     ..plan_render::Environment::default()
                 };
                 let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    record_walkthrough(
-                        &scene,
-                        &cam,
+                    let job = record::RecordJob {
+                        scene: &scene,
+                        cam: &cam,
                         elevation,
-                        &lights,
-                        &env,
-                        &record_settings_for(&walk),
-                        walk.fps,
-                        &out,
-                        &mut |n, _| {
-                            d2.store(n, Ordering::Relaxed);
-                            !c2.load(Ordering::Relaxed)
+                        lights: &lights,
+                        env: &env,
+                        settings: &plan_render::RenderSettings {
+                            technique: render_technique,
+                            ..record_settings_for(&walk)
                         },
-                    )
+                        walk,
+                        style,
+                    };
+                    record::record(&job, &out, &mut |n, _| {
+                        d2.store(n, Ordering::Relaxed);
+                        !c2.load(Ordering::Relaxed)
+                    })
+                    .map(|r| r.frames)
                     .map_err(|e| e.to_string())
                 }))
                 .unwrap_or_else(|_| Err("The renderer stopped unexpectedly".into()));
@@ -1425,6 +1477,7 @@ impl Recording {
             cancel,
             result,
             dir,
+            video,
         }
     }
 
@@ -1468,6 +1521,8 @@ enum Setup {
         target: [f32; 3],
     },
     Section(SectionCut),
+    /// A saved orthographic view.
+    Ortho(plan_core::camera_view::OrthoView),
 }
 
 /// The cross section slider (C-23).
@@ -1524,6 +1579,8 @@ pub struct View3dState {
     quality_applied: Option<ViewQuality>,
     /// Nothing above this height (a Floor Camera's ceiling), inches.
     pub clip_above: Option<f64>,
+    /// Nothing centred below this height (the lowest floor a camera picks).
+    pub clip_below: Option<f64>,
     /// Save Camera was asked for by a request; done at the next frame.
     save_requested: bool,
     /// The backdrop picture last loaded, by file name.
@@ -1543,6 +1600,14 @@ pub struct View3dState {
     obj_drag: Option<drag::ObjDrag>,
     /// The object under the pointer (its mesh id) and when it was picked.
     hover: Hover,
+    /// The path-traced Final View over the live view.
+    pub final_view: final_view::FinalView,
+    /// Undo Zoom: the camera before each zoom, pan or move.
+    pub zoom: zoom_history::ZoomHistory,
+    /// Export 360 Panorama, while it is open.
+    panorama_dialog: Option<crate::dialogs::panorama::PanoramaDialog>,
+    /// A panorama being rendered.
+    panorama_job: Option<crate::dialogs::panorama::PanoramaJob>,
 }
 
 /// The hover highlight's state: the last pick, throttled by
@@ -1594,6 +1659,7 @@ impl View3dState {
             quality: ViewQuality::Final,
             quality_applied: None,
             clip_above: None,
+            clip_below: None,
             save_requested: false,
             backdrop_cache: None,
             aspect: 1.5,
@@ -1602,6 +1668,10 @@ impl View3dState {
             select_tool: true,
             obj_drag: None,
             hover: Hover::default(),
+            final_view: final_view::FinalView::default(),
+            zoom: zoom_history::ZoomHistory::default(),
+            panorama_dialog: None,
+            panorama_job: None,
         }
     }
 
@@ -1643,7 +1713,10 @@ impl View3dState {
                         });
                         self.camera_dialog = Some(
                             CameraDialog::new(c, &floor, extras)
-                                .with_plan_lighting(project.lighting),
+                                .with_plan_lighting(project.lighting.clone())
+                                .with_floor_names(
+                                    project.floors.iter().map(|f| f.name.clone()).collect(),
+                                ),
                         );
                     }
                 }
@@ -1660,7 +1733,10 @@ impl View3dState {
         self.slider = None;
         self.active_camera = None;
         self.clip_above = None;
+        self.clip_below = None;
         self.walk = None;
+        self.zoom.clear();
+        self.final_view.clear();
         self.setup = Some(Setup::Mode(mode));
     }
 
@@ -1685,6 +1761,7 @@ impl View3dState {
         let scope = view_settings::scope_of(project, c);
         self.scope_floor = scope.floor;
         self.clip_above = scope.clip_above;
+        self.clip_below = scope.clip_below;
         self.section = None;
         if c.kind != CameraKind::Walkthrough {
             self.walk = None;
@@ -1731,6 +1808,11 @@ impl View3dState {
                     tilt_deg: c.view.tilt_deg,
                 });
             }
+            CameraKind::Orthographic if c.view.ortho.is_some() => {
+                let view = c.view.ortho.expect("checked");
+                self.mode = extras::ortho_mode(view.kind);
+                self.setup = Some(Setup::Ortho(view));
+            }
             CameraKind::PerspectiveOverview
             | CameraKind::Orthographic
             | CameraKind::GlassHouse
@@ -1751,12 +1833,38 @@ impl View3dState {
         }
         self.active = true;
         self.active_camera = Some(id);
+        self.zoom.clear();
+        self.final_view.clear();
     }
 
     /// The open Lighting dialog, for the scenario tests that edit it.
     #[cfg(test)]
     pub fn lighting_dialog_mut(&mut self) -> Option<&mut LightingDialog> {
         self.lighting.as_mut()
+    }
+
+    /// The open Adjust Lights dialog, for the scenario tests.
+    #[cfg(test)]
+    pub fn adjust_lights_mut(&mut self) -> Option<&mut AdjustLightsDialog> {
+        self.adjust_lights.as_mut()
+    }
+
+    /// The open Record Walkthrough dialog, for the scenario tests.
+    #[cfg(test)]
+    pub fn record_dialog_mut(&mut self) -> Option<&mut RecordDialog> {
+        self.record_dialog.as_mut()
+    }
+
+    /// The open Export 360 Panorama dialog, for the scenario tests.
+    #[cfg(test)]
+    pub fn panorama_dialog_mut(&mut self) -> Option<&mut crate::dialogs::panorama::PanoramaDialog> {
+        self.panorama_dialog.as_mut()
+    }
+
+    /// Is a panorama being rendered?
+    #[cfg(test)]
+    pub fn panorama_running(&self) -> bool {
+        self.panorama_job.is_some()
     }
 
     /// The open Camera Specification, for the scenario tests that edit it.
@@ -1786,9 +1894,11 @@ impl View3dState {
         self.slider = None;
         self.active_camera = None;
         self.clip_above = None;
+        self.clip_below = None;
         self.walk = None;
         if let Some(vp) = &mut self.viewport {
             vp.set_mode(mode);
+            self.zoom.reset_to(&vp.camera);
         }
     }
 
@@ -2063,12 +2173,17 @@ impl View3dState {
         let Some(cam) = cx.project.camera(id).cloned() else {
             return;
         };
-        let sun = self.raytrace.environment().sun;
-        let rec = Recording::start(&cx.project, &cam, sun, dir);
+        // The plan's sun (3D > Lighting), as the Final View and the panorama use.
+        let sun = final_view::environment_for(&cx.project.lighting, Some(&cam.view)).sun;
+        let technique = view_settings::technique_of(&cam).unwrap_or(self.technique);
+        let rec = Recording::start_in(&cx.project, &cam, sun, dir, technique);
         cx.status = format!(
             "Recording {} frames to {}",
             rec.progress().1,
-            rec.dir.display()
+            rec.video
+                .as_ref()
+                .map_or(rec.dir.clone(), Clone::clone)
+                .display()
         );
         self.recording = Some(rec);
     }
@@ -2128,8 +2243,17 @@ impl View3dState {
                 o
             }
             _ => {
-                cx.status = "Save Camera works from the perspective views".into();
-                return;
+                // An elevation or the plan overhead: keep its direction, centre
+                // and zoom so Restore brings the same view back.
+                let Some(view) = extras::ortho_view_of(cam) else {
+                    cx.status = "Save Camera needs a 3D view".into();
+                    return;
+                };
+                let at = Point::new(f64::from(cam.target[0]), -f64::from(cam.target[2]));
+                let mut o = CameraObject::new(CameraKind::Orthographic, at, 90.0, name, floor);
+                o.view.show_in_plan = false;
+                o.view.ortho = Some(view);
+                o
             }
         };
         obj.view.technique = Some(self.technique.label().to_string());
@@ -2303,6 +2427,7 @@ impl View3dState {
             fill: technique_view(self.technique).fill,
             no_images: true,
             clip_above: self.clip_above,
+            clip_below: self.clip_below,
         }
     }
 
@@ -2320,10 +2445,14 @@ impl View3dState {
         }
         self.scope().fill.hash(&mut h);
         self.clip_above.map(f64::to_bits).hash(&mut h);
+        self.clip_below.map(f64::to_bits).hash(&mut h);
         self.textures_on.hash(&mut h);
         // A painted object shows its material as it is now.
         if !project.object_materials.is_empty() || !project.material_defaults.is_empty() {
             crate::tools::materials::library_revision().hash(&mut h);
+            // Material packages: the PBR maps switch and their size.
+            let r = crate::dialogs::preferences::pages::current().render;
+            (r.pbr_maps, r.max_texture_side).hash(&mut h);
         }
         h.finish()
     }
@@ -2599,7 +2728,14 @@ impl View3dState {
                 vp.set_mode(cut.elevation_mode());
                 vp.camera.yaw = cut.yaw();
             }
+            Setup::Ortho(view) => {
+                vp.set_mode(extras::ortho_mode(view.kind));
+                vp.fit_view();
+                extras::apply_ortho(&mut vp.camera, &view);
+            }
         }
+        // The program aimed the camera: not a step for Undo Zoom.
+        self.zoom.reset_to(&vp.camera);
         self.mode = vp.camera.mode;
     }
 
@@ -2646,10 +2782,16 @@ impl View3dState {
         self.lighting_window(ctx, cx);
         self.record_window(ctx, cx);
         self.recording_window(ctx, cx);
+        self.panorama_windows(ctx, cx);
         self.sun_window(ctx, cx);
         self.defaults_window(ctx);
         if self.raytrace.open || self.raytrace.is_running() {
-            self.raytrace.lights = render_lights(&cx.project);
+            self.raytrace.lights = crate::dialogs::camera::render_lights_in(
+                &cx.project,
+                self.active_camera
+                    .and_then(|id| cx.project.camera(id))
+                    .and_then(|c| c.view.light_set.as_deref()),
+            );
             let scope = ViewScope {
                 fill: None,
                 no_images: false,
@@ -2691,7 +2833,10 @@ impl View3dState {
         };
         if let Some(result) = rec.finished() {
             cx.status = match result {
-                Ok(n) => format!("Recorded {n} frames to {}", rec.dir.display()),
+                Ok(n) => match &rec.video {
+                    Some(v) => format!("Recorded {n} frames to {}", v.display()),
+                    None => format!("Recorded {n} frames to {}", rec.dir.display()),
+                },
                 Err(e) => format!("Recording failed: {e}"),
             };
             self.recording = None;
@@ -2710,7 +2855,10 @@ impl View3dState {
                     done as f32 / total as f32
                 };
                 ui.add(egui::ProgressBar::new(frac).text(format!("{done} / {total} frames")));
-                ui.weak(format!("Writing frame_NNNN.png to {}", rec.dir.display()));
+                match &rec.video {
+                    Some(v) => ui.weak(format!("Writing {}", v.display())),
+                    None => ui.weak(format!("Writing frame_NNNN.png to {}", rec.dir.display())),
+                };
                 cancel = ui.button("Cancel").clicked();
             });
         if cancel {
@@ -3042,9 +3190,11 @@ fn technique_combo(ui: &mut egui::Ui, current: RenderingTechnique, out: &mut Bar
 
 /// The Shading menu: shadows, ambient occlusion, quality and exposure of the
 /// interactive view (`plan_view3d::ViewSettings`).
-fn shading_menu(ui: &mut egui::Ui, settings: Option<&mut ViewSettings>) {
+fn shading_menu(ui: &mut egui::Ui, settings: Option<&mut ViewSettings>, final_on: &mut bool) {
     let Some(s) = settings else { return };
     ui.menu_button("Shading", |ui| {
+        ui.checkbox(final_on, "Path-traced Final View")
+            .on_hover_text("When the camera stops, ray trace the view and refine it until Stop");
         ui.checkbox(&mut s.shadows, "Shadows");
         ui.checkbox(&mut s.ambient_occlusion, "Ambient occlusion");
         ui.horizontal(|ui| {
@@ -3093,7 +3243,7 @@ pub fn show(ui: &mut egui::Ui, cx: &mut EditorContext, st: &mut View3dState) {
         .filter(|c| c.view.label.show_in_view)
         .map(|c| c.view.label_text(&c.name).to_string());
     let backdrop = st.backdrop_for(view.as_ref());
-    let plan_lighting = cx.project.lighting;
+    let plan_lighting = cx.project.lighting.clone();
     let (quality, quality_due) = (st.quality, st.quality_applied != Some(st.quality));
     st.quality_applied = Some(quality);
     st.aspect = size.x / size.y.max(1.0);
@@ -3107,6 +3257,8 @@ pub fn show(ui: &mut egui::Ui, cx: &mut EditorContext, st: &mut View3dState) {
         vp.background = sky;
     }
     vp.backdrop = backdrop;
+    vp.ground = view_settings::ground_of(view.as_ref());
+    vp.fog = view_settings::fog_of(view.as_ref());
     if quality_due {
         vp.settings = view_settings::settings_for(
             quality,
@@ -3114,7 +3266,10 @@ pub fn show(ui: &mut egui::Ui, cx: &mut EditorContext, st: &mut View3dState) {
             view.as_ref().is_none_or(|v| v.shadows),
         );
     }
-    vp.set_point_lights(&render_lights(&cx.project));
+    vp.set_point_lights(&crate::dialogs::camera::render_lights_in(
+        &cx.project,
+        view.as_ref().and_then(|v| v.light_set.as_deref()),
+    ));
     vp.textures_enabled = st.textures_on && technique_shows_textures(st.technique);
     if let Some((position, yaw)) = walk_pose {
         vp.camera.position = position;
@@ -3127,6 +3282,12 @@ pub fn show(ui: &mut egui::Ui, cx: &mut EditorContext, st: &mut View3dState) {
     let resp = vp.ui(ui, size);
     st.mode = vp.camera.mode;
     let stand_cam = vp.camera.clone();
+    // Undo Zoom: a playing walkthrough moves the camera by itself.
+    if st.walk.is_some_and(|w| w.playing) {
+        st.zoom.reset_to(&vp.camera);
+    } else {
+        st.zoom.observe(&vp.camera);
+    }
 
     // Page Up / Page Down raise and lower the eye (C-38).
     if vp.camera.mode == CameraMode::FullCamera && (resp.hovered() || resp.has_focus()) {
@@ -3148,6 +3309,7 @@ pub fn show(ui: &mut egui::Ui, cx: &mut EditorContext, st: &mut View3dState) {
     st.update_hover(&ctx, cx, &resp);
     st.refresh_overlay(&cx.project, &cx.selection);
     stand_in::paint(ui.painter(), &stand_cam, resp.rect, &cx.project);
+    st.final_view_frame(ui, cx, resp.rect);
     if let Some(text) = view_label {
         ui.painter().text(
             resp.rect.left_bottom() + egui::vec2(12.0, -10.0),
@@ -3208,7 +3370,11 @@ pub fn show(ui: &mut egui::Ui, cx: &mut EditorContext, st: &mut View3dState) {
                         });
                     technique_combo(ui, st.technique, &mut out);
                     ui.checkbox(&mut st.textures_on, "Textures");
-                    shading_menu(ui, st.viewport.as_mut().map(|v| &mut v.settings));
+                    shading_menu(
+                        ui,
+                        st.viewport.as_mut().map(|v| &mut v.settings),
+                        &mut st.final_view.enabled,
+                    );
                     out.rebuild = ui.button("Rebuild 3D").clicked();
                     for q in ViewQuality::ALL {
                         if ui
@@ -3406,8 +3572,7 @@ fn apply_bar(
         cx.status = "Rebuilt the 3D model".into();
     }
     if out.refresh {
-        st.vector.invalidate();
-        st.rebuild();
+        st.refresh();
     }
     if out.dxf {
         st.export_vector_dxf(cx);
@@ -3578,6 +3743,7 @@ fn show_vector(ui: &mut egui::Ui, cx: &mut EditorContext, st: &mut View3dState) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dialogs::camera::render_lights;
     use crate::plan_defaults;
     use plan_3d::Vertex;
     use plan_core::WallKind;
@@ -4494,6 +4660,7 @@ mod tests {
         let mut cam = walk_camera();
         cam.path = vec![Point::new(60.0, 40.0), Point::new(72.0, 40.0)];
         cam.walk_speed = 48.0; // a quarter second: 3 frames
+        cam.view.walk.format = plan_core::camera_view::RecordFormat::Frames;
         let dir = std::env::temp_dir().join(format!("plan_walk_thread_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let rec = Recording::start(&p, &cam, None, dir.clone());
@@ -5602,15 +5769,19 @@ mod tests {
     }
 
     #[test]
-    fn save_camera_refuses_the_orthographic_views() {
+    fn save_camera_keeps_an_orthographic_view_as_an_orthographic_camera() {
         let mut cx = EditorContext::new(plan_defaults::embedded());
         cx.project = house();
         let mut st = View3dState::with_inbox(Outbox::default());
         st.open_mode(CameraMode::ElevationFront, None);
         run_frames(&mut cx, &mut st, 2);
         st.save_camera(&mut cx);
-        assert!(cx.project.cameras.is_empty());
-        assert!(cx.status.contains("perspective"));
+        let saved = cx.project.cameras.last().expect("a saved camera");
+        assert_eq!(saved.kind, CameraKind::Orthographic);
+        assert_eq!(
+            saved.view.ortho.map(|o| o.kind),
+            Some(plan_core::camera_view::OrthoKind::ElevationFront)
+        );
     }
 
     #[test]
@@ -5685,6 +5856,8 @@ mod tests {
             width: 64,
             height: 48,
             samples: 1,
+            format: plan_core::camera_view::RecordFormat::Frames,
+            ..plan_core::camera_view::WalkRecord::default()
         };
         assert_eq!(walk_frame_count(&cam, 3.0), 3);
         let id = p.add_camera(cam);

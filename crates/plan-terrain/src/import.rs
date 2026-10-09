@@ -6,10 +6,11 @@
 //!   and the vertices of an `LWPOLYLINE` (all at its elevation, group 38), as a
 //!   survey or a civil package exports spot heights. The drawing unit comes
 //!   from `$INSUNITS` when the file has one;
-//! * **GPX**: waypoints, route points and track points (`<wpt>`, `<rtept>`,
-//!   `<trkpt>`) with `lat`, `lon` and `<ele>` in meters. They are projected
-//!   onto a local flat plan around the first point (east is plan x, north is
-//!   plan y);
+//! * **GPX**: way points (`<wpt>`) with `lat`, `lon` and `<ele>` in meters.
+//!   Route and track points carry no elevation and are not read here (the GPS
+//!   assistant in `import_assistant` makes markers, polylines and perimeters of
+//!   them). They are projected onto a local flat plan around the first point
+//!   (east is plan x, north is plan y);
 //! * **XYZ text**: one point per line, `x y z` separated by spaces, commas,
 //!   semicolons or tabs. Lines that do not start with numbers (headers,
 //!   comments) are skipped.
@@ -22,9 +23,9 @@ use plan_core::Point;
 use crate::model::{ElevationPoint, Terrain};
 
 /// Meters in an inch.
-const METERS_PER_INCH: f64 = 0.0254;
+pub(crate) const METERS_PER_INCH: f64 = 0.0254;
 /// Mean radius of the earth, meters (the GPX projection).
-const EARTH_RADIUS_M: f64 = 6_371_008.8;
+pub(crate) const EARTH_RADIUS_M: f64 = 6_371_008.8;
 /// Points closer than this to an existing point count as the same point, inches.
 const SAME_POINT: f64 = 0.01;
 
@@ -340,6 +341,9 @@ fn parse_gpx(text: &str) -> ImportedPoints {
         };
         let open = &text[start..start + open_end];
         let self_closing = open.ends_with('/');
+        // Only way points carry elevation; route points are ignored and track
+        // points are markers, polylines or a perimeter (the GPS assistant).
+        let is_way = tag_name(&lower[start + 1..]) == "wpt";
         at = start + open_end + 1;
         let body = if self_closing {
             ""
@@ -351,6 +355,9 @@ fn parse_gpx(text: &str) -> ImportedPoints {
             at = end;
             b
         };
+        if !is_way {
+            continue;
+        }
         let (lat, lon) = (attribute(open, "lat"), attribute(open, "lon"));
         match (lat, lon) {
             (Some(lat), Some(lon)) if lat.abs() <= 90.0 && lon.abs() <= 180.0 => {
@@ -381,7 +388,7 @@ fn parse_gpx(text: &str) -> ImportedPoints {
 }
 
 /// Offset of the next `<wpt`, `<rtept` or `<trkpt` tag in `lower`.
-fn next_point_tag(lower: &str) -> Option<usize> {
+pub(crate) fn next_point_tag(lower: &str) -> Option<usize> {
     ["<wpt", "<rtept", "<trkpt"]
         .iter()
         .filter_map(|tag| {
@@ -404,7 +411,7 @@ fn next_point_tag(lower: &str) -> Option<usize> {
 }
 
 /// The element name that starts at the beginning of `s` (after the `<`).
-fn tag_name(s: &str) -> &str {
+pub(crate) fn tag_name(s: &str) -> &str {
     let end = s
         .find(|c: char| c.is_whitespace() || c == '>' || c == '/')
         .unwrap_or(s.len());
@@ -412,7 +419,7 @@ fn tag_name(s: &str) -> &str {
 }
 
 /// The numeric value of attribute `name` in a start tag.
-fn attribute(tag: &str, name: &str) -> Option<f64> {
+pub(crate) fn attribute(tag: &str, name: &str) -> Option<f64> {
     let lower = tag.to_ascii_lowercase();
     let mut from = 0;
     while let Some(i) = lower[from..].find(name) {
@@ -441,7 +448,7 @@ fn attribute(tag: &str, name: &str) -> Option<f64> {
 }
 
 /// The number inside `<name>..</name>` in `body`.
-fn element(body: &str, name: &str) -> Option<f64> {
+pub(crate) fn element(body: &str, name: &str) -> Option<f64> {
     let lower = body.to_ascii_lowercase();
     let open = format!("<{name}>");
     let start = lower.find(&open)? + open.len();
@@ -555,14 +562,16 @@ mod tests {
 
     const GPX: &str = r#"<?xml version="1.0"?>
 <gpx version="1.1"><wpt lat="33.7490" lon="-84.3880"><ele>320.0</ele><name>A</name></wpt>
+<wpt lat='33.7500' lon='-84.3880'><ele>321.5</ele></wpt>
+<wpt lat="33.7490" lon="-84.3870"/>
+<wpt lat="95" lon="0"><ele>1</ele></wpt>
+<rte><rtept lat="33.8" lon="-84.3"><ele>9</ele></rtept></rte>
 <trk><trkseg>
-<trkpt lat='33.7500' lon='-84.3880'><ele>321.5</ele></trkpt>
-<trkpt lat="33.7490" lon="-84.3870"/>
-<trkpt lat="95" lon="0"><ele>1</ele></trkpt>
+<trkpt lat="33.7000" lon="-84.3000"><ele>5</ele></trkpt>
 </trkseg></trk></gpx>"#;
 
     #[test]
-    fn gpx_waypoints_project_onto_a_local_plan() {
+    fn gpx_waypoints_project_onto_a_local_plan_and_other_points_are_not_elevation() {
         let r = import_points(GPX, ImportUnit::Feet).unwrap();
         assert_eq!(r.format, ImportFormat::Gpx);
         assert_eq!(r.points.len(), 3);

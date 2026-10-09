@@ -20,6 +20,7 @@ use crate::layers::{
     LayoutLayers, LAYER_BOX_BORDERS, LAYER_REVISION_CLOUDS, LAYER_TEXT, LAYER_TITLE_BLOCK,
     TITLE_BLOCK_BASE_PT,
 };
+use crate::overlay::{OverlayShape, PlanOverlayFn, PlanOverlayItem};
 use crate::model::{
     perspective_pixels, BoxSource, Layout, LayoutBox, LayoutPage, TextAlign, BOTTOM_STRIP_IN,
 };
@@ -29,7 +30,7 @@ use plan_3d::Scene;
 use plan_core::opening_symbol::{casing_parts, plan_symbol_in, PartKind};
 use plan_core::{
     detect_rooms, wall_outlines, CadItem, CadObject, DimFormat, DimensionKind, Floor, LayerSet,
-    Opening, OpeningKind, Point, Project, Room, Wall,
+    Opening, Point, Project, Room, Wall,
 };
 use plan_docs::pdf::FontSpec;
 use plan_docs::{
@@ -94,6 +95,11 @@ pub struct LayoutRenderContext<'a> {
     /// the rest of the 3D view appear (this crate cannot build them); it is
     /// asked once per print or draw.
     pub scene_builder: Option<SceneBuilderFn<'a>>,
+    /// What plan boxes draw besides the walls, openings, rooms, dimensions
+    /// and CAD: cabinets with their fill, stairs (and the treads seen through
+    /// a stairwell) and placed symbols. The application supplies it (this
+    /// crate cannot build them); see [`crate::overlay`].
+    pub plan_overlay: Option<PlanOverlayFn<'a>>,
     pub macros: MacroContext,
     /// Draws a camera's elevation or section for [`BoxSource::Camera`] boxes.
     /// The application supplies it (it knows the camera's render options), so
@@ -119,6 +125,16 @@ pub struct LayoutRenderContext<'a> {
     /// `(sheet number, title)` of every printed page, for sheet index boxes
     /// (set by [`set_sheet_index`](Self::set_sheet_index)).
     sheet_rows: RefCell<Vec<(String, String)>>,
+    /// Rows of the Layout Page Table (label, title, description) and the
+    /// Layout Revision Table rows of every page by page number, both set by
+    /// [`set_sheet_index`](Self::set_sheet_index).
+    page_table_rows: RefCell<Vec<Vec<String>>>,
+    revision_rows: RefCell<HashMap<u32, Vec<Vec<String>>>>,
+    /// The page being drawn (its number): a Layout Revision Table lists this
+    /// page's revisions, wherever the table sits (a page template too).
+    current_page: std::cell::Cell<u32>,
+    /// The macros of the sheet being drawn, for text boxes.
+    page_macros: RefCell<Option<MacroContext>>,
     picture_cache: RefCell<HashMap<String, Option<Rc<PerspectiveImage>>>>,
 }
 
@@ -177,6 +193,7 @@ impl<'a> LayoutRenderContext<'a> {
                 .collect(),
             scene: None,
             scene_builder: None,
+            plan_overlay: None,
             macros: macros_for(project),
             camera_drawing: None,
             perspective_image: None,
@@ -187,6 +204,10 @@ impl<'a> LayoutRenderContext<'a> {
             camera_cache: RefCell::new(HashMap::new()),
             perspective_cache: RefCell::new(HashMap::new()),
             sheet_rows: RefCell::new(Vec::new()),
+            page_table_rows: RefCell::new(Vec::new()),
+            revision_rows: RefCell::new(HashMap::new()),
+            current_page: std::cell::Cell::new(0),
+            page_macros: RefCell::new(None),
             picture_cache: RefCell::new(HashMap::new()),
         }
     }
@@ -194,6 +215,12 @@ impl<'a> LayoutRenderContext<'a> {
     /// Sets [`scene_builder`](Self::scene_builder).
     pub fn with_scene_builder(mut self, f: impl Fn(&Project) -> Scene + 'a) -> Self {
         self.scene_builder = Some(Box::new(f));
+        self
+    }
+
+    /// Sets [`plan_overlay`](Self::plan_overlay).
+    pub fn with_plan_overlay(mut self, f: impl Fn(usize) -> Vec<PlanOverlayItem> + 'a) -> Self {
+        self.plan_overlay = Some(Box::new(f));
         self
     }
 
@@ -273,8 +300,62 @@ impl<'a> LayoutRenderContext<'a> {
         *self.sheet_rows.borrow_mut() = layout
             .content_pages()
             .iter()
-            .map(|p| (p.sheet_number(), p.title.to_uppercase()))
+            .map(|p| (layout.sheet_number_of(p), p.title.to_uppercase()))
             .collect();
+        *self.page_table_rows.borrow_mut() = layout.page_table_rows();
+        *self.revision_rows.borrow_mut() = layout
+            .pages
+            .iter()
+            .map(|p| (p.number, crate::pages::revision_rows(&p.revisions)))
+            .collect();
+    }
+
+    /// Says which page is being drawn: a Layout Revision Table lists the
+    /// revisions of this page.
+    pub fn set_current_page(&self, number: u32) {
+        self.current_page.set(number);
+    }
+
+    /// Sets the macros text boxes expand (`None` leaves their text as typed).
+    pub fn set_page_macros(&self, ctx: Option<MacroContext>) {
+        *self.page_macros.borrow_mut() = ctx;
+    }
+
+    /// `text` with the sheet's macros expanded (text boxes).
+    pub(crate) fn expand_page_macros(&self, text: &str) -> String {
+        match &*self.page_macros.borrow() {
+            Some(m) if text.contains('%') => m.expand(text),
+            _ => text.to_string(),
+        }
+    }
+
+    /// The Layout Page Table.
+    pub(crate) fn page_table(&self) -> plan_docs::Schedule {
+        plan_docs::Schedule {
+            title: "LAYOUT PAGES".to_string(),
+            columns: crate::pages::PAGE_TABLE_COLUMNS
+                .iter()
+                .map(|c| (*c).to_string())
+                .collect(),
+            rows: self.page_table_rows.borrow().clone(),
+        }
+    }
+
+    /// The Layout Revision Table of the page being drawn.
+    pub(crate) fn revision_table(&self) -> plan_docs::Schedule {
+        plan_docs::Schedule {
+            title: "REVISIONS".to_string(),
+            columns: crate::pages::REVISION_TABLE_COLUMNS
+                .iter()
+                .map(|c| (*c).to_string())
+                .collect(),
+            rows: self
+                .revision_rows
+                .borrow()
+                .get(&self.current_page.get())
+                .cloned()
+                .unwrap_or_default(),
+        }
     }
 
     /// The sheet index as a table.
@@ -830,10 +911,7 @@ fn draw_plan(
         }
     };
     for o in &f.openings {
-        let layer = match o.kind {
-            OpeningKind::Door => "Doors",
-            OpeningKind::Window => "Windows",
-        };
+        let layer = o.layer_name();
         let Some(w) = f.wall(o.wall_id) else { continue };
         if show(layer) && show(&w.layer) {
             let exterior = plan_core::exterior_sign(w, rooms);
@@ -855,6 +933,10 @@ fn draw_plan(
                 }
             }
         }
+    }
+
+    if let Some(overlay) = &cx.plan_overlay {
+        draw_overlay(cv, &overlay(floor), &show, &pen, tp, k);
     }
 
     if show("Room Labels") {
@@ -896,7 +978,8 @@ fn draw_plan(
     }
 
     let attrs = f.cad_attr_map();
-    for o in &f.cad {
+    // In drawing-group order (Edit > Drawing Group).
+    for o in f.cad_draw_order_with(&cx.project.drawing_group_defaults) {
         if show(&o.layer) {
             let style = text_style_of(cx.project, o, attrs.get(&o.id)).map(|st| (st, k / 6.0));
             match attrs.get(&o.id) {
@@ -904,7 +987,54 @@ fn draw_plan(
                 Some(a) if matches!(o.item, CadItem::Text { .. }) && a.text_box.needs_layout() => {
                     draw_text_box_item(cv, o, a, tp, k, pen(&o.layer), style);
                 }
+                // Fill, colour, weight, dash and arrow ends (callouts, notes,
+                // text arrows).
+                Some(a) if !matches!(o.item, CadItem::Text { .. }) => {
+                    let pn = crate::cadattrs::pen_for(a, pen(&o.layer));
+                    crate::cadattrs::draw_fill(cv, o, a, tp);
+                    draw_cad_item_styled(cv, o, tp, k, pn, style);
+                    crate::cadattrs::draw_arrows(cv, o, a, tp, pn);
+                }
                 _ => draw_cad_item_styled(cv, o, tp, k, pen(&o.layer), style),
+            }
+        }
+    }
+}
+
+/// The application's plan overlay (cabinets, stairs, symbols) on the page:
+/// each item on its layer, in the layer's colour and weight.
+fn draw_overlay(
+    cv: &mut Canvas,
+    items: &[PlanOverlayItem],
+    show: &dyn Fn(&str) -> bool,
+    pen: &dyn Fn(&str) -> Pen,
+    tp: &dyn Fn(Point) -> Pt,
+    k: f64,
+) {
+    for it in items.iter().filter(|i| show(&i.layer)) {
+        let base = pen(&it.layer);
+        match &it.shape {
+            OverlayShape::Polyline { points, closed } => {
+                let mut p = base.scaled(it.weight);
+                if it.dashed {
+                    p.dash = Dash::Dashed;
+                }
+                let pts: Vec<Pt> = points.iter().map(|&q| tp(q)).collect();
+                cv.stroke(&pts, *closed, p);
+            }
+            OverlayShape::Fill { points, rgb, alpha } => {
+                let a = f64::from(alpha.clamp(0.0, 1.0));
+                let mix = |c: u8| (255.0 + (f64::from(c) - 255.0) * a).round() as u8;
+                let pts: Vec<Pt> = points.iter().map(|&q| tp(q)).collect();
+                cv.fill(&pts, PdfColor::Rgb(mix(rgb[0]), mix(rgb[1]), mix(rgb[2])));
+            }
+            OverlayShape::Text {
+                at,
+                text,
+                height,
+                angle,
+            } => {
+                cv.text_full(tp(*at), height * k, base.color, false, *angle, text);
             }
         }
     }
@@ -956,11 +1086,20 @@ fn draw_text_box_item(
         let pts: Vec<Pt> = quad.iter().map(|&q| tp(q)).collect();
         cv.stroke(&pts, true, pen);
     }
+    let style_font = style.and_then(|(st, _)| FontSpec::of_style(st));
     for r in &draw.runs {
         let color = r
             .run
             .color
             .map_or(pen.color, |c| PdfColor::Rgb(c[0], c[1], c[2]));
+        // A run in its own font family (Rich Text Edit Bar).
+        if let Some(f) = &r.run.font {
+            cv.set_font(Some(FontSpec::new(
+                f.clone(),
+                style_bold || r.run.bold,
+                r.run.italic,
+            )));
+        }
         cv.text_full(
             tp(r.at),
             r.height * k,
@@ -969,6 +1108,32 @@ fn draw_text_box_item(
             pb.angle,
             &r.run.text,
         );
+        if r.run.font.is_some() {
+            cv.set_font(style_font.clone());
+        }
+        // Underlined (and hyperlink) and struck-through runs.
+        if r.run.underline || r.run.strike {
+            let w = cv.text_width(&r.run.text, r.height * k, style_bold || r.run.bold) / k;
+            let dir = Point::new(pb.angle.cos(), pb.angle.sin());
+            let up = dir.perp();
+            let mut line_at = |off: f64| {
+                let a = r.at + up * (r.height * off);
+                cv.line(
+                    tp(a),
+                    tp(a + dir * w),
+                    Pen {
+                        color,
+                        ..Pen::new(0.5)
+                    },
+                );
+            };
+            if r.run.underline {
+                line_at(-0.12);
+            }
+            if r.run.strike {
+                line_at(0.3);
+            }
+        }
     }
     cv.set_font(None);
 }
@@ -1153,12 +1318,31 @@ pub(crate) fn box_prims(
                         }
                     }
                 }
-                BoxSource::CadDetail { items, .. } => {
+                BoxSource::CadDetail { name, items } => {
                     let layers = &cx.project.layers;
+                    // The extras of the detail's CAD (text boxes, text
+                    // styles, rich runs) live on the detail's floor; the box
+                    // carries only the objects.
+                    let attrs = cx
+                        .project
+                        .floors
+                        .iter()
+                        .find(|f| f.is_cad_detail() && f.name == *name)
+                        .map(|f| f.cad_attr_map())
+                        .unwrap_or_default();
                     for o in items {
-                        let style = text_style_of(cx.project, o, None).map(|st| (st, ipf));
+                        let a = attrs.get(&o.id);
+                        let style = text_style_of(cx.project, o, a).map(|st| (st, ipf));
                         let pen = layer_pen(layers, &o.layer, lws);
-                        draw_cad_item_styled(&mut cv, o, &tp, k, pen, style);
+                        match a {
+                            Some(a)
+                                if matches!(o.item, CadItem::Text { .. })
+                                    && a.text_box.needs_layout() =>
+                            {
+                                draw_text_box_item(&mut cv, o, a, &tp, k, pen, style);
+                            }
+                            _ => draw_cad_item_styled(&mut cv, o, &tp, k, pen, style),
+                        }
                     }
                 }
                 _ => {}
@@ -1181,6 +1365,12 @@ pub(crate) fn box_prims(
             BoxSource::SheetIndex => {
                 draw_table(&mut cv, &cx.sheet_index_table(), rect[0], rect[3]);
             }
+            BoxSource::PageTable => {
+                draw_table(&mut cv, &cx.page_table(), rect[0], rect[3]);
+            }
+            BoxSource::RevisionTable => {
+                draw_table(&mut cv, &cx.revision_table(), rect[0], rect[3]);
+            }
             BoxSource::Perspective { camera_id } => {
                 match cx.perspective_for(request_for(b, *camera_id)) {
                     Some(img) => draw_pixels(&mut cv, rect, lws, &img, "PERSPECTIVE"),
@@ -1198,7 +1388,8 @@ pub(crate) fn box_prims(
                 align,
                 bold,
             } if layers.is_visible(LAYER_TEXT) => {
-                let fitted = fit_text_box(text, *height_pt, *bold, b.text_fit, bw, bh);
+                let text = cx.expand_page_macros(text);
+                let fitted = fit_text_box(&text, *height_pt, *bold, b.text_fit, bw, bh);
                 let size = fitted.size_pt;
                 // A line that starts below the box is dropped; one that only
                 // runs past the bottom is cut by the box's clip. Without a
@@ -1697,7 +1888,7 @@ fn draw_sheet_index(cv: &mut Canvas, layout: &Layout, ctx: &MacroContext, size: 
     cv.line((x, y), (x + 4.0 * 72.0, y), Pen::new(0.75));
     for p in layout.content_pages() {
         y -= 16.0;
-        cv.text(x, y, 10.0, BLACK, &p.sheet_number());
+        cv.text(x, y, 10.0, BLACK, &layout.sheet_number_of(p));
         cv.text(x + 54.0, y, 10.0, BLACK, &p.title.to_uppercase());
     }
 }
@@ -1806,22 +1997,28 @@ pub(crate) fn draw_page(
     if ctx.project_name.is_empty() {
         ctx.project_name = cx.project.name.clone();
     }
-    ctx.sheet_number = page.sheet_number();
-    ctx.sheet_title = page.title.clone();
+    // The sheet number is the page's label, with the page macros and the
+    // REVISIONS table (the page's own revisions, else the clouds').
+    ctx.apply_page(layout, page);
     ctx.scale = page_scale_label(page);
     ctx.page_count = pages.len();
-    // The REVISIONS table lists the revisions the page clouds carry.
-    ctx.add_cloud_revisions(layout);
 
     cx.set_sheet_index(layout);
-    for t in layout.template_pages() {
+    cx.set_current_page(page.number);
+    cx.set_page_macros(Some(ctx.clone()));
+    let page_index = layout.pages.iter().position(|p| p.number == page.number);
+    for t in page_index.map_or_else(Vec::new, |i| layout.templates_for(i)) {
         draw_page_content(cv, t, &ctx, cx, scenes, &layout.layers);
     }
     draw_page_content(cv, page, &ctx, cx, scenes, &layout.layers);
+    cx.set_page_macros(None);
     // Page Specification can give a page its own sheet and drop its title
     // block.
     let size = layout.page_sheet_inches(page);
-    let title_block = layout.layers.is_visible(LAYER_TITLE_BLOCK) && !page.no_title_block;
+    let no_title_block = page_index.map_or(page.no_title_block, |i| {
+        layout.effective_no_title_block(i)
+    });
+    let title_block = layout.layers.is_visible(LAYER_TITLE_BLOCK) && !no_title_block;
     if title_block {
         let mut block = Canvas::new();
         draw_title_block(&mut block, layout, &ctx, size);
@@ -1886,7 +2083,7 @@ pub fn render_pdf(layout: &Layout, cx: &LayoutRenderContext) -> Vec<u8> {
         }
         doc.add_bookmark(&format!(
             "{} {}",
-            pages[index].sheet_number(),
+            layout.sheet_number_of(pages[index]),
             pages[index].title
         ));
         let mut cv = Canvas::new();

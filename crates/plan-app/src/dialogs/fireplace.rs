@@ -74,7 +74,7 @@ impl FireplaceDialog {
             ChimneyTop::Auto => 168.0,
         };
         let mut layers = layers;
-        if !layers.iter().any(|l| *l == sym.layer) {
+        if !layers.contains(&sym.layer) {
             layers.push(sym.layer.clone());
         }
         if !layers.iter().any(|l| l == FIREPLACE_LAYER) {

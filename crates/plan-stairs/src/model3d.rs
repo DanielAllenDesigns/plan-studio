@@ -5,20 +5,28 @@
 //! X right, Y up, Z = -plan y.
 
 use crate::landing::polygon_slab;
-use crate::layout::{Curve, Flight, Frame, Layout, Uv};
-use crate::railing::{stair_half_wall, stair_railing};
+use crate::layout::{Curve, Flight, Frame, Layout, RampArc, Uv};
+use crate::railing::{
+    bar, landing_railing, stair_half_wall_skipping, stair_railing_skipping, PostSkip,
+};
 use crate::{RailSide, SideKind, Stair, StairParams, StringerStyle};
 use plan_3d::{Material, Mesh, Vertex};
 use plan_core::{Id, Point};
 
 pub(crate) type V3 = [f64; 3];
 
-/// Stringer board thickness.
+/// Stringer board thickness (curved stairs).
 const STRINGER_THICKNESS: f64 = 1.5;
 /// Handrail cross-section (square).
 const HANDRAIL_SIZE: f64 = 2.0;
 /// Handrail height above the nosing line.
 const HANDRAIL_HEIGHT: f64 = 34.0;
+/// Thickness of a carpet runner.
+const RUNNER_THICKNESS: f64 = 0.5;
+/// Thickness of the soffit under a stair that is closed underneath.
+const SOFFIT_THICKNESS: f64 = 0.75;
+/// How far a handrail returns into the wall.
+const RETURN_LENGTH: f64 = 3.0;
 
 /// What a mesh of a stair is, since [`plan_3d::Mesh`] carries only a material.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -35,6 +43,8 @@ pub enum StairPart {
     Ramp,
     /// A handrail, or the railing of a stair side (newels, balusters, rails).
     Handrail,
+    /// The carpet runner down the treads.
+    Runner,
 }
 
 /// All meshes of the stair, each box or slab as its own [`Mesh`].
@@ -47,6 +57,12 @@ pub fn meshes(stair: &Stair) -> Vec<Mesh> {
 
 /// Like [`meshes`], but each mesh is labelled with the [`StairPart`] it is.
 pub fn tagged_meshes(stair: &Stair) -> Vec<(StairPart, Mesh)> {
+    tagged_meshes_skipping(stair, PostSkip::default())
+}
+
+/// [`tagged_meshes`] without the newels or balusters `skip` names: the
+/// caller puts a library post at each place [`crate::stair_posts`] lists.
+pub fn tagged_meshes_skipping(stair: &Stair, skip: PostSkip) -> Vec<(StairPart, Mesh)> {
     let layout = Layout::build(stair);
     let mut out = Vec::new();
     let mut ctx = Ctx {
@@ -61,60 +77,93 @@ pub fn tagged_meshes(stair: &Stair) -> Vec<(StairPart, Mesh)> {
 
     if let Some(c) = &layout.curve {
         ctx.curved(c, p, h);
+    } else if let Some(arc) = &layout.ramp_arc {
+        ctx.curved_ramp(arc, thick);
+        if p.handrail {
+            ctx.arc_handrails(arc);
+        }
     } else if !layout.is_landing {
-        for f in &layout.flights {
+        let aprons = layout.aprons(p);
+        let flared = !p.flare_shape.is_none();
+        let nflights = layout.flights.len();
+        for (i, f) in layout.flights.iter().enumerate() {
             if layout.is_ramp {
                 ctx.ramp(f, thick);
+                if p.handrail {
+                    ctx.ramp_handrails(f, p, i == 0, i + 1 == nflights);
+                }
                 continue;
             }
+            let t = layout.tread_depth;
             for j in 1..=f.treads {
-                let s1 = f64::from(j) * layout.tread_depth;
-                let s0 = s1 - layout.tread_depth - p.nosing;
+                let s1 = f64::from(j) * t;
+                let s0 = s1 - t - p.nosing;
                 let top = f.base + f64::from(j) * h;
-                let flared = if j == 1 && std::ptr::eq(f, &layout.flights[0]) {
-                    layout.apron(p)
-                } else {
-                    None
-                };
-                let profile = match flared {
-                    Some(apron) => apron
-                        .into_iter()
-                        .map(|uv| ctx.scene(uv, top - p.tread_thickness))
-                        .collect(),
-                    None => ctx.flight_rect(f, s0, s1, top - p.tread_thickness),
-                };
-                ctx.push(
-                    StairPart::Tread,
-                    Material::Floor,
-                    &profile,
-                    [0.0, p.tread_thickness, 0.0],
-                );
-            }
-            if !p.open_risers {
-                for j in 1..=f.risers {
-                    let s0 = f64::from(j - 1) * layout.tread_depth;
-                    let profile = ctx.flight_rect(
-                        f,
-                        s0,
-                        s0 + p.riser_thickness,
-                        f.base + f64::from(j - 1) * h,
-                    );
+                let lo = top - p.tread_thickness;
+                let apron = aprons.iter().find(|(n, _)| i == 0 && *n == j);
+                if let Some((_, apron)) = apron {
+                    let profile: Vec<V3> = apron.iter().map(|&uv| ctx.scene(uv, lo)).collect();
                     ctx.push(
-                        StairPart::Riser,
-                        Material::WallInterior,
+                        StairPart::Tread,
+                        Material::Floor,
                         &profile,
-                        [0.0, h, 0.0],
+                        [0.0, p.tread_thickness, 0.0],
+                    );
+                } else if flared {
+                    let mut ring = layout.across(p, i, s0, layout.bulge(p, i, j - 1));
+                    ring.extend(layout.across(p, i, s1, layout.bulge(p, i, j)).into_iter().rev());
+                    ctx.slab(StairPart::Tread, Material::Floor, &ring, (lo, top));
+                } else {
+                    let profile = ctx.flight_rect(f, s0, s1, lo);
+                    ctx.push(
+                        StairPart::Tread,
+                        Material::Floor,
+                        &profile,
+                        [0.0, p.tread_thickness, 0.0],
                     );
                 }
             }
+            if !p.open_risers {
+                for j in 1..=f.risers {
+                    if j == f.risers && i + 1 == nflights && !p.top_landing.riser_surface {
+                        continue;
+                    }
+                    let s0 = f64::from(j - 1) * t;
+                    let y0 = f.base + f64::from(j - 1) * h;
+                    if flared {
+                        let mut ring = layout.across(p, i, s0, layout.bulge(p, i, j - 1));
+                        ring.extend(
+                            layout
+                                .across(p, i, s0 + p.riser_thickness, layout.bulge(p, i, j - 1))
+                                .into_iter()
+                                .rev(),
+                        );
+                        ctx.slab(StairPart::Riser, Material::WallInterior, &ring, (y0, y0 + h));
+                    } else {
+                        let profile = ctx.flight_rect(f, s0, s0 + p.riser_thickness, y0);
+                        ctx.push(
+                            StairPart::Riser,
+                            Material::WallInterior,
+                            &profile,
+                            [0.0, h, 0.0],
+                        );
+                    }
+                }
+            }
             if f.treads > 0 {
-                ctx.stringers(f, h, p);
+                ctx.stringers(f, i, h, p);
                 let (left, right) = (
                     p.handrail || p.left_side == SideKind::Handrail,
                     p.handrail || p.right_side == SideKind::Handrail,
                 );
                 if left || right {
-                    ctx.handrails(f, h, left, right);
+                    ctx.handrails(f, h, left, right, p, i == 0, i + 1 == nflights);
+                }
+                if p.runner.width > 1e-9 {
+                    ctx.runner(f, h, p, t);
+                }
+                if p.top_landing.nosing && i + 1 == nflights {
+                    ctx.top_nosing(f, h, p);
                 }
             }
         }
@@ -151,7 +200,7 @@ pub fn tagged_meshes(stair: &Stair) -> Vec<(StairPart, Mesh)> {
 
     if layout.is_landing {
         out.extend(
-            crate::railing::landing_railing(stair)
+            landing_railing(stair, skip)
                 .into_iter()
                 .map(|m| (StairPart::Handrail, m)),
         );
@@ -165,14 +214,20 @@ pub fn tagged_meshes(stair: &Stair) -> Vec<(StairPart, Mesh)> {
                 // A Handrail side is drawn with the flights' handrails.
                 SideKind::None | SideKind::Handrail => {}
                 SideKind::Railing => out.extend(
-                    stair_railing(stair, side, &railing)
+                    stair_railing_skipping(stair, side, &railing, skip)
                         .into_iter()
                         .map(|m| (StairPart::Handrail, m)),
                 ),
                 SideKind::Wall | SideKind::HalfWall => out.extend(
-                    stair_half_wall(stair, side, &railing, kind == SideKind::Wall)
-                        .into_iter()
-                        .map(|m| (StairPart::Stringer, m)),
+                    stair_half_wall_skipping(
+                        stair,
+                        side,
+                        &railing,
+                        kind == SideKind::Wall,
+                        skip,
+                    )
+                    .into_iter()
+                    .map(|m| (StairPart::Stringer, m)),
                 ),
             }
         }
@@ -238,27 +293,87 @@ impl Ctx<'_> {
         self.push(part, material, &profile, ext);
     }
 
-    /// Stringers along the pitch line through the riser tops, one on each side.
-    fn stringers(&mut self, f: &Flight, h: f64, p: &StairParams) {
+    /// A polygon given in the local frame, extruded between two heights.
+    fn slab(&mut self, part: StairPart, material: Material, ring: &[Uv], (y0, y1): (f64, f64)) {
+        let poly: Vec<Point> = ring.iter().map(|&uv| self.frame.uv(uv)).collect();
+        if let Some(m) = polygon_slab(
+            &poly,
+            self.elevation + y0,
+            self.elevation + y1,
+            material,
+            Some(self.id),
+        ) {
+            self.out.push((part, m));
+        }
+    }
+
+    /// A board across the whole flight (or `width` of it from `lat`): the
+    /// profile is `(along, height)` pairs, extruded sideways.
+    fn across_board(
+        &mut self,
+        part: StairPart,
+        f: &Flight,
+        pts: &[(f64, f64)],
+        lat: f64,
+        width: f64,
+    ) {
+        let profile: Vec<V3> = pts
+            .iter()
+            .map(|&(s, h)| self.on_flight(f, s, lat, h))
+            .collect();
+        let r = f.right();
+        let ext = self.vector((r.0 * width, r.1 * width), 0.0);
+        self.push(part, Material::WallInterior, &profile, ext);
+    }
+
+    /// Stringers along the pitch line through the riser tops: one on each
+    /// side by default, plus the centre ones and the skirt and soffit of a
+    /// stair that is closed underneath (the Stringers panel).
+    fn stringers(&mut self, f: &Flight, index: usize, h: f64, p: &StairParams) {
+        let o = &p.stringers;
+        let thick = o.thickness.max(0.25);
+        let style = if p.stringer == StringerStyle::None && o.centre > 0 {
+            StringerStyle::Closed
+        } else {
+            p.stringer
+        };
+        let t = f.len / f64::from(f.treads.max(1));
+        let slope = h / t;
         let depth = p.stringer_depth;
         let rise = f64::from(f.treads) * h;
         let hyp = f.len.hypot(rise);
         let (cos, sin) = (f.len / hyp, rise / hyp);
-        let lats = [0.0, (f.width - STRINGER_THICKNESS).max(0.0)];
-        match p.stringer {
+        // Where the boards stand: the sides unless left out, then the
+        // middle ones.
+        let mut lats: Vec<f64> = Vec::new();
+        if p.stringer != StringerStyle::None && !o.no_sides {
+            lats.extend([0.0, (f.width - thick).max(0.0)]);
+        }
+        for k in 1..=u32::from(o.centre) {
+            lats.push(f.width * f64::from(k) / f64::from(u32::from(o.centre) + 1) - thick / 2.0);
+        }
+        let s_end = if o.extend_top {
+            f.len
+        } else {
+            (f.len - t).max(t.min(f.len))
+        };
+        match style {
             StringerStyle::None => {}
             StringerStyle::Closed => {
                 let (dx, dy) = (sin * depth, -cos * depth);
-                let (a, b) = ((0.0, f.base + h), (f.len, f.base + h + rise));
+                let (a, b) = (
+                    (0.0, f.base + h),
+                    (s_end, f.base + h + s_end * slope),
+                );
                 let pts = [a, b, (b.0 + dx, b.1 + dy), (a.0 + dx, a.1 + dy)];
-                for lat in lats {
+                for &lat in &lats {
                     self.side_board(
                         StairPart::Stringer,
                         Material::WallInterior,
                         f,
                         &pts,
                         lat,
-                        STRINGER_THICKNESS,
+                        thick,
                     );
                 }
             }
@@ -266,26 +381,30 @@ impl Ctx<'_> {
                 // The board under the notches: between the line through the
                 // inside corners of the steps and the bottom edge, at least
                 // 4" of throat; then one triangle per step above it.
-                let t = f.len / f64::from(f.treads);
-                let tip = |s: f64| f.base + h + s * h / t;
+                let tip = |s: f64| f.base + h + s * slope;
                 let throat = (depth / cos - h).max(4.0 / cos);
                 let root = |s: f64| tip(s) - h;
                 let strip = [
                     (0.0, root(0.0)),
-                    (f.len, root(f.len)),
-                    (f.len, root(f.len) - throat),
+                    (s_end, root(s_end)),
+                    (s_end, root(s_end) - throat),
                     (0.0, root(0.0) - throat),
                 ];
-                for lat in lats {
+                let steps = if o.extend_top {
+                    f.treads
+                } else {
+                    f.treads.saturating_sub(1)
+                };
+                for &lat in &lats {
                     self.side_board(
                         StairPart::Stringer,
                         Material::WallInterior,
                         f,
                         &strip,
                         lat,
-                        STRINGER_THICKNESS,
+                        thick,
                     );
-                    for j in 1..=f.treads {
+                    for j in 1..=steps {
                         let (s0, s1) = (f64::from(j - 1) * t, f64::from(j) * t);
                         let tri = [(s0, root(s0)), (s0, tip(s0)), (s1, root(s1))];
                         self.side_board(
@@ -294,30 +413,95 @@ impl Ctx<'_> {
                             f,
                             &tri,
                             lat,
-                            STRINGER_THICKNESS,
+                            thick,
                         );
                     }
                 }
             }
         }
+        // A larger stringer at the base: a block down to the floor under the
+        // first steps of the first flight.
+        if o.large_base && index == 0 && style != StringerStyle::None {
+            let heel = [
+                (0.0, f.base),
+                (t, f.base),
+                (t, f.base + h + t * slope),
+                (0.0, f.base + h),
+            ];
+            for &lat in &lats {
+                self.side_board(
+                    StairPart::Stringer,
+                    Material::WallInterior,
+                    f,
+                    &heel,
+                    lat,
+                    thick,
+                );
+            }
+        }
+        // Closed underneath: a skirt down to the floor along each side and a
+        // soffit across the underside.
+        if !o.open_underneath {
+            let top_a = f.base + h;
+            let top_b = f.base + h + rise;
+            let skirt = [(0.0, 0.0), (f.len, 0.0), (f.len, top_b), (0.0, top_a)];
+            let inset = o.side_inset.max(0.0).min(f.width / 2.0 - thick);
+            for lat in [inset, (f.width - inset - thick).max(0.0)] {
+                self.side_board(
+                    StairPart::Stringer,
+                    Material::WallInterior,
+                    f,
+                    &skirt,
+                    lat,
+                    thick,
+                );
+            }
+            let (dx, dy) = (sin * depth, -cos * depth);
+            let soffit = [
+                (dx, top_a + dy),
+                (f.len + dx, top_b + dy),
+                (f.len + dx, top_b + dy - SOFFIT_THICKNESS),
+                (dx, top_a + dy - SOFFIT_THICKNESS),
+            ];
+            self.across_board(
+                StairPart::Stringer,
+                f,
+                &soffit,
+                inset,
+                (f.width - 2.0 * inset).max(0.0),
+            );
+        }
     }
 
-    /// A handrail on the chosen sides, parallel to the pitch line.
-    fn handrails(&mut self, f: &Flight, h: f64, left: bool, right: bool) {
+    /// A handrail on the chosen sides, parallel to the pitch line, with the
+    /// Railing panel's extensions and returns.
+    #[allow(clippy::too_many_arguments)]
+    fn handrails(
+        &mut self,
+        f: &Flight,
+        h: f64,
+        left: bool,
+        right: bool,
+        p: &StairParams,
+        first: bool,
+        last: bool,
+    ) {
         let rise = f64::from(f.treads) * h;
-        let (y0, y1) = (
-            f.base + h + HANDRAIL_HEIGHT,
-            f.base + h + rise + HANDRAIL_HEIGHT,
-        );
+        let slope = rise / f.len.max(1e-9);
+        let o = &p.handrail_options;
+        let ext_b = if first { o.extend_bottom.max(0.0) } else { 0.0 };
+        let ext_t = if last { o.extend_top.max(0.0) } else { 0.0 };
+        let y_at = |s: f64| f.base + h + HANDRAIL_HEIGHT + slope * s;
+        let (s0, s1) = (-ext_b, f.len + ext_t);
         let pts = [
-            (0.0, y0),
-            (f.len, y1),
-            (f.len, y1 - HANDRAIL_SIZE),
-            (0.0, y0 - HANDRAIL_SIZE),
+            (s0, y_at(s0)),
+            (s1, y_at(s1)),
+            (s1, y_at(s1) - HANDRAIL_SIZE),
+            (s0, y_at(s0) - HANDRAIL_SIZE),
         ];
-        for lat in [
-            left.then_some(0.0),
-            right.then_some((f.width - HANDRAIL_SIZE).max(0.0)),
+        for (is_left, lat) in [
+            left.then_some((true, 0.0)),
+            right.then_some((false, (f.width - HANDRAIL_SIZE).max(0.0))),
         ]
         .into_iter()
         .flatten()
@@ -330,7 +514,159 @@ impl Ctx<'_> {
                 lat,
                 HANDRAIL_SIZE,
             );
+            // A return: a short bar from the end of the rail into the wall.
+            let into_wall = if is_left { -1.0 } else { 1.0 };
+            for (ret, s) in [(o.return_bottom && first, s0), (o.return_top && last, s1)] {
+                if !ret {
+                    continue;
+                }
+                let y = y_at(s) - HANDRAIL_SIZE / 2.0;
+                let edge = if is_left { 0.0 } else { f.width };
+                let a = self.on_flight(f, s, edge - into_wall * HANDRAIL_SIZE / 2.0, y);
+                let b = self.on_flight(f, s, edge + into_wall * RETURN_LENGTH, y);
+                let hint = self.vector((f.dir.0, f.dir.1), 0.0);
+                self.out.extend(
+                    bar(
+                        a,
+                        b,
+                        hint,
+                        (HANDRAIL_SIZE, HANDRAIL_SIZE),
+                        Material::WallInterior,
+                        Some(self.id),
+                    )
+                    .map(|m| (StairPart::Handrail, m)),
+                );
+            }
         }
+    }
+
+    /// Handrails on both sides of a ramp run, 34" above the surface, flat
+    /// over the landing that follows; the first run starts, and the last run
+    /// ends, with the Railing panel's extension.
+    fn ramp_handrails(&mut self, f: &Flight, p: &StairParams, first: bool, last: bool) {
+        let slope = f.rise / f.len.max(1e-9);
+        let o = &p.handrail_options;
+        let ext_b = if first { o.extend_bottom.max(0.0) } else { 0.0 };
+        let ext_t = if last { o.extend_top.max(0.0) } else { crate::RAMP_LANDING };
+        let y_at = |s: f64| f.base + HANDRAIL_HEIGHT + (slope * s).min(f.rise);
+        let pts = [
+            (-ext_b, y_at(-ext_b.min(0.0))),
+            (f.len, y_at(f.len)),
+            (f.len + ext_t, y_at(f.len)),
+            (f.len + ext_t, y_at(f.len) - HANDRAIL_SIZE),
+            (f.len, y_at(f.len) - HANDRAIL_SIZE),
+            (-ext_b, y_at(0.0) - HANDRAIL_SIZE),
+        ];
+        // A run's rail is not convex once it flattens over the landing:
+        // cut it into the sloped part and the level part.
+        let sloped = [pts[0], pts[1], pts[4], pts[5]];
+        let level = [pts[1], pts[2], pts[3], pts[4]];
+        for lat in [0.0, (f.width - HANDRAIL_SIZE).max(0.0)] {
+            self.side_board(
+                StairPart::Handrail,
+                Material::WallInterior,
+                f,
+                &sloped,
+                lat,
+                HANDRAIL_SIZE,
+            );
+            if ext_t > 1e-9 {
+                self.side_board(
+                    StairPart::Handrail,
+                    Material::WallInterior,
+                    f,
+                    &level,
+                    lat,
+                    HANDRAIL_SIZE,
+                );
+            }
+        }
+    }
+
+    /// Handrails along both edges of a curved ramp.
+    fn arc_handrails(&mut self, arc: &RampArc) {
+        let c = &arc.curve;
+        let sweep = c.sweep();
+        let n = ((sweep.to_degrees() / 7.5).ceil() as usize).max(1);
+        for lat in [HANDRAIL_SIZE / 2.0, c.width - HANDRAIL_SIZE / 2.0] {
+            for i in 0..n {
+                let (a0, a1) = (
+                    sweep * i as f64 / n as f64,
+                    sweep * (i + 1) as f64 / n as f64,
+                );
+                let pa = self.scene(c.at_lat(a0, lat), arc.height_at(a0) + HANDRAIL_HEIGHT);
+                let pb = self.scene(c.at_lat(a1, lat), arc.height_at(a1) + HANDRAIL_HEIGHT);
+                let hint = [0.0, 1.0, 0.0];
+                let hint = if (pb[0] - pa[0]).abs() + (pb[2] - pa[2]).abs() < 1e-9 {
+                    [1.0, 0.0, 0.0]
+                } else {
+                    hint
+                };
+                self.out.extend(
+                    bar(
+                        pa,
+                        pb,
+                        hint,
+                        (HANDRAIL_SIZE, HANDRAIL_SIZE),
+                        Material::WallInterior,
+                        Some(self.id),
+                    )
+                    .map(|m| (StairPart::Handrail, m)),
+                );
+            }
+        }
+    }
+
+    /// A carpet runner down the middle of the treads; a tucked one also
+    /// covers the face of each riser under the nosing.
+    fn runner(&mut self, f: &Flight, h: f64, p: &StairParams, t: f64) {
+        let rw = p.runner.width.min(f.width);
+        let lat0 = (f.width - rw) / 2.0;
+        for j in 1..=f.treads {
+            let top = f.base + f64::from(j) * h;
+            let s1 = f64::from(j) * t;
+            let s0 = s1 - t - p.nosing;
+            let profile: Vec<V3> = [(s0, lat0), (s1, lat0), (s1, lat0 + rw), (s0, lat0 + rw)]
+                .iter()
+                .map(|&(s, l)| self.on_flight(f, s, l, top))
+                .collect();
+            self.push(
+                StairPart::Runner,
+                Material::Floor,
+                &profile,
+                [0.0, RUNNER_THICKNESS, 0.0],
+            );
+            if p.runner.tucked {
+                let face = s0 + p.nosing;
+                let profile: Vec<V3> = [
+                    (face - p.nosing - RUNNER_THICKNESS, lat0),
+                    (face - p.nosing, lat0),
+                    (face - p.nosing, lat0 + rw),
+                    (face - p.nosing - RUNNER_THICKNESS, lat0 + rw),
+                ]
+                .iter()
+                .map(|&(s, l)| self.on_flight(f, s, l, top - h + RUNNER_THICKNESS))
+                .collect();
+                self.push(
+                    StairPart::Runner,
+                    Material::Floor,
+                    &profile,
+                    [0.0, h - RUNNER_THICKNESS - p.tread_thickness, 0.0],
+                );
+            }
+        }
+    }
+
+    /// A nosing along the edge of the top landing, over the top riser.
+    fn top_nosing(&mut self, f: &Flight, h: f64, p: &StairParams) {
+        let top = f.base + f64::from(f.risers) * h;
+        let profile = self.flight_rect(f, f.len - p.nosing, f.len + p.riser_thickness, top - p.tread_thickness);
+        self.push(
+            StairPart::Tread,
+            Material::Floor,
+            &profile,
+            [0.0, p.tread_thickness, 0.0],
+        );
     }
 
     /// One sloped slab rising over the flight length, on top of `f.base`.
@@ -347,6 +683,36 @@ impl Ctx<'_> {
         let r = f.right();
         let ext = self.vector((r.0 * f.width, r.1 * f.width), 0.0);
         self.push(StairPart::Ramp, Material::WallInterior, &profile, ext);
+    }
+
+    /// The sloped runs of a curved ramp, in strips of 5 degrees.
+    fn curved_ramp(&mut self, arc: &RampArc, thick: f64) {
+        let c = &arc.curve;
+        for &(a0, a1, _, rise) in &arc.segs {
+            if rise.abs() < 1e-9 {
+                continue;
+            }
+            let n = (((a1 - a0).to_degrees() / 5.0).ceil() as usize).max(1);
+            for k in 0..n {
+                let (b0, b1) = (
+                    a0 + (a1 - a0) * k as f64 / n as f64,
+                    a0 + (a1 - a0) * (k + 1) as f64 / n as f64,
+                );
+                let (h0, h1) = (arc.height_at(b0), arc.height_at(b1));
+                let profile = [
+                    self.scene(c.at_lat(b0, 0.0), h0),
+                    self.scene(c.at_lat(b0, c.width), h0),
+                    self.scene(c.at_lat(b1, c.width), h1),
+                    self.scene(c.at_lat(b1, 0.0), h1),
+                ];
+                self.push(
+                    StairPart::Ramp,
+                    Material::WallInterior,
+                    &profile,
+                    [0.0, -thick, 0.0],
+                );
+            }
+        }
     }
 
     /// A horizontal wedge of a curved stair at height `y`.

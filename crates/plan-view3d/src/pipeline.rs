@@ -30,6 +30,8 @@ uniform int u_ortho;
 uniform vec3 u_sky_top;
 uniform vec3 u_sky_horizon;
 uniform vec3 u_ground;
+uniform int u_ground_mode;    // 0 fade, 1 flat color, 2 sky carries on
+uniform vec3 u_ground_solid;
 uniform int u_backdrop_on;
 uniform sampler2D u_backdrop;
 uniform vec2 u_backdrop_scale;
@@ -49,6 +51,10 @@ void main() {
         float up = dir.y;
         if (up >= 0.0) {
             col = mix(u_sky_horizon, u_sky_top, pow(clamp(up, 0.0, 1.0), 0.5));
+        } else if (u_ground_mode == 1) {
+            col = mix(u_sky_horizon, u_ground_solid, smoothstep(0.0, 0.02, -up));
+        } else if (u_ground_mode == 2) {
+            col = mix(u_sky_horizon, u_sky_top, pow(clamp(-up, 0.0, 1.0), 0.5));
         } else {
             col = mix(u_sky_horizon, u_ground, smoothstep(0.0, 0.35, -up));
         }

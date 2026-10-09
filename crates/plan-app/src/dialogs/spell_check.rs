@@ -308,7 +308,10 @@ pub fn set_range(project: &mut Project, s: &Source, start: usize, end: usize, ne
                     .get_mut(*page)
                     .and_then(|p| p.boxes.iter_mut().find(|b| b.id == *id))
                     .and_then(|b| match &mut b.source {
-                        BoxSource::Text { text: t, .. } => Some(*t = text),
+                        BoxSource::Text { text: t, .. } => {
+                            *t = text;
+                            Some(())
+                        }
                         _ => None,
                     })
                     .is_some(),
@@ -323,7 +326,10 @@ pub fn set_range(project: &mut Project, s: &Source, start: usize, end: usize, ne
                     .get_mut(*page)
                     .and_then(|p| p.cad.iter_mut().find(|c| c.id == *id))
                     .and_then(|c| match &mut c.item {
-                        CadItem::Text { text: t, .. } => Some(*t = text),
+                        CadItem::Text { text: t, .. } => {
+                            *t = text;
+                            Some(())
+                        }
                         _ => None,
                     })
                     .is_some(),
@@ -974,7 +980,7 @@ mod tests {
     fn words() -> Speller {
         test_speller(&[
             "the", "kitchen", "master", "bedroom", "bath", "wall", "room", "door", "open", "to",
-            "notes", "garage",
+            "notes", "garage", "fine", "and", "is", "here", "again",
         ])
     }
 

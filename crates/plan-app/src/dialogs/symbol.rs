@@ -1,8 +1,15 @@
-//! Symbol Specification (CB-60): General (source catalog and object, size,
-//! elevation, position, angle, flip), Options (flip), Layer and Label for a
-//! placed library symbol. Sizes stretch the symbol's 3D mesh too. "Replace
-//! From Library" swaps the symbol's catalog id for the active Library
-//! Browser item and keeps its position and angle.
+//! Library Object Specification (CB-57, CB-60) for a placed library symbol:
+//! General (source catalog and object, size with Keep aspect, elevation,
+//! position, angle, reflect), Options (library-specific choices: door style,
+//! cabinet door, hardware), Materials, Label, Layer, Object Information and
+//! Schedule. Sizes stretch the symbol's 3D mesh too. "Replace From Library"
+//! swaps the symbol's catalog id for the active Library Browser item and
+//! keeps its position and angle.
+//!
+//! The same dialog is the Library Browser's Open Object:
+//! `SymbolDialog::for_library_item` edits a library object's own defaults
+//! (size, elevation, layer, label, schedule, options) instead of a placed
+//! copy; see `dialogs::library_object`.
 
 // The shell opens this dialog; until it is wired the items are unused.
 #![allow(dead_code)]
@@ -19,7 +26,7 @@ use eframe::egui::{self, Align2, Painter, Pos2, Rect, Stroke, StrokeKind, Ui, Ve
 use plan_core::geometry::Point;
 use plan_core::images::DistKind;
 use plan_core::PlacedSymbol;
-use plan_library::Placement;
+use plan_library::{CatalogItem, LibType, ObjectDefaults, Placement};
 
 mod import3d;
 pub use import3d::{show_import, start_import};
@@ -38,8 +45,14 @@ const TABS: &[Tab] = &[
     on("Layer"),
     on("Label"),
     off("Components"),
-    off("Object Information"),
+    on("Object Information"),
+    on("Schedule"),
 ];
+
+/// The names of the tabs, in order.
+pub fn tab_names() -> Vec<&'static str> {
+    TABS.iter().map(|t| t.name).collect()
+}
 
 pub struct SymbolDialog {
     frame: SpecDialog,
@@ -52,6 +65,14 @@ pub struct SymbolDialog {
 enum Special {
     Image(ImageForm),
     Distribution(DistributionForm),
+}
+
+/// What the dialog edits when it is the Library Browser's Open Object.
+struct LibraryMode {
+    item_id: String,
+    /// A User Catalog item: OK saves the changes into it. Built-in and Chief
+    /// objects are read-only.
+    editable: bool,
 }
 
 struct SymbolForm {
@@ -75,6 +96,186 @@ struct SymbolForm {
     material: Option<String>,
     material_changed: bool,
     material_search: String,
+    /// General tab: resizing one dimension scales the other two with it.
+    keep_aspect: bool,
+    /// The browser type of the library item (decides the Options rows).
+    lib_type: Option<LibType>,
+    /// Object Information rows and the item's keywords.
+    info: Vec<(&'static str, String)>,
+    keywords: Vec<String>,
+    /// Some when the dialog edits a library object, not a placed copy.
+    library: Option<LibraryMode>,
+    /// Open Object: how the item's 3D model is turned about the vertical
+    /// axis, degrees (the General tab's Rotation row).
+    model_rotation: f64,
+}
+
+impl SymbolForm {
+    fn blank(draft: PlacedSymbol, layers: Vec<String>) -> SymbolForm {
+        SymbolForm {
+            name: String::new(),
+            category: String::new(),
+            placement: Placement::FreeStanding,
+            source: String::new(),
+            chief: false,
+            library_size: None,
+            layers,
+            fields: Fields::default(),
+            note: String::new(),
+            material: None,
+            material_changed: false,
+            material_search: String::new(),
+            keep_aspect: false,
+            lib_type: None,
+            info: Vec::new(),
+            keywords: Vec::new(),
+            library: None,
+            model_rotation: 0.0,
+            draft,
+        }
+    }
+}
+
+/// Schedules a placed object can be filed under by hand.
+const SCHEDULE_CATEGORIES: &[&str] = &["Fixture", "Furniture", "Plant", "Appliance"];
+
+/// Scales the other two sizes when one changed (Keep aspect). `old` is the
+/// size before the edit, `changed` says which of width, depth, height was
+/// typed into.
+fn keep_aspect(d: &mut PlacedSymbol, old: (f64, f64, f64), changed: (bool, bool, bool)) {
+    let ratio = match changed {
+        (true, _, _) if old.0 > 0.0 => d.width / old.0,
+        (_, true, _) if old.1 > 0.0 => d.depth / old.1,
+        (_, _, true) if old.2 > 0.0 => d.height / old.2,
+        _ => return,
+    };
+    if !ratio.is_finite() || ratio <= 0.0 {
+        return;
+    }
+    if !changed.0 {
+        d.width = old.0 * ratio;
+    }
+    if !changed.1 {
+        d.depth = old.1 * ratio;
+    }
+    if !changed.2 {
+        d.height = old.2 * ratio;
+    }
+}
+
+/// The library-specific rows of the Options tab for a browser type: the
+/// option key (stored in `PlacedSymbol::options`) and its label.
+fn option_rows(t: Option<LibType>) -> &'static [(&'static str, &'static str)] {
+    match t {
+        Some(LibType::Doors) => &[("door_style", "Door style"), ("hardware", "Hardware")],
+        Some(LibType::Cabinets) => &[("cabinet_door", "Cabinet door"), ("hardware", "Hardware")],
+        Some(LibType::Windows) => &[("hardware", "Hardware")],
+        _ => &[],
+    }
+}
+
+/// Hardware finishes offered next to the library's hardware objects.
+const FINISHES: &[&str] = &[
+    "Brushed Nickel",
+    "Polished Chrome",
+    "Oil-Rubbed Bronze",
+    "Matte Black",
+    "Satin Brass",
+];
+
+/// The choices of an option key: door styles are the library's doors, cabinet
+/// doors its Cabinet Doors styles, hardware its hardware objects and the
+/// common finishes.
+fn option_choices(key: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut push = |n: String| {
+        if !out.contains(&n) {
+            out.push(n);
+        }
+    };
+    match key {
+        "door_style" => {
+            for i in crate::tools::library::library_catalog().all_items() {
+                if plan_library::types::classify(i) == Some(LibType::Doors) {
+                    push(i.name.clone());
+                }
+            }
+        }
+        "cabinet_door" => {
+            let styles = crate::tools::library::door_styles::available();
+            for st in crate::tools::library::door_styles::doors(&styles) {
+                push(st.name.clone());
+            }
+            // The three fronts every cabinet can be built with.
+            for n in ["Slab", "Shaker", "Raised Panel"] {
+                push(n.to_string());
+            }
+        }
+        _ => {
+            for i in crate::tools::library::library_catalog().all_items() {
+                if plan_library::types::classify(i) == Some(LibType::Hardware) {
+                    push(i.name.clone());
+                }
+            }
+            for f in FINISHES {
+                push((*f).to_string());
+            }
+        }
+    }
+    out
+}
+
+/// The Object Information rows of a library item.
+pub fn info_rows(item: &plan_library::CatalogItem, source: &str) -> Vec<(&'static str, String)> {
+    let trim = |v: f64| {
+        if (v - v.round()).abs() < 0.05 {
+            format!("{}", v.round() as i64)
+        } else {
+            format!("{v:.1}")
+        }
+    };
+    let mut v = vec![
+        ("Name", item.name.clone()),
+        ("Type", item.kind.label().to_string()),
+        (
+            "Browser type",
+            plan_library::types::classify(item)
+                .map_or("-", LibType::label)
+                .to_string(),
+        ),
+        ("Category", item.category_label()),
+        ("Source", source.to_string()),
+        (
+            "Size",
+            format!(
+                "{} \u{00D7} {} \u{00D7} {} in",
+                trim(item.width),
+                trim(item.depth),
+                trim(item.height)
+            ),
+        ),
+        ("Placement", placement_name(item.placement).to_string()),
+        ("Default layer", plan_library::rules::default_layer(item)),
+    ];
+    if item.elevation != 0.0 {
+        v.push(("Elevation", format!("{} in", trim(item.elevation))));
+    }
+    if let Some(m) = &item.manufacturer {
+        v.push(("Manufacturer", m.clone()));
+    }
+    if let Some(st) = &item.style {
+        v.push(("Style", st.clone()));
+    }
+    v.push((
+        "3D model",
+        if item.model3d.is_some() || chief::is_chief_id(&item.id) {
+            "Yes"
+        } else {
+            "Plan symbol only"
+        }
+        .to_string(),
+    ));
+    v
 }
 
 fn placement_name(p: Placement) -> &'static str {
@@ -114,45 +315,17 @@ impl SymbolDialog {
                 title,
             );
         }
-        let mut form = SymbolForm {
-            name: String::new(),
-            category: String::new(),
-            placement: Placement::FreeStanding,
-            source: String::new(),
-            chief: false,
-            library_size: None,
-            layers,
-            fields: Fields::default(),
-            note: String::new(),
-            material: None,
-            material_changed: false,
-            material_search: String::new(),
-            draft: symbol,
-        };
+        let mut form = SymbolForm::blank(symbol, layers);
         form.describe();
         Self {
-            frame: SpecDialog::new("Symbol Specification", "symbol"),
+            frame: SpecDialog::new("Library Object Specification", "symbol"),
             form,
             special: None,
         }
     }
 
     fn special(symbol: PlacedSymbol, layers: Vec<String>, special: Special, title: &str) -> Self {
-        let form = SymbolForm {
-            name: String::new(),
-            category: String::new(),
-            placement: Placement::FreeStanding,
-            source: String::new(),
-            chief: false,
-            library_size: None,
-            layers,
-            fields: Fields::default(),
-            note: String::new(),
-            material: None,
-            material_changed: false,
-            material_search: String::new(),
-            draft: symbol,
-        };
+        let form = SymbolForm::blank(symbol, layers);
         Self {
             frame: SpecDialog::new(title, "symbol_special"),
             form,
@@ -166,6 +339,89 @@ impl SymbolDialog {
             Some(Special::Distribution(f)) => self.frame.show(ctx, f),
             None => self.frame.show(ctx, &mut self.form),
         }
+    }
+
+    /// Open Object: the Library Object Specification of library item `id`.
+    /// It edits the item's own defaults (size, elevation, layer, label,
+    /// schedule, options and Reflect) on a stand-in placed copy. Only User
+    /// Catalog items can be saved ([`library_update`](Self::library_update));
+    /// built-in and Chief objects are read-only. `None` for an unknown id.
+    pub fn for_library_item(id: &str, layers: Vec<String>) -> Option<Self> {
+        let item = find_item(id)?;
+        let mut proto = PlacedSymbol::new(
+            item.id.clone(),
+            Point::ZERO,
+            item.width,
+            item.depth,
+            item.height,
+        );
+        proto.elevation = item.elevation;
+        proto.layer = item
+            .layer
+            .clone()
+            .unwrap_or_else(|| plan_library::rules::default_layer(&item));
+        if let Some(d) = &item.defaults {
+            proto.flip = d.flip;
+            proto.label = d.label.clone();
+            proto.schedule = d.schedule.clone();
+            proto.options = d.options.clone();
+        }
+        let editable = id.starts_with("user.") && crate::tools::library::user::item(id).is_some();
+        let mut form = SymbolForm::blank(proto, layers);
+        form.model_rotation = item.model_rotation;
+        form.library = Some(LibraryMode {
+            item_id: id.to_string(),
+            editable,
+        });
+        form.describe();
+        Some(Self {
+            frame: SpecDialog::new("Library Object Specification", "library_object"),
+            form,
+            special: None,
+        })
+    }
+
+    /// Changes the draft the way typing into the fields would (tests).
+    #[cfg(test)]
+    pub fn edit_draft(&mut self, f: impl FnOnce(&mut PlacedSymbol)) {
+        f(&mut self.form.draft);
+    }
+
+    /// The library item Open Object edits (`None` for a placed copy).
+    pub fn library_item_id(&self) -> Option<&str> {
+        self.form.library.as_ref().map(|l| l.item_id.as_str())
+    }
+
+    /// Open Object, after OK: the User Catalog item with the dialog's size,
+    /// elevation, layer and defaults. The drawing is stretched to the new
+    /// width and depth. `None` for a read-only item or a placed copy.
+    pub fn library_update(&self) -> Option<CatalogItem> {
+        let lib = self.form.library.as_ref().filter(|l| l.editable)?;
+        let mut item = (*crate::tools::library::user::item(&lib.item_id)?).clone();
+        let d = &self.form.draft;
+        if item.width > 0.0 && item.depth > 0.0 && (d.width != item.width || d.depth != item.depth)
+        {
+            item.symbol = item
+                .symbol
+                .scaled_xy(d.width / item.width, d.depth / item.depth);
+        }
+        item.width = d.width;
+        item.depth = d.depth;
+        item.height = d.height;
+        item.elevation = d.elevation;
+        item.model_rotation = self.form.model_rotation;
+        let mut probe = item.clone();
+        probe.layer = None;
+        item.layer =
+            (d.layer != plan_library::rules::default_layer(&probe)).then(|| d.layer.clone());
+        let defaults = ObjectDefaults {
+            flip: d.flip,
+            label: d.label.clone(),
+            schedule: d.schedule.clone(),
+            options: d.options.clone(),
+        };
+        item.defaults = (!defaults.is_default()).then_some(defaults);
+        Some(item)
     }
 
     /// Starts the Materials tab on the material the symbol is painted with.
@@ -193,8 +449,8 @@ impl SymbolDialog {
 }
 
 impl SymbolForm {
-    /// Fills name, category, source and library size from the draft's
-    /// catalog id.
+    /// Fills name, category, source, library size, type and Object
+    /// Information from the draft's catalog id.
     fn describe(&mut self) {
         let id = self.draft.catalog_id.clone();
         let item = find_item(&id);
@@ -208,8 +464,22 @@ impl SymbolForm {
         self.source = match chief::installed(&id) {
             Some(c) => c.catalog_name,
             None if self.chief => "Chief Architect catalog (not loaded)".into(),
+            None if id.starts_with("user.") => "User Catalog".into(),
             None => "Plan Studio library".into(),
         };
+        self.lib_type = item.as_ref().and_then(|i| plan_library::types::classify(i));
+        self.info = item
+            .as_ref()
+            .map_or_else(Vec::new, |i| info_rows(i, &self.source));
+        self.keywords = item.as_ref().map_or_else(Vec::new, |i| {
+            i.tags
+                .iter()
+                .filter(|t| {
+                    !t.starts_with("image:") && !t.starts_with(plan_library::resolve::GUID_PREFIX)
+                })
+                .cloned()
+                .collect()
+        });
     }
 
     /// Replace From Library: the active Library Browser item takes over the
@@ -248,6 +518,7 @@ impl SymbolForm {
         let mut replace = false;
         let mut add_lib = false;
         let mut convert = false;
+        let in_library = self.library.is_some();
         let f = &mut self.fields;
         let d = &mut self.draft;
         section(ui, "Symbol");
@@ -260,30 +531,49 @@ impl SymbolForm {
         if self.chief {
             ui.weak(LICENSE_NOTE);
         }
-        row(ui, "Library", |ui| {
-            if ui.button("Replace From Library").clicked() {
-                replace = true;
+        if in_library {
+            if !self.library.as_ref().is_some_and(|l| l.editable) {
+                row(ui, "User Catalog", |ui| {
+                    if !self.chief && ui.button("Add to Library").clicked() {
+                        add_lib = true;
+                    }
+                });
             }
-        });
-        row(ui, "User Catalog", |ui| {
-            if ui.button("Add to Library").clicked() {
-                add_lib = true;
-            }
-            if ui
-                .button("Convert to Symbol")
-                .on_hover_text("Save as a user symbol and use that item")
-                .clicked()
-            {
-                convert = true;
-            }
-        });
+        } else {
+            row(ui, "Library", |ui| {
+                if ui.button("Replace From Library").clicked() {
+                    replace = true;
+                }
+            });
+            row(ui, "User Catalog", |ui| {
+                if ui.button("Add to Library").clicked() {
+                    add_lib = true;
+                }
+                if ui
+                    .button("Convert to Symbol")
+                    .on_hover_text("Save as a user symbol and use that item")
+                    .clicked()
+                {
+                    convert = true;
+                }
+            });
+        }
         if !self.note.is_empty() {
             ui.weak(&self.note);
         }
         section(ui, "Size");
-        f.length_row(ui, "Width", "width", &mut d.width);
-        f.length_row(ui, "Depth", "depth", &mut d.depth);
-        f.length_row(ui, "Height", "height", &mut d.height);
+        let (w0, dp0, h0) = (d.width, d.depth, d.height);
+        let cw = f.length_row(ui, "Width", "width", &mut d.width);
+        let cd = f.length_row(ui, "Depth", "depth", &mut d.depth);
+        let ch = f.length_row(ui, "Height", "height", &mut d.height);
+        ui.horizontal(|ui| {
+            ui.add_space(8.0);
+            ui.checkbox(&mut self.keep_aspect, "Keep aspect")
+                .on_hover_text("Changing one size scales the other two with it");
+        });
+        if self.keep_aspect {
+            keep_aspect(d, (w0, dp0, h0), (cw, cd, ch));
+        }
         if let Some((w, dp, h)) = self.library_size {
             if ui.button("Reset to Library Size").clicked() {
                 d.width = w;
@@ -291,12 +581,21 @@ impl SymbolForm {
                 d.height = h;
             }
         }
-        section(ui, "Position");
+        section(ui, if in_library { "Defaults" } else { "Position" });
         f.length_row(ui, "Elevation (from floor)", "elev", &mut d.elevation);
-        f.length_row(ui, "Position X (back center)", "pos_x", &mut d.position.x);
-        f.length_row(ui, "Position Y (back center)", "pos_y", &mut d.position.y);
-        f.degrees_row(ui, "Angle", "deg_angle", &mut d.angle);
-        ui.checkbox(&mut d.flip, "Flip");
+        if in_library {
+            f.degrees_row(
+                ui,
+                "Rotation (3D model)",
+                "model_rot",
+                &mut self.model_rotation,
+            );
+        } else {
+            f.length_row(ui, "Position X (back center)", "pos_x", &mut d.position.x);
+            f.length_row(ui, "Position Y (back center)", "pos_y", &mut d.position.y);
+            f.degrees_row(ui, "Angle", "deg_angle", &mut d.angle);
+        }
+        ui.checkbox(&mut d.flip, "Reflect (mirror left to right)");
         if replace {
             self.replace_from_library();
         }
@@ -358,7 +657,108 @@ impl SymbolForm {
 
     fn options(&mut self, ui: &mut Ui) {
         section(ui, "Options");
-        ui.checkbox(&mut self.draft.flip, "Flip (mirror left to right)");
+        ui.checkbox(&mut self.draft.flip, "Reflect (mirror left to right)");
+        let rows = option_rows(self.lib_type);
+        if rows.is_empty() {
+            ui.weak("This library object has no other options.");
+            return;
+        }
+        section(ui, "Library choices");
+        for (key, label) in rows {
+            let choices = option_choices(key);
+            let current = self.draft.options.get(*key).cloned();
+            let mut pick = current.clone();
+            row(ui, label, |ui| {
+                egui::ComboBox::from_id_salt(("sym_option", *key))
+                    .selected_text(current.clone().unwrap_or_else(|| "Default".into()))
+                    .width(200.0)
+                    .show_ui(ui, |ui| {
+                        if ui.selectable_label(current.is_none(), "Default").clicked() {
+                            pick = None;
+                        }
+                        for c in &choices {
+                            if ui
+                                .selectable_label(current.as_deref() == Some(c.as_str()), c)
+                                .clicked()
+                            {
+                                pick = Some(c.clone());
+                            }
+                        }
+                    });
+            });
+            if pick != current {
+                match pick {
+                    Some(v) => {
+                        self.draft.options.insert((*key).to_string(), v);
+                    }
+                    None => {
+                        self.draft.options.remove(*key);
+                    }
+                }
+            }
+        }
+    }
+
+    /// The Object Information tab: what the library item is.
+    fn object_information(&mut self, ui: &mut Ui) {
+        section(ui, "Object Information");
+        if self.info.is_empty() {
+            ui.weak("The library item is not available, so there is nothing to list.");
+            return;
+        }
+        for (k, v) in &self.info {
+            row(ui, k, |ui| ui.label(v));
+        }
+        if !self.keywords.is_empty() {
+            row(ui, "Keywords", |ui| ui.label(self.keywords.join(", ")));
+        }
+        if self.chief {
+            ui.weak(LICENSE_NOTE);
+        }
+    }
+
+    /// The Schedule tab: whether and how the object appears in schedules.
+    fn schedule(&mut self, ui: &mut Ui) {
+        section(ui, "Schedule");
+        let mut sch = self.draft.schedule.clone().unwrap_or_default();
+        let before = sch.clone();
+        let mut include = !sch.exclude;
+        ui.checkbox(&mut include, "Include in schedules");
+        sch.exclude = !include;
+        ui.add_enabled_ui(include, |ui| {
+            row(ui, "Schedule", |ui| {
+                let shown = if sch.category.is_empty() {
+                    "By library category".to_string()
+                } else {
+                    sch.category.clone()
+                };
+                egui::ComboBox::from_id_salt("sym_schedule_cat")
+                    .selected_text(shown)
+                    .width(200.0)
+                    .show_ui(ui, |ui| {
+                        if ui
+                            .selectable_label(sch.category.is_empty(), "By library category")
+                            .clicked()
+                        {
+                            sch.category.clear();
+                        }
+                        for c in SCHEDULE_CATEGORIES {
+                            if ui.selectable_label(sch.category == *c, *c).clicked() {
+                                sch.category = (*c).to_string();
+                            }
+                        }
+                    });
+            });
+            row(ui, "Mark", |ui| ui.text_edit_singleline(&mut sch.mark));
+            row(ui, "Manufacturer", |ui| {
+                ui.text_edit_singleline(&mut sch.manufacturer)
+            });
+            row(ui, "Model", |ui| ui.text_edit_singleline(&mut sch.model));
+            row(ui, "Note", |ui| ui.text_edit_singleline(&mut sch.note));
+        });
+        if sch != before {
+            self.draft.schedule = (!sch.is_default()).then_some(sch);
+        }
     }
 
     fn layer(&mut self, ui: &mut Ui) {
@@ -396,6 +796,11 @@ impl SpecPages for SymbolForm {
         if self.fields.any_invalid() {
             return Some("Enter valid lengths".into());
         }
+        if self.library.as_ref().is_some_and(|l| !l.editable) {
+            return Some(
+                "This library object is read-only: use Add to Library to edit a copy".into(),
+            );
+        }
         let d = &self.draft;
         (d.width < 1.0 || d.depth < 1.0 || d.height <= 0.0)
             .then(|| "Width, depth and height must be positive".to_string())
@@ -408,6 +813,8 @@ impl SpecPages for SymbolForm {
             Some("Materials") => self.materials(ui),
             Some("Layer") => self.layer(ui),
             Some("Label") => self.label(ui),
+            Some("Object Information") => self.object_information(ui),
+            Some("Schedule") => self.schedule(ui),
             _ => {}
         }
     }
@@ -599,5 +1006,143 @@ mod tests {
         );
         assert_eq!(dlg.form.source, "Plan Studio library");
         assert!(!dlg.form.chief);
+    }
+
+    #[test]
+    fn keep_aspect_scales_the_other_two_sizes() {
+        let mut d = PlacedSymbol::new("x", Point::ZERO, 20.0, 10.0, 40.0);
+        d.width = 40.0;
+        keep_aspect(&mut d, (20.0, 10.0, 40.0), (true, false, false));
+        assert_eq!((d.width, d.depth, d.height), (40.0, 20.0, 80.0));
+        let mut d = PlacedSymbol::new("x", Point::ZERO, 20.0, 10.0, 40.0);
+        d.height = 20.0;
+        keep_aspect(&mut d, (20.0, 10.0, 40.0), (false, false, true));
+        assert_eq!((d.width, d.depth, d.height), (10.0, 5.0, 20.0));
+        // Nothing changed, or a zero old size: nothing happens.
+        let mut d = PlacedSymbol::new("x", Point::ZERO, 20.0, 10.0, 40.0);
+        keep_aspect(&mut d, (20.0, 10.0, 40.0), (false, false, false));
+        assert_eq!((d.width, d.depth, d.height), (20.0, 10.0, 40.0));
+        keep_aspect(&mut d, (0.0, 10.0, 40.0), (true, false, false));
+        assert_eq!((d.width, d.depth, d.height), (20.0, 10.0, 40.0));
+    }
+
+    #[test]
+    fn options_follow_the_object_type_and_are_stored_on_the_symbol() {
+        assert!(option_rows(Some(LibType::Doors))
+            .iter()
+            .any(|r| r.0 == "door_style"));
+        assert!(option_rows(Some(LibType::Cabinets))
+            .iter()
+            .any(|r| r.0 == "cabinet_door"));
+        assert!(option_rows(Some(LibType::Furniture)).is_empty());
+        assert!(option_rows(None).is_empty());
+        assert!(option_choices("hardware").contains(&"Matte Black".to_string()));
+        assert!(!option_choices("door_style").is_empty());
+        assert!(!option_choices("cabinet_door").is_empty());
+
+        // A built-in door opens with the door rows; the tab draws them.
+        let door = crate::tools::library::library_catalog()
+            .all_items()
+            .find(|i| plan_library::types::classify(i) == Some(LibType::Doors));
+        if let Some(door) = door {
+            let s = PlacedSymbol::new(
+                door.id.clone(),
+                Point::ZERO,
+                door.width,
+                door.depth,
+                door.height,
+            );
+            let mut dlg = SymbolDialog::new(s, Vec::new());
+            assert_eq!(dlg.form.lib_type, Some(LibType::Doors));
+            dlg.form
+                .draft
+                .options
+                .insert("door_style".into(), "Shaker".into());
+            let ctx = egui::Context::default();
+            let tab = TABS.iter().position(|t| t.name == "Options").unwrap();
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| dlg.form.page(ui, tab));
+            });
+            assert_eq!(
+                dlg.draft().options.get("door_style").map(String::as_str),
+                Some("Shaker"),
+                "drawing the tab keeps the choice"
+            );
+        }
+    }
+
+    #[test]
+    fn the_schedule_and_object_information_tabs_draw_and_edit_the_record() {
+        let item = crate::tools::library::library_catalog()
+            .all_items()
+            .next()
+            .unwrap();
+        let s = PlacedSymbol::new(
+            item.id.clone(),
+            Point::ZERO,
+            item.width,
+            item.depth,
+            item.height,
+        );
+        let mut dlg = SymbolDialog::new(s, Vec::new());
+        assert!(dlg.form.info.iter().any(|(k, _)| *k == "Size"));
+        assert!(dlg
+            .form
+            .info
+            .iter()
+            .any(|(k, v)| *k == "Name" && *v == item.name));
+        assert!(dlg.draft().schedule.is_none());
+        let ctx = egui::Context::default();
+        for name in ["Object Information", "Schedule"] {
+            let tab = TABS.iter().position(|t| t.name == name).unwrap();
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| dlg.form.page(ui, tab));
+            });
+        }
+        assert!(dlg.draft().schedule.is_none(), "drawing changes nothing");
+        // A changed record is kept; the default record is dropped again.
+        dlg.form.draft.schedule = Some(plan_core::SymbolSchedule {
+            exclude: true,
+            ..Default::default()
+        });
+        let tab = TABS.iter().position(|t| t.name == "Schedule").unwrap();
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| dlg.form.page(ui, tab));
+        });
+        assert!(dlg.draft().schedule.as_ref().is_some_and(|s| s.exclude));
+        // Open Object on a user item is editable, on a built-in one it is not.
+        assert!(SymbolDialog::for_library_item(&item.id, Vec::new())
+            .unwrap()
+            .form
+            .error()
+            .is_some_and(|e| e.contains("read-only")));
+    }
+
+    #[test]
+    fn open_object_saves_the_models_rotation_with_the_item() {
+        use crate::tools::library::user::{self as store, tests_support};
+        use plan_library::{CatalogItem, Symbol2d};
+        tests_support::fresh(false);
+        let item = CatalogItem::new(
+            store::new_id(plan_library::ItemKind::Symbol),
+            "Bench",
+            Placement::FreeStanding,
+            Symbol2d::default(),
+        )
+        .with_category(&["User", "Symbols"])
+        .with_size(48.0, 16.0, 18.0);
+        let item = store::add(item, None).unwrap();
+        let mut dlg = SymbolDialog::for_library_item(&item.id, Vec::new()).unwrap();
+        assert!(dlg.library_update().is_some(), "a user item is editable");
+        dlg.form.model_rotation = 90.0;
+        dlg.edit_draft(|d| d.elevation = 3.0);
+        let up = dlg.library_update().unwrap();
+        assert_eq!((up.model_rotation, up.elevation), (90.0, 3.0));
+        // The Defaults section draws, with the rotation row.
+        let ctx = egui::Context::default();
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| dlg.form.page(ui, 0));
+        });
+        assert_eq!(dlg.library_update().unwrap().model_rotation, 90.0);
     }
 }

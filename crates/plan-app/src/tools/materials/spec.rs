@@ -23,7 +23,7 @@ use super::{pattern_by_name, pattern_name, scene_material, PATTERNS};
 use eframe::egui::{self, Align2, Color32};
 use plan_materials::{
     clip_strokes_to_polygon, filter_texture_files, list_texture_files, textures, transform_rgba,
-    MaterialClass, MaterialDef, PriceUnit, TextureFile, BLEND_PREFIX,
+    MapKind, MaterialClass, MaterialDef, PriceUnit, TextureFile, BLEND_PREFIX,
 };
 
 /// What the dialog wants done after a frame.
@@ -404,6 +404,7 @@ impl MaterialSpec {
                 self.def.texture_scale_in = (f64::from(t), f64::from(t));
             }
         }
+        self.package_maps(ui);
         ui.separator();
         egui::Grid::new("spec_texture")
             .num_columns(2)
@@ -468,6 +469,52 @@ impl MaterialSpec {
                 ui.end_row();
             });
         self.texture_preview(ui, ctx);
+    }
+
+    /// The extra maps of a material package (Lightbeans): one switch each.
+    /// Nothing is drawn for a material without any.
+    fn package_maps(&mut self, ui: &mut egui::Ui) {
+        if !self.def.has_pbr_maps() {
+            return;
+        }
+        ui.separator();
+        ui.strong("Package maps");
+        for kind in MapKind::ALL {
+            if kind == MapKind::Albedo {
+                continue;
+            }
+            let Some(path) = self.def.map_path(kind).map(str::to_string) else {
+                continue;
+            };
+            let mut on = self.def.map_enabled(kind);
+            let file = std::path::Path::new(&path)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or(path.clone());
+            let note = if kind == MapKind::Height && self.def.normal_map.is_some() {
+                "  (the normal map is used)"
+            } else {
+                ""
+            };
+            if ui
+                .checkbox(&mut on, format!("{}  \u{b7}  {file}{note}", kind.label()))
+                .on_hover_text(path)
+                .changed()
+            {
+                self.def.set_map_enabled(kind, on);
+            }
+        }
+        if let Some(src) = &self.def.package_source {
+            ui.weak(format!(
+                "From {src}{}",
+                self.def
+                    .package_imported
+                    .as_ref()
+                    .map(|d| format!(", imported {d}"))
+                    .unwrap_or_default()
+            ));
+        }
+        ui.weak("The bump strength on the Properties tab scales the normals.");
     }
 
     fn texture_preview(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {

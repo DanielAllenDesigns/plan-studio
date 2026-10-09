@@ -1336,3 +1336,51 @@ fn each_side_can_have_its_own_newels_and_balusters() {
     let back: StairParams = serde_json::from_str(&legacy).unwrap();
     assert_eq!(back.left_railing, None);
 }
+
+#[test]
+fn steps_down_from_a_floor_use_a_negative_base_everywhere() {
+    // Porch steps that go down 19.125" from the floor: footprint, plan
+    // symbol, railings and 3D meshes all stay finite and below the floor.
+    let mut st = stair(StairParams {
+        left_side: SideKind::Railing,
+        right_side: SideKind::HalfWall,
+        ..params(19.125)
+    });
+    st.floor_elevation = 100.0;
+    st.base = -19.125;
+    assert!(close(st.bottom_elevation(), 80.875));
+    let (_, z) = top_point(&st);
+    assert!(close(z, 100.0), "the stair arrives at the floor: {z}");
+    // The footprint does not depend on the base.
+    let flat = Stair {
+        base: 0.0,
+        ..st.clone()
+    };
+    assert_eq!(footprint(&st), footprint(&flat));
+    assert!(polygon_area(&footprint(&st)).abs() > 100.0);
+    assert!(!plan_symbol(&st, None).is_empty());
+    let parts = tagged_meshes(&st);
+    assert!(count(&parts, StairPart::Tread) >= 1);
+    let (mut lo, mut hi) = (f64::MAX, f64::MIN);
+    for (_, mesh) in &parts {
+        assert!(mesh
+            .vertices
+            .iter()
+            .all(|v| v.position.iter().all(|x| x.is_finite())));
+        if let Some((a, b)) = mesh.bounds() {
+            lo = lo.min(f64::from(a[1]));
+            hi = hi.max(f64::from(b[1]));
+        }
+    }
+    // Only the stringers hang below the bottom step, by their depth.
+    assert!(lo >= 80.875 - 6.0, "nothing far below the bottom step: {lo}");
+    assert!(lo < 100.0 - 19.125 + 0.1, "the steps really go down: {lo}");
+    // Treads top out at the floor; only railings stand above it.
+    let tread_top = parts
+        .iter()
+        .filter(|(p, _)| *p == StairPart::Tread)
+        .map(|(_, m)| f64::from(m.bounds().unwrap().1[1]))
+        .fold(f64::MIN, f64::max);
+    assert!(tread_top <= 100.0 + 1e-3, "{tread_top}");
+    assert!(hi > 100.0, "the railing stands above the floor: {hi}");
+}

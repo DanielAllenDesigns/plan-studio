@@ -1150,3 +1150,43 @@ fn wall_devices_are_modeled_facing_out_of_their_wall() {
     };
     assert!(depth(DeviceKind::OutletWp) > depth(DeviceKind::Outlet110) + 0.5);
 }
+
+#[test]
+fn kitchen_counter_outlets_follow_the_base_cabinets_against_the_walls() {
+    let (floor, rooms) = room_20x12();
+    let types = vec![(rooms[0].label.clone(), RoomFunction::Kitchen)];
+    // A run of base cabinets along the north wall (face at y = 141.75), 24"
+    // deep, from x = 40 to 200; an island in the middle floor is no run.
+    let run = vec![
+        Point::new(40.0, 117.75),
+        Point::new(200.0, 117.75),
+        Point::new(200.0, 141.75),
+        Point::new(40.0, 141.75),
+    ];
+    let island = vec![
+        Point::new(80.0, 50.0),
+        Point::new(160.0, 50.0),
+        Point::new(160.0, 74.0),
+        Point::new(80.0, 74.0),
+    ];
+    let opts = AutoOutletOptions {
+        counter_runs: vec![run, island],
+        ..AutoOutletOptions::default()
+    };
+    let devices = auto_place_outlets(&floor, &rooms, &types, &opts);
+    assert!(!devices.is_empty());
+    // Only the north wall (3) has counter, so only it gets outlets.
+    assert!(devices.iter().all(|d| d.wall_id == Some(3)), "{devices:?}");
+    // They stay inside the cabinet run (the wall runs east to west, so the
+    // offset along it counts from x = 240).
+    for d in &devices {
+        assert!(d.position.x >= 40.0 && d.position.x <= 200.0, "{:?}", d.position);
+        assert_eq!(d.height, 44.0);
+    }
+    // 160" of counter at most 48" apart: at least four outlets.
+    assert!(devices.len() >= 4, "{}", devices.len());
+    // Without cabinets every wall keeps its outlets, as before.
+    let plain = auto_place_outlets(&floor, &rooms, &types, &AutoOutletOptions::default());
+    assert!(plain.iter().any(|d| d.wall_id == Some(1)));
+    assert!(plain.iter().any(|d| d.wall_id == Some(2)));
+}

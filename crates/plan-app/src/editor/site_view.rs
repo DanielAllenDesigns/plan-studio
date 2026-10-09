@@ -25,7 +25,7 @@ use plan_core::units::fmt_ft_in_frac;
 use plan_core::{Floor, Id, Project, Wall};
 use plan_electrical::{place_on_wall, Device, ElectricalLayer, Stroke as ElStroke, WallSide};
 use plan_terrain::{
-    auto_hole_for_building, build_terrain_with_progress, contours_with, landscape_plan,
+    auto_hole_for_building, build_terrain_with_progress, contours_opts, landscape_plan,
     plan_symbols, BuildStage, Contour, FeatureKind, ModifierKind, PlanItem,
     Stroke as TerrainStroke, StrokeKind, Terrain, TerrainSurface,
 };
@@ -42,7 +42,7 @@ pub use landscape::{
 use serde_json::{json, Value};
 #[allow(unused_imports)] // the sun angle reads `plan_sun_azimuth`
 pub use site_plan::{
-    ensure_site_plan_layer, north_angle, place_north_pointer, place_scale_bar, plan_sun_azimuth,
+    apply_gps_import, ensure_site_plan_layer, north_angle, place_north_pointer, place_scale_bar, plan_sun_azimuth,
 };
 use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
@@ -81,7 +81,14 @@ pub fn save_electrical(project: &mut Project, floor: usize, layer: &ElectricalLa
         return;
     }
     // Serializing plain data cannot fail; keep the old value if it ever does.
-    let _ = f.set_electrical(layer);
+    // A NaN is written as 0, not as null (QA-23).
+    if let Ok((v, _)) = plan_core::foreign::to_value_finite(layer) {
+        f.electrical = Some(v);
+    }
+    // The connection arcs live on their own layer from the first one on.
+    if !layer.connections.is_empty() {
+        project.layers.ensure_electrical_connection_layer();
+    }
 }
 
 /// The project's terrain with the settings the Terrain Specification edits.
@@ -123,6 +130,17 @@ impl TerrainRecord {
         self.terrain.perimeter.len() >= 3
     }
 
+    /// Clear Terrain (manual p. 1309): removes only what Build Terrain
+    /// generated, the surface and the contours. The perimeter, the elevation
+    /// data and every object stay. Returns whether anything was cleared.
+    pub fn clear_generated(&mut self) -> bool {
+        let had = self.built || self.terrain.last_build.is_some();
+        self.built = false;
+        self.built_key = 0;
+        plan_terrain::clear_generated_only(&mut self.terrain);
+        had
+    }
+
     /// Takes the settings of a Terrain Specification `draft` (OK in the
     /// dialog): everything the dialog edits, nothing it only displays.
     pub fn apply_spec(&mut self, draft: &TerrainRecord) {
@@ -145,6 +163,29 @@ impl TerrainRecord {
         t.dirt_material = d.dirt_material.clone();
         t.contour_primary = d.contour_primary;
         t.contour_secondary = d.contour_secondary;
+        t.absolute_elevation = d.absolute_elevation;
+        t.reference_point = d.reference_point;
+        t.surface_offset = d.surface_offset;
+        t.floor_one_elevation = d.floor_one_elevation;
+        t.skirt = d.skirt.clone();
+        t.hide_under_building = d.hide_under_building;
+        t.smoothing_level = d.smoothing_level;
+        t.triangle_detail = d.triangle_detail;
+        t.custom_triangles = d.custom_triangles;
+        t.max_triangle_size = d.max_triangle_size;
+        t.contour_offset = d.contour_offset;
+        t.contour_label_units = d.contour_label_units;
+        t.highlight_negative = d.highlight_negative;
+        t.contour_smoothing = d.contour_smoothing;
+        t.contour_smooth_passes = d.contour_smooth_passes;
+        t.season = d.season;
+        t.label_primary = d.label_primary;
+        t.perimeter_extras = d.perimeter_extras.clone();
+        // An import that made a perimeter around its data (when there was
+        // none) or a GPS import that replaced it.
+        if d.perimeter.len() >= 3 && d.perimeter != t.perimeter {
+            t.perimeter = d.perimeter.clone();
+        }
         // Survey points imported in the dialog only ever add to the data.
         if d.elevation_points.len() > t.elevation_points.len() {
             t.elevation_points = d.elevation_points.clone();
@@ -332,7 +373,15 @@ pub struct TerrainView {
 /// Identifies the terrain data (and contour interval) a surface is built from.
 pub fn terrain_key(rec: &TerrainRecord) -> u64 {
     let mut h = DefaultHasher::new();
-    if let Ok(text) = serde_json::to_string(&rec.terrain) {
+    // What the last build reported is a result, not an input.
+    let text = if rec.terrain.last_build.is_some() {
+        let mut t = rec.terrain.clone();
+        t.last_build = None;
+        serde_json::to_string(&t)
+    } else {
+        serde_json::to_string(&rec.terrain)
+    };
+    if let Ok(text) = text {
         text.hash(&mut h);
     }
     rec.contour_interval.to_bits().hash(&mut h);
@@ -347,7 +396,7 @@ pub fn build_surface_with_progress(
     progress: &mut dyn FnMut(BuildStage, f32),
 ) -> (TerrainSurface, Vec<Contour>) {
     let s = build_terrain_with_progress(&rec.terrain, progress);
-    let c = contours_with(&s, rec.contour_interval, rec.terrain.contour_major_every);
+    let c = contours_opts(&s, &rec.terrain.contour_options(rec.contour_interval));
     let key = terrain_key(rec);
     SURFACE_CACHE.with(|cache| {
         *cache.borrow_mut() = Some((key, s.clone(), c.clone()));
@@ -391,7 +440,8 @@ impl TerrainView {
         } else {
             (None, Vec::new())
         };
-        let symbols = plan_symbols(&record.terrain, &cont);
+        let mut symbols = plan_symbols(&record.terrain, &cont);
+        symbols.extend(plan_terrain::label_strokes(&record.terrain));
         let landscape = landscape_plan(&record.terrain);
         Self {
             record,
@@ -553,7 +603,7 @@ pub fn auto_building_pad(cx: &mut EditorContext) -> bool {
     }
     pad.footprint = footprint;
     pad.first_floor = Some(first_floor);
-    rec.terrain.building_pad_elevation = first_floor - rec.terrain.subfloor_height_above_terrain;
+    rec.terrain.building_pad_elevation = first_floor - rec.terrain.effective_subfloor_distance();
     rec.terrain.building_pad = Some(pad);
     rec.terrain.flatten_pad = true;
     cx.begin_change("Building Pad");
@@ -623,11 +673,14 @@ pub fn hit_terrain(t: &Terrain, p: Point, tol: f64) -> Option<TerrainHit> {
     {
         return Some(TerrainHit::Feature(i));
     }
-    if let Some(i) = t
-        .roads
-        .iter()
-        .position(|r| near_polyline(&r.centerline, p, tol.max(r.width * 0.5)))
-    {
+    if let Some(i) = t.roads.iter().position(|r| {
+        if r.kind.is_outline_kind() || r.outline.len() >= 3 {
+            let poly = plan_terrain::road_polygon(r);
+            near_polygon(&poly, p, tol) || (poly.len() >= 3 && point_in_polygon(p, &poly))
+        } else {
+            near_polyline(&r.centerline, p, tol.max(r.width * 0.5))
+        }
+    }) {
         return Some(TerrainHit::Road(i));
     }
     if let Some(i) = t
@@ -682,10 +735,22 @@ pub fn remove_terrain_element(t: &mut Terrain, hit: TerrainHit) -> bool {
             t.perimeter.clear();
             had
         }
-        TerrainHit::Point(i) => remove(&mut t.elevation_points, i),
+        TerrainHit::Point(i) => {
+            let gone = remove(&mut t.elevation_points, i);
+            t.forget_extras_of_removed(plan_terrain::ObjectKey::Point(i));
+            gone
+        }
         TerrainHit::Line(i) => remove(&mut t.elevation_lines, i),
-        TerrainHit::Region(i) => remove(&mut t.elevation_regions, i),
-        TerrainHit::Modifier(i) => remove(&mut t.modifiers, i),
+        TerrainHit::Region(i) => {
+            let gone = remove(&mut t.elevation_regions, i);
+            t.forget_extras_of_removed(plan_terrain::ObjectKey::Region(i));
+            gone
+        }
+        TerrainHit::Modifier(i) => {
+            let gone = remove(&mut t.modifiers, i);
+            t.forget_extras_of_removed(plan_terrain::ObjectKey::Modifier(i));
+            gone
+        }
         TerrainHit::Feature(i) => remove(&mut t.features, i),
         TerrainHit::Road(i) => remove(&mut t.roads, i),
         TerrainHit::Break(i) => remove(&mut t.breaks, i),
@@ -782,6 +847,8 @@ const MARKING_COLOR: Color32 = Color32::from_rgb(0xC9, 0x9A, 0x12);
 const ROAD_COLOR: Color32 = Color32::from_rgb(0x70, 0x70, 0x78);
 const DATA_COLOR: Color32 = Color32::from_rgb(0xB0, 0x40, 0x30);
 const MODIFIER_COLOR: Color32 = Color32::from_rgb(0x2E, 0x8B, 0x7A);
+/// Contour labels below elevation 0 with Highlight Negative Elevations on.
+const NEGATIVE_COLOR: Color32 = Color32::from_rgb(0xD0, 0x20, 0x20);
 /// Smallest on-screen text height worth drawing, pixels.
 const MIN_TEXT_PX: f32 = 5.0;
 
@@ -888,6 +955,10 @@ pub fn draw_site(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
     }
     let px = |w: f64, min: f32| ((w as f32) * 1.6).max(min);
     let t = &view.record.terrain;
+    let layers = cx.layers();
+    let primary_on = layers.is_visible(plan_terrain::LAYER_PRIMARY_CONTOURS);
+    let secondary_on = layers.is_visible(plan_terrain::LAYER_SECONDARY_CONTOURS);
+    let labels_on = layers.is_visible(plan_terrain::LAYER_TERRAIN_LABELS);
     if view.stale {
         // Auto rebuild is off and the terrain was edited since Build Terrain.
         if let Some(p) = view.record.terrain.perimeter.first() {
@@ -909,8 +980,26 @@ pub fn draw_site(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
                 weight,
                 kind,
             } => {
+                if (*kind == StrokeKind::MajorContour && !primary_on)
+                    || (*kind == StrokeKind::Contour && !secondary_on)
+                {
+                    continue;
+                }
                 let (color, width, dashed) = match kind {
-                    StrokeKind::Perimeter => (PERIMETER_COLOR, 3.0, false),
+                    StrokeKind::Label => continue,
+                    StrokeKind::Perimeter => {
+                        let st = &t.perimeter_extras.style;
+                        (
+                            st.line_color
+                                .map_or(PERIMETER_COLOR, |c| Color32::from_rgb(c[0], c[1], c[2])),
+                            if st.line_weight > 0.0 {
+                                px(st.line_weight, 1.0)
+                            } else {
+                                3.0
+                            },
+                            st.dashed,
+                        )
+                    }
                     StrokeKind::MajorContour => (
                         contour_color(&t.contour_primary, MAJOR_CONTOUR_COLOR),
                         px(*weight, 1.4),
@@ -938,56 +1027,98 @@ pub fn draw_site(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
                 text,
                 height,
                 angle,
+                kind,
+                negative,
             } => {
-                draw_label_rotated(
-                    painter,
-                    cam,
-                    *at,
-                    text,
-                    *height,
-                    *angle,
-                    MAJOR_CONTOUR_COLOR,
-                );
+                let on = match kind {
+                    StrokeKind::MajorContour => primary_on,
+                    StrokeKind::Contour => secondary_on,
+                    _ => labels_on,
+                };
+                if !on {
+                    continue;
+                }
+                let color = if *negative {
+                    NEGATIVE_COLOR
+                } else if *kind == StrokeKind::Label {
+                    DATA_COLOR
+                } else {
+                    MAJOR_CONTOUR_COLOR
+                };
+                draw_label_rotated(painter, cam, *at, text, *height, *angle, color);
             }
         }
     }
-    let data = egui::Stroke::new(1.2_f32, DATA_COLOR);
-    for e in &t.elevation_points {
+    let units = t.contour_label_units;
+    let own = |key: plan_terrain::ObjectKey, default: Color32| -> Option<(egui::Stroke, bool)> {
+        let st = t.extras(key).style;
+        if !st.layer.trim().is_empty() && !layers.is_visible(&st.layer) {
+            return None;
+        }
+        let c = st.line_color.map_or(default, |c| Color32::from_rgb(c[0], c[1], c[2]));
+        let w = if st.line_weight > 0.0 {
+            px(st.line_weight, 0.8)
+        } else {
+            1.2
+        };
+        Some((egui::Stroke::new(w, c), st.dashed))
+    };
+    for (i, e) in t.elevation_points.iter().enumerate() {
+        let Some((data, _)) = own(plan_terrain::ObjectKey::Point(i), DATA_COLOR) else {
+            continue;
+        };
+        let radius = {
+            let r = t.extras(plan_terrain::ObjectKey::Point(i)).marker_radius;
+            if r > 0.0 {
+                r
+            } else {
+                plan_terrain::DEFAULT_MARKER_RADIUS
+            }
+        };
         let c = sc(cam, e.pos);
-        painter.line_segment([c + egui::vec2(-6.0, 0.0), c + egui::vec2(6.0, 0.0)], data);
-        painter.line_segment([c + egui::vec2(0.0, -6.0), c + egui::vec2(0.0, 6.0)], data);
+        let arm = ((radius * cam.px_per_in) as f32).clamp(4.0, 24.0);
+        painter.line_segment([c + egui::vec2(-arm, 0.0), c + egui::vec2(arm, 0.0)], data);
+        painter.line_segment([c + egui::vec2(0.0, -arm), c + egui::vec2(0.0, arm)], data);
         painter.text(
-            c + egui::vec2(8.0, -8.0),
+            c + egui::vec2(arm + 2.0, -arm - 2.0),
             Align2::LEFT_BOTTOM,
-            fmt_ft_in_frac(e.z, 2),
+            units.format(e.z),
             FontId::proportional(11.0),
-            DATA_COLOR,
+            data.color,
         );
     }
-    for l in &t.elevation_lines {
+    for (i, l) in t.elevation_lines.iter().enumerate() {
+        let Some((data, _)) = own(plan_terrain::ObjectKey::Line(i), DATA_COLOR) else {
+            continue;
+        };
         draw_polyline(painter, cam, &l.points, false, data, true);
         if let Some(mid) = l.points.get(l.points.len() / 2) {
-            draw_label(painter, cam, *mid, &fmt_ft_in_frac(l.z, 2), 8.0, DATA_COLOR);
+            draw_label(painter, cam, *mid, &units.format(l.z), 8.0, data.color);
         }
     }
-    for r in &t.elevation_regions {
+    for (i, r) in t.elevation_regions.iter().enumerate() {
+        let Some((data, _)) = own(plan_terrain::ObjectKey::Region(i), DATA_COLOR) else {
+            continue;
+        };
         draw_polyline(painter, cam, &r.polygon, true, data, true);
         draw_label(
             painter,
             cam,
             centroid(&r.polygon),
-            &fmt_ft_in_frac(r.z, 2),
+            &units.format(r.z),
             8.0,
-            DATA_COLOR,
+            data.color,
         );
     }
-    let modifier = egui::Stroke::new(1.2_f32, MODIFIER_COLOR);
-    for m in &t.modifiers {
+    for (i, m) in t.modifiers.iter().enumerate() {
+        let Some((modifier, _)) = own(plan_terrain::ObjectKey::Modifier(i), MODIFIER_COLOR) else {
+            continue;
+        };
         draw_polyline(painter, cam, &m.polygon, true, modifier, true);
         let label = if m.kind == ModifierKind::FlatRegion {
             modifier_name(m.kind).to_string()
         } else {
-            format!("{} {}", modifier_name(m.kind), fmt_ft_in_frac(m.height, 2))
+            format!("{} {}", modifier_name(m.kind), units.format(m.height))
         };
         draw_label(
             painter,
@@ -995,8 +1126,19 @@ pub fn draw_site(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
             centroid(&m.polygon),
             &label,
             8.0,
-            MODIFIER_COLOR,
+            modifier.color,
         );
+    }
+    // The Terrain Elevation Reference Point: a ringed cross, shown only while
+    // the perimeter is selected.
+    if let Some(rp) = t.reference_point {
+        if cx.selection.contains(crate::editor::ObjectRef::Terrain) {
+            let c = sc(cam, rp);
+            let ring = egui::Stroke::new(1.6_f32, PERIMETER_COLOR);
+            painter.circle_stroke(c, 8.0, ring);
+            painter.line_segment([c + egui::vec2(-12.0, 0.0), c + egui::vec2(12.0, 0.0)], ring);
+            painter.line_segment([c + egui::vec2(0.0, -12.0), c + egui::vec2(0.0, 12.0)], ring);
+        }
     }
     for r in &t.roads {
         if r.own_layer().is_some_and(|l| !cx.layers().is_visible(l)) {
@@ -1016,6 +1158,11 @@ pub fn draw_site(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
                 egui::Stroke::new(width, c),
                 r.dashed,
             );
+            continue;
+        }
+        if r.kind.is_outline_kind() || r.outline.len() >= 3 {
+            // A median or cul-de-sac (or a polyline road): the plan symbols
+            // already draw the outline; the dashed centerline is for strips.
             continue;
         }
         draw_polyline(
@@ -1140,7 +1287,16 @@ pub fn draw_devices(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
             );
         }
     }
-    let dash = egui::Stroke::new(1.0_f32, color);
+    // The connections have a layer of their own (hidden apart from the
+    // devices); a plan without it shows them with the devices.
+    if !cx.layers().is_visible(plan_core::layers::ELECTRICAL_CONNECTION_LAYER) {
+        return;
+    }
+    let [cr, cg, cb] = cx
+        .layers()
+        .get(plan_core::layers::ELECTRICAL_CONNECTION_LAYER)
+        .map_or([200, 120, 0], |l| l.color);
+    let dash = egui::Stroke::new(1.0_f32, Color32::from_rgb(cr, cg, cb));
     for c in &layer.connections {
         if let Some(arc) = layer.connection_arc(c) {
             let pts = arc_points(cam, &arc);

@@ -20,6 +20,7 @@ pub mod action_history;
 pub mod app_info;
 pub mod build_tools;
 pub mod cabinet;
+pub mod calculators;
 pub mod cad;
 pub mod camera;
 pub mod code_notice;
@@ -31,6 +32,8 @@ pub mod defaults;
 pub mod delete_objects;
 pub mod details;
 pub mod dimension;
+pub mod drawing_groups;
+pub mod dxf_options;
 pub mod edit_behaviors;
 pub mod electrical;
 pub mod exchange;
@@ -44,13 +47,21 @@ pub mod framing;
 pub mod help;
 pub mod hotkeys;
 pub mod images;
+pub mod import_drawing;
 pub mod import_review;
 pub mod layer_display;
 pub mod layer_sets;
 pub mod layout;
+pub mod layout_revisions;
+pub mod library_object;
 pub mod materials;
+pub mod materials_list;
+pub mod multiple_copy;
+pub mod object_info;
 mod opening;
+pub mod page_info;
 pub mod painters;
+pub mod panorama;
 pub mod plan_check;
 pub mod plan_views;
 pub mod preferences;
@@ -238,7 +249,15 @@ impl SpecDialog {
             .or_else(|| props.as_ref().and_then(|p| p.borrow().error()));
         let tabs = pages.tabs();
         let props_tab = props.is_some().then_some(tabs.len());
-        if self.active != props_tab.unwrap_or(usize::MAX)
+        // The Components and Object Information tabs of the Materials List
+        // (`object_info::with_current`), after the Properties tab.
+        let info = object_info::current();
+        let first_info = tabs.len() + usize::from(props.is_some());
+        let comp_tab = info.as_ref().map(|_| first_info);
+        let info_tab = info.as_ref().map(|_| first_info + 1);
+        let (comp_name, info_name) =
+            object_info::tab_names(&tabs.iter().map(|t| t.name).collect::<Vec<_>>());
+        if ![props_tab, comp_tab, info_tab].contains(&Some(self.active))
             && !tabs.get(self.active).is_some_and(|t| t.enabled)
         {
             self.active = 0;
@@ -314,6 +333,14 @@ impl SpecDialog {
                                 self.active = i;
                             }
                         }
+                        for (i, name) in [(comp_tab, &comp_name), (info_tab, &info_name)] {
+                            if let Some(i) = i {
+                                let label = egui::SelectableLabel::new(self.active == i, name);
+                                if ui.add(label).clicked() {
+                                    self.active = i;
+                                }
+                            }
+                        }
                     });
                 });
 
@@ -327,6 +354,16 @@ impl SpecDialog {
                     match (&props, props_tab) {
                         (Some(p), Some(i)) if self.active == i => {
                             property_manager::page(ui, &mut p.borrow_mut());
+                        }
+                        _ if comp_tab == Some(self.active) => {
+                            if let Some(s) = &info {
+                                object_info::components_page(ui, &mut s.borrow_mut());
+                            }
+                        }
+                        _ if info_tab == Some(self.active) => {
+                            if let Some(s) = &info {
+                                object_info::info_page(ui, &mut s.borrow_mut());
+                            }
                         }
                         _ => pages.page(ui, self.active),
                     }

@@ -527,7 +527,8 @@ fn footings(ctx: &Ctx, out: &mut Vec<Finding>) {
                     depth_msg("The slab footing", bottom),
                     depth_fix,
                 )
-                .at(at),
+                .at(at)
+                .on(Target::Foundation(s.id)),
             );
         }
         if ft.depth < o.footing_min_thickness - EPS {
@@ -541,7 +542,8 @@ fn footings(ctx: &Ctx, out: &mut Vec<Finding>) {
                     ),
                     "Make the footing at least 6\" thick.",
                 )
-                .at(at),
+                .at(at)
+                .on(Target::Foundation(s.id)),
             );
         }
     }
@@ -557,7 +559,8 @@ fn footings(ctx: &Ctx, out: &mut Vec<Finding>) {
                     depth_msg("The pier", bottom),
                     depth_fix,
                 )
-                .at(p.center),
+                .at(p.center)
+                .on(Target::Foundation(p.id)),
             );
         }
     }
@@ -571,7 +574,8 @@ fn footings(ctx: &Ctx, out: &mut Vec<Finding>) {
                     depth_msg("The pad", bottom),
                     depth_fix,
                 )
-                .at(p.center),
+                .at(p.center)
+                .on(Target::Foundation(p.id)),
             );
         }
         if p.thickness < o.footing_min_thickness - EPS {
@@ -585,7 +589,8 @@ fn footings(ctx: &Ctx, out: &mut Vec<Finding>) {
                     ),
                     "Make the pad at least 6\" thick.",
                 )
-                .at(p.center),
+                .at(p.center)
+                .on(Target::Foundation(p.id)),
             );
         }
     }

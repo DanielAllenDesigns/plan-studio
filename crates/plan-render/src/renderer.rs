@@ -53,6 +53,12 @@ impl Renderer {
                         material: mesh.material,
                         color: rgb,
                         paint: mesh.paint_surface(),
+                        maps: plan_materials::pbr::lookup(
+                            mesh.object_id,
+                            mesh.material,
+                            mesh.color,
+                        )
+                        .map(|src| src.key()),
                     };
                     let at = custom.iter().position(|c| *c == key).unwrap_or_else(|| {
                         custom.push(key);

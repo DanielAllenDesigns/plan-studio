@@ -84,7 +84,14 @@ pub(crate) fn floor_of(project: &Project, floor: usize) -> Option<&Floor> {
 /// Wall ids in reading order of their midpoints, paired with their number
 /// (`WL01`, `WL02`, ...).
 pub(crate) fn wall_numbers(f: &Floor) -> Vec<(&Wall, String)> {
-    let mut walls: Vec<&Wall> = f.walls.iter().collect();
+    // "Include in Schedule" (Wall Specification, Schedule tab): a cleared box
+    // leaves the wall out; the invisible walls generated between platforms
+    // are not drawn walls and are never listed.
+    let mut walls: Vec<&Wall> = f
+        .walls
+        .iter()
+        .filter(|w| w.spec.schedule.include && !w.flags.auto_generated)
+        .collect();
     walls.sort_by_key(|w| (reading_key(w.start.add(w.end).scale(0.5)), w.id));
     walls
         .into_iter()

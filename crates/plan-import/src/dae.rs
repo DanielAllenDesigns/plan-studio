@@ -363,7 +363,11 @@ fn geometry_parts(geom: &Node) -> Vec<GeomPart> {
             _ => {
                 for pn in prim.children_named("p") {
                     let p = pn.ints();
-                    polys.push((0..p.len() / stride).filter_map(|k| corner(&p, k)).collect());
+                    polys.push(
+                        (0..p.len() / stride)
+                            .filter_map(|k| corner(&p, k))
+                            .collect(),
+                    );
                 }
             }
         }
@@ -421,7 +425,9 @@ impl<'a> Builder<'a> {
     /// Adds the parts of the geometry at `url`, moved by `m`; `bind` maps a
     /// primitive's material symbol to a material id.
     fn place(&mut self, url: &str, bind: &HashMap<&str, &str>, m: &Mat) {
-        let Some(geom) = self.doc.get(url) else { return };
+        let Some(geom) = self.doc.get(url) else {
+            return;
+        };
         let gid = geom.attr("id").unwrap_or("");
         if !self.geoms.contains_key(gid) {
             self.geoms.insert(gid, geometry_parts(geom));
@@ -441,7 +447,7 @@ impl<'a> Builder<'a> {
             let mut indices = gp.indices.clone();
             if flip {
                 // A mirroring transform reverses the winding.
-                for t in indices.chunks_exact_mut(3) {
+                for t in indices.as_chunks_mut::<3>().0 {
                     t.swap(1, 2);
                 }
             }
@@ -524,7 +530,9 @@ pub fn parse_dae(bytes: &[u8], opts: &ModelOptions) -> Result<ImportedModel, Mod
     }
     let model = ImportedModel { parts: b.parts }.cleaned().converted(opts);
     if model.is_empty() {
-        return Err(ModelError("The COLLADA file has no usable triangles".into()));
+        return Err(ModelError(
+            "The COLLADA file has no usable triangles".into(),
+        ));
     }
     Ok(model)
 }
@@ -597,7 +605,10 @@ pub(crate) mod tests {
         // 6 quads -> 12 triangles; Z up: height is y.
         assert_eq!(m.triangle_count(), 12);
         let e = m.extent().unwrap();
-        assert!((e[0] - 10.0).abs() < 1e-3 && (e[1] - 30.0).abs() < 1e-3 && (e[2] - 20.0).abs() < 1e-3, "{e:?}");
+        assert!(
+            (e[0] - 10.0).abs() < 1e-3 && (e[1] - 30.0).abs() < 1e-3 && (e[2] - 20.0).abs() < 1e-3,
+            "{e:?}"
+        );
         let p = &m.parts[0];
         assert_eq!(p.name, "Crate");
         assert_eq!(p.material.as_deref(), Some("Red"));
@@ -607,7 +618,11 @@ pub(crate) mod tests {
     #[test]
     fn node_transforms_place_each_instance() {
         let text = box_dae(10.0, 10.0, 10.0, 0.0254, "Y_UP", 25.0);
-        let m = parse_dae(text.as_bytes(), &declared(text.as_bytes()).unwrap().options()).unwrap();
+        let m = parse_dae(
+            text.as_bytes(),
+            &declared(text.as_bytes()).unwrap().options(),
+        )
+        .unwrap();
         assert_eq!(m.parts.len(), 2);
         assert_eq!(m.triangle_count(), 24);
         assert!((m.extent().unwrap()[0] - 35.0).abs() < 1e-3);
@@ -615,8 +630,10 @@ pub(crate) mod tests {
 
     #[test]
     fn texture_resolves_through_sampler_and_surface() {
-        let text = box_dae(1.0, 1.0, 1.0, 1.0, "Y_UP", 0.0)
-            .replace("symbol=\"m1\" target=\"#mat1\"", "symbol=\"m1\" target=\"#mat2\"");
+        let text = box_dae(1.0, 1.0, 1.0, 1.0, "Y_UP", 0.0).replace(
+            "symbol=\"m1\" target=\"#mat1\"",
+            "symbol=\"m1\" target=\"#mat2\"",
+        );
         let m = parse_dae(text.as_bytes(), &ModelOptions::default()).unwrap();
         assert_eq!(m.parts[0].texture.as_deref(), Some("lid_oak.jpg"));
         assert_eq!(m.parts[0].material.as_deref(), Some("Oak"));

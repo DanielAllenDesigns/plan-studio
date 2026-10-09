@@ -6,9 +6,9 @@
 //! half-wall with a cap. All lengths are inches. Scene space is X right, Y up,
 //! Z = -plan y (see `plan-3d`).
 
-use crate::layout::{Curve, Layout};
+use crate::layout::{Curve, Layout, RampArc};
 use crate::model3d::{solid, V3};
-use crate::{effective_landing, Stair, Stroke};
+use crate::{effective_landing, PostProfile, SideKind, Stair, Stroke};
 use plan_3d::{Material, Mesh};
 use plan_core::{Id, Point};
 use serde::{Deserialize, Serialize};
@@ -50,6 +50,9 @@ const STAIR_INFILL_LIFT: f64 = 2.0;
 const NEWEL_MERGE: f64 = 1.0;
 /// Fallback maximum newel spacing.
 const DEFAULT_NEWEL_SPACING: f64 = 96.0;
+/// A post-to-beam newel reaches this far below its foot by default: a 2x12
+/// floor platform and its subfloor.
+const DEFAULT_BEAM_DROP: f64 = 12.75;
 
 /// The infill between the rails.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -95,6 +98,15 @@ pub struct NewelParams {
     pub cap: bool,
     /// Maximum centre-to-centre spacing on a flat railing.
     pub max_spacing: f64,
+    /// The shape of the post.
+    pub profile: PostProfile,
+    /// The post carries down through the floor structure to the beam under
+    /// it (Post to Beam), so a guard stands on the framing and not on the
+    /// subfloor.
+    pub post_to_beam: bool,
+    /// How far below the foot a post-to-beam newel reaches, inches (about
+    /// the floor platform and the beam's depth).
+    pub beam_drop: f64,
 }
 
 impl Default for NewelParams {
@@ -104,6 +116,9 @@ impl Default for NewelParams {
             height: 40.0,
             cap: true,
             max_spacing: DEFAULT_NEWEL_SPACING,
+            profile: PostProfile::Square,
+            post_to_beam: false,
+            beam_drop: DEFAULT_BEAM_DROP,
         }
     }
 }
@@ -124,6 +139,8 @@ pub struct RailingParams {
     pub style: RailStyle,
     /// Height of a half-wall under the infill (without its cap), if any.
     pub half_wall: Option<f64>,
+    /// The shape of the balusters.
+    pub baluster_profile: PostProfile,
 }
 
 impl Default for RailingParams {
@@ -135,6 +152,7 @@ impl Default for RailingParams {
             newel: NewelParams::default(),
             style: RailStyle::default(),
             half_wall: None,
+            baluster_profile: PostProfile::Square,
         }
     }
 }
@@ -331,8 +349,100 @@ fn slab(s: &Slab, thick: f64, material: Material, id: Option<Id>) -> Option<Mesh
     Some(solid(&profile, mul3(lateral(n), thick), material, id))
 }
 
+/// Which posts of a railing the caller draws itself (a newel or baluster
+/// from the library takes the built-in one's place).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PostSkip {
+    /// Leave out the built-in newels.
+    pub newels: bool,
+    /// Leave out the built-in balusters.
+    pub balusters: bool,
+}
+
+/// A ring of `sides` points of radius `r` about `at` at height `y`.
+fn ring(at: Point, y: f64, r: f64, sides: usize) -> Vec<V3> {
+    (0..sides)
+        .map(|k| {
+            let a = std::f64::consts::TAU * (k as f64 + 0.5) / sides as f64;
+            sc(at + Point::new(a.cos(), a.sin()) * r, y)
+        })
+        .collect()
+}
+
+/// A square of side `size` with its corners cut by a quarter of it.
+fn chamfered_ring(at: Point, y: f64, size: f64) -> Vec<V3> {
+    let (h, c) = (size * 0.5, size * 0.25);
+    [
+        (-h + c, -h),
+        (h - c, -h),
+        (h, -h + c),
+        (h, h - c),
+        (h - c, h),
+        (-h + c, h),
+        (-h, h - c),
+        (-h, -h + c),
+    ]
+    .iter()
+    .map(|&(x, z)| sc(at + Point::new(x, z), y))
+    .collect()
+}
+
+/// A vertical post of `size` and `profile` from `y0` up to `y1`, centred on
+/// `at`; `lat` is any horizontal direction (it orients a square post).
+pub(crate) fn post_prism(
+    at: Point,
+    (y0, y1): (f64, f64),
+    size: f64,
+    profile: PostProfile,
+    lat: V3,
+    id: Option<Id>,
+    out: &mut Vec<Mesh>,
+) {
+    if y1 - y0 < 1e-6 {
+        return;
+    }
+    let m = Material::WallInterior;
+    match profile {
+        PostProfile::Square => {
+            out.extend(bar(sc(at, y0), sc(at, y1), lat, (size, size), m, id));
+        }
+        PostProfile::Chamfered => out.push(solid(
+            &chamfered_ring(at, y0, size),
+            [0.0, y1 - y0, 0.0],
+            m,
+            id,
+        )),
+        PostProfile::Round => out.push(solid(
+            &ring(at, y0, size / 2.0, 8),
+            [0.0, y1 - y0, 0.0],
+            m,
+            id,
+        )),
+        PostProfile::Turned => {
+            // A block at each end, a slim neck and a swelling in the middle.
+            let r = size / 2.0;
+            let h = y1 - y0;
+            for (f0, f1, k) in [
+                (0.0, 0.12, 1.0),
+                (0.12, 0.38, 0.62),
+                (0.38, 0.62, 0.95),
+                (0.62, 0.88, 0.62),
+                (0.88, 1.0, 1.0),
+            ] {
+                out.push(solid(
+                    &ring(at, y0 + h * f0, r * k, 8),
+                    [0.0, h * (f1 - f0), 0.0],
+                    m,
+                    id,
+                ));
+            }
+        }
+    }
+}
+
 /// A newel: shaft plus optional cap, `foot` above the floor, `lat` any
-/// horizontal direction in scene space.
+/// horizontal direction in scene space. A post-to-beam newel reaches
+/// [`NewelParams::beam_drop`] below its foot.
 fn newel_meshes(
     at: Point,
     foot: f64,
@@ -343,15 +453,20 @@ fn newel_meshes(
 ) {
     let top = foot + nw.height;
     let shaft_top = if nw.cap { top - CAP_HEIGHT } else { top };
-    let size = (nw.size, nw.size);
-    out.extend(bar(
-        sc(at, foot),
-        sc(at, shaft_top),
+    let bottom = if nw.post_to_beam {
+        foot - nw.beam_drop.max(0.0)
+    } else {
+        foot
+    };
+    post_prism(
+        at,
+        (bottom, shaft_top),
+        nw.size,
+        nw.profile,
         lat,
-        size,
-        Material::WallInterior,
         id,
-    ));
+        out,
+    );
     if nw.cap {
         let cap = nw.size + 2.0 * CAP_OVERHANG;
         out.extend(bar(
@@ -414,6 +529,7 @@ pub(crate) fn run_meshes(
     floor_elev: f64,
     params: &RailingParams,
     id: Option<Id>,
+    skip: PostSkip,
 ) -> Vec<Mesh> {
     let mut out = Vec::new();
     let mut newels: Vec<Point> = Vec::new();
@@ -481,14 +597,9 @@ pub(crate) fn run_meshes(
             match params.style {
                 RailStyle::Balusters { size, .. } => {
                     for &p in &geom.balusters {
-                        out.extend(bar(
-                            sc(p, lo),
-                            sc(p, hi),
-                            lat,
-                            (size, size),
-                            Material::WallInterior,
-                            id,
-                        ));
+                        if !skip.balusters {
+                            post_prism(p, (lo, hi), size, params.baluster_profile, lat, id, &mut out);
+                        }
                     }
                 }
                 RailStyle::Cable { .. } => {
@@ -514,7 +625,9 @@ pub(crate) fn run_meshes(
         for &p in &geom.newels {
             if newels.iter().all(|q| q.dist(p) > NEWEL_MERGE) {
                 newels.push(p);
-                newel_meshes(p, y(0.0), &params.newel, lat, id, &mut out);
+                if !skip.newels {
+                    newel_meshes(p, y(0.0), &params.newel, lat, id, &mut out);
+                }
             }
         }
     }
@@ -529,7 +642,7 @@ pub fn railing_meshes(
     floor_elev: f64,
     params: &RailingParams,
 ) -> Vec<Mesh> {
-    run_meshes(&[(start, end)], floor_elev, params, None)
+    run_meshes(&[(start, end)], floor_elev, params, None, PostSkip::default())
 }
 
 // ---------------------------------------------------------------------------
@@ -615,6 +728,10 @@ pub fn stair_railing_geometry(
     }
     if let Some(c) = &layout.curve {
         curved_geometry(&layout, c, stair, side, params, &mut g);
+        return g;
+    }
+    if let Some(arc) = &layout.ramp_arc {
+        ramp_arc_geometry(&layout, arc, stair, side, params, &mut g);
         return g;
     }
     let mut ends: Vec<Option<FlightEnd>> = Vec::new();
@@ -774,11 +891,96 @@ pub fn landing_edges(stair: &Stair, side: RailSide) -> Vec<(Point, Point)> {
         .collect()
 }
 
+/// One guarded edge of a landing.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LandingGuard {
+    /// Start of the edge in plan.
+    pub a: Point,
+    /// End of the edge.
+    pub b: Point,
+    /// Index of the edge in the landing's stored outline (the edge from
+    /// corner `edge` to the next).
+    pub edge: usize,
+    /// Which side's railing settings the edge uses.
+    pub side: RailSide,
+    /// What stands on it: a railing, a half wall or a wall.
+    pub kind: SideKind,
+}
+
+/// The edges of a landing that carry a railing, wall or half wall: the open
+/// left and right sides as the stair's sides ask, then every edge the Selected
+/// Edge setting forces (`Has Railing`) and none of those it turns off.
+pub fn landing_guards(stair: &Stair) -> Vec<LandingGuard> {
+    let layout = Layout::build(stair);
+    let Some(slab) = layout.slabs.first().filter(|_| layout.is_landing) else {
+        return Vec::new();
+    };
+    let stored: Vec<Point> = slab.poly.iter().map(|&p| layout.frame.uv(p)).collect();
+    let n = stored.len();
+    if n < 3 {
+        return Vec::new();
+    }
+    let ccw = plan_core::geometry::polygon_area(&stored) >= 0.0;
+    let travel = Point::new(stair.direction.cos(), stair.direction.sin());
+    let left = travel.perp();
+    let p = &stair.params;
+    let mut out = Vec::new();
+    for i in 0..n {
+        let (pa, pb) = (stored[i], stored[(i + 1) % n]);
+        if pa.dist(pb) < 1e-6 {
+            continue;
+        }
+        let d = (pb - pa).normalized();
+        let outward = if ccw {
+            Point::new(d.y, -d.x)
+        } else {
+            Point::new(-d.y, d.x)
+        };
+        let facing = if outward.dot(left) > 0.7 {
+            Some(RailSide::Left)
+        } else if outward.dot(left) < -0.7 {
+            Some(RailSide::Right)
+        } else {
+            None
+        };
+        let side_kind = |s: RailSide| match s {
+            RailSide::Left => p.left_side,
+            RailSide::Right => p.right_side,
+        };
+        let (side, kind) = match (p.edge_rails.get(i).copied().unwrap_or_default(), facing) {
+            (crate::EdgeRail::No, _) => continue,
+            (crate::EdgeRail::Automatic, Some(s)) => (s, side_kind(s)),
+            (crate::EdgeRail::Automatic, None) => continue,
+            (crate::EdgeRail::Has, f) => {
+                let s = f.unwrap_or(RailSide::Left);
+                let k = match side_kind(s) {
+                    k @ (SideKind::Railing | SideKind::HalfWall | SideKind::Wall) => k,
+                    _ => SideKind::Railing,
+                };
+                (s, k)
+            }
+        };
+        if !matches!(kind, SideKind::Railing | SideKind::HalfWall | SideKind::Wall) {
+            continue;
+        }
+        // The run goes the way a counter-clockwise outline does.
+        let (a, b) = if ccw { (pa, pb) } else { (pb, pa) };
+        out.push(LandingGuard {
+            a,
+            b,
+            edge: i,
+            side,
+            kind,
+        });
+    }
+    out
+}
+
 /// 3D meshes of the guard along the open sides of a landing: the Left and
 /// Right sides as the stair's `left_side` / `right_side` ask (a railing, or
 /// a half wall that is a railing on a half-height wall). A full wall is not
 /// drawn on a landing. The rail stands on the landing's top.
-pub(crate) fn landing_railing(stair: &Stair) -> Vec<Mesh> {
+pub(crate) fn landing_railing(stair: &Stair, skip: PostSkip) -> Vec<Mesh> {
     let layout = Layout::build(stair);
     let Some(top) = layout
         .slabs
@@ -790,20 +992,25 @@ pub(crate) fn landing_railing(stair: &Stair) -> Vec<Mesh> {
     };
     let elevation = stair.bottom_elevation() + top;
     let mut out = Vec::new();
+    // Group the edges by what they carry so runs that meet share a newel.
     for (side, kind) in [
-        (RailSide::Left, stair.params.left_side),
-        (RailSide::Right, stair.params.right_side),
+        (RailSide::Left, SideKind::Railing),
+        (RailSide::Left, SideKind::HalfWall),
+        (RailSide::Right, SideKind::Railing),
+        (RailSide::Right, SideKind::HalfWall),
     ] {
         let mut params = stair.params.railing_for(side);
-        match kind {
-            crate::SideKind::Railing => {}
-            crate::SideKind::HalfWall => {
-                params.half_wall = Some(params.half_wall.unwrap_or(GUARD_HEIGHT * 0.5));
-            }
-            _ => continue,
+        if kind == SideKind::HalfWall {
+            params.half_wall = Some(params.half_wall.unwrap_or(GUARD_HEIGHT * 0.5));
         }
-        let runs = landing_edges(stair, side);
-        out.extend(run_meshes(&runs, elevation, &params, Some(stair.id)));
+        let runs: Vec<(Point, Point)> = landing_guards(stair)
+            .into_iter()
+            .filter(|g| g.side == side && g.kind == kind)
+            .map(|g| (g.a, g.b))
+            .collect();
+        if !runs.is_empty() {
+            out.extend(run_meshes(&runs, elevation, &params, Some(stair.id), skip));
+        }
     }
     out
 }
@@ -872,6 +1079,17 @@ pub fn stair_half_wall(
     params: &RailingParams,
     full_height: bool,
 ) -> Vec<Mesh> {
+    stair_half_wall_skipping(stair, side, params, full_height, PostSkip::default())
+}
+
+/// [`stair_half_wall`] without the posts `skip` names.
+pub fn stair_half_wall_skipping(
+    stair: &Stair,
+    side: RailSide,
+    params: &RailingParams,
+    full_height: bool,
+    skip: PostSkip,
+) -> Vec<Mesh> {
     let solid_style = RailingParams {
         style: RailStyle::Solid,
         ..*params
@@ -915,7 +1133,7 @@ pub fn stair_half_wall(
             }
         }
     }
-    if !full_height {
+    if !full_height && !skip.newels {
         for &(p, foot) in &g.newels {
             newel_meshes(p, foot, &params.newel, lateral(travel.perp()), id, &mut out);
         }
@@ -926,6 +1144,17 @@ pub fn stair_half_wall(
 /// 3D meshes of the railing on one `side` of a stair; see
 /// [`stair_railing_geometry`].
 pub fn stair_railing(stair: &Stair, side: RailSide, params: &RailingParams) -> Vec<Mesh> {
+    stair_railing_skipping(stair, side, params, PostSkip::default())
+}
+
+/// [`stair_railing`] without the posts `skip` names (the caller draws a
+/// library newel or baluster in their place).
+pub fn stair_railing_skipping(
+    stair: &Stair,
+    side: RailSide,
+    params: &RailingParams,
+    skip: PostSkip,
+) -> Vec<Mesh> {
     let g = stair_railing_geometry(stair, side, params);
     let id = Some(stair.id);
     let travel = Point::new(stair.direction.cos(), stair.direction.sin());
@@ -933,19 +1162,24 @@ pub fn stair_railing(stair: &Stair, side: RailSide, params: &RailingParams) -> V
     let (tw, th) = params.top_rail;
     let mut out = Vec::new();
 
-    for &(p, foot) in &g.newels {
-        newel_meshes(p, foot, &params.newel, post_lat, id, &mut out);
+    if !skip.newels {
+        for &(p, foot) in &g.newels {
+            newel_meshes(p, foot, &params.newel, post_lat, id, &mut out);
+        }
     }
-    for &(p, foot, top) in &g.balusters {
-        if let RailStyle::Balusters { size, .. } = params.style {
-            out.extend(bar(
-                sc(p, foot),
-                sc(p, top),
-                post_lat,
-                (size, size),
-                Material::WallInterior,
-                id,
-            ));
+    if !skip.balusters {
+        for &(p, foot, top) in &g.balusters {
+            if let RailStyle::Balusters { size, .. } = params.style {
+                post_prism(
+                    p,
+                    (foot, top),
+                    size,
+                    params.baluster_profile,
+                    post_lat,
+                    id,
+                    &mut out,
+                );
+            }
         }
     }
     for &(a, ea, b, eb) in &g.rails {
@@ -971,6 +1205,151 @@ pub fn stair_railing(stair: &Stair, side: RailSide, params: &RailingParams) -> V
             id,
             &mut out,
         );
+    }
+    out
+}
+
+/// Rail, newel and baluster layout along the edge of a curved ramp: the
+/// rail rises with the surface and stays level over the landings.
+fn ramp_arc_geometry(
+    layout: &Layout,
+    arc: &RampArc,
+    stair: &Stair,
+    side: RailSide,
+    params: &RailingParams,
+    g: &mut StairRailingGeometry,
+) {
+    let c = &arc.curve;
+    let floor = stair.bottom_elevation();
+    let lat = match side {
+        RailSide::Left => 0.0,
+        RailSide::Right => c.width,
+    };
+    let rho = c.rho(lat);
+    let plan = |a: f64| layout.frame.uv(c.at(a, rho));
+    let surface = |a: f64| floor + arc.height_at(a);
+    let rail_top = |a: f64| surface(a) + STAIR_RAIL_HEIGHT;
+    let sweep = c.sweep();
+    if sweep < 1e-9 {
+        return;
+    }
+    let n = ((sweep.to_degrees() / 7.5).ceil() as usize).max(1);
+    for i in 0..n {
+        let (a0, a1) = (sweep * i as f64 / n as f64, sweep * (i + 1) as f64 / n as f64);
+        g.rails
+            .push((plan(a0), rail_top(a0), plan(a1), rail_top(a1)));
+    }
+    g.add_newel(plan(0.0), surface(0.0));
+    g.add_newel(plan(sweep), surface(sweep));
+    // A newel where a run meets a landing.
+    for &(_, a1, _, _) in arc.segs.iter().take(arc.segs.len().saturating_sub(1)) {
+        g.add_newel(plan(a1), surface(a1));
+    }
+    let extra = (sweep * rho / CURVE_NEWEL_SPACING - 1e-9).ceil() as u32;
+    for i in 1..extra {
+        let a = sweep * f64::from(i) / f64::from(extra);
+        g.add_newel(plan(a), surface(a));
+    }
+    if let RailStyle::Balusters { spacing, size } = params.style {
+        let below = params.top_rail.1;
+        let pitch = spacing.max(1e-3) + size;
+        let count = ((sweep * rho) / pitch).floor().max(1.0) as u32;
+        for k in 0..count {
+            let a = sweep * (f64::from(k) + 0.5) / f64::from(count);
+            g.balusters
+                .push((plan(a), surface(a), rail_top(a) - below));
+        }
+    }
+}
+
+/// Where one post stands, for a caller that draws its own.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PostPlacement {
+    /// Plan position of the centre.
+    pub at: Point,
+    /// Absolute elevation of the foot.
+    pub foot: f64,
+    /// Absolute elevation of the top.
+    pub top: f64,
+    /// Width of the post.
+    pub size: f64,
+}
+
+/// Every newel and baluster of a stair's railings (both sides, and the
+/// guarded sides of a landing).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct StairPosts {
+    pub newels: Vec<PostPlacement>,
+    pub balusters: Vec<PostPlacement>,
+}
+
+/// The newels and balusters of every railing side of the stair (those it
+/// builds itself, so a library post can be put at each one).
+pub fn stair_posts(stair: &Stair) -> StairPosts {
+    let mut out = StairPosts::default();
+    let layout = Layout::build(stair);
+    let p = &stair.params;
+    for (side, kind) in [(RailSide::Left, p.left_side), (RailSide::Right, p.right_side)] {
+        let railing = p.railing_for(side);
+        if layout.is_landing {
+            let Some(slab) = layout.slabs.first() else {
+                continue;
+            };
+            let elevation = stair.bottom_elevation() + slab.top;
+            for guard in landing_guards(stair)
+                .into_iter()
+                .filter(|g| g.side == side && matches!(g.kind, SideKind::Railing | SideKind::HalfWall))
+            {
+                let mut params = railing;
+                if guard.kind == SideKind::HalfWall {
+                    params.half_wall = Some(params.half_wall.unwrap_or(GUARD_HEIGHT * 0.5));
+                }
+                let g = railing_segments(guard.a, guard.b, &params);
+                for n in g.newels {
+                    out.newels.push(PostPlacement {
+                        at: n,
+                        foot: elevation,
+                        top: elevation + params.newel.height,
+                        size: params.newel.size,
+                    });
+                }
+                if let RailStyle::Balusters { size, .. } = params.style {
+                    for q in g.balusters {
+                        out.balusters.push(PostPlacement {
+                            at: q,
+                            foot: elevation + params.infill_bottom(),
+                            top: elevation + params.height - params.top_rail.1,
+                            size,
+                        });
+                    }
+                }
+            }
+            continue;
+        }
+        if !matches!(kind, SideKind::Railing | SideKind::HalfWall) {
+            continue;
+        }
+        let g = stair_railing_geometry(stair, side, &railing);
+        for (at, foot) in g.newels {
+            out.newels.push(PostPlacement {
+                at,
+                foot,
+                top: foot + railing.newel.height,
+                size: railing.newel.size,
+            });
+        }
+        if kind == SideKind::Railing {
+            if let RailStyle::Balusters { size, .. } = railing.style {
+                for (at, foot, top) in g.balusters {
+                    out.balusters.push(PostPlacement {
+                        at,
+                        foot,
+                        top,
+                        size,
+                    });
+                }
+            }
+        }
     }
     out
 }

@@ -19,8 +19,10 @@ pub fn general() -> PageSpec {
     PageSpec::new("general", "General Plan Defaults")
         .section(
             "Units",
-            vec![F::flag("general.imperial", "Imperial Units (Feet and Inches)", true)
-                .bound(bind_flag!(units.imperial))],
+            vec![
+                F::flag("general.imperial", "Imperial Units (Feet and Inches)", true)
+                    .bound(bind_flag!(units.imperial)),
+            ],
         )
         .section(
             "Grid and Snaps",
@@ -39,13 +41,23 @@ pub fn general() -> PageSpec {
         )
         .section(
             "Undo",
-            vec![F::int("general.undo_levels", "Undo Levels", 100, (1, 1000), "")],
+            vec![F::int(
+                "general.undo_levels",
+                "Undo Levels",
+                100,
+                (1, 1000),
+                "",
+            )],
         )
         .section(
             "Walls",
             vec![
-                F::flag("general.split_on_tee", "Split a Wall Where Another Meets It", true)
-                    .bound(bind_flag!(walls_connect.split_on_tee)),
+                F::flag(
+                    "general.split_on_tee",
+                    "Split a Wall Where Another Meets It",
+                    true,
+                )
+                .bound(bind_flag!(walls_connect.split_on_tee)),
                 F::len("general.connect_distance", "Connect Walls Within", 1.0)
                     .bound(bind_num!(walls_connect.connect_distance_min)),
             ],
@@ -101,7 +113,12 @@ pub fn layout() -> PageSpec {
                     &["ARCH C 18x24", "ARCH D 24x36", "ANSI B 11x17", "US Letter"],
                     "ARCH C 18x24",
                 ),
-                F::pick("layout.orientation", "Orientation", &["Landscape", "Portrait"], "Landscape"),
+                F::pick(
+                    "layout.orientation",
+                    "Orientation",
+                    &["Landscape", "Portrait"],
+                    "Landscape",
+                ),
                 F::len("layout.margin", "Margin", 0.5),
                 F::flag("layout.border", "Page Border", true),
             ],
@@ -198,27 +215,26 @@ pub fn text_page(slug: &str) -> Option<PageSpec> {
     let p = id.as_str();
     let spec = PageSpec::new(p, title).note(NOTE);
     Some(match slug {
-        "rich" => spec
-            .section(
-                "Rich Text",
-                vec![
-                    F::list(
-                        &format!("{p}.style"),
-                        "Default Rich Text Style",
-                        ListSource::TextStyles,
-                        "Default Text Style",
-                    ),
-                    F::pick(
-                        &format!("{p}.align"),
-                        "Alignment",
-                        &["Left", "Center", "Right"],
-                        "Left",
-                    ),
-                    F::flag(&format!("{p}.border"), "Display Border", false),
-                    F::len(&format!("{p}.margin"), "Margins", 0.375),
-                    F::flag(&format!("{p}.fill"), "Opaque Background", false),
-                ],
-            ),
+        "rich" => spec.section(
+            "Rich Text",
+            vec![
+                F::list(
+                    &format!("{p}.style"),
+                    "Default Rich Text Style",
+                    ListSource::TextStyles,
+                    "Default Text Style",
+                ),
+                F::pick(
+                    &format!("{p}.align"),
+                    "Alignment",
+                    &["Left", "Center", "Right"],
+                    "Left",
+                ),
+                F::flag(&format!("{p}.border"), "Display Border", false),
+                F::len(&format!("{p}.margin"), "Margins", 0.375),
+                F::flag(&format!("{p}.fill"), "Opaque Background", false),
+            ],
+        ),
         "arrows" => spec.section(
             "Arrows",
             vec![
@@ -317,8 +333,12 @@ pub fn floor_levels() -> PageSpec {
             vec![
                 F::len("floor_levels.ceiling", "Ceiling Height", 108.0)
                     .bound(bind_num!(rooms.ceiling_height)),
-                F::len("floor_levels.foundation_height", "Foundation Wall Height", 96.0)
-                    .bound(bind_num!(foundation_wall.height)),
+                F::len(
+                    "floor_levels.foundation_height",
+                    "Foundation Wall Height",
+                    96.0,
+                )
+                .bound(bind_num!(foundation_wall.height)),
                 F::len("floor_levels.wall_height", "Exterior Wall Height", 109.125)
                     .bound(bind_num!(exterior_wall.height)),
             ],
@@ -343,8 +363,12 @@ pub fn platforms() -> PageSpec {
                 .bound(bind_num!(rooms.floor.ceiling_structure_thickness)),
             F::len("platforms.floor_finish", "Floor Finish Thickness", 0.75)
                 .bound(bind_num!(rooms.floor.floor_finish_thickness)),
-            F::len("platforms.ceiling_finish", "Ceiling Finish Thickness", 0.625)
-                .bound(bind_num!(rooms.floor.ceiling_finish_thickness)),
+            F::len(
+                "platforms.ceiling_finish",
+                "Ceiling Finish Thickness",
+                0.625,
+            )
+            .bound(bind_num!(rooms.floor.ceiling_finish_thickness)),
         ],
     )
 }
@@ -355,13 +379,8 @@ pub fn rooms() -> PageSpec {
         .section(
             "New Rooms",
             vec![
-                F::list(
-                    "rooms.type",
-                    "Default Room Type",
-                    ListSource::RoomTypes,
-                    "",
-                )
-                .bound(bind_text!(rooms.floor.default_room_type)),
+                F::list("rooms.type", "Default Room Type", ListSource::RoomTypes, "")
+                    .bound(bind_text!(rooms.floor.default_room_type)),
                 F::text("rooms.floor_material", "Floor Material", "")
                     .bound(bind_text!(rooms.floor.floor_material)),
                 F::text("rooms.ceiling_material", "Ceiling Material", "")

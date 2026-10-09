@@ -653,7 +653,9 @@ mod tests {
 
     #[test]
     fn unknown_extensions_are_refused() {
-        let e = parse_model("stl", b"", None, None, &ModelOptions::default()).unwrap_err();
-        assert!(e.contains(".stl"));
+        let e = parse_model("xyz", b"", None, None, &ModelOptions::default()).unwrap_err();
+        assert!(e.contains(".xyz"));
+        // A known extension with nothing inside is refused by its parser.
+        assert!(parse_model("stl", b"", None, None, &ModelOptions::default()).is_err());
     }
 }

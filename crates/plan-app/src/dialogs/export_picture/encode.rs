@@ -41,6 +41,7 @@ impl Format {
     }
 
     /// The format a file name's extension names.
+    #[cfg(test)]
     pub fn from_extension(ext: &str) -> Option<Format> {
         match ext.to_ascii_lowercase().as_str() {
             "png" => Some(Format::Png),
@@ -96,7 +97,7 @@ pub fn encode_bmp(width: u32, height: u32, rgba: &[u8]) -> Vec<u8> {
     out.extend_from_slice(&2835u32.to_le_bytes());
     out.extend_from_slice(&[0; 8]);
     for row in (0..h).rev() {
-        for px in rgba[row * w * 4..(row + 1) * w * 4].chunks_exact(4) {
+        for px in rgba[row * w * 4..(row + 1) * w * 4].as_chunks::<4>().0 {
             let a = px[3];
             out.extend_from_slice(&[
                 over_white(px[2], a),
@@ -123,20 +124,21 @@ pub fn encode_tiff(width: u32, height: u32, rgba: &[u8]) -> Vec<u8> {
     let ifd_end = 8 + 2 + 12 * u32::from(entries) + 4;
     let bits_at = ifd_end; // 4 x u16
     let data_at = bits_at + 8;
-    let mut e: Vec<(u16, u16, u32, u32)> = Vec::new();
     // (tag, type, count, value): type 3 = SHORT, 4 = LONG
-    e.push((256, 4, 1, width));
-    e.push((257, 4, 1, height));
-    e.push((258, 3, 4, bits_at));
-    e.push((259, 3, 1, 1)); // no compression
-    e.push((262, 3, 1, 2)); // RGB
-    e.push((273, 4, 1, data_at)); // strip offset
-    e.push((277, 3, 1, 4)); // samples per pixel
-    e.push((278, 4, 1, height)); // rows per strip
-    e.push((279, 4, 1, data_len as u32)); // strip byte count
-    e.push((284, 3, 1, 1)); // chunky
-    e.push((296, 3, 1, 2)); // resolution unit: inch
-    e.push((338, 3, 1, 2)); // extra samples: unassociated alpha
+    let e: [(u16, u16, u32, u32); 12] = [
+        (256, 4, 1, width),
+        (257, 4, 1, height),
+        (258, 3, 4, bits_at),
+        (259, 3, 1, 1),               // no compression
+        (262, 3, 1, 2),               // RGB
+        (273, 4, 1, data_at),         // strip offset
+        (277, 3, 1, 4),               // samples per pixel
+        (278, 4, 1, height),          // rows per strip
+        (279, 4, 1, data_len as u32), // strip byte count
+        (284, 3, 1, 1),               // chunky
+        (296, 3, 1, 2),               // resolution unit: inch
+        (338, 3, 1, 2),               // extra samples: unassociated alpha
+    ];
     debug_assert_eq!(e.len(), usize::from(entries));
     out.extend_from_slice(&entries.to_le_bytes());
     for (tag, ty, count, value) in e {
@@ -321,7 +323,10 @@ fn segment(out: &mut Vec<u8>, marker: u8, body: &[u8]) {
 /// on white. `quality` is 1..=100 like libjpeg's.
 pub fn encode_jpeg(width: u32, height: u32, rgba: &[u8], quality: u8) -> Vec<u8> {
     let (w, h) = (width as usize, height as usize);
-    let (ql, qc) = (scaled_table(&LUMA_Q, quality), scaled_table(&CHROMA_Q, quality));
+    let (ql, qc) = (
+        scaled_table(&LUMA_Q, quality),
+        scaled_table(&CHROMA_Q, quality),
+    );
     let mut out = vec![0xFF, 0xD8];
     segment(
         &mut out,
@@ -361,11 +366,7 @@ pub fn encode_jpeg(width: u32, height: u32, rgba: &[u8], quality: u8) -> Vec<u8>
     ];
     let quant = [&ql, &qc, &qc];
     let basis = dct_basis();
-    let mut bw = BitWriter {
-        out,
-        acc: 0,
-        n: 0,
-    };
+    let mut bw = BitWriter { out, acc: 0, n: 0 };
     let mut last_dc = [0i32; 3];
     for by in (0..h).step_by(8) {
         for bx in (0..w).step_by(8) {
@@ -453,7 +454,10 @@ mod tests {
             (&AC_LUMA_BITS, &AC_LUMA_VALS[..]),
             (&AC_CHROMA_BITS, &AC_CHROMA_VALS[..]),
         ] {
-            assert_eq!(bits.iter().map(|&b| usize::from(b)).sum::<usize>(), vals.len());
+            assert_eq!(
+                bits.iter().map(|&b| usize::from(b)).sum::<usize>(),
+                vals.len()
+            );
             let mut want: Vec<u8> = (1..=10u8)
                 .flat_map(|s| (0..16u8).map(move |r| r << 4 | s))
                 .collect();
@@ -463,8 +467,17 @@ mod tests {
             got.sort_unstable();
             assert_eq!(got, want);
         }
-        assert_eq!(DC_LUMA_BITS.iter().map(|&b| usize::from(b)).sum::<usize>(), 12);
-        assert_eq!(DC_CHROMA_BITS.iter().map(|&b| usize::from(b)).sum::<usize>(), 12);
+        assert_eq!(
+            DC_LUMA_BITS.iter().map(|&b| usize::from(b)).sum::<usize>(),
+            12
+        );
+        assert_eq!(
+            DC_CHROMA_BITS
+                .iter()
+                .map(|&b| usize::from(b))
+                .sum::<usize>(),
+            12
+        );
     }
 
     #[test]
@@ -492,7 +505,11 @@ mod tests {
         }
         assert!(worst <= 24, "worst channel error {worst}");
         // The transparent corner became white.
-        assert!(back.rgba[..3].iter().all(|&c| c > 200), "{:?}", &back.rgba[..4]);
+        assert!(
+            back.rgba[..3].iter().all(|&c| c > 200),
+            "{:?}",
+            &back.rgba[..4]
+        );
     }
 
     #[test]
@@ -508,13 +525,19 @@ mod tests {
         let src = sample(5, 3);
         let b = encode_bmp(5, 3, &src);
         assert_eq!(&b[..2], b"BM");
-        assert_eq!(u32::from_le_bytes([b[2], b[3], b[4], b[5]]) as usize, b.len());
+        assert_eq!(
+            u32::from_le_bytes([b[2], b[3], b[4], b[5]]) as usize,
+            b.len()
+        );
         assert_eq!(b.len(), 54 + 5 * 3 * 4);
         assert_eq!(i32::from_le_bytes([b[18], b[19], b[20], b[21]]), 5);
         assert_eq!(i32::from_le_bytes([b[22], b[23], b[24], b[25]]), 3);
-        // The first stored row is the image's last row: BGR of (0, last row).
-        let last = &src[2 * 5 * 4..2 * 5 * 4 + 4];
-        assert_eq!(&b[54..57], &[last[2], last[1], last[0]]);
+        // The first stored row is the image's last row. Its first pixel is
+        // transparent in the sample, so it flattens to white; the pixel after
+        // the transparent corner (x = 3) keeps its own color, as BGR.
+        assert_eq!(&b[54..57], &[255, 255, 255]);
+        let px = &src[(2 * 5 + 3) * 4..(2 * 5 + 3) * 4 + 4];
+        assert_eq!(&b[54 + 3 * 4..54 + 3 * 4 + 3], &[px[2], px[1], px[0]]);
     }
 
     #[test]

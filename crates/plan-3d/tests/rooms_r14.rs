@@ -128,6 +128,26 @@ fn an_open_below_room_opens_only_the_rooms_wholly_inside_it() {
 }
 
 #[test]
+fn an_open_below_room_gets_no_ceiling_surface_plate() {
+    // The lower left room names a wood-plank ceiling; under an Open Below
+    // room the plate would float, so only the other room gets one.
+    let mut p = open_below_house(120.0);
+    let mut n = RoomName::new(Point::new(30.0, 60.0), "Den", "Den");
+    n.ceiling_finish = Some("Wood Planks".into());
+    p.floors[0].room_names.push(n);
+    let plates = |p: &Project| {
+        meshes(p, Material::Floor)
+            .into_iter()
+            .filter(|m| (bottom_of(std::slice::from_ref(m)) - (CEIL as f32 - 0.06)).abs() < 0.01)
+            .count()
+    };
+    assert_eq!(plates(&p), 0, "no plate under the open room");
+    // Without the Open Below room above, the plate is there.
+    p.floors[1].room_names.clear();
+    assert_eq!(plates(&p), 1);
+}
+
+#[test]
 fn a_room_larger_than_the_open_below_room_keeps_its_ceiling() {
     // An Open Below room 0..60 over a lower room 0..120.
     let p = open_below_house(60.0);

@@ -217,7 +217,8 @@ toolbar sets, reduced to the buttons that view can use.
 - **Rows** shows the three standard rows, each with a Show tick, and the rows you added. **Add Row** makes a row with a name
   you type; **Delete Row** removes a row you added (the standard rows cannot be deleted, hide them instead).
 - **Buttons on the row**: select a button and use Move Up, Move Down or Remove; **Add Separator** puts a divider line after
-  the selected button.
+  the selected button. **Rename** renames a row, **Duplicate Row** copies one with its buttons and the arrows beside the row
+  list reorder the rows.
 - **Lock Toolbars** makes the dialog refuse changes until it is cleared. (The bars themselves are not draggable in Plan
   Studio, so the lock only protects the dialog.)
 - **Reset This View to Daniel's Chief Set** and **Reset All Views** put the shipped sets back.
@@ -491,15 +492,24 @@ change applies at once and is saved to `~/.plan-studio/settings.json` when the m
 
 | Page | What it holds |
 |---|---|
-| Appearance | The canvas theme, UI brightness, **Text size** (80-150%, the whole interface) and **Icon halo** (a plate behind the toolbar icons). |
-| Fonts | **Interface text size**, and **Use system fonts for plan, layout and PDF text** (on by default): a text style's font (Avenir, Arial ...) is drawn and printed in the installed font of that name; off means the bundled font on screen and Helvetica on paper. The page counts the font families found on this computer and lists the notes about styles whose font is missing, or whose licence forbids embedding in a PDF (chapter 12.6). The choice is saved in `~/.plan-studio/fonts.json`. |
+| Appearance | The canvas theme, UI brightness, **Text size** (80-150%, the whole interface), **Icon size** and **Icon halo** (a plate behind the toolbar icons), and colors of your own for the canvas, grid, text and temporary dimensions. |
 | Colors | A selection highlight color of your own. |
-| Library | The Chief catalogs switch and the catalog folder (the same `chief_catalogs` settings as the Library Browser; it rescans when next opened). |
-| Folders | Where the default plan and layout templates are, the settings folder and the material library file; buttons to the Templates page and Default Settings. |
-| Render | Starting image size, samples per pixel, technique and sun latitude of the Ray Trace dialog. |
-| Edit | Buttons to Default Settings and Customize Hotkeys (chapter 13.7). |
-| Snaps | Object snaps (each type), grid snaps, angle snaps and increment, snap distance and bumping: the plan's editing defaults. |
-| Architectural | Automatic countertop join and cabinet fit to gap (chapter 6). |
+| Text (the Fonts page of earlier builds) | **Interface text size**, and **Use system fonts for plan, layout and PDF text** (on by default): a text style's font (Avenir, Arial ...) is drawn and printed in the installed font of that name; off means the bundled font on screen and Helvetica on paper. The page counts the font families found on this computer and lists the notes about styles whose font is missing, or whose licence forbids embedding in a PDF (chapter 12.6). The choice is saved in `~/.plan-studio/fonts.json`. |
+| Library Browser | The Chief catalogs switch and the catalog folder (the same `chief_catalogs` settings as the Library Browser; it rescans when next opened), the thumbnail size and what the search looks at (names, descriptions, keywords, catalog names, whole words, every word). |
+| Render | Starting image size, samples per pixel, technique and sun latitude of the Ray Trace dialog, and the shadow, ambient occlusion and quality a new 3D view starts with. |
+| Materials List | Waste, round up, prices and all floors for the Materials List. |
+| Reset Options | Brings back every message you hid with "Don't ask again", and resets the other preference groups. |
+| Folders | Where textures, backdrops, templates, the autosave and the user library are kept. The folder in force is shown with an indicator; an empty slot means the default for this computer. The autosave folder, when set, keeps every plan's autosave in one place (`<plan name>-<hash>-autosave.psplan`). |
+| Edit | The marquee mode, rotate about and resize about, and buttons to Default Settings and Customize Hotkeys (chapter 13.7). |
+| Behaviors | The camera Move, Turn and Tilt step sizes and the other behaviors. |
+| Snap Properties | Object snaps (each type), grid snaps, angle snaps and increment, snap distance and bumping: the plan's editing defaults. They are kept in `preferences.json` once you change them and laid over every plan you open or start. |
+| Architectural | Automatic countertop join and cabinet fit to gap (chapter 6), and the switches that rebuild roofs, walls, foundations and attic walls automatically. |
+| CAD | Arc centers, end caps and the minimum and maximum line weights. |
+| General Plan Defaults | The plan-wide defaults of Chief's page of that name. |
+| Unit Conversions | The conversion table. |
+
+The pages are kept in `~/.plan-studio/preferences.json`. The choice of a few of them is read where it applies; the ones
+that are not read yet are listed in `docs/integration-queue.md` ("Preferences, hotkeys and toolbars, round 14").
 
 View > Status Bar and View > Toolbars hide or show those bars and are remembered. File > Open Recent Documents lists the last ten plans
 opened or saved (`recent_files` in the same settings file).

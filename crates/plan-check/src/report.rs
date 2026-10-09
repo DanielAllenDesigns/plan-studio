@@ -31,6 +31,7 @@ impl Finding {
             Some(Target::Cabinet(i)) => format!("Cabinet {i}"),
             Some(Target::Roof(i)) => format!("Roof plane {i}"),
             Some(Target::Detail(i)) => format!("Deck {i}"),
+            Some(Target::Foundation(i)) => format!("Foundation {i}"),
             None => "Plan".to_string(),
         }
     }

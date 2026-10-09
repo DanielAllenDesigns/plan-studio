@@ -26,8 +26,8 @@ Library menu's catalog import is still dimmed. Chief catalogs are read in place 
 | Layout JSON | Read and write | Yes: File > Export > Layout (JSON)... and File > Import > Layout (JSON)... | `plan-layout` |
 | Markdown and PDF (Plan Check report) | Write | Yes: Save Report... and Report PDF... (chapter 18.4) | `plan-check` |
 | DXF (ASCII, R12) | Write | Yes: File > Export > DXF..., Elevation DXF..., and Export DXF from a section or elevation's vector view and its Camera Specification (chapter 10.7) | `plan-core::export::dxf`, `plan-elevation` |
-| DXF import, CAD to Walls | Read | Yes: File > Import > Import Drawing (DXF)..., CAD > CAD to Walls... | `plan-import` |
-| DWG | Neither | (planned) | |
+| DXF import (ASCII and binary, R12 to 2018), CAD to Walls | Read | Yes: File > Import > Import Drawing (DWG/DXF)... (Import Drawing Assistant), CAD > CAD to Walls... DWG: guidance only | `plan-import`, `dialogs/import_drawing.rs` |
+| DWG | Neither (import: DXF-save guidance only) | The Import Drawing window recognises a DWG and says how to save a DXF | |
 | Chief catalogs `.calib`, `.calibz` | Read in place | Yes: the Library Browser's Chief nodes (chapter 6.6); no import command | `plan-calib` |
 | Chief templates `.plan`, `.tpl`, `.layout` | Read names and some values | Yes: File > Templates > Import Chief Template... | `plan-chiefplan` |
 | Chief project `.plan` (the building itself) | Read | Yes: File > Import > Chief Plan... (12.8a): floors, walls, doors, windows, named rooms, dimensions, text, cabinets, placed library objects, electrical devices, stairs and roof planes | `plan-chiefplan` (`import`) |
@@ -56,9 +56,9 @@ Library menu's catalog import is still dimmed. Chief catalogs are read in place 
 | File > Export > Construction Set PDF... | | The same as Create Construction Set. | Works. |
 | File > Export > glTF... | | The same as 3D > Export > glTF.... | Works. |
 | File > Export > (image, DWG) | | Not in the menu. | (planned) |
-| File > Import > Import Drawing (DXF)... | | Adds a DXF drawing to the active floor as CAD objects (12.4). | Works. |
+| File > Import > Import Drawing (DWG/DXF)... | | The Import Drawing window and assistant: adds a DXF drawing to the active floor as CAD objects, dimensions and CAD blocks (12.4). | Works (DWG refused with guidance). |
 | File > Import > Underlay Picture (PNG, JPEG, PDF)... (also Tools > Underlays...) | | Places a picture under the plan for tracing (12.4a). | Works. |
-| File > Import > (DWG) | | Not in the menu. | (planned) |
+| File > Import > (DWG) | | Part of Import Drawing (DWG/DXF): a DWG shows how to save a DXF (DECISIONS DX1). | Guidance only. |
 | File > Import > Chief Plan... | | Reads a Chief project `.plan` into a new plan in the window (12.8a); it asks about unsaved changes first. | Works. |
 | File > Templates > Import Chief Template... | | Seeds your defaults from a Chief `.plan`, `.tpl` or `.layout` (12.8). | Works. |
 | File > New Layout | | Makes the plan's layout and shows the layout view (11.3). | Works. |
@@ -233,26 +233,58 @@ std::fs::write("first-floor.dxf", dxf)?;
 
 `plan-import` is the counterpart of Chief's Import Drawing and CAD to Walls.
 
-### File > Import > Import Drawing (DXF)...
+### File > Import > Import Drawing (DWG/DXF)...
 
-Pick a `.dxf` file; the **Import Drawing (DXF)** window opens before anything is added.
+Pick one or more `.dxf` files (a `.dwg` is accepted so the window can tell you what to do, see below) or drop
+them on the Plan Studio window. The **Import Drawing** window opens before anything is added; it works like
+Chief's Import Drawing dialog and Import Drawing Assistant (reference manual pp. 1289-1297).
 
-- It shows the file name, "<n> entities on <m> layers; the file's units: <units>" and, when the reader
-  skipped entity kinds it does not support, "Not imported: <count> <kind>, ...". A file that cannot be read
-  ends with "Import failed: <reason>" in the status bar.
-- **Units**: As the file says (default), Inches, Feet, Millimeters, Centimeters or Meters. A file with no
-  units reads as inches. **Layer name prefix** is put in front of every imported layer name (blank by default).
-  "Size in the plan" shows the drawing's declared extents in the current units, updating as you change Units.
-- **Scale** (on top of the units), **Rotation** (degrees, about the insertion point), **Base point** (the drawing's
-  origin or the lower-left corner of its extents) and **Insert it at** (x and y, feet-inches) place the drawing in the plan.
-- **Layer mapping**: every DXF layer is listed with its object count and a choice of where it goes: Keep (under the prefix),
-  Do not import, one of the plan's layers (a layer named like a plan layer is preselected), or a new layer of a name you type.
-  Blocks (INSERTs) are always exploded.
-- **Convert to walls** (with the layer to read, "A-WALL" preselected when there is a wall layer) also runs the CAD to Walls matcher
-  with its default options on that layer's lines and adds the walls in the same undo step.
-- **Import** adds the drawing to the active floor as CAD objects, as one undo step ("Import Drawing"). Layers the
-  plan does not have are created, hidden when the DXF layer was off. The status bar says "Imported n objects (k
-  new layers)", or "The drawing had nothing to import", and the number of walls when it made some.
+- **Import Drawing** (first window): "Files Selected for Import" lists the files with their object and layer
+  counts. **Show Import Assistant** (on) takes each file through the pages below; off, the files are imported at
+  once with the defaults (the layers the original program showed, layers of the same names with their attributes,
+  the file's units, the drawing moved to the origin). **Show For Each File** gives every file its own assistant
+  (otherwise the settings are shared). **Create CAD Blocks** makes each drawing one CAD block. **Auto Position
+  Blocks** puts several drawings side by side (48" apart) instead of on top of each other. Place In Current View
+  and Add to Library are not built (DECISIONS DX12).
+- **Select File**: the file name, release (`$ACADVER`), format (ASCII or binary DXF), counts and units; a warning
+  listing external references (they are not imported). **Polylines** joins lines that share end points into
+  polylines, **Boxes** turns lines that close a rectangle into a box; polylines already in the file are not
+  touched. **Import Hatch entities** (on) and **Include the first page of paper space** (off; imported as one CAD
+  block named Paper Space; later pages are not read).
+- **Select Layers**: one row per DXF layer with a check box, its colour, Visible / Off / Frozen, line type, weight
+  and object count. Layers that were visible are checked, frozen ones are not (Select All, Clear All). **To walls**
+  marks a layer whose lines (and polyline segments) are run through CAD to Walls with its default options in the
+  same undo step; the **wall type** picker gives the walls that type's thickness, kind and name ("Default for its
+  kind" keeps the measured thickness). The lines stay as CAD.
+- **Layer Mapping**: **A single layer in Plan Studio** (a plan layer or a new name; each object keeps its colour,
+  line style and weight), **Layers of the same names** (made when missing; "Import the attributes of each layer"
+  gives them the DXF layer's colour, weight and line style, otherwise each object carries them), or **Advanced
+  layer mapping**: a table of DXF layer, Plan Studio layer (same name, an existing layer, or a new name typed) and
+  "New" for layers that will be made.
+- **Duplicate CAD Blocks** (only when this floor already has a CAD block of a name the file brings): give each
+  duplicate a unique name (`name_Copy_1`), replace the floor's blocks of that name, keep the floor's and discard the
+  imported ones, or manage each duplicate individually (Auto Name, Replace, Use Existing per name).
+- **Drawing Unit**: the unit ("As the file says" shows what that is; a file with no `$INSUNITS` is inches, or
+  millimetres when `$MEASUREMENT` says metric), **Scale** on top of it, **Rotation**, **Dimensions** ("Import as
+  dimensions where possible" or "Import as CAD blocks"), **Move drawing to the origin** (the lower-left of the
+  drawing goes to the place below; unchecked, the drawing lands where it was drawn) and **Place it at** (x and y in
+  feet-inches).
+- **Import Complete**: the counts (objects by kind, hatches, dimensions, CAD blocks, layers), the size in the plan,
+  how many walls will be made, and notes: blocks used but not defined, external references, paper space left out,
+  entity kinds not imported, block definitions nothing inserts. **Import** adds everything to the active floor as
+  one undo step ("Import Drawing") and selects it so it can be moved. A multi-file import is one step, too.
+- **What is read**: lines, polylines and lightweight polylines (bulges become arcs, and are remembered as polyline
+  arc edges), circles, arcs, ellipses and splines (NURBS, as polylines), hatches (a solid fill, or the CAD Hatch
+  tool's pattern lines by the AutoCAD pattern name), solids, 3D faces and polyface meshes (outlines), points (a
+  small circle), text and multi-line text (justification, rich runs, first font, wrap width, text styles that
+  match a plan style), attributes (as text), leaders and multileaders (a polyline with an arrow, plus the text),
+  linear and aligned dimensions (as dimensions; other kinds are drawn from the file's own dimension block or from
+  their definition points), and block inserts and arrays (as CAD blocks, nested blocks expanded, BYBLOCK and layer 0
+  following the insert). Layer colours (ACI and true colour), line weights and line types are kept; a line type
+  becomes the nearest of solid, dashed, dotted and dash-dot.
+- **DWG** is not read. The window says: "This is an AutoCAD DWG file (release 2013). Plan Studio reads DXF: in
+  AutoCAD, BricsCAD or LibreCAD choose Save As and pick DXF (any release from R12 to 2018), then import that file."
+  (DECISIONS DX1.)
 
 ### CAD > CAD to Walls...
 
@@ -270,19 +302,21 @@ lines on the floor the status bar says "CAD to Walls: there are no CAD lines on 
 
 ### The engine
 
-- `parse_dxf(text)` reads **ASCII DXF** tolerantly (CRLF or LF, padded or bare group codes) into a
-  `DxfDrawing` with layers, units, extents, blocks and entities. Supported entities: LINE,
-  LWPOLYLINE, POLYLINE/VERTEX, CIRCLE, ARC, TEXT, MTEXT and INSERT. Anything else is counted in
-  `skipped`.
-- `DxfDrawing::explode_inserts` expands block references with scale, rotation, base point and nesting.
-- `to_inches_factor(units, override)` and `to_cad_objects(drawing, factor, layer_prefix)` turn
-  entities into plan CAD objects in inches; bulged polyline segments become sampled arcs.
+- `parse_dxf(text)` and `parse_dxf_bytes(bytes)` read **ASCII and binary DXF** tolerantly, R12 through 2018 (CRLF or
+  LF, padded or bare group codes, Windows-1252 text, comments), into a `DxfDrawing`: header values, the LAYER, LTYPE,
+  STYLE and DIMSTYLE tables, block definitions (anonymous dimension blocks, external references), model-space
+  entities and the first paper-space page. `dxf::tokens::ascii_to_binary` writes the binary form of an ASCII file
+  (used by the tests).
+- `convert(drawing, &ImportOptions)` expands blocks, maps layers, places the drawing and returns a `Converted`
+  (objects with their `CadAttrs`, dimensions, CAD blocks, hatch requests, the plan layers needed, notes);
+  `add_objects` then `make_blocks` (or `apply_converted`) add it to a `Project`. `to_inches_factor(units, override)`
+  and `default_units` give the unit; `to_cad_objects(drawing, factor, layer_prefix)` is the plain objects-only form.
 - `cad_to_walls(lines, options)` pairs **parallel lines** into wall proposals, measures the
   thickness, and closes corners and T-junctions; `apply_walls` and `apply_cad` add the results to a
   `Project` with fresh ids.
-- **DWG and binary DXF are not supported.** Convert to ASCII DXF first. A file that is not ASCII DXF
-  fails with "not an ASCII DXF file" or "binary DXF files are not supported".
-- The reader round-trips what `write_dxf` writes.
+- A DWG fails with `ImportError::Dwg` carrying the release code; the message tells how to save a DXF.
+- The reader round-trips what `write_dxf` and the DXF export options write (counts and geometry within 1e-3 inch,
+  `s57_dxf_import`).
 
 
 ## 12.4a Underlays (PNG, JPEG, scanned PDF)

@@ -113,6 +113,10 @@ pub fn apply_plant(obj: &mut Landscape, plant: &PlantChoice) {
     obj.size = plant.width.max(6.0);
     obj.height = plant.height.max(6.0);
     obj.spacing = obj.size;
+    // The catalog size is the mature size: Grow All Plants scales from it.
+    obj.mature_height = obj.height;
+    obj.mature_width = obj.size;
+    obj.maturity_months = plan_terrain::default_age_at_maturity(obj.height);
     obj.form = if plant.conifer {
         PlantForm::Cone
     } else {

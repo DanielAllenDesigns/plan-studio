@@ -672,8 +672,14 @@ impl CadTool {
                     }
                 }
             }
+            CadItem::Arc { .. } | CadItem::Circle { .. } => {
+                match crate::tools::cad_ops::trim_for_tool(cx, &obj.item, p.world, &cutters) {
+                    Some(v) => v,
+                    None => return ToolResult::consumed(),
+                }
+            }
             _ => {
-                cx.status = "Trim Line works on lines and polylines".into();
+                cx.status = "Trim Line works on lines, polylines, arcs and circles".into();
                 return ToolResult::consumed();
             }
         };
@@ -699,8 +705,10 @@ impl CadTool {
             cx.status = "Extend Line: click the end of a line".into();
             return ToolResult::consumed();
         };
+        if !matches!(obj.item, CadItem::Line { .. }) {
+            return crate::tools::cad_ops::extend_for_tool(cx, obj.id, p.world);
+        }
         let CadItem::Line { a, b } = obj.item else {
-            cx.status = "Extend Line works on lines".into();
             return ToolResult::consumed();
         };
         let bounds = Self::others(cx, obj.id);

@@ -561,6 +561,13 @@ pub struct DimensionDefaults {
     /// default group.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub elevation_locate: Option<crate::dimension::LocateGroup>,
+    /// The General, Setup, Extensions, Layer and Auto Story Pole settings of
+    /// the Dimension Defaults dialog.
+    #[serde(default)]
+    pub setup: crate::dimension::DimSetup,
+    /// The Locate panels of the dimension tools beyond the typed fields above.
+    #[serde(default)]
+    pub locates: crate::dimension::ToolLocates,
 }
 
 fn default_true() -> bool {
@@ -652,6 +659,7 @@ impl DimensionDefaultSet {
                 trailing_zeroes: auto.trailing_zeroes,
                 ..LengthFormat::default()
             }),
+            label: auto.setup.label_options(auto.text_above_line),
         };
         Self { name, format, auto }
     }
@@ -1182,6 +1190,7 @@ impl PlanDefaults {
             smallest_fraction: self.dimensions.smallest_fraction.max(1),
             unit_indicators: self.dimensions.unit_indicators,
             length: None,
+            label: self.dimensions.setup.label_options(self.dimensions.text_above_line),
         }
     }
 
@@ -1256,6 +1265,8 @@ impl PlanDefaults {
             printed_size: false,
             temp_locate: None,
             elevation_locate: None,
+            setup: Default::default(),
+            locates: Default::default(),
         };
         PlanDefaults {
             name: "Chief X18 (Daniel)".into(),

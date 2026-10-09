@@ -268,11 +268,45 @@ pub fn detect_and_seed(path: Option<&Path>, home: Option<&Path>, base: PlanDefau
 
 fn detect_settings(home: Option<&Path>) -> TemplateSettings {
     let found = home.map(plan_config::detect_chief_templates);
+    // Preferences > Folders > Templates, when the user set one, supplies the
+    // templates Chief's own preferences did not name.
+    let own = custom_templates_folder();
+    let from_own = |ext: &str| own.as_deref().and_then(|d| first_with_extension(d, ext));
     TemplateSettings {
-        plan: found.as_ref().and_then(|f| f.plan.clone()),
-        layout: found.as_ref().and_then(|f| f.layout.clone()),
+        plan: found
+            .as_ref()
+            .and_then(|f| f.plan.clone())
+            .or_else(|| from_own("plan")),
+        layout: found
+            .as_ref()
+            .and_then(|f| f.layout.clone())
+            .or_else(|| from_own("layout")),
         seed_from_chief: true,
     }
+}
+
+/// The Templates folder of Preferences > Folders when the user changed it
+/// from the default.
+fn custom_templates_folder() -> Option<PathBuf> {
+    use crate::dialogs::preferences::pages::{self, FolderKind};
+    pages::current().folders.get(FolderKind::Templates)?;
+    pages::folder(FolderKind::Templates)
+}
+
+/// The first file (by name) in `dir` with extension `ext`.
+fn first_with_extension(dir: &Path, ext: &str) -> Option<PathBuf> {
+    let mut found: Vec<PathBuf> = std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| {
+            p.is_file()
+                && p.extension()
+                    .is_some_and(|e| e.to_string_lossy().eq_ignore_ascii_case(ext))
+        })
+        .collect();
+    found.sort();
+    found.into_iter().next()
 }
 
 /// Starts the first-launch scan on a thread when this machine has no saved
@@ -1393,5 +1427,25 @@ mod tests {
         assert!(d.settings.plan.is_none());
         assert_eq!(d.defaults, PlanDefaults::chief_x18_daniel());
         std::fs::remove_dir_all(&home).ok();
+    }
+
+    #[test]
+    fn the_templates_folder_preference_supplies_templates_chief_did_not_name() {
+        use crate::dialogs::preferences::pages::{self, FolderKind};
+        let home = temp_dir("own-home");
+        let own = temp_dir("own-folder");
+        std::fs::write(own.join("b.plan"), "x").unwrap();
+        std::fs::write(own.join("a.plan"), "x").unwrap();
+        std::fs::write(own.join("page.layout"), "x").unwrap();
+        // Default folder: nothing found on a machine without Chief.
+        assert!(detect_settings(Some(&home)).plan.is_none());
+        pages::update(|p| p.folders.set(FolderKind::Templates, &own.to_string_lossy()));
+        let s = detect_settings(Some(&home));
+        assert_eq!(s.plan, Some(own.join("a.plan")));
+        assert_eq!(s.layout, Some(own.join("page.layout")));
+        pages::update(|p| p.folders.set(FolderKind::Templates, ""));
+        assert!(detect_settings(Some(&home)).plan.is_none());
+        std::fs::remove_dir_all(&home).ok();
+        std::fs::remove_dir_all(&own).ok();
     }
 }

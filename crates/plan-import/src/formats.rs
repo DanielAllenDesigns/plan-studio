@@ -174,19 +174,41 @@ mod tests {
     fn dispatch_reads_every_format_and_explains_sketchup() {
         let stl = stl::tests::binary(&stl::tests::box_tris(1.0, 2.0, 3.0), "");
         let o = ModelOptions::default();
-        assert_eq!(parse_3d("STL", &stl, None, None, &o).unwrap().triangle_count(), 12);
+        assert_eq!(
+            parse_3d("STL", &stl, None, None, &o)
+                .unwrap()
+                .triangle_count(),
+            12
+        );
         let tds = tds::tests::box_3ds(1.0, 2.0, 3.0);
-        assert_eq!(parse_3d("3ds", &tds, None, None, &o).unwrap().triangle_count(), 12);
+        assert_eq!(
+            parse_3d("3ds", &tds, None, None, &o)
+                .unwrap()
+                .triangle_count(),
+            12
+        );
         let dae = dae::tests::box_dae(1.0, 2.0, 3.0, 1.0, "Y_UP", 0.0);
         assert_eq!(
-            parse_3d("dae", dae.as_bytes(), None, None, &o).unwrap().triangle_count(),
+            parse_3d("dae", dae.as_bytes(), None, None, &o)
+                .unwrap()
+                .triangle_count(),
             12
         );
         let obj = "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
-        assert_eq!(parse_3d("obj", obj.as_bytes(), None, None, &o).unwrap().triangle_count(), 1);
+        assert_eq!(
+            parse_3d("obj", obj.as_bytes(), None, None, &o)
+                .unwrap()
+                .triangle_count(),
+            1
+        );
         let skp = parse_3d("skp", b"anything", None, None, &o).unwrap_err();
-        assert!(skp.0.starts_with("Export from SketchUp as COLLADA (.dae) or OBJ"));
-        assert!(parse_3d("fbx", b"x", None, None, &o).unwrap_err().0.contains(".fbx"));
+        assert!(skp
+            .0
+            .starts_with("Export from SketchUp as COLLADA (.dae) or OBJ"));
+        assert!(parse_3d("fbx", b"x", None, None, &o)
+            .unwrap_err()
+            .0
+            .contains(".fbx"));
         assert!(is_3d_extension("SKP") && is_3d_extension("Stl") && !is_3d_extension("fbx"));
     }
 
@@ -201,10 +223,16 @@ mod tests {
         // COLLADA declares meters per unit 0.01 = centimeters, Z up.
         let dae = dae::tests::box_dae(10.0, 10.0, 10.0, 0.01, "Z_UP", 0.0);
         let s = suggest("dae", dae.as_bytes());
-        assert_eq!((s.unit_name.as_str(), s.options.up_axis, s.from_file), ("Centimeters", UpAxis::Z, true));
+        assert_eq!(
+            (s.unit_name.as_str(), s.options.up_axis, s.from_file),
+            ("Centimeters", UpAxis::Z, true)
+        );
         // glTF is meters, Y up.
         let g = suggest("glb", b"");
-        assert_eq!((g.unit_name.as_str(), g.options.up_axis), ("Meters", UpAxis::Y));
+        assert_eq!(
+            (g.unit_name.as_str(), g.options.up_axis),
+            ("Meters", UpAxis::Y)
+        );
         // An unreadable OBJ falls back to inches.
         let bad = suggest("obj", b"nonsense");
         assert_eq!(bad.unit_name, "Inches");

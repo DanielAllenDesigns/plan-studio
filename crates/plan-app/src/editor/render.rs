@@ -15,7 +15,7 @@ use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Shape, Stroke, Vec
 use plan_core::cad::CadItem;
 use plan_core::geometry::Point;
 use plan_core::{
-    exterior_sign, Dimension, DimensionKind, Opening, OpeningKind, Wall, WallClass, WallKind,
+    exterior_sign, Dimension, DimensionKind, Opening, Wall, WallClass, WallKind,
 };
 use std::collections::HashMap;
 
@@ -103,6 +103,8 @@ pub fn draw_plan(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
         crate::editor::site_view::draw_site(cx, painter, cam)
     );
     section!("rooms", draw_rooms(cx, painter, cam));
+    // CAD objects in a drawing group below the walls' draw under them.
+    section!("cad behind walls", draw_cad_pass(cx, painter, cam, true));
     // Slabs, pads and piers sit under the walls.
     section!(
         "foundation",
@@ -182,41 +184,8 @@ pub fn draw_plan(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
             }
         }
     );
-    section!("cad", let attrs = floor.cad_attr_map();
-    // Text objects are drawn in their text style's font; anything drawn
-    // after them (tool previews) in the Default Text Style's.
-    let default_face = face_of(
-        cx.project
-            .text_styles
-            .resolve(plan_core::text_styles::DEFAULT_TEXT_STYLE_NAME),
-    );
-    for c in &floor.cad {
-        if !cx.layers().is_visible(&c.layer) {
-            continue;
-        }
-        if matches!(c.item, CadItem::Text { .. }) {
-            let style = cx.project.text_styles.style_of_text(
-                cx.layers(),
-                &c.layer,
-                attrs.get(&c.id).and_then(|a| a.text_style.as_deref()),
-            );
-            set_text_face(face_of(style));
-        }
-        // Text in a printed-size style is drawn at its size on paper for
-        // the sheet's scale.
-        let printed = printed_text_object(cx, c, attrs.get(&c.id));
-        let c = printed.as_ref().unwrap_or(c);
-        match attrs.get(&c.id) {
-            Some(a) if matches!(c.item, CadItem::Text { .. }) && a.text_box.needs_layout() => {
-                draw_text_box(cx, painter, cam, c, a)
-            }
-            Some(a) => crate::tools::cad::draw_cad_styled(cx, painter, cam, c, Some(a)),
-            None => weighted(cx, painter, &c.layer, || {
-                draw_cad(painter, cam, &c.item, Stroke::new(1.0_f32, pal.text), pal)
-            }),
-        }
-    }
-    set_text_face(default_face));
+    // CAD objects whose drawing group is above the walls' draw over everything.
+    section!("cad", draw_cad_pass(cx, painter, cam, false));
     section!(
         "space boxes",
         crate::editor::rooms_edit::draw_space_boxes(cx, painter, cam)
@@ -254,6 +223,54 @@ pub fn draw_plan(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
     }
 }
 
+/// The CAD objects (and text) in drawing-group order: with `behind` the ones
+/// whose group is below the walls' (they draw under the walls), otherwise the
+/// rest, over everything else (LAY-36, `plan_core::drawing_group`).
+fn draw_cad_pass(cx: &EditorContext, painter: &egui::Painter, cam: &Camera, behind: bool) {
+    let pal = &cx.palette;
+    let floor = cx.floor();
+    let (under, over) = floor.cad_by_walls(&cx.project.drawing_group_defaults);
+    let objects = if behind { under } else { over };
+    if objects.is_empty() {
+        return;
+    }
+    let attrs = floor.cad_attr_map();
+    // Text objects are drawn in their text style's font; anything drawn
+    // after them (tool previews) in the Default Text Style's.
+    let default_face = face_of(
+        cx.project
+            .text_styles
+            .resolve(plan_core::text_styles::DEFAULT_TEXT_STYLE_NAME),
+    );
+    for c in objects {
+        if !cx.layers().is_visible(&c.layer) {
+            continue;
+        }
+        if matches!(c.item, CadItem::Text { .. }) {
+            let style = cx.project.text_styles.style_of_text(
+                cx.layers(),
+                &c.layer,
+                attrs.get(&c.id).and_then(|a| a.text_style.as_deref()),
+            );
+            set_text_face(face_of(style));
+        }
+        // Text in a printed-size style is drawn at its size on paper for
+        // the sheet's scale.
+        let printed = printed_text_object(cx, c, attrs.get(&c.id));
+        let c = printed.as_ref().unwrap_or(c);
+        match attrs.get(&c.id) {
+            Some(a) if matches!(c.item, CadItem::Text { .. }) && a.text_box.needs_layout() => {
+                draw_text_box(cx, painter, cam, c, a)
+            }
+            Some(a) => crate::tools::cad::draw_cad_styled(cx, painter, cam, c, Some(a)),
+            None => weighted(cx, painter, &c.layer, || {
+                draw_cad(painter, cam, &c.item, Stroke::new(1.0_f32, pal.text), pal)
+            }),
+        }
+    }
+    set_text_face(default_face);
+}
+
 /// The crosshair lines over the whole canvas (View > Crosshairs).
 pub fn draw_crosshairs(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
     if !cx.view_flags.contains(&ViewFlag::Crosshairs) {
@@ -273,11 +290,9 @@ pub fn draw_crosshairs(cx: &EditorContext, painter: &egui::Painter, cam: &Camera
     );
 }
 
-fn opening_layer(o: &Opening) -> &'static str {
-    match o.kind {
-        OpeningKind::Door => "Doors",
-        OpeningKind::Window => "Windows",
-    }
+/// The layer an opening draws on: its Layer tab's choice, else Doors or Windows.
+fn opening_layer(o: &Opening) -> &str {
+    o.layer_name()
 }
 
 fn quad(cam: &Camera, pts: &[Point]) -> Vec<Pos2> {
@@ -290,33 +305,44 @@ fn draw_grid(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
     while spacing * cam.px_per_in < 8.0 {
         spacing *= 5.0;
     }
-    let rect = cam.rect;
     if cx.view_flags.contains(&ViewFlag::ReferenceGrid) {
-        let tl = cam.screen_to_world(rect.left_top());
-        let br = cam.screen_to_world(rect.right_bottom());
+        // The canvas corners bound the grid; a rotated view needs all four.
+        let corners = cam.world_corners();
+        let lo = corners
+            .iter()
+            .fold(corners[0], |m, p| Point::new(m.x.min(p.x), m.y.min(p.y)));
+        let hi = corners
+            .iter()
+            .fold(corners[0], |m, p| Point::new(m.x.max(p.x), m.y.max(p.y)));
         let minor = Stroke::new(1.0_f32, pal.grid_minor);
         let major = Stroke::new(1.0_f32, pal.grid_major);
         let (x0, x1) = (
-            (tl.x / spacing).floor() as i64,
-            (br.x / spacing).ceil() as i64,
+            (lo.x / spacing).floor() as i64,
+            (hi.x / spacing).ceil() as i64,
         );
         for k in x0..=x1 {
-            let x = cam.world_to_screen(Point::new(k as f64 * spacing, 0.0)).x;
+            let x = k as f64 * spacing;
             let stroke = if k % 5 == 0 { major } else { minor };
             painter.line_segment(
-                [Pos2::new(x, rect.top()), Pos2::new(x, rect.bottom())],
+                [
+                    cam.world_to_screen(Point::new(x, lo.y)),
+                    cam.world_to_screen(Point::new(x, hi.y)),
+                ],
                 stroke,
             );
         }
         let (y0, y1) = (
-            (br.y / spacing).floor() as i64,
-            (tl.y / spacing).ceil() as i64,
+            (lo.y / spacing).floor() as i64,
+            (hi.y / spacing).ceil() as i64,
         );
         for k in y0..=y1 {
-            let y = cam.world_to_screen(Point::new(0.0, k as f64 * spacing)).y;
+            let y = k as f64 * spacing;
             let stroke = if k % 5 == 0 { major } else { minor };
             painter.line_segment(
-                [Pos2::new(rect.left(), y), Pos2::new(rect.right(), y)],
+                [
+                    cam.world_to_screen(Point::new(lo.x, y)),
+                    cam.world_to_screen(Point::new(hi.x, y)),
+                ],
                 stroke,
             );
         }
@@ -467,6 +493,8 @@ fn draw_walls(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
             draw_one_wall(cx, painter, cam, wall)
         });
     }
+    // Walls left whole across each other draw as one shape (W-36).
+    crate::editor::wall_edit::draw_crossing_merges(cx, painter, cam);
 }
 
 /// The wall's left and right face lines (a straight wall's footprint edges,
@@ -945,8 +973,10 @@ pub fn draw_text_box(
     let pal = &cx.palette;
     let px = cam.px_per_in as f32;
     let (pos, angle, tb) = (pb.pos, pb.angle, pb.tb);
-    // Screen angle: plan angles run counter-clockwise, the screen's clockwise.
-    let (sin_a, cos_a) = (angle.sin() as f32, angle.cos() as f32);
+    // Screen angle: plan angles run counter-clockwise, the screen's clockwise;
+    // a rotated plan view turns the text with the plan.
+    let screen_angle = angle + cam.rotation;
+    let (sin_a, cos_a) = (screen_angle.sin() as f32, screen_angle.cos() as f32);
     let along = Vec2::new(cos_a, -sin_a);
     let sc = |x: f64, y: f64| cam.world_to_screen(BoxLayout::to_plan(pos, angle, Point::new(x, y)));
     // Glyphs first: their widths decide where each line starts and, for an
@@ -970,12 +1000,17 @@ pub fn draw_text_box(
                         .color
                         .map_or(pal.text, |k| Color32::from_rgb(k[0], k[1], k[2]));
                     let size = (base_px * r.scale as f32).clamp(6.0, 200.0);
-                    Piece {
-                        galley: painter.layout_no_wrap(
-                            r.text.clone(),
-                            text_font(painter, size),
-                            color,
+                    // A run set in its own font family (Rich Text Edit Bar).
+                    let font = match &r.font {
+                        Some(f) => crate::fonts::font_id(
+                            painter.ctx(),
+                            &crate::fonts::spec_named(f, r.bold, r.italic),
+                            size,
                         ),
+                        None => text_font(painter, size),
+                    };
+                    Piece {
+                        galley: painter.layout_no_wrap(r.text.clone(), font, color),
                         run: r.clone(),
                         color,
                     }
@@ -1035,7 +1070,7 @@ pub fn draw_text_box(
                 line.y + h_in,
             );
             let shape = egui::epaint::TextShape::new(top_left, piece.galley.clone(), piece.color)
-                .with_angle(-angle as f32);
+                .with_angle(-screen_angle as f32);
             if piece.run.bold {
                 let nudge = along * 0.7;
                 let mut bold = shape.clone();
@@ -1046,6 +1081,14 @@ pub fn draw_text_box(
             if piece.run.underline {
                 let a = sc(x0 + f64::from(x_px) / f64::from(px.max(1e-6)), line.y)
                     - Vec2::new(-sin_a, -cos_a) * 1.0;
+                let b = a + along * size.x;
+                painter.line_segment([a, b], Stroke::new(1.0_f32, piece.color));
+            }
+            if piece.run.strike {
+                let a = sc(
+                    x0 + f64::from(x_px) / f64::from(px.max(1e-6)),
+                    line.y + h_in * 0.35,
+                );
                 let b = a + along * size.x;
                 painter.line_segment([a, b], Stroke::new(1.0_f32, piece.color));
             }
@@ -1548,6 +1591,7 @@ pub fn draw_snap_marker(painter: &egui::Painter, cam: &Camera, s: &SnapResult, c
 mod tests {
     use super::*;
     use crate::plan_defaults;
+    use plan_core::OpeningKind;
 
     /// Draws a plan with every object kind, a selection and a hover through a
     /// headless egui context; a panic here means a drawing bug.

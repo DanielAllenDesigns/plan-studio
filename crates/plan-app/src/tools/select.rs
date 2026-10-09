@@ -88,7 +88,11 @@ enum Op {
     Symbol(Id, HandleKind),
     DeviceMove(Id),
     RoofMove(Id),
-    RoofVertex(Id, usize),
+    /// A handle of a roof plane: corner, edge middle, pitch arrow or rotate
+    /// knob (RF-38).
+    RoofHandle(Id, roof_view::PlaneHandle),
+    /// The angle-of-view and tilt handles of a selected camera (C-25).
+    CameraWedge(Id, camera_tool::WedgeHandle),
     /// Corner `n` of a slab, slab hole or platform hole.
     FoundationVertex(Id, usize),
     /// One end (`true`: the second point) of a framing member or layout line.
@@ -123,7 +127,14 @@ impl Op {
             Op::Symbol(..) => "Edit Symbol",
             Op::DeviceMove(_) => "Move Device",
             Op::RoofMove(_) => "Move Roof Plane",
-            Op::RoofVertex(..) => "Reshape Roof Plane",
+            Op::RoofHandle(_, h) => match h {
+                roof_view::PlaneHandle::Vertex(_) => "Reshape Roof Plane",
+                roof_view::PlaneHandle::Edge(_) => "Move Roof Edge",
+                roof_view::PlaneHandle::Pitch => "Change Roof Pitch",
+                roof_view::PlaneHandle::Rotate => "Rotate Roof Plane",
+            },
+            Op::CameraWedge(_, camera_tool::WedgeHandle::Tilt) => "Tilt Camera",
+            Op::CameraWedge(..) => "Change Angle of View",
             Op::FoundationVertex(..) => "Reshape Foundation Object",
             Op::FramingEnd(..) => "Stretch Framing",
             Op::FramingVertex(..) => "Reshape Truss Base",
@@ -880,6 +891,10 @@ impl SelectTool {
 
     /// The drag a press at `at` starts on a handle of the selected object.
     fn handle_op(cx: &EditorContext, at: Point, tol: f64) -> Option<Op> {
+        // A selected callout, marker or note (a group) has its own handles.
+        if let Some((id, kind)) = crate::tools::text::annot_handle_at(cx, at, tol) {
+            return Some(Op::CadVertex(id, kind));
+        }
         match cx.selection.single()? {
             ObjectRef::Stair(id) => {
                 let o = stairs_view::find(cx.floor(), id)?;
@@ -887,7 +902,10 @@ impl SelectTool {
                 stairs_view::hit_handle(&hs, at, tol).map(|h| Op::Stair(id, h.kind))
             }
             ObjectRef::Camera(id) => {
-                camera_tool::hit_handle(cx.project.camera(id)?, at, tol).map(|h| Op::Camera(id, h))
+                let c = cx.project.camera(id)?;
+                camera_tool::hit_handle(c, at, tol)
+                    .map(|h| Op::Camera(id, h))
+                    .or_else(|| camera_tool::hit_wedge(c, at, tol).map(|w| Op::CameraWedge(id, w)))
             }
             ObjectRef::Cad(id) => {
                 // The bulge diamonds of a polyline with arc edges come first.
@@ -918,7 +936,8 @@ impl SelectTool {
             (ObjectRef::Symbol(id), k) => Op::Symbol(id, k),
             (ObjectRef::Device(id), HandleKind::Move) => Op::DeviceMove(id),
             (ObjectRef::RoofPlane(id), HandleKind::Move) => Op::RoofMove(id),
-            (ObjectRef::RoofPlane(id), HandleKind::Reshape(i)) => Op::RoofVertex(id, i),
+            (ObjectRef::RoofPlane(id), k) => Op::RoofHandle(id, handles::roof_plane_handle(k)?),
+            (ObjectRef::Camera(id), k) => Op::CameraWedge(id, handles::camera_wedge_handle(k)?),
             (ObjectRef::Foundation(id), HandleKind::Reshape(i)) => Op::FoundationVertex(id, i),
             (ObjectRef::Framing(id), HandleKind::ResizeStart) => Op::FramingEnd(id, false),
             (ObjectRef::Framing(id), HandleKind::ResizeEnd) => Op::FramingEnd(id, true),
@@ -1132,6 +1151,7 @@ impl SelectTool {
             }
             Op::Group => {
                 let items = cx.selection.items.clone();
+                eprintln!("DBGG total={:?} delta={:?}", total, behaviors::group_delta(cx, total));
                 move_group_ex(cx, &items, behaviors::group_delta(cx, total), !a.copy);
             }
             Op::GroupRotate(center) => {
@@ -1209,12 +1229,26 @@ impl SelectTool {
                     roof_view::store(&mut cx.project, fl, &mut set);
                 }
             }
-            Op::RoofVertex(id, i) => {
-                let to = cx.snap_at(p.world, None, alt, &[]).point;
-                let mut set = roof_view::load(&a.original.floors[fl]);
-                if let Some(r) = set.plane_mut(id) {
-                    r.move_vertex(i, to);
-                    roof_view::store(&mut cx.project, fl, &mut set);
+            Op::RoofHandle(id, h) => {
+                // Corners follow the snapped pointer; the pitch arrow, edge
+                // and rotate handles work from the raw one.
+                let to = if matches!(h, roof_view::PlaneHandle::Vertex(_)) {
+                    cx.snap_at(p.world, None, alt, &[]).point
+                } else {
+                    p.world
+                };
+                if let Some(d) =
+                    roof_view::apply_handle_drag(&mut cx.project, fl, id, h, a.start, to)
+                {
+                    cx.readout = Some(d.readout);
+                }
+            }
+            Op::CameraWedge(id, w) => {
+                if let Some(orig) = a.original.camera(id).cloned() {
+                    cx.project.update_camera(id, |c| {
+                        *c = orig.clone();
+                        camera_tool::apply_wedge(c, w, p.world);
+                    });
                 }
             }
             Op::FoundationVertex(id, i) => {
@@ -1406,7 +1440,7 @@ impl SelectTool {
             cx.cancel_change();
             return ToolResult::consumed();
         }
-        if let Op::Camera(id, _) = a.op {
+        if let Op::Camera(id, _) | Op::CameraWedge(id, _) = a.op {
             Outbox::global().post(ViewRequest::RefreshCamera(id));
         }
         ToolResult::committed(if a.copy {

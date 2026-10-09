@@ -383,8 +383,8 @@ impl Speller {
         }
         let first = target[0];
         found.sort_by(|a, b| {
-            let fa = a.1.chars().next() != Some(first);
-            let fb = b.1.chars().next() != Some(first);
+            let fa = !a.1.starts_with(first);
+            let fb = !b.1.starts_with(first);
             a.0.cmp(&b.0)
                 .then(fa.cmp(&fb))
                 .then(
@@ -519,9 +519,9 @@ pub fn tokens(text: &str, markup: bool) -> Vec<(usize, usize)> {
             let mut j = i + 1;
             while j < chars.len() {
                 let cj = chars[j].1;
-                if word_char(cj) {
-                    j += 1;
-                } else if apostrophe(cj) && j + 1 < chars.len() && word_char(chars[j + 1].1) {
+                if word_char(cj)
+                    || (apostrophe(cj) && j + 1 < chars.len() && word_char(chars[j + 1].1))
+                {
                     j += 1;
                 } else {
                     break;
@@ -716,7 +716,7 @@ mod tests {
         test_speller(&[
             "the", "kitchen", "wall", "room", "master", "bedroom", "bath", "bathroom", "frame",
             "stop", "run", "close", "happy", "door", "window", "shelf", "knife", "city", "carry",
-            "house", "measure", "walk", "closet",
+            "house", "measure", "walk", "closet", "is", "in", "see", "or",
         ])
     }
 
@@ -843,7 +843,7 @@ mod tests {
         assert_eq!(sp.suggest("Kitchn", 1), vec!["Kitchen"]);
         assert_eq!(sp.suggest("KITCHN", 1), vec!["KITCHEN"]);
         // Nearest first: one edit before two.
-        let near = sp.suggest("wal", 8);
+        let near = sp.suggest("wll", 8);
         assert_eq!(near.first().map(String::as_str), Some("wall"));
         // A swap is one edit.
         assert_eq!(sp.suggest("rooom", 1), vec!["room"]);

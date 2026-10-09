@@ -14,7 +14,8 @@
 //! keywords share the most tags with the placed copy.
 //!
 //! The index is built from the catalogs in place (nothing is copied) the first
-//! time an import asks, on the importing thread: one pass over every
+//! time an import asks, on the importing thread, and again when the library
+//! changed (another install folder, a new scan): one pass over every
 //! catalog's `LibraryObjects.UniqueId` column for the GUIDs, and, only when an
 //! object was not found by GUID, one pass over the object names.
 
@@ -24,6 +25,7 @@ use plan_chiefplan::import::SymbolQuery;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::Arc;
 
 /// One catalog item known by display name.
 #[derive(Debug, Clone, PartialEq)]
@@ -170,28 +172,64 @@ impl Index {
     }
 }
 
+type Shared = (Arc<ChiefLibrary>, Rc<RefCell<Index>>);
+
 thread_local! {
-    static INDEX: RefCell<Option<Rc<RefCell<Index>>>> = const { RefCell::new(None) };
+    /// The index with the library it was built from.
+    static INDEX: RefCell<Option<Shared>> = const { RefCell::new(None) };
 }
 
-/// The shared index, built from the discovered library on first use; `None`
-/// when the Chief catalogs are off or not installed.
+/// Drops the shared index so the next import builds it again.
+#[allow(dead_code)] // `index()` also notices a changed library by itself
+pub fn forget() {
+    INDEX.with(|c| *c.borrow_mut() = None);
+}
+
+/// The shared index, built from the discovered library on first use and again
+/// when the library changed (Preferences > Folders, a new scan); `None` when
+/// the Chief catalogs are off or not installed.
 fn index() -> Option<Rc<RefCell<Index>>> {
-    if let Some(ix) = INDEX.with(|c| c.borrow().clone()) {
-        return Some(ix);
-    }
     if !chief::enabled() {
         return None;
     }
     let lib = chief::library()?;
-    let ix = Rc::new(RefCell::new(Index::build(&lib)));
-    INDEX.with(|c| *c.borrow_mut() = Some(ix.clone()));
+    index_for(lib, Index::build)
+}
+
+/// [`index`] for a given library and builder (the builder is a parameter so
+/// a test can count the builds).
+fn index_for(
+    lib: Arc<ChiefLibrary>,
+    build: impl FnOnce(&ChiefLibrary) -> Index,
+) -> Option<Rc<RefCell<Index>>> {
+    if let Some((built_from, ix)) = INDEX.with(|c| c.borrow().clone()) {
+        if Arc::ptr_eq(&built_from, &lib) {
+            return Some(ix);
+        }
+    }
+    let ix = Rc::new(RefCell::new(build(&lib)));
+    INDEX.with(|c| *c.borrow_mut() = Some((lib, ix.clone())));
     Some(ix)
 }
 
 /// `plan_chiefplan::import::ImportOptions::symbol_resolver` for the app: the
-/// catalog id of a placed Chief library object, by GUID and then by name.
+/// catalog id of a placed Chief library object. Chief's installed catalogs
+/// are searched first (by GUID, then by name); a symbol they do not hold is
+/// matched against Plan Studio's own library (the built-in catalogs and the
+/// User Catalog: `tools::library::resolve_symbol_query`).
 pub fn resolve_symbol(q: &SymbolQuery) -> Option<String> {
+    resolve_in_chief(q).or_else(|| {
+        crate::tools::library::resolve_symbol_query(
+            &q.name,
+            &q.tags,
+            q.unique_id.as_deref(),
+            &q.candidates,
+        )
+    })
+}
+
+/// The Chief catalogs' answer alone.
+fn resolve_in_chief(q: &SymbolQuery) -> Option<String> {
     let ix = index()?;
     if let Some(id) = ix.borrow().by_guid(q) {
         return Some(id.to_owned());
@@ -223,6 +261,29 @@ mod tests {
             rank,
             words: words.iter().map(|w| w.to_string()).collect(),
         }
+    }
+
+    #[test]
+    fn the_index_is_rebuilt_only_when_the_library_changes() {
+        forget();
+        let a = Arc::new(ChiefLibrary::default());
+        let mut builds = 0;
+        let first = index_for(a.clone(), |l| {
+            builds += 1;
+            Index::build(l)
+        })
+        .unwrap();
+        let again = index_for(a.clone(), |_| panic!("same library: no rebuild")).unwrap();
+        assert!(Rc::ptr_eq(&first, &again));
+        let b = Arc::new(ChiefLibrary::default());
+        let other = index_for(b, |l| {
+            builds += 1;
+            Index::build(l)
+        })
+        .unwrap();
+        assert!(!Rc::ptr_eq(&first, &other), "a new library builds a new index");
+        assert_eq!(builds, 2);
+        forget();
     }
 
     #[test]

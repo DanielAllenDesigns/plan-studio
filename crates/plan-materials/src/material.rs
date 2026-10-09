@@ -243,6 +243,39 @@ pub struct MaterialDef {
     /// Materials List tab: the unit of `price`.
     #[serde(default)]
     pub unit: PriceUnit,
+    /// PBR packages (Lightbeans and the like): the tangent-space normal map.
+    /// The extra maps are image files kept next to the albedo in
+    /// `~/.plan-studio/textures/<package>/`; see [`crate::package`].
+    #[serde(default)]
+    pub normal_map: Option<String>,
+    /// PBR package roughness map (grey, 1 = fully diffuse).
+    #[serde(default)]
+    pub roughness_map: Option<String>,
+    /// PBR package metallic map (grey, 1 = metal).
+    #[serde(default)]
+    pub metallic_map: Option<String>,
+    /// PBR package height / displacement map; it becomes the bump when the
+    /// package has no normal map.
+    #[serde(default)]
+    pub height_map: Option<String>,
+    /// PBR package ambient-occlusion map.
+    #[serde(default)]
+    pub ao_map: Option<String>,
+    /// PBR package opacity (alpha) map; a cut-out for leaves, grilles, lace.
+    #[serde(default)]
+    pub opacity_map: Option<String>,
+    /// Keys (`MapKind::key`) of the maps switched off in the Texture tab.
+    #[serde(default)]
+    pub maps_off: Vec<String>,
+    /// The normal map came in the DirectX convention (green points down).
+    #[serde(default)]
+    pub normal_flip_y: bool,
+    /// Where the package was imported from (the zip's path).
+    #[serde(default)]
+    pub package_source: Option<String>,
+    /// The day the package was imported, `YYYY-MM-DD`.
+    #[serde(default)]
+    pub package_imported: Option<String>,
 }
 
 impl MaterialDef {
@@ -274,6 +307,16 @@ impl MaterialDef {
             supplier: String::new(),
             price: 0.0,
             unit: PriceUnit::SqFt,
+            normal_map: None,
+            roughness_map: None,
+            metallic_map: None,
+            height_map: None,
+            ao_map: None,
+            opacity_map: None,
+            maps_off: Vec::new(),
+            normal_flip_y: false,
+            package_source: None,
+            package_imported: None,
         }
     }
 

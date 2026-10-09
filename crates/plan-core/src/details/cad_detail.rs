@@ -365,6 +365,16 @@ mod tests {
     }
 
     #[test]
+    fn build_new_floor_lands_under_the_details_not_after_them() {
+        let (mut p, d) = detail_project();
+        assert_eq!(d, 1);
+        let at = p.build_new_floor_with(&crate::floors::NewFloorOptions::default());
+        assert_eq!(at, Some(1), "the new floor goes above floor 0");
+        assert!(!p.floors[1].is_cad_detail());
+        assert!(p.floors[2].is_cad_detail(), "the detail stays last");
+    }
+
+    #[test]
     fn names_stay_unique_and_a_rename_locks_the_name() {
         let (mut p, a) = detail_project();
         let b = p.add_cad_detail("Wall Detail", CadDetailInfo::default());

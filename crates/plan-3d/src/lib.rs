@@ -20,11 +20,13 @@ pub mod gltf;
 pub mod images;
 pub mod import;
 mod leaf;
+pub mod material_region;
 mod mesh;
 mod opening;
 mod railing;
 mod roof;
 mod slab;
+pub mod solids;
 pub mod split_level;
 pub mod surface;
 pub mod triangulate;
@@ -359,7 +361,12 @@ fn add_floor(
     // floor datum under its exterior walls.
     let stem = types.foundation_thickness();
     for room in &rooms {
-        let levels = slab::room_levels(floor, room);
+        let mut levels = slab::room_levels(floor, room);
+        // A room open to the floor above has no ceiling: no ceiling plate,
+        // no crown molding.
+        if open_above.iter().any(|h| covers(h, &room.polygon)) {
+            levels.has_ceiling = false;
+        }
         scene
             .meshes
             .extend(slab::stem_walls(floor, room, &levels, stem));

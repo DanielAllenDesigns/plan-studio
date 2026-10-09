@@ -4,6 +4,7 @@
 use crate::catalog::{CatalogItem, ItemKind};
 use crate::library::Library;
 use crate::manage::UserMeta;
+use crate::types::{classify, LibType};
 
 /// How results are ordered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -49,8 +50,11 @@ impl SortKey {
 pub struct Filter {
     /// Search text (all words must match; see [`Library::search`]).
     pub query: String,
-    /// Keep only these types; empty keeps all.
+    /// Keep only these kinds; empty keeps all.
     pub kinds: Vec<ItemKind>,
+    /// Keep only these browser types (cabinets, doors, ...); empty keeps all.
+    /// Items that fit none of the types are dropped when this is set.
+    pub types: Vec<LibType>,
     /// Keep only items of the catalog with this name.
     pub catalog: Option<String>,
     /// Keep items whose style, manufacturer, tags or name contain this word.
@@ -78,6 +82,7 @@ impl Filter {
     pub fn is_empty(&self) -> bool {
         self.query.trim().is_empty()
             && self.kinds.is_empty()
+            && self.types.is_empty()
             && self.catalog.is_none()
             && self.style.trim().is_empty()
             && self.min_size.is_none()
@@ -88,6 +93,9 @@ impl Filter {
 
     fn keeps(&self, item: &CatalogItem, catalog_name: &str, meta: &UserMeta) -> bool {
         if !self.kinds.is_empty() && !self.kinds.contains(&item.kind) {
+            return false;
+        }
+        if !self.types.is_empty() && !classify(item).is_some_and(|t| self.types.contains(&t)) {
             return false;
         }
         if let Some(c) = &self.catalog {
@@ -318,5 +326,36 @@ mod tests {
         assert_eq!(ids(apply(&l, &f, &m))[0], "u.base");
         f.sort = SortKey::Name;
         assert_eq!(ids(apply(&l, &f, &m))[0], "u.base");
+    }
+
+    #[test]
+    fn the_type_filter_keeps_the_chosen_browser_types() {
+        let l = lib();
+        let meta = UserMeta::default();
+        let f = Filter {
+            types: vec![LibType::Cabinets],
+            ..Filter::default()
+        };
+        assert!(!f.is_empty());
+        assert_eq!(ids(apply(&l, &f, &meta)), ["u.base"]);
+        let f = Filter {
+            types: vec![LibType::Materials, LibType::Cabinets],
+            ..Filter::default()
+        };
+        assert_eq!(ids(apply(&l, &f, &meta)), ["u.base", "u.tile"]);
+        // The sofa is furniture by its name; the unnamed rest fit no type.
+        let f = Filter {
+            types: vec![LibType::Furniture],
+            ..Filter::default()
+        };
+        let got = ids(apply(&l, &f, &meta));
+        assert!(got.contains(&"u.sofa".to_string()) && !got.contains(&"u.base".to_string()));
+        // A query still narrows inside the type.
+        let f = Filter {
+            query: "sofa".into(),
+            types: vec![LibType::Furniture],
+            ..Filter::default()
+        };
+        assert_eq!(ids(apply(&l, &f, &meta)), ["u.sofa"]);
     }
 }

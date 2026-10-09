@@ -67,6 +67,15 @@ impl PainterMode {
         }
     }
 
+    /// The name of the toolbar button; the 3D toolbar already has an Object
+    /// Eyedropper (the materials one).
+    pub fn toolbar_name(self) -> &'static str {
+        match self {
+            PainterMode::ObjectEyedropper => "Object Painter Eyedropper",
+            other => other.name(),
+        }
+    }
+
     pub fn is_layer(self) -> bool {
         matches!(self, PainterMode::LayerPaint | PainterMode::LayerEyedropper)
     }
@@ -373,8 +382,8 @@ impl Attrs {
                     .iter_mut()
                     .find(|o| o.id == id),
                 |o| {
-                    o.style = src.style.clone();
-                    o.casing = src.casing.clone();
+                    o.style = src.style;
+                    o.casing = src.casing;
                     o.lites = src.lites;
                     o.egress = src.egress;
                     o.tempered = src.tempered;
@@ -421,16 +430,16 @@ impl Attrs {
                 cab.drawer_style = src.drawer_style.clone();
                 cab.overlay = src.overlay;
                 cab.framed = src.framed;
-                cab.materials = src.materials.clone();
+                cab.materials = src.materials;
                 cab.indicators = src.indicators;
                 cab.indicators_3d = src.indicators_3d;
                 cab.moldings = src.moldings.clone();
-                cab.fill = src.fill.clone();
-                cab.accessories = src.accessories.clone();
+                cab.fill = src.fill;
+                cab.accessories = src.accessories;
                 if cab.kind == src.kind {
-                    cab.countertop = src.countertop.clone();
-                    cab.backsplash = src.backsplash.clone();
-                    cab.toe_kick = src.toe_kick.clone();
+                    cab.countertop = src.countertop;
+                    cab.backsplash = src.backsplash;
+                    cab.toe_kick = src.toe_kick;
                 }
                 let changed = serde_json::to_value(&cab).ok() != before;
                 changed && placed::replace_cabinet(&mut cx.project, fl, &cab)
@@ -467,7 +476,7 @@ impl Attrs {
         cx.project.edit_cad_attrs(fl, id, |a| {
             a.color = src.color;
             a.weight = src.weight;
-            a.dash = src.dash.clone();
+            a.dash = src.dash;
             a.fill = src.fill.clone();
             a.arrow_start = src.arrow_start;
             a.arrow_end = src.arrow_end;
@@ -987,12 +996,9 @@ impl Tool for PaintersTool {
                         "Layer Painter: pick a layer in the bar or use the Layer Eyedropper".into();
                 }
             }
-            PainterMode::ObjectPaint => {
-                if with_state(|s| s.source.is_none()) {
-                    cx.status =
-                        "Object Painter: use the Object Eyedropper (or Match Properties) first"
-                            .into();
-                }
+            PainterMode::ObjectPaint if with_state(|s| s.source.is_none()) => {
+                cx.status =
+                    "Object Painter: use the Object Eyedropper (or Match Properties) first".into();
             }
             _ => {}
         }

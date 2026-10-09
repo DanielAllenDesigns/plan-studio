@@ -857,3 +857,74 @@ fn the_edit_behavior_shows_in_the_status_bar_until_select_is_left() {
         .behavior
         .is_none());
 }
+
+// ----- handles of roof planes and cameras under Select (integration) -----
+
+#[test]
+fn select_drags_the_pitch_arrow_and_rotate_knob_of_a_roof_plane() {
+    use crate::editor::handles::{handles_for, HandleKind};
+    use crate::editor::roof_view;
+    use crate::tools::roof::RoofMode;
+    let mut sim = Sim::new();
+    super::draw_shell(&mut sim, 480.0, 360.0);
+    sim.tool(ToolId::RoofVariant(RoofMode::Build));
+    sim.click(240.0, 180.0);
+    sim.ok();
+    sim.tool(ToolId::Select);
+    let rec = roof_view::load(sim.app.cx.floor()).planes[0].clone();
+    sim.app.cx.selection.set(ObjectRef::RoofPlane(rec.id));
+    let hs = handles_for(&sim.app.cx, sim.app.cx.px_per_in);
+    let arrow = hs.iter().find(|h| h.kind == HandleKind::Pitch).unwrap().pos;
+    let to = arrow + rec.up_slope() * 12.0;
+    sim.drag((arrow.x, arrow.y), (to.x, to.y));
+    let now = roof_view::load(sim.app.cx.floor())
+        .plane(rec.id)
+        .unwrap()
+        .clone();
+    assert!(
+        now.pitch > rec.pitch + 1.0,
+        "{} -> {}",
+        rec.pitch,
+        now.pitch
+    );
+    assert_eq!(sim.undo().as_deref(), Some("Change Roof Pitch"));
+    let back = roof_view::load(sim.app.cx.floor())
+        .plane(rec.id)
+        .unwrap()
+        .clone();
+    assert_eq!(back.pitch, rec.pitch);
+}
+
+#[test]
+fn select_drags_the_wedge_handles_of_a_selected_camera() {
+    use crate::editor::handles::{handles_for, HandleKind};
+    use crate::tools::camera::{wedge_handles_of, CameraVariant as V, WedgeHandle};
+    let mut sim = Sim::new();
+    super::draw_shell(&mut sim, 480.0, 360.0);
+    sim.tool(ToolId::CameraVariant(V::FloorCamera));
+    sim.drag((120.0, 100.0), (120.0, 200.0));
+    let id = sim.app.cx.project.cameras[0].id;
+    sim.tool(ToolId::Select);
+    sim.app.cx.selection.set(ObjectRef::Camera(id));
+    // The wedge handles are listed with the camera's other handles.
+    let hs = handles_for(&sim.app.cx, sim.app.cx.px_per_in);
+    assert!(hs.iter().any(|h| h.kind == HandleKind::Reshape(2)));
+    assert!(hs.iter().any(|h| h.kind == HandleKind::Reshape(4)));
+    let c = sim.app.cx.project.camera(id).unwrap().clone();
+    let corner = wedge_handles_of(&c)[0].1;
+    sim.drag((corner.x, corner.y), (120.0 - 200.0, 100.0 + 200.0));
+    let wide = sim.app.cx.project.camera(id).unwrap().clone();
+    assert!(wide.fov_deg > c.fov_deg + 20.0);
+    assert_eq!(wide.position, c.position);
+    assert_eq!(sim.undo().as_deref(), Some("Change Angle of View"));
+    assert_eq!(sim.app.cx.project.camera(id).unwrap().fov_deg, c.fov_deg);
+    // The tilt diamond tilts it.
+    let d = wedge_handles_of(&c)
+        .into_iter()
+        .find(|(h, _)| *h == WedgeHandle::Tilt)
+        .unwrap()
+        .1;
+    sim.drag((d.x, d.y), (d.x, d.y + 40.0));
+    assert!(sim.app.cx.project.camera(id).unwrap().view.tilt_deg > 20.0);
+    assert_eq!(sim.undo().as_deref(), Some("Tilt Camera"));
+}

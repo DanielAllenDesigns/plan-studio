@@ -400,6 +400,24 @@ impl EditorContext {
             self.status = "Select objects first".into();
             return;
         }
+        // Nothing to do (already so, or a layer the plan lacks): say so and
+        // leave no undo step (QA-26).
+        let needs = |l: &String| {
+            self.project
+                .layers
+                .get(l)
+                .is_some_and(|layer| layer.locked != lock)
+        };
+        if !layers.iter().any(needs) {
+            self.status = if layers.iter().all(|l| self.project.layers.get(l).is_none()) {
+                "These objects are not on a layer that can be locked".into()
+            } else if lock {
+                "Already locked".into()
+            } else {
+                "Nothing is locked".into()
+            };
+            return;
+        }
         self.begin_change(if lock { "Lock" } else { "Unlock" });
         for l in &layers {
             self.project.layers.set_locked(l, lock);
@@ -564,6 +582,7 @@ impl EditorContext {
             v.push(custom_button(ids::UNGROUP, "Ungroup"));
         }
         v.push(custom_button(ids::SELECT_SAME, "Select Same Type"));
+        v.extend(crate::dialogs::materials_list::edit_buttons(self));
         if crate::tools::painters::can_match(self) {
             v.push(custom_button(
                 crate::tools::painters::MATCH_PROPERTIES,
@@ -788,6 +807,10 @@ impl EditorContext {
 
     /// Runs the `edit.*` command `id` (see [`ids`]).
     pub fn run_edit_command(&mut self, id: &str) {
+        self.undo_group(|cx| cx.run_edit_command_ungrouped(id));
+    }
+
+    fn run_edit_command_ungrouped(&mut self, id: &str) {
         match id {
             ids::CUT => self.cut_selection(),
             ids::COPY => self.copy_selection(),

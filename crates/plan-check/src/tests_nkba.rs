@@ -22,7 +22,15 @@ fn rect(p: &mut Project, x0: f64, y0: f64, x1: f64, y1: f64, kind: WallKind) -> 
     ids
 }
 
-fn open(p: &mut Project, wall: u64, offset: f64, w: f64, h: f64, sill: f64, kind: OpeningKind) -> u64 {
+fn open(
+    p: &mut Project,
+    wall: u64,
+    offset: f64,
+    w: f64,
+    h: f64,
+    sill: f64,
+    kind: OpeningKind,
+) -> u64 {
     let id = p.alloc_id();
     let mut op = match kind {
         OpeningKind::Door => Opening::default_door(id, wall, offset),
@@ -34,7 +42,11 @@ fn open(p: &mut Project, wall: u64, offset: f64, w: f64, h: f64, sill: f64, kind
 }
 
 fn opening_mut(p: &mut Project, id: u64) -> &mut Opening {
-    p.floors[0].openings.iter_mut().find(|o| o.id == id).unwrap()
+    p.floors[0]
+        .openings
+        .iter_mut()
+        .find(|o| o.id == id)
+        .unwrap()
 }
 
 fn run(p: &Project, types: &[&str]) -> Vec<Finding> {
@@ -120,7 +132,15 @@ fn add_cab(p: &mut Project, v: Value) {
 
 /// A symbol with its back-centre at `at`.
 #[allow(clippy::too_many_arguments)]
-fn sym(p: &mut Project, id: &str, at: (f64, f64), size: (f64, f64), angle: f64, elevation: f64, height: f64) -> u64 {
+fn sym(
+    p: &mut Project,
+    id: &str,
+    at: (f64, f64),
+    size: (f64, f64),
+    angle: f64,
+    elevation: f64,
+    height: f64,
+) -> u64 {
     let mut s = PlacedSymbol::new(id, pt(at.0, at.1), size.0, size.1, height);
     s.angle = angle;
     s.elevation = elevation;
@@ -128,7 +148,9 @@ fn sym(p: &mut Project, id: &str, at: (f64, f64), size: (f64, f64), angle: f64, 
 }
 
 fn remove_symbols(p: &mut Project, needle: &str) {
-    p.floors[0].symbols.retain(|s| !s.catalog_id.contains(needle));
+    p.floors[0]
+        .symbols
+        .retain(|s| !s.catalog_id.contains(needle));
 }
 
 fn set_devices(p: &mut Project, list: &[(&str, f64, f64)]) {
@@ -157,14 +179,28 @@ fn good_kitchen() -> Project {
     let w = rect(&mut p, 0.0, 0.0, 180.0, 144.0, WallKind::Exterior);
     open(&mut p, w[3], 72.0, 36.0, 80.0, 0.0, OpeningKind::Door);
     sym(&mut p, FRIDGE, (21.0, 3.0), (36.0, 30.0), 0.0, 0.0, 70.0);
-    sym(&mut p, DISHWASHER, (135.0, 3.0), (24.0, 24.0), 0.0, 0.0, 34.0);
+    sym(
+        &mut p,
+        DISHWASHER,
+        (135.0, 3.0),
+        (24.0, 24.0),
+        0.0,
+        0.0,
+        34.0,
+    );
     sym(&mut p, RANGE, (90.0, 141.0), (30.0, 25.0), 180.0, 0.0, 36.0);
     sym(&mut p, HOOD, (90.0, 141.0), (30.0, 20.0), 180.0, 66.0, 18.0);
     let pi = std::f64::consts::PI;
     add_cab(&mut p, cab(1, "Base", (39.0, 3.0), 0.0, (36.0, 24.0)));
     add_cab(
         &mut p,
-        with_cutout(cab(2, "Base", (75.0, 3.0), 0.0, (48.0, 24.0)), "Sink", (24.0, 12.0), 33.0, 22.0),
+        with_cutout(
+            cab(2, "Base", (75.0, 3.0), 0.0, (48.0, 24.0)),
+            "Sink",
+            (24.0, 12.0),
+            33.0,
+            22.0,
+        ),
     );
     let mut trash = cab(3, "Base", (147.0, 3.0), 0.0, (30.0, 24.0));
     trash["label"] = json!("Trash pullout");
@@ -222,19 +258,40 @@ fn kitchen_door(w: f64, style: OpeningStyle) -> Vec<Finding> {
 #[test]
 fn the_kitchen_doorway_is_32_inches_clear() {
     // A 36" leaf is 32" clear; 34" is not.
-    assert!(!fires(&kitchen_door(36.0, OpeningStyle::Hinged), nkba::K_DOOR));
+    assert!(!fires(
+        &kitchen_door(36.0, OpeningStyle::Hinged),
+        nkba::K_DOOR
+    ));
     let f = kitchen_door(34.0, OpeningStyle::Hinged);
     assert_eq!(sev(&f, nkba::K_DOOR), Some(Severity::Warning));
     assert!(of(&f, nkba::K_DOOR)[0].message.contains("30\" clear"));
-    assert!(matches!(of(&f, nkba::K_DOOR)[0].object, Some(Target::Opening(_))));
+    assert!(matches!(
+        of(&f, nkba::K_DOOR)[0].object,
+        Some(Target::Opening(_))
+    ));
     assert!(of(&f, nkba::K_DOOR)[0].location.is_some());
     // A cased opening has no leaf: its width is the clear width.
-    assert!(!fires(&kitchen_door(32.0, OpeningStyle::Doorway), nkba::K_DOOR));
-    assert!(fires(&kitchen_door(31.0, OpeningStyle::Doorway), nkba::K_DOOR));
+    assert!(!fires(
+        &kitchen_door(32.0, OpeningStyle::Doorway),
+        nkba::K_DOOR
+    ));
+    assert!(fires(
+        &kitchen_door(31.0, OpeningStyle::Doorway),
+        nkba::K_DOOR
+    ));
     // A pocket door loses 2"; a sliding door is half its width clear.
-    assert!(!fires(&kitchen_door(34.0, OpeningStyle::Pocket), nkba::K_DOOR));
-    assert!(fires(&kitchen_door(60.0, OpeningStyle::Sliding), nkba::K_DOOR));
-    assert!(!fires(&kitchen_door(72.0, OpeningStyle::Sliding), nkba::K_DOOR));
+    assert!(!fires(
+        &kitchen_door(34.0, OpeningStyle::Pocket),
+        nkba::K_DOOR
+    ));
+    assert!(fires(
+        &kitchen_door(60.0, OpeningStyle::Sliding),
+        nkba::K_DOOR
+    ));
+    assert!(!fires(
+        &kitchen_door(72.0, OpeningStyle::Sliding),
+        nkba::K_DOOR
+    ));
 }
 
 #[test]
@@ -276,7 +333,10 @@ fn a_door_must_not_swing_into_a_cabinet_or_appliance() {
     let flip = hits[1];
     let f = build(flip, true);
     assert_eq!(sev(&f, nkba::K_SWING), Some(Severity::Warning));
-    assert!(matches!(of(&f, nkba::K_SWING)[0].object, Some(Target::Opening(_))));
+    assert!(matches!(
+        of(&f, nkba::K_SWING)[0].object,
+        Some(Target::Opening(_))
+    ));
 }
 
 // ----- the work triangle -----
@@ -287,7 +347,13 @@ fn triangle(fridge: (f64, f64), range: (f64, f64), sink_x: f64) -> Vec<Finding> 
     rect(&mut p, 0.0, 0.0, 240.0, 144.0, WallKind::Exterior);
     add_cab(
         &mut p,
-        with_cutout(cab(2, "Base", (sink_x - 24.0, 3.0), 0.0, (48.0, 24.0)), "Sink", (24.0, 12.0), 33.0, 22.0),
+        with_cutout(
+            cab(2, "Base", (sink_x - 24.0, 3.0), 0.0, (48.0, 24.0)),
+            "Sink",
+            (24.0, 12.0),
+            33.0,
+            22.0,
+        ),
     );
     sym(&mut p, FRIDGE, fridge, (36.0, 30.0), 180.0, 0.0, 70.0);
     sym(&mut p, RANGE, range, (30.0, 25.0), 180.0, 0.0, 36.0);
@@ -299,7 +365,11 @@ fn the_work_triangle_legs_and_total() {
     // Sink front (60, 29); range (30, 115); refrigerator (100, 110): legs of
     // 91", 70" and 90" and a total of 251".
     let ok = triangle((100.0, 141.0), (30.0, 141.0), 60.0);
-    assert!(!fires(&ok, nkba::K_TRIANGLE), "{:?}", of(&ok, nkba::K_TRIANGLE));
+    assert!(
+        !fires(&ok, nkba::K_TRIANGLE),
+        "{:?}",
+        of(&ok, nkba::K_TRIANGLE)
+    );
     // The sink and range far apart: a leg over 9' and a total over 26'.
     let far = triangle((100.0, 141.0), (230.0, 141.0), 30.0);
     let f = of(&far, nkba::K_TRIANGLE);
@@ -323,15 +393,35 @@ fn an_island_may_cut_a_leg_by_a_foot_not_more() {
         rect(&mut p, 0.0, 0.0, 240.0, 144.0, WallKind::Exterior);
         add_cab(
             &mut p,
-            with_cutout(cab(2, "Base", (36.0, 3.0), 0.0, (48.0, 24.0)), "Sink", (24.0, 12.0), 33.0, 22.0),
+            with_cutout(
+                cab(2, "Base", (36.0, 3.0), 0.0, (48.0, 24.0)),
+                "Sink",
+                (24.0, 12.0),
+                33.0,
+                22.0,
+            ),
         );
-        sym(&mut p, FRIDGE, (100.0, 141.0), (36.0, 30.0), 180.0, 0.0, 70.0);
+        sym(
+            &mut p,
+            FRIDGE,
+            (100.0, 141.0),
+            (36.0, 30.0),
+            180.0,
+            0.0,
+            70.0,
+        );
         sym(&mut p, RANGE, (30.0, 141.0), (30.0, 25.0), 180.0, 0.0, 36.0);
         // An island across the leg from the refrigerator to the sink.
-        add_cab(&mut p, cab(9, "Base", (50.0, 60.0), 0.0, (48.0, island_depth)));
+        add_cab(
+            &mut p,
+            cab(9, "Base", (50.0, 60.0), 0.0, (48.0, island_depth)),
+        );
         run(&p, &["Kitchen"])
     };
-    assert!(!fires(&build(10.0), nkba::K_TRIANGLE), "11 inches of island");
+    assert!(
+        !fires(&build(10.0), nkba::K_TRIANGLE),
+        "11 inches of island"
+    );
     let f = build(24.0);
     assert!(fires(&f, nkba::K_TRIANGLE));
     assert!(of(&f, nkba::K_TRIANGLE)[0].message.contains("cuts the"));
@@ -361,7 +451,13 @@ fn two_cook(aisle: f64, second_sink: bool) -> Vec<Finding> {
     rect(&mut p, 0.0, 0.0, 200.0, 150.0, WallKind::Exterior);
     add_cab(
         &mut p,
-        with_cutout(cab(1, "Base", (10.0, 3.0), 0.0, (96.0, 24.0)), "Sink", (30.0, 12.0), 33.0, 22.0),
+        with_cutout(
+            cab(1, "Base", (10.0, 3.0), 0.0, (96.0, 24.0)),
+            "Sink",
+            (30.0, 12.0),
+            33.0,
+            22.0,
+        ),
     );
     // Island facing south; its front is 'aisle' from the run's front (27).
     let back = 27.0 + aisle + 24.0;
@@ -377,7 +473,10 @@ fn two_cook(aisle: f64, second_sink: bool) -> Vec<Finding> {
 fn two_cooks_need_a_48_inch_work_aisle() {
     // The ray starts at the sink's counter front (1" overhang).
     assert!(fires(&two_cook(46.0, true), nkba::K_AISLE2));
-    assert_eq!(sev(&two_cook(46.0, true), nkba::K_AISLE2), Some(Severity::Info));
+    assert_eq!(
+        sev(&two_cook(46.0, true), nkba::K_AISLE2),
+        Some(Severity::Info)
+    );
     assert!(!fires(&two_cook(51.0, true), nkba::K_AISLE2));
     // One sink is one cook: the 42" aisle of the older rule applies.
     assert!(!fires(&two_cook(46.0, false), nkba::K_AISLE2));
@@ -406,7 +505,9 @@ fn seating_has_knee_space_for_its_counter_height() {
     assert!(!fires(&seating(36.0, 15.0, 50.0), nkba::K_SEAT_KNEE));
     let f = seating(36.0, 12.0, 50.0);
     assert_eq!(sev(&f, nkba::K_SEAT_KNEE), Some(Severity::Warning));
-    assert!(of(&f, nkba::K_SEAT_KNEE)[0].message.contains("15\" of knee space"));
+    assert!(of(&f, nkba::K_SEAT_KNEE)[0]
+        .message
+        .contains("15\" of knee space"));
     assert!(!fires(&seating(42.0, 12.0, 50.0), nkba::K_SEAT_KNEE));
     assert!(fires(&seating(42.0, 8.0, 50.0), nkba::K_SEAT_KNEE));
     assert!(fires(&seating(30.0, 12.0, 50.0), nkba::K_SEAT_KNEE));
@@ -437,7 +538,13 @@ fn sink_run(width: f64, cutout_x: f64) -> Vec<Finding> {
     rect(&mut p, 0.0, 0.0, 200.0, 144.0, WallKind::Exterior);
     add_cab(
         &mut p,
-        with_cutout(cab(1, "Base", (10.0, 3.0), 0.0, (width, 24.0)), "Sink", (cutout_x, 12.0), 33.0, 22.0),
+        with_cutout(
+            cab(1, "Base", (10.0, 3.0), 0.0, (width, 24.0)),
+            "Sink",
+            (cutout_x, 12.0),
+            33.0,
+            22.0,
+        ),
     );
     run(&p, &["Kitchen"])
 }
@@ -449,7 +556,11 @@ fn the_sink_has_24_inches_on_one_side_and_18_on_the_other() {
     // Sink 20" from one end: 3.5" on that side.
     let f = sink_run(96.0, 20.0);
     assert_eq!(sev(&f, nkba::K_SINK), Some(Severity::Warning));
-    assert!(of(&f, nkba::K_SINK)[0].message.contains("4\" of counter"), "{}", of(&f, nkba::K_SINK)[0].message);
+    assert!(
+        of(&f, nkba::K_SINK)[0].message.contains("4\" of counter"),
+        "{}",
+        of(&f, nkba::K_SINK)[0].message
+    );
     // 24" and 18": the edge of the rule.
     // Cutout 33" wide; width 33 + 24 + 18 = 75, cutout starts at 24.
     assert!(!fires(&sink_run(75.0, 24.0 + 16.5), nkba::K_SINK));
@@ -480,11 +591,23 @@ fn a_second_sink_needs_18_and_3_inches() {
     // A big sink with ample counter, and a bar sink with 4" beside it.
     add_cab(
         &mut p,
-        with_cutout(cab(1, "Base", (10.0, 3.0), 0.0, (96.0, 24.0)), "Sink", (48.0, 12.0), 33.0, 22.0),
+        with_cutout(
+            cab(1, "Base", (10.0, 3.0), 0.0, (96.0, 24.0)),
+            "Sink",
+            (48.0, 12.0),
+            33.0,
+            22.0,
+        ),
     );
     add_cab(
         &mut p,
-        with_cutout(cab(2, "Base", (140.0, 3.0), 0.0, (60.0, 24.0)), "Sink", (20.0, 12.0), 15.0, 15.0),
+        with_cutout(
+            cab(2, "Base", (140.0, 3.0), 0.0, (60.0, 24.0)),
+            "Sink",
+            (20.0, 12.0),
+            15.0,
+            15.0,
+        ),
     );
     let f = run(&p, &["Kitchen"]);
     assert!(!fires(&f, nkba::K_SINK), "{:?}", of(&f, nkba::K_SINK));
@@ -503,7 +626,10 @@ fn range_between(left: f64, right: f64) -> Vec<Finding> {
     rect(&mut p, 0.0, 0.0, 200.0, 144.0, WallKind::Exterior);
     sym(&mut p, RANGE, (100.0, 3.0), (30.0, 25.0), 0.0, 0.0, 36.0);
     if left > 0.0 {
-        add_cab(&mut p, cab(1, "Base", (85.0 - left, 3.0), 0.0, (left, 24.0)));
+        add_cab(
+            &mut p,
+            cab(1, "Base", (85.0 - left, 3.0), 0.0, (left, 24.0)),
+        );
     }
     if right > 0.0 {
         add_cab(&mut p, cab(2, "Base", (115.0, 3.0), 0.0, (right, 24.0)));
@@ -520,7 +646,10 @@ fn the_cooking_surface_has_15_inches_on_one_side_and_12_on_the_other() {
     assert_eq!(sev(&f, nkba::K_COOKTOP), Some(Severity::Warning));
     assert!(fires(&range_between(14.0, 14.0), nkba::K_COOKTOP));
     assert!(fires(&range_between(24.0, 0.0), nkba::K_COOKTOP));
-    assert!(matches!(of(&f, nkba::K_COOKTOP)[0].object, Some(Target::Symbol(_))));
+    assert!(matches!(
+        of(&f, nkba::K_COOKTOP)[0].object,
+        Some(Target::Symbol(_))
+    ));
 }
 
 #[test]
@@ -530,7 +659,13 @@ fn a_cooktop_cutout_is_a_cooking_surface_too() {
     // 30" of cooktop in a 36" cabinet with no counter beside it.
     add_cab(
         &mut p,
-        with_cutout(cab(1, "Base", (60.0, 3.0), 0.0, (36.0, 24.0)), "Cooktop", (18.0, 12.0), 30.0, 21.0),
+        with_cutout(
+            cab(1, "Base", (60.0, 3.0), 0.0, (36.0, 24.0)),
+            "Cooktop",
+            (18.0, 12.0),
+            30.0,
+            21.0,
+        ),
     );
     let f = run(&p, &["Kitchen"]);
     assert!(fires(&f, nkba::K_COOKTOP));
@@ -539,12 +674,21 @@ fn a_cooktop_cutout_is_a_cooking_surface_too() {
 
 /// An appliance (`id`) at the end of the south run with `beside` inches of
 /// counter next to it, and optionally an island across.
-fn appliance_landing(id: &str, size: (f64, f64), elevation: f64, beside: f64, island: bool) -> Vec<Finding> {
+fn appliance_landing(
+    id: &str,
+    size: (f64, f64),
+    elevation: f64,
+    beside: f64,
+    island: bool,
+) -> Vec<Finding> {
     let mut p = Project::new("t");
     rect(&mut p, 0.0, 0.0, 200.0, 144.0, WallKind::Exterior);
     sym(&mut p, id, (60.0, 3.0), size, 0.0, elevation, 70.0);
     if beside > 0.0 {
-        add_cab(&mut p, cab(1, "Base", (60.0 + size.0 / 2.0, 3.0), 0.0, (beside, 24.0)));
+        add_cab(
+            &mut p,
+            cab(1, "Base", (60.0 + size.0 / 2.0, 3.0), 0.0, (beside, 24.0)),
+        );
     }
     if island {
         add_cab(&mut p, cab(2, "Base", (40.0, 60.0), 0.0, (36.0, 24.0)));
@@ -559,14 +703,23 @@ fn the_refrigerator_oven_and_microwave_have_15_inches_beside_or_across() {
         (nkba::K_OVEN, OVEN, (30.0, 24.0), 0.0),
         (nkba::K_MICRO, MICROWAVE, (24.0, 16.0), 0.0),
     ] {
-        assert!(!fires(&appliance_landing(id, size, elev, 15.0, false), rule), "{rule}");
+        assert!(
+            !fires(&appliance_landing(id, size, elev, 15.0, false), rule),
+            "{rule}"
+        );
         let f = appliance_landing(id, size, elev, 14.0, false);
         assert_eq!(sev(&f, rule), Some(Severity::Warning), "{rule}");
-        assert!(fires(&appliance_landing(id, size, elev, 0.0, false), rule), "{rule}");
+        assert!(
+            fires(&appliance_landing(id, size, elev, 0.0, false), rule),
+            "{rule}"
+        );
         // 15" of counter across the aisle within 48" counts. The front of
         // the appliance is 30" from the wall at most; the island is at
         // y = 60..84.
-        assert!(!fires(&appliance_landing(id, size, elev, 0.0, true), rule), "{rule} island");
+        assert!(
+            !fires(&appliance_landing(id, size, elev, 0.0, true), rule),
+            "{rule} island"
+        );
     }
 }
 
@@ -577,12 +730,27 @@ fn dishwasher_at(x: f64, opposite: Option<f64>) -> Vec<Finding> {
     rect(&mut p, 0.0, 0.0, 240.0, 144.0, WallKind::Exterior);
     add_cab(
         &mut p,
-        with_cutout(cab(1, "Base", (10.0, 3.0), 0.0, (60.0, 24.0)), "Sink", (30.0, 12.0), 33.0, 22.0),
+        with_cutout(
+            cab(1, "Base", (10.0, 3.0), 0.0, (60.0, 24.0)),
+            "Sink",
+            (30.0, 12.0),
+            33.0,
+            22.0,
+        ),
     );
     sym(&mut p, DISHWASHER, (x, 3.0), (24.0, 24.0), 0.0, 0.0, 34.0);
     if let Some(gap) = opposite {
         // A run across from the dishwasher, `gap` inches from its front (27).
-        add_cab(&mut p, cab(2, "Base", (x + 30.0, 27.0 + gap + 24.0), std::f64::consts::PI, (60.0, 24.0)));
+        add_cab(
+            &mut p,
+            cab(
+                2,
+                "Base",
+                (x + 30.0, 27.0 + gap + 24.0),
+                std::f64::consts::PI,
+                (60.0, 24.0),
+            ),
+        );
     }
     run(&p, &["Kitchen"])
 }
@@ -596,11 +764,15 @@ fn the_dishwasher_is_near_the_sink_with_21_inches_of_standing_space() {
     assert!(!fires(&dishwasher_at(edge, None), nkba::K_DISHWASHER));
     let far = dishwasher_at(edge + 2.0, None);
     assert_eq!(sev(&far, nkba::K_DISHWASHER), Some(Severity::Warning));
-    assert!(of(&far, nkba::K_DISHWASHER)[0].message.contains("from the sink"));
+    assert!(of(&far, nkba::K_DISHWASHER)[0]
+        .message
+        .contains("from the sink"));
     // A run 18" across leaves 18" of standing space.
     let tight = dishwasher_at(80.0, Some(18.0));
     assert!(fires(&tight, nkba::K_DISHWASHER));
-    assert!(of(&tight, nkba::K_DISHWASHER)[0].message.contains("18\" of standing space"));
+    assert!(of(&tight, nkba::K_DISHWASHER)[0]
+        .message
+        .contains("18\" of standing space"));
     assert!(!fires(&dishwasher_at(80.0, Some(22.0)), nkba::K_DISHWASHER));
 }
 
@@ -608,7 +780,13 @@ fn the_dishwasher_is_near_the_sink_with_21_inches_of_standing_space() {
 
 fn range_with_wall_cabinet(elevation: f64) -> Vec<Finding> {
     let mut p = good_kitchen();
-    let mut w = cab(20, "Wall", (85.0, 129.0), std::f64::consts::PI, (30.0, 12.0));
+    let mut w = cab(
+        20,
+        "Wall",
+        (85.0, 129.0),
+        std::f64::consts::PI,
+        (30.0, 12.0),
+    );
     // Over the range on the north wall: footprint x 55..85? Place it over x 75..105.
     w["position"] = json!({ "x": 105.0, "y": 141.0 });
     w["elevation"] = json!(elevation);
@@ -625,16 +803,30 @@ fn a_cabinet_over_the_cooking_surface_is_24_or_30_inches_up() {
     assert!(of(&mid, nkba::K_COOK_CLEAR)[0].message.contains("26\""));
     let low = range_with_wall_cabinet(54.0);
     assert_eq!(sev(&low, nkba::K_COOK_CLEAR), Some(Severity::Warning));
-    assert!(matches!(of(&low, nkba::K_COOK_CLEAR)[0].object, Some(Target::Cabinet(20))));
+    assert!(matches!(
+        of(&low, nkba::K_COOK_CLEAR)[0].object,
+        Some(Target::Cabinet(20))
+    ));
     // At exactly 24" it is the protected-surface case.
-    assert_eq!(sev(&range_with_wall_cabinet(60.0), nkba::K_COOK_CLEAR), Some(Severity::Info));
+    assert_eq!(
+        sev(&range_with_wall_cabinet(60.0), nkba::K_COOK_CLEAR),
+        Some(Severity::Info)
+    );
 }
 
 #[test]
 fn a_microwave_over_the_range_counts_for_clearance_and_ventilation() {
     let mut p = good_kitchen();
     remove_symbols(&mut p, "hood");
-    sym(&mut p, MICROWAVE, (90.0, 141.0), (30.0, 16.0), 180.0, 54.0, 16.0);
+    sym(
+        &mut p,
+        MICROWAVE,
+        (90.0, 141.0),
+        (30.0, 16.0),
+        180.0,
+        54.0,
+        16.0,
+    );
     let f = kitchen_findings(&p);
     // 54 - 36 = 18" under the microwave.
     assert_eq!(sev(&f, nkba::K_COOK_CLEAR), Some(Severity::Warning));
@@ -647,14 +839,33 @@ fn a_hood_is_needed_and_as_wide_as_the_cooktop() {
     remove_symbols(&mut p, "hood");
     let f = kitchen_findings(&p);
     assert_eq!(sev(&f, nkba::K_VENT), Some(Severity::Warning));
-    assert!(matches!(of(&f, nkba::K_VENT)[0].object, Some(Target::Symbol(_))));
+    assert!(matches!(
+        of(&f, nkba::K_VENT)[0].object,
+        Some(Target::Symbol(_))
+    ));
     // A 24" hood over a 30" range.
-    sym(&mut p, "core.bathkitchen.range_hood_24", (90.0, 141.0), (24.0, 20.0), 180.0, 66.0, 18.0);
+    sym(
+        &mut p,
+        "core.bathkitchen.range_hood_24",
+        (90.0, 141.0),
+        (24.0, 20.0),
+        180.0,
+        66.0,
+        18.0,
+    );
     let narrow = kitchen_findings(&p);
     assert_eq!(sev(&narrow, nkba::K_VENT), Some(Severity::Info));
     // An exhaust fan within 5' will do.
     remove_symbols(&mut p, "hood");
-    sym(&mut p, "core.lighting.exhaust_fan_14", (90.0, 100.0), (14.0, 14.0), 0.0, 96.0, 4.0);
+    sym(
+        &mut p,
+        "core.lighting.exhaust_fan_14",
+        (90.0, 100.0),
+        (14.0, 14.0),
+        0.0,
+        96.0,
+        4.0,
+    );
     assert!(!fires(&kitchen_findings(&p), nkba::K_VENT));
 }
 
@@ -669,7 +880,10 @@ fn a_window_over_the_cooktop_is_a_hazard() {
     };
     let f = build(100.0, 36.0);
     assert_eq!(sev(&f, nkba::K_COOK_SAFE), Some(Severity::Info));
-    assert!(matches!(of(&f, nkba::K_COOK_SAFE)[0].object, Some(Target::Opening(_))));
+    assert!(matches!(
+        of(&f, nkba::K_COOK_SAFE)[0].object,
+        Some(Target::Opening(_))
+    ));
     // Beside the range, within 12" of its side.
     assert!(fires(&build(145.0, 36.0), nkba::K_COOK_SAFE));
     // Well away, or high enough to clear the hood.
@@ -685,7 +899,15 @@ fn a_kitchen_needs_a_waste_receptacle() {
     cab_mut(&mut p, 3)["label"] = json!("Pantry base");
     let f = kitchen_findings(&p);
     assert_eq!(sev(&f, nkba::K_WASTE), Some(Severity::Info));
-    sym(&mut p, "core.bathkitchen.trash_compactor_15", (20.0, 60.0), (15.0, 24.0), 0.0, 0.0, 34.0);
+    sym(
+        &mut p,
+        "core.bathkitchen.trash_compactor_15",
+        (20.0, 60.0),
+        (15.0, 24.0),
+        0.0,
+        0.0,
+        34.0,
+    );
     assert!(!fires(&kitchen_findings(&p), nkba::K_WASTE));
 }
 
@@ -694,7 +916,13 @@ fn small_kitchen(n: usize, sink: bool) -> Vec<Finding> {
     let mut p = Project::new("t");
     rect(&mut p, 0.0, 0.0, 140.0, 120.0, WallKind::Exterior);
     for k in 0..n {
-        let mut c = cab(k as u64 + 1, "Base", (3.0 + 36.0 * (k % 3) as f64, 3.0 + 40.0 * (k / 3) as f64), 0.0, (36.0, 24.0));
+        let mut c = cab(
+            k as u64 + 1,
+            "Base",
+            (3.0 + 36.0 * (k % 3) as f64, 3.0 + 40.0 * (k / 3) as f64),
+            0.0,
+            (36.0, 24.0),
+        );
         if sink && k == 0 {
             c = with_cutout(c, "Sink", (18.0, 12.0), 33.0, 22.0);
         }
@@ -714,13 +942,18 @@ fn counter_frontage_is_158_inches_in_a_small_kitchen_198_in_a_large_one() {
     assert!(!fires(&small_kitchen(5, false), nkba::K_FRONTAGE));
     // The sink takes its 33" out of the frontage: 147".
     assert!(fires(&small_kitchen(5, true), nkba::K_FRONTAGE));
-    assert!(of(&small_kitchen(5, true), nkba::K_FRONTAGE)[0].message.contains("147\""));
+    assert!(of(&small_kitchen(5, true), nkba::K_FRONTAGE)[0]
+        .message
+        .contains("147\""));
     // A kitchen of 150 sq ft or more needs 198".
     let mut p = good_kitchen();
     assert!(!fires(&kitchen_findings(&p), nkba::K_FRONTAGE));
     cab_mut(&mut p, 7)["width"] = json!(8.0);
     let f = kitchen_findings(&p);
-    assert!(of(&f, nkba::K_FRONTAGE)[0].message.contains("198\""), "{f:?}");
+    assert!(
+        of(&f, nkba::K_FRONTAGE)[0].message.contains("198\""),
+        "{f:?}"
+    );
 }
 
 #[test]
@@ -738,7 +971,10 @@ fn island_corners_are_clipped_or_rounded() {
     add_cab(&mut p, cab(9, "Base", (60.0, 60.0), 0.0, (48.0, 30.0)));
     let f = kitchen_findings(&p);
     assert_eq!(sev(&f, nkba::K_EDGES), Some(Severity::Info));
-    assert!(matches!(of(&f, nkba::K_EDGES)[0].object, Some(Target::Cabinet(9))));
+    assert!(matches!(
+        of(&f, nkba::K_EDGES)[0].object,
+        Some(Target::Cabinet(9))
+    ));
     cab_mut(&mut p, 9)["countertop"]["corner"] = json!("Clipped");
     assert!(!fires(&kitchen_findings(&p), nkba::K_EDGES));
     cab_mut(&mut p, 9)["countertop"]["corner"] = json!("Rounded");
@@ -751,11 +987,23 @@ fn island_corners_are_clipped_or_rounded() {
 fn the_counter_has_a_receptacle_within_24_inches_of_every_point() {
     let mut p = good_kitchen();
     // Drop the east receptacles on the south wall.
-    set_devices(&mut p, &[("Gfci", 30.0, 0.0), ("Gfci", 30.0, 144.0), ("Gfci", 78.0, 144.0), ("Gfci", 126.0, 144.0), ("Gfci", 170.0, 144.0)]);
+    set_devices(
+        &mut p,
+        &[
+            ("Gfci", 30.0, 0.0),
+            ("Gfci", 30.0, 144.0),
+            ("Gfci", 78.0, 144.0),
+            ("Gfci", 126.0, 144.0),
+            ("Gfci", 170.0, 144.0),
+        ],
+    );
     let f = kitchen_findings(&p);
     assert_eq!(sev(&f, nkba::K_RECEPT), Some(Severity::Warning));
     assert!(of(&f, nkba::K_RECEPT)[0].location.is_some());
-    assert!(matches!(of(&f, nkba::K_RECEPT)[0].object, Some(Target::Cabinet(_))));
+    assert!(matches!(
+        of(&f, nkba::K_RECEPT)[0].object,
+        Some(Target::Cabinet(_))
+    ));
     // A kitchen with no electrical layer at all is not judged.
     p.floors[0].electrical = None;
     let f = kitchen_findings(&p);
@@ -775,9 +1023,17 @@ fn an_island_needs_a_receptacle() {
     // A receptacle on the island's end.
     set_devices(
         &mut p,
-        &[("Gfci", 30.0, 0.0), ("Gfci", 78.0, 0.0), ("Gfci", 126.0, 0.0), ("Gfci", 170.0, 0.0),
-          ("Gfci", 30.0, 144.0), ("Gfci", 78.0, 144.0), ("Gfci", 126.0, 144.0), ("Gfci", 170.0, 144.0),
-          ("OutletFloor", 84.0, 80.0)],
+        &[
+            ("Gfci", 30.0, 0.0),
+            ("Gfci", 78.0, 0.0),
+            ("Gfci", 126.0, 0.0),
+            ("Gfci", 170.0, 0.0),
+            ("Gfci", 30.0, 144.0),
+            ("Gfci", 78.0, 144.0),
+            ("Gfci", 126.0, 144.0),
+            ("Gfci", 170.0, 144.0),
+            ("OutletFloor", 84.0, 80.0),
+        ],
     );
     assert!(!fires(&kitchen_findings(&p), nkba::K_RECEPT));
 }
@@ -786,7 +1042,14 @@ fn an_island_needs_a_receptacle() {
 fn receptacles_within_six_feet_of_the_sink_are_gfci() {
     let mut p = good_kitchen();
     assert!(!fires(&kitchen_findings(&p), nkba::K_GFCI));
-    set_devices(&mut p, &[("Gfci", 30.0, 0.0), ("Outlet110", 78.0, 0.0), ("Outlet110Quad", 126.0, 0.0)]);
+    set_devices(
+        &mut p,
+        &[
+            ("Gfci", 30.0, 0.0),
+            ("Outlet110", 78.0, 0.0),
+            ("Outlet110Quad", 126.0, 0.0),
+        ],
+    );
     let f = kitchen_findings(&p);
     let g = of(&f, nkba::K_GFCI);
     assert_eq!(g.len(), 1);
@@ -809,16 +1072,70 @@ fn good_bath() -> Project {
     open(&mut p, w[0], 90.0, 24.0, 36.0, 36.0, OpeningKind::Window);
     open(&mut p, w[1], 48.0, 36.0, 80.0, 0.0, OpeningKind::Door);
     add_cab(&mut p, {
-        let mut v = with_cutout(cab(1, "Base", (3.0, 3.0), 0.0, (60.0, 21.0)), "Sink", (30.0, 10.5), 20.0, 16.0);
+        let mut v = with_cutout(
+            cab(1, "Base", (3.0, 3.0), 0.0, (60.0, 21.0)),
+            "Sink",
+            (30.0, 10.5),
+            20.0,
+            16.0,
+        );
         v["height"] = json!(34.0);
         v
     });
-    sym(&mut p, "core.bathkitchen.toilet_elongated", (90.0, 3.0), (20.0, 28.0), 0.0, 0.0, 30.0);
-    sym(&mut p, "core.bathkitchen.shower_36x36", (21.0, 93.0), (36.0, 36.0), 180.0, 0.0, 80.0);
-    sym(&mut p, "core.plumbing.shower_valve", (21.0, 93.0), (4.0, 4.0), 180.0, 40.0, 8.0);
-    sym(&mut p, "core.bathkitchen.grab_bar_24", (105.0, 20.0), (24.0, 2.0), 90.0, 33.0, 2.0);
-    sym(&mut p, "core.bathkitchen.grab_bar_36", (39.0, 70.0), (36.0, 2.0), 90.0, 33.0, 2.0);
-    sym(&mut p, "core.bathkitchen.mirror_36", (33.0, 3.0), (36.0, 1.0), 0.0, 40.0, 30.0);
+    sym(
+        &mut p,
+        "core.bathkitchen.toilet_elongated",
+        (90.0, 3.0),
+        (20.0, 28.0),
+        0.0,
+        0.0,
+        30.0,
+    );
+    sym(
+        &mut p,
+        "core.bathkitchen.shower_36x36",
+        (21.0, 93.0),
+        (36.0, 36.0),
+        180.0,
+        0.0,
+        80.0,
+    );
+    sym(
+        &mut p,
+        "core.plumbing.shower_valve",
+        (21.0, 93.0),
+        (4.0, 4.0),
+        180.0,
+        40.0,
+        8.0,
+    );
+    sym(
+        &mut p,
+        "core.bathkitchen.grab_bar_24",
+        (105.0, 20.0),
+        (24.0, 2.0),
+        90.0,
+        33.0,
+        2.0,
+    );
+    sym(
+        &mut p,
+        "core.bathkitchen.grab_bar_36",
+        (39.0, 70.0),
+        (36.0, 2.0),
+        90.0,
+        33.0,
+        2.0,
+    );
+    sym(
+        &mut p,
+        "core.bathkitchen.mirror_36",
+        (33.0, 3.0),
+        (36.0, 1.0),
+        0.0,
+        40.0,
+        30.0,
+    );
     set_devices(&mut p, &[("Gfci", 33.0, 0.0)]);
     p
 }
@@ -852,8 +1169,14 @@ fn bath_door(w: f64, style: OpeningStyle) -> Vec<Finding> {
 #[test]
 fn the_bathroom_doorway_is_32_inches_clear() {
     assert!(!fires(&bath_door(36.0, OpeningStyle::Hinged), nkba::B_DOOR));
-    assert_eq!(sev(&bath_door(30.0, OpeningStyle::Hinged), nkba::B_DOOR), Some(Severity::Warning));
-    assert!(!fires(&bath_door(32.0, OpeningStyle::Doorway), nkba::B_DOOR));
+    assert_eq!(
+        sev(&bath_door(30.0, OpeningStyle::Hinged), nkba::B_DOOR),
+        Some(Severity::Warning)
+    );
+    assert!(!fires(
+        &bath_door(32.0, OpeningStyle::Doorway),
+        nkba::B_DOOR
+    ));
     assert!(fires(&bath_door(24.0, OpeningStyle::Doorway), nkba::B_DOOR));
 }
 
@@ -863,16 +1186,34 @@ fn the_lavatory_tub_and_shower_have_30_inches_clear_in_front() {
     let mut p = good_bath();
     assert!(!fires(&bath_findings(&p), nkba::B_CLEAR));
     // Move the shower's front to 20" from the vanity: 25 + 20 = 45.
-    p.floors[0].symbols.iter_mut().find(|s| s.catalog_id.contains("shower_36x36")).unwrap().position = pt(21.0, 81.0);
+    p.floors[0]
+        .symbols
+        .iter_mut()
+        .find(|s| s.catalog_id.contains("shower_36x36"))
+        .unwrap()
+        .position = pt(21.0, 81.0);
     let f = bath_findings(&p);
     assert_eq!(sev(&f, nkba::B_CLEAR), Some(Severity::Warning));
     // The basin and the shower both fall short.
-    assert_eq!(of(&f, nkba::B_CLEAR).len(), 2, "{:?}", of(&f, nkba::B_CLEAR));
+    assert_eq!(
+        of(&f, nkba::B_CLEAR).len(),
+        2,
+        "{:?}",
+        of(&f, nkba::B_CLEAR)
+    );
     assert!(of(&f, nkba::B_CLEAR)[0].message.contains("clear floor"));
     // A tub with the wall 20" off its front.
     let mut t = Project::new("t");
     rect(&mut t, 0.0, 0.0, 120.0, 56.0, WallKind::Exterior);
-    sym(&mut t, "core.bathkitchen.tub_alcove_60x30_left", (60.0, 3.0), (60.0, 30.0), 0.0, 0.0, 20.0);
+    sym(
+        &mut t,
+        "core.bathkitchen.tub_alcove_60x30_left",
+        (60.0, 3.0),
+        (60.0, 30.0),
+        0.0,
+        0.0,
+        20.0,
+    );
     let f = bath_findings(&t);
     assert!(fires(&f, nkba::B_CLEAR));
     assert!(of(&f, nkba::B_CLEAR)[0].message.contains("tub"));
@@ -881,7 +1222,15 @@ fn the_lavatory_tub_and_shower_have_30_inches_clear_in_front() {
 fn toilet_in(width: f64, depth: f64) -> Vec<Finding> {
     let mut p = Project::new("t");
     rect(&mut p, 0.0, 0.0, width, depth, WallKind::Exterior);
-    sym(&mut p, "core.bathkitchen.toilet_elongated", (width / 2.0, 3.0), (20.0, 28.0), 0.0, 0.0, 30.0);
+    sym(
+        &mut p,
+        "core.bathkitchen.toilet_elongated",
+        (width / 2.0, 3.0),
+        (20.0, 28.0),
+        0.0,
+        0.0,
+        30.0,
+    );
     run(&p, &["Bathroom"])
 }
 
@@ -899,9 +1248,14 @@ fn the_toilet_has_16_inches_to_a_side_obstruction_and_30_in_front() {
     // Front clearance: 3 + 28 = 31 to the toilet's front; wall face at depth - 3.
     let front = toilet_in(60.0, 59.0);
     assert_eq!(sev(&front, nkba::B_TOILET), Some(Severity::Info));
-    assert!(of(&front, nkba::B_TOILET)[0].message.contains("25\" clear in front"));
+    assert!(of(&front, nkba::B_TOILET)[0]
+        .message
+        .contains("25\" clear in front"));
     assert!(!fires(&toilet_in(60.0, 64.0), nkba::B_TOILET));
-    assert!(!fires(&toilet_in(60.0, 50.0), nkba::B_TOILET), "under 21\" is the IRC rule");
+    assert!(
+        !fires(&toilet_in(60.0, 50.0), nkba::B_TOILET),
+        "under 21\" is the IRC rule"
+    );
 }
 
 #[test]
@@ -909,14 +1263,24 @@ fn a_shower_is_36_by_36_inside() {
     let build = |w: f64, d: f64| {
         let mut p = Project::new("t");
         rect(&mut p, 0.0, 0.0, 120.0, 96.0, WallKind::Exterior);
-        sym(&mut p, "core.bathkitchen.shower_36x36", (60.0, 3.0), (w, d), 0.0, 0.0, 80.0);
+        sym(
+            &mut p,
+            "core.bathkitchen.shower_36x36",
+            (60.0, 3.0),
+            (w, d),
+            0.0,
+            0.0,
+            80.0,
+        );
         run(&p, &["Bathroom"])
     };
     assert!(!fires(&build(36.0, 36.0), nkba::B_SHOWER));
     assert!(!fires(&build(48.0, 36.0), nkba::B_SHOWER));
     let small = build(34.0, 36.0);
     assert_eq!(sev(&small, nkba::B_SHOWER), Some(Severity::Warning));
-    assert!(of(&small, nkba::B_SHOWER)[0].message.contains("34\" x 36\""));
+    assert!(of(&small, nkba::B_SHOWER)[0]
+        .message
+        .contains("34\" x 36\""));
     // 32" x 32" passes the code (30" x 30") but not the NKBA.
     let f = build(32.0, 32.0);
     assert!(fires(&f, nkba::B_SHOWER));
@@ -924,7 +1288,15 @@ fn a_shower_is_36_by_36_inside() {
     // A tub is not a shower.
     let mut t = Project::new("t");
     rect(&mut t, 0.0, 0.0, 120.0, 96.0, WallKind::Exterior);
-    sym(&mut t, "core.bathkitchen.tub_alcove_60x30_left", (60.0, 3.0), (60.0, 30.0), 0.0, 0.0, 20.0);
+    sym(
+        &mut t,
+        "core.bathkitchen.tub_alcove_60x30_left",
+        (60.0, 3.0),
+        (60.0, 30.0),
+        0.0,
+        0.0,
+        20.0,
+    );
     assert!(!fires(&run(&t, &["Bathroom"]), nkba::B_SHOWER));
 }
 
@@ -934,7 +1306,15 @@ fn shower_controls_are_38_to_48_inches_up() {
         let mut p = good_bath();
         remove_symbols(&mut p, "shower_valve");
         if let Some(e) = elevation {
-            sym(&mut p, "core.plumbing.shower_valve", (21.0, 93.0), (4.0, 4.0), 180.0, e, 8.0);
+            sym(
+                &mut p,
+                "core.plumbing.shower_valve",
+                (21.0, 93.0),
+                (4.0, 4.0),
+                180.0,
+                e,
+                8.0,
+            );
         }
         bath_findings(&p)
     };
@@ -988,7 +1368,13 @@ fn double_lavatories_are_30_inches_apart_and_15_from_a_side_obstruction() {
         rect(&mut p, 0.0, 0.0, 120.0, 96.0, WallKind::Exterior);
         let mut v = cab(1, "Base", (3.0, 3.0), 0.0, (72.0, 21.0));
         v["height"] = json!(34.0);
-        let v = with_cutout(with_cutout(v, "Sink", (a, 10.5), 20.0, 16.0), "Sink", (b, 10.5), 20.0, 16.0);
+        let v = with_cutout(
+            with_cutout(v, "Sink", (a, 10.5), 20.0, 16.0),
+            "Sink",
+            (b, 10.5),
+            20.0,
+            16.0,
+        );
         add_cab(&mut p, v);
         run(&p, &["Bathroom"])
     };
@@ -996,13 +1382,17 @@ fn double_lavatories_are_30_inches_apart_and_15_from_a_side_obstruction() {
     assert!(!fires(&build(18.0, 54.0), nkba::B_LAV_SPACE));
     let near = build(20.0, 44.0);
     assert_eq!(sev(&near, nkba::B_LAV_SPACE), Some(Severity::Warning));
-    assert!(of(&near, nkba::B_LAV_SPACE)[0].message.contains("24\" apart"));
+    assert!(of(&near, nkba::B_LAV_SPACE)[0]
+        .message
+        .contains("24\" apart"));
     // 30" apart exactly.
     assert!(!fires(&build(18.0, 48.0), nkba::B_LAV_SPACE));
     // 10" from the west wall.
     let wall = build(10.0, 50.0);
     assert!(fires(&wall, nkba::B_LAV_SPACE));
-    assert!(of(&wall, nkba::B_LAV_SPACE)[0].message.contains("obstruction"));
+    assert!(of(&wall, nkba::B_LAV_SPACE)[0]
+        .message
+        .contains("obstruction"));
 }
 
 #[test]
@@ -1011,7 +1401,10 @@ fn a_mirror_at_the_lavatory() {
     remove_symbols(&mut p, "mirror");
     let f = bath_findings(&p);
     assert_eq!(sev(&f, nkba::B_MIRROR), Some(Severity::Info));
-    assert!(matches!(of(&f, nkba::B_MIRROR)[0].object, Some(Target::Cabinet(1))));
+    assert!(matches!(
+        of(&f, nkba::B_MIRROR)[0].object,
+        Some(Target::Cabinet(1))
+    ));
 }
 
 #[test]
@@ -1023,9 +1416,25 @@ fn a_bath_needs_a_fan_or_a_window_of_three_square_feet() {
             open(&mut p, w[0], 60.0, ww, wh, 40.0, OpeningKind::Window);
         }
         if fan {
-            sym(&mut p, "core.lighting.exhaust_fan_14", (60.0, 48.0), (14.0, 14.0), 0.0, 96.0, 4.0);
+            sym(
+                &mut p,
+                "core.lighting.exhaust_fan_14",
+                (60.0, 48.0),
+                (14.0, 14.0),
+                0.0,
+                96.0,
+                4.0,
+            );
         }
-        sym(&mut p, "core.bathkitchen.toilet_elongated", (90.0, 3.0), (20.0, 28.0), 0.0, 0.0, 30.0);
+        sym(
+            &mut p,
+            "core.bathkitchen.toilet_elongated",
+            (90.0, 3.0),
+            (20.0, 28.0),
+            0.0,
+            0.0,
+            30.0,
+        );
         run(&p, &["Bathroom"])
     };
     let none = bare(None, false);
@@ -1048,7 +1457,10 @@ fn a_receptacle_within_36_inches_of_each_lavatory() {
     set_devices(&mut p, &[("Gfci", 110.0, 90.0)]);
     let f = bath_findings(&p);
     assert_eq!(sev(&f, nkba::B_RECEPT), Some(Severity::Warning));
-    assert!(matches!(of(&f, nkba::B_RECEPT)[0].object, Some(Target::Cabinet(1))));
+    assert!(matches!(
+        of(&f, nkba::B_RECEPT)[0].object,
+        Some(Target::Cabinet(1))
+    ));
     // No electrical layer: not judged.
     p.floors[0].electrical = None;
     let f = bath_findings(&p);
@@ -1079,7 +1491,10 @@ fn nkba_report_of(p: &Project) -> NkbaReport {
 fn every_guideline_is_in_the_catalog_under_the_nkba_group() {
     let catalog = rule_catalog();
     for g in GUIDELINES {
-        let info = catalog.iter().find(|r| r.id == g.id).unwrap_or_else(|| panic!("{} missing", g.id));
+        let info = catalog
+            .iter()
+            .find(|r| r.id == g.id)
+            .unwrap_or_else(|| panic!("{} missing", g.id));
         assert_eq!(info.group, "NKBA");
         assert_eq!(info.severity, g.severity);
         assert_eq!(info.summary, g.requirement);
@@ -1108,7 +1523,10 @@ fn the_nkba_group_has_its_own_switch() {
     assert!(settings.group_enabled("Rooms"), "other groups stay on");
     settings.store(&mut p);
     let off = run_plan_check(&p, 0, &rooms, &types, &[]);
-    assert!(!off.findings.iter().any(|f| GUIDELINES.iter().any(|g| g.id == f.rule)));
+    assert!(!off
+        .findings
+        .iter()
+        .any(|f| GUIDELINES.iter().any(|g| g.id == f.rule)));
     assert!(off.switched_off >= 1);
     // One rule off, the rest on.
     let mut one = CheckSettings::default();
@@ -1147,12 +1565,27 @@ fn every_finding_has_a_place_and_an_object_to_zoom_to() {
 fn the_kitchen_and_bath_report_lists_every_guideline() {
     let p = good_kitchen();
     let r = nkba_report_of(&p);
-    let kitchen_rules = GUIDELINES.iter().filter(|g| g.area == nkba::Area::Kitchen).count();
-    let unchecked = r.rows.iter().filter(|x| x.status == NkbaStatus::NotChecked).count();
+    let kitchen_rules = GUIDELINES
+        .iter()
+        .filter(|g| g.area == nkba::Area::Kitchen)
+        .count();
+    let unchecked = r
+        .rows
+        .iter()
+        .filter(|x| x.status == NkbaStatus::NotChecked)
+        .count();
     assert_eq!(r.rows.len(), kitchen_rules + unchecked);
     assert!(unchecked >= 5);
     let (met, not_met) = r.counts();
-    assert_eq!(not_met, 0, "{:?}", r.rows.iter().filter(|x| x.status == NkbaStatus::NotMet).collect::<Vec<_>>());
+    assert_eq!(
+        not_met,
+        0,
+        "{:?}",
+        r.rows
+            .iter()
+            .filter(|x| x.status == NkbaStatus::NotMet)
+            .collect::<Vec<_>>()
+    );
     assert!(met >= 10, "{met}");
     // The rows that have nothing to test are 'not in the plan'.
     let row = |name: &str| r.rows.iter().find(|x| x.guideline == name).unwrap();
@@ -1189,7 +1622,15 @@ fn the_report_covers_both_the_kitchen_and_the_bath() {
         p.floors[0].wall_mut(id).unwrap().kind = WallKind::Interior;
     }
     sym(&mut p, RANGE, (50.0, 3.0), (30.0, 25.0), 0.0, 0.0, 36.0);
-    sym(&mut p, "core.bathkitchen.toilet_elongated", (200.0, 147.0 - 144.0), (20.0, 28.0), 0.0, 0.0, 30.0);
+    sym(
+        &mut p,
+        "core.bathkitchen.toilet_elongated",
+        (200.0, 147.0 - 144.0),
+        (20.0, 28.0),
+        0.0,
+        0.0,
+        30.0,
+    );
     let rooms = detect_rooms(&p.floors[0].walls, 1.0);
     assert_eq!(rooms.len(), 2);
     let types = [(0usize, "Kitchen".to_string()), (1, "Bathroom".to_string())];
@@ -1202,7 +1643,10 @@ fn the_report_covers_both_the_kitchen_and_the_bath() {
     assert!(table.rows.iter().all(|row| row.len() == 5));
     let md = r.markdown();
     assert!(md.starts_with("# Kitchen and Bath Report"));
-    assert!(md.contains("(Kitchen)") && md.contains("(Bathroom)"), "{md}");
+    assert!(
+        md.contains("(Kitchen)") && md.contains("(Bathroom)"),
+        "{md}"
+    );
     assert!(md.contains("Not met"));
     // A plan with no kitchen or bath says so.
     let empty = nkba_report(&Project::new("e"), 0, &[], &[], &[]);

@@ -138,11 +138,9 @@ impl Form {
         });
         for d in wanted {
             if !self.def.columns.iter().any(|c| c.field == d.column_id()) {
-                self.def.columns.push(ColumnSpec::new(
-                    &d.column_id(),
-                    &d.name,
-                    d.show_in_schedule,
-                ));
+                self.def
+                    .columns
+                    .push(ColumnSpec::new(&d.column_id(), &d.name, d.show_in_schedule));
             }
         }
     }
@@ -629,7 +627,10 @@ mod tests {
         assert!(col(&d, "prop:Fire Rating").unwrap().visible);
         assert!(!col(&d, "prop:Notes").unwrap().visible);
         assert!(col(&d, "prop:Glazing").is_none(), "a window property");
-        assert!(d.draft().visible_columns().any(|c| c.field == "prop:Fire Rating"));
+        assert!(d
+            .draft()
+            .visible_columns()
+            .any(|c| c.field == "prop:Fire Rating"));
         // Changing the kind swaps the property columns for the new kind's.
         d.draft_mut().set_kind(ScheduleKind::Window);
         d.form.sync_prop_columns();

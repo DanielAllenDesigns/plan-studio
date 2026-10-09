@@ -385,6 +385,8 @@ fn a_walkthrough_from_a_cad_polyline_plays_scrubs_and_records_at_the_chosen_rate
             width: 48,
             height: 32,
             samples: 1,
+            format: plan_core::camera_view::RecordFormat::Frames,
+            ..WalkRecord::default()
         };
     });
     let duration = sim.app.cx.project.camera(id).unwrap().walk_duration_s();

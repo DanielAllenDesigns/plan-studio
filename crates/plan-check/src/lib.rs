@@ -96,6 +96,9 @@ pub enum Target {
     Roof(Id),
     /// A detail object (a deck), by id.
     Detail(Id),
+    /// A slab, square pad or round pier of the foundation layer, by id
+    /// (`plan_core::foundation::FoundationRef`).
+    Foundation(Id),
 }
 
 /// One result of a check.

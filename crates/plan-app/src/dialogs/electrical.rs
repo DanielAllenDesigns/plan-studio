@@ -448,6 +448,7 @@ impl SpecPages for Form {
             center: mid,
             px_per_in: f64::from(area.width().min(area.height())) * 0.9 / span,
             rect: area,
+            rotation: 0.0,
         };
         site_view::draw_symbol(p, &cam, &self.draft.kind.symbol(), PV_INK, 1.5);
         pv_text(

@@ -649,6 +649,25 @@ impl WallDialog {
         &mut self.form.draft
     }
 
+    /// Draws the tab called `tab` in a headless frame, so a test runs that
+    /// page's code; false when the dialog has no live tab of that name.
+    #[cfg(test)]
+    pub fn draw_tab_for_test(&mut self, ctx: &egui::Context, tab: &str) -> bool {
+        let Some(i) = self
+            .form
+            .tabs()
+            .iter()
+            .position(|t| t.name == tab && t.enabled)
+        else {
+            return false;
+        };
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| self.form.page(ui, i));
+        });
+        self.sync_stored();
+        true
+    }
+
     pub fn extras(&self) -> &WallExtras {
         &self.form.extras
     }
@@ -1134,7 +1153,13 @@ impl WallForm {
             // The Rails tab's top of rail follows the height set here.
             self.draft.spec.railing.top_rail_top = Some(self.draft.height);
         }
-        super::code_notice::code_notice(ui, "IRC R312.1.2 guard height", &mut self.draft.height, crate::editor::code::active().guard_height, super::code_notice::LimitKind::Min);
+        super::code_notice::code_notice(
+            ui,
+            "IRC R312.1.2 guard height",
+            &mut self.draft.height,
+            crate::editor::code::active().guard_height,
+            super::code_notice::LimitKind::Min,
+        );
         let len = self.draft.length();
         ui.weak(format!(
             "Posts {}: one every 8' at most and one at each end",
@@ -2921,5 +2946,99 @@ mod tests {
             assert_eq!(w.wall_type.as_deref(), Some("Interior-6"));
             assert!((w.thickness - i6.thickness()).abs() < 1e-9);
         }
+    }
+
+    #[test]
+    fn the_covering_materials_components_info_and_schedule_tabs_are_live() {
+        let mut f = form(WallLock::Start);
+        let ctx = egui::Context::default();
+        for name in [
+            "Wall Covering",
+            "Materials",
+            "Components",
+            "Object Information",
+            "Schedule",
+        ] {
+            assert!(
+                f.tabs().iter().any(|t| t.name == name && t.enabled),
+                "{name}"
+            );
+        }
+        let cover = tab_index(&f, "Wall Covering");
+        let drawn = page_texts(&mut f, cover);
+        for want in [
+            "Interior Side",
+            "Exterior Side",
+            "Wainscot",
+            "Chair Rail",
+            "Base Molding",
+            "Crown Molding",
+        ] {
+            assert!(drawn.iter().any(|t| t == want), "{want} in {drawn:?}");
+        }
+        // The heights follow the molding library once a profile is picked.
+        f.draft.spec.covering.interior.base = "Base 5 1/4".into();
+        f.draft.spec.covering.interior.wainscot = "Beadboard".into();
+        let drawn = page_texts(&mut f, cover);
+        assert!(drawn.iter().any(|t| t == "Wainscot Height"), "{drawn:?}");
+        // Components list the layers and the wainscot.
+        let comp = tab_index(&f, "Components");
+        let drawn = page_texts(&mut f, comp);
+        assert!(drawn.iter().any(|t| t.starts_with("Wainscot")), "{drawn:?}");
+        // Object Information and Schedule store through the draft.
+        let info = tab_index(&f, "Object Information");
+        let drawn = page_texts(&mut f, info);
+        for want in ["Identification", "Manufacturer", "Supplier", "Description"] {
+            assert!(drawn.iter().any(|t| t == want), "{want} in {drawn:?}");
+        }
+        let sched = tab_index(&f, "Schedule");
+        assert!(f.draft.spec.schedule.include);
+        click_label(&mut f, &ctx, sched, "Include in Schedule");
+        assert!(!f.draft.spec.schedule.include);
+        let back: Wall = serde_json::from_str(&serde_json::to_string(&f.draft).unwrap()).unwrap();
+        assert_eq!(back.spec.covering.interior.base, "Base 5 1/4");
+        assert!(!back.spec.schedule.include);
+    }
+
+    #[test]
+    fn the_newels_and_rails_tabs_belong_to_railing_walls() {
+        let mut f = form(WallLock::Start);
+        let newels = tab_index(&f, "Newels/Balusters");
+        let rails = tab_index(&f, "Rails");
+        // An interior wall gets the hint only.
+        let drawn = page_texts(&mut f, newels);
+        assert!(
+            drawn.iter().any(|t| t.starts_with("Draw a Railing")),
+            "{drawn:?}"
+        );
+        f.change_class(WallClass::Railing);
+        let drawn = page_texts(&mut f, newels);
+        for want in [
+            "Newel Size",
+            "Greatest Newel Spacing",
+            "Between Newels",
+            "Baluster Size",
+            "Greatest Baluster Spacing",
+        ] {
+            assert!(drawn.iter().any(|t| t == want), "{want} in {drawn:?}");
+        }
+        let drawn = page_texts(&mut f, rails);
+        for want in [
+            "Top Rail",
+            "Bottom Rail",
+            "Top of Top Rail",
+            "Rail Height",
+            "Rail Width",
+        ] {
+            assert!(drawn.iter().any(|t| t == want), "{want} in {drawn:?}");
+        }
+        // Glass panels replace the balusters.
+        f.draft.spec.railing.fill = plan_core::walls::RailFill::GlassPanel;
+        let drawn = page_texts(&mut f, newels);
+        assert!(drawn.iter().any(|t| t == "Panel Thickness"), "{drawn:?}");
+        assert!(
+            !drawn.iter().any(|t| t == "Greatest Baluster Spacing"),
+            "{drawn:?}"
+        );
     }
 }

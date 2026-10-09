@@ -45,6 +45,7 @@ use std::path::{Path, PathBuf};
 
 pub mod browser;
 pub mod defaults;
+pub mod package;
 pub mod paint;
 pub mod spec;
 pub mod surfaces;
@@ -561,12 +562,26 @@ pub fn apply_overrides(project: &Project, scene: &mut Scene) -> usize {
             mesh.material = m;
             mesh.color = Some(def.color);
             register_surface(id, m, def);
+            register_maps(id, m, def);
             if changed {
                 n += 1;
             }
         }
     }
     n
+}
+
+/// Tells the renderers which PBR package maps (normal, roughness, metallic,
+/// ambient occlusion, opacity) paint the object, when the PBR maps preference
+/// is on and the material has any.
+fn register_maps(object: Id, material: Material, def: &MaterialDef) {
+    let src = crate::dialogs::preferences::pages::current()
+        .render
+        .pbr_maps
+        .then(|| plan_materials::pbr::PbrSource::from_def(def))
+        .flatten()
+        .map(std::sync::Arc::new);
+    plan_materials::pbr::register(object, material, def.color, src);
 }
 
 /// Tells the renderers how the painted material `def` responds to light.
@@ -596,6 +611,63 @@ fn register_surface(object: Id, material: Material, def: &MaterialDef) {
 /// than its flat colour?
 fn has_bitmap(def: &MaterialDef) -> bool {
     def.texture_path.is_some() || !matches!(def.texture, plan_materials::Texture::Solid)
+}
+
+thread_local! {
+    /// Package albedos at the Preferences > Render max texture size, by file
+    /// and size (the texture store shrinks files to 1024 pixels).
+    static PACKAGE_ALBEDO: RefCell<std::collections::HashMap<(String, u32), std::sync::Arc<plan_materials::textures::TextureImage>>> =
+        RefCell::new(std::collections::HashMap::new());
+}
+
+/// The albedo of a material package at the preferred max texture size; `None`
+/// for any other material (or a file that does not load).
+fn package_albedo(
+    def: &MaterialDef,
+) -> Option<std::sync::Arc<plan_materials::textures::TextureImage>> {
+    use plan_materials::textures::{TextureImage, TextureOrigin};
+    def.package_imported.as_ref()?;
+    let path = def.texture_path.clone()?;
+    let side = crate::dialogs::preferences::pages::current()
+        .render
+        .max_texture_side
+        .clamp(256, 8192);
+    let key = (path.clone(), side);
+    if let Some(hit) = PACKAGE_ALBEDO.with(|c| c.borrow().get(&key).cloned()) {
+        return Some(hit);
+    }
+    let img = plan_library::image::decode_file(Path::new(&path))
+        .ok()?
+        .downscaled(side);
+    let scale = [def.texture_scale_in.0 as f32, def.texture_scale_in.1 as f32];
+    let tex = std::sync::Arc::new(TextureImage::new(
+        img,
+        TextureOrigin::File(PathBuf::from(&path)),
+        scale,
+    ));
+    PACKAGE_ALBEDO.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.len() >= 8 {
+            c.clear();
+        }
+        c.insert(key, std::sync::Arc::clone(&tex));
+    });
+    Some(tex)
+}
+
+/// The package maps of `def` for the GL view (its key and the decoded
+/// set), when the PBR maps preference is on and the material has any.
+fn pbr_maps_of(def: &MaterialDef) -> Option<(u64, std::sync::Arc<plan_materials::pbr::PbrSet>)> {
+    let prefs = crate::dialogs::preferences::pages::current().render;
+    if !prefs.pbr_maps {
+        return None;
+    }
+    let src = plan_materials::pbr::PbrSource::from_def(def)?;
+    let side = prefs.max_texture_side.clamp(256, 8192);
+    Some((
+        src.key() ^ u64::from(side),
+        plan_materials::pbr::load_cached(&src, side, false),
+    ))
 }
 
 /// Content key of the bitmap of `def` (its name, image path and tile size).
@@ -694,17 +766,26 @@ pub fn painted_textures(
             if !drawn.contains(&material) {
                 continue;
             }
-            let image = store.definition(def);
-            let key = bitmap_key(def);
+            let image = package_albedo(def).unwrap_or_else(|| store.definition(def));
+            let pbr = pbr_maps_of(def);
+            let key = match &pbr {
+                Some((k, _)) => bitmap_key(def) ^ k.rotate_left(17),
+                None => bitmap_key(def),
+            };
             let rgba = BITMAPS.with(|b| {
                 std::sync::Arc::clone(b.borrow_mut().entry(key).or_insert_with(|| {
-                    std::sync::Arc::new(plan_materials::transform_rgba(
+                    let mut px = plan_materials::transform_rgba(
                         &image.image.rgba,
                         image.image.width,
                         image.image.height,
                         image.scale_in,
                         def,
-                    ))
+                    );
+                    // An opacity map cuts the surface out through the alpha.
+                    if let Some((_, set)) = &pbr {
+                        set.fold_opacity(&mut px, image.image.width, image.image.height);
+                    }
+                    std::sync::Arc::new(px)
                 }))
             });
             out.push(plan_view3d::SurfaceTexture {
@@ -715,6 +796,7 @@ pub fn painted_textures(
                 height: image.image.height,
                 rgba,
                 scale_in: image.scale_in,
+                pbr: pbr.map(|(_, set)| set),
             });
         }
     }
@@ -911,6 +993,7 @@ pub fn run_command(cx: &mut EditorContext, id: &str) -> bool {
                 None => open_new_spec(),
             }
         }
+        _ if package::run_command(cx, id) => {}
         _ => return false,
     }
     true

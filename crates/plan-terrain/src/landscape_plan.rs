@@ -384,6 +384,12 @@ fn object_plan(o: &Landscape, items: &mut Vec<PlanItem>) {
             if o.points.len() >= 3 && !o.material.is_empty() {
                 s.text(centroid(&o.points), o.material.clone(), l.line);
             }
+            // Plants spread over the bed by its Distributed Plant panel.
+            if let Some(d) = o.distribution.as_ref().filter(|d| d.size > 0.0) {
+                for p in o.distributed_positions() {
+                    s.line(circle_points(p, d.size / 2.0, 16, 0.0), true, &l);
+                }
+            }
         }
         LandscapeKind::GrassRegion => {
             let l = look(&o.style, GRASS_COLOR, 0.8, true);
@@ -417,6 +423,11 @@ fn object_plan(o: &Landscape, items: &mut Vec<PlanItem>) {
                 s.line(circle_points(p, o.size / 2.0, 20, 0.0), true, &l);
                 s.line(circle_points(p, o.size / 8.0, 8, 0.0), true, &l);
             }
+        }
+        LandscapeKind::SprinklerLine => {
+            // Irrigation pipe: a dashed line, never in 3D.
+            let l = look(&o.style, SPRINKLER_COLOR, 0.8, true);
+            s.line(o.points.clone(), false, &l);
         }
         LandscapeKind::Sprinklers => {
             let l = look(&o.style, SPRINKLER_COLOR, 0.8, false);

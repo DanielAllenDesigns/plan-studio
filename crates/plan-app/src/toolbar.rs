@@ -719,17 +719,6 @@ pub fn railing_deck() -> Flyout {
             sep(wall_item("deck_edge", Style::DeckEdge, false)),
             wall_item("deck_edge", Style::DeckEdge, true),
             sep(det("deck_edge", DetailsVariant::PolygonDeck)),
-            // CB-86: framing for the deck rooms of the floor.
-            sep(item(
-                "deck_edge",
-                "Build Deck Framing",
-                Action::Custom(crate::editor::fireplace_view::cmd::BUILD_DECK),
-            )),
-            item(
-                "deck_edge",
-                "Delete Deck Framing",
-                Action::Custom(crate::editor::fireplace_view::cmd::CLEAR_DECK),
-            ),
         ],
     )
 }
@@ -1421,6 +1410,8 @@ pub fn dimensions() -> Flyout {
                 Some("\u{2303}\u{2325}\u{2318}G"),
             ),
             dim("dim_manual", D::TapeMeasure, Some("D, T, M")),
+            sep(dim("dim_manual", D::ExtensionAdd, None)),
+            dim("dim_manual", D::ExtensionDelete, None),
         ],
     )
 }
@@ -1489,6 +1480,7 @@ pub fn text_tools() -> Flyout {
             txt("note", T::Note, "\u{2303}\u{2325}\u{2318}N"),
             sep(txt_plain("note", T::NoteTypes)),
             txt_plain("text", T::Macros),
+            txt_plain("text", T::TextStyles),
         ],
     );
     f.current = 2;
@@ -1616,6 +1608,16 @@ pub fn terrain_wall_curb() -> Flyout {
             terr("wall_exterior", "Straight Terrain Curb", T::StraightCurb),
             terr("wall_curved", "Curved Terrain Wall", T::CurvedWall),
             terr("wall_curved", "Curved Terrain Curb", T::CurvedCurb),
+            sep(terr(
+                "wall_exterior",
+                "Straight Retaining Wall",
+                T::StraightRetainingWall,
+            )),
+            terr(
+                "wall_curved",
+                "Curved Retaining Wall",
+                T::CurvedRetainingWall,
+            ),
         ],
     )
 }
@@ -1640,6 +1642,7 @@ pub fn site_objects() -> Flyout {
                 "Import Terrain Data\u{2026}",
                 T::ImportData,
             )),
+            terr("terrain", "Import GPS Data\u{2026}", T::ImportGps),
             terr(
                 "terrain",
                 "Terrain Cut and Fill Report\u{2026}",
@@ -1659,6 +1662,17 @@ pub fn elevation_data() -> Flyout {
             terr("terrain", "Elevation Region", T::ElevationRegion),
             terr("spline", "Elevation Spline", T::ElevationSpline),
             terr("terrain", "Terrain Break", T::Break),
+            terr("terrain", "Terrain Labels", T::TerrainLabels),
+            sep(terr(
+                "terrain",
+                "Terrain Elevation Reference Point",
+                T::ReferencePoint,
+            )),
+            terr(
+                "terrain",
+                "Remove Terrain Elevation Reference Point",
+                T::RemoveReferencePoint,
+            ),
             sep(terr("terrain", "Build Terrain", T::Build)),
         ],
     )
@@ -1743,6 +1757,7 @@ pub fn water_feature() -> Flyout {
         vec![
             terr("polyline", "Polyline Water Feature", T::WaterPolyline),
             terr("spline", "Spline Water Feature", T::WaterSpline),
+            sep(terr("spline", "Stream", T::Stream)),
         ],
     )
 }
@@ -1763,10 +1778,14 @@ pub fn road() -> Flyout {
         vec![
             terr(
                 "road",
-                "Polyline Road",
+                "Straight Road",
                 crate::tools::terrain::TerrainVariant::Road,
             ),
             terr("road", "Spline Road", T::SplineRoad),
+            terr("road", "Polyline Road", T::PolylineRoad),
+            terr("road", "Median", T::Median),
+            terr("road", "Cul-de-sac", T::CulDeSac),
+            sep(terr("road", "Auto Generate Sidewalk", T::AutoSidewalk)),
         ],
     )
 }
@@ -1777,10 +1796,11 @@ pub fn driveway() -> Flyout {
         vec![
             terr(
                 "road",
-                "Polyline Driveway",
+                "Straight Driveway",
                 crate::tools::terrain::TerrainVariant::Driveway,
             ),
             terr("road", "Spline Driveway", T::SplineDriveway),
+            terr("road", "Polyline Driveway", T::PolylineDriveway),
         ],
     )
 }
@@ -1791,10 +1811,11 @@ pub fn sidewalk() -> Flyout {
         vec![
             terr(
                 "road",
-                "Polyline Sidewalk",
+                "Straight Sidewalk",
                 crate::tools::terrain::TerrainVariant::Sidewalk,
             ),
             terr("road", "Spline Sidewalk", T::SplineSidewalk),
+            terr("road", "Polyline Sidewalk", T::PolylineSidewalk),
         ],
     )
 }
@@ -1816,6 +1837,7 @@ pub fn plant() -> Flyout {
         vec![
             terr("terrain", "Polyline Plant", T::PlantPolyline),
             terr("terrain", "Spline Plant", T::PlantSpline),
+            sep(terr("terrain", "Grow All Plants\u{2026}", T::GrowPlants)),
         ],
     )
 }
@@ -1826,6 +1848,16 @@ pub fn sprinkler() -> Flyout {
         vec![
             terr("terrain", "Polyline Sprinkler", T::SprinklerPolyline),
             terr("terrain", "Spline Sprinkler", T::SprinklerSpline),
+            sep(terr(
+                "terrain",
+                "Polyline Sprinkler Line",
+                T::SprinklerLinePolyline,
+            )),
+            terr(
+                "terrain",
+                "Spline Sprinkler Line",
+                T::SprinklerLineSpline,
+            ),
         ],
     )
 }
@@ -2130,16 +2162,26 @@ fn row1_slots() -> Vec<Slot> {
             "Material Eyedropper",
             Action::Custom(crate::tools::materials::EYEDROPPER),
         )),
-        toggle("object_eyedropper", "Object Eyedropper"),
+        Slot::Toggle(item(
+            "object_eyedropper",
+            "Object Eyedropper",
+            Action::Custom(crate::tools::materials::OBJECT_EYEDROPPER),
+        )),
         Slot::Toggle(item(
             "delete_surface",
             "Delete Surface",
             Action::Custom(crate::tools::materials::ERASE),
         )),
-        Slot::Button(item(
+        Slot::Toggle(item(
             "adjust_material",
             "Adjust Material Definition",
-            Action::Custom(crate::tools::materials::BUILDER),
+            Action::Custom(crate::tools::materials::ADJUST_DEFINITION),
+        )),
+        // TODO parity: a dedicated icon (it borrows the Default Configuration glyph).
+        Slot::Toggle(item(
+            "config_default",
+            "Use Default Material",
+            Action::Custom(crate::tools::materials::USE_DEFAULT),
         )),
         Slot::Button(item(
             "material_editor",
@@ -2234,7 +2276,7 @@ fn row2_slots() -> Vec<Slot> {
 fn painter_toggle(icon: &'static str, mode: PainterMode) -> Slot {
     Slot::Toggle(item(
         icon,
-        mode.name(),
+        mode.toolbar_name(),
         Action::SetTool(ToolId::PainterVariant(mode)),
     ))
 }
@@ -2258,7 +2300,11 @@ fn view_slots() -> Vec<Slot> {
             Dock::LayerDisplay,
         ),
         Sep,
-        toggle("zoom", "Zoom"),
+        Slot::Toggle(item(
+            "zoom",
+            "Zoom",
+            Action::Custom(crate::shell::view_commands::ZOOM_WINDOW),
+        )),
         Slot::Button(item("zoom_in", "Zoom In", Action::ZoomIn)),
         Slot::Button(item("zoom_out", "Zoom Out", Action::ZoomOut)),
         Slot::Button(item("zoom_undo", "Undo Zoom", Action::UndoZoom)),
@@ -2267,7 +2313,11 @@ fn view_slots() -> Vec<Slot> {
             "Fill Window Selected Objects",
             Action::Custom(crate::dialogs::app_info::FILL_SELECTED),
         )),
-        button("fill_building", "Fill Window Building Only"),
+        Slot::Button(item(
+            "fill_building",
+            "Fill Window Building Only",
+            Action::Custom(crate::shell::view_commands::FILL_BUILDING),
+        )),
         Slot::Button(with_hotkey(
             item("fill_window", "Fill Window", Action::FillWindow),
             "\u{2303}F",
@@ -2628,7 +2678,11 @@ fn code_badge(ui: &egui::Ui, rect: Rect) {
     if n == 0 {
         return;
     }
-    let text = if n > 99 { "99+".to_string() } else { n.to_string() };
+    let text = if n > 99 {
+        "99+".to_string()
+    } else {
+        n.to_string()
+    };
     let center = egui::pos2(rect.right() - 6.0, rect.top() + 6.0);
     let r = if text.len() > 1 { 8.0 } else { 6.5 };
     ui.painter()

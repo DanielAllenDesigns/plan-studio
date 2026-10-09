@@ -105,6 +105,7 @@ sub-tool, so one tool object serves every entry of its flyout:
 | `DimensionVariant(DimMode)`, `TextVariant(TextMode)`, `CadVariant(CadMode)` | the flyout entry |
 | `CameraVariant(CameraVariant)` | Full Camera, overviews, Doll House, sections |
 | `FramingVariant(FramingVariant)` | General Framing, Post, Joist, Joist Direction, Bearing Line, Rafter, Roof Truss, Truss Base ... (`framing_view` stores the objects in `Floor.framing`) |
+| `FireplaceVariant(FireplaceMode)` | Fireplace, Fireplace in Wall, Prefab Fireplace, Chimney (a placed symbol plus a `Floor::fireplaces` record; `editor::fireplace_view` places, specifies and draws them, `dialogs::fireplace` is the Fireplace Specification) |
 
 `ToolSet::set_active` finds the tool whose `id().same_tool(id)` and calls
 `set_variant(id)` with the full payload; `ToolId::base()` gives the plain id.

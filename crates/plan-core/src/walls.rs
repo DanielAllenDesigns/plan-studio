@@ -23,16 +23,16 @@ use std::f64::consts::PI;
 pub mod spec;
 #[path = "wall_spec_tabs.rs"]
 pub mod spec_tabs;
+pub use spec::{
+    default_cap_profiles, min_thickness, platform_adjust, CapPosition, CapProfile, CeilingPlatform,
+    FloorPlatform, PlatformAdjust, PlatformContext, WallBox, WallCap, WallFoundation, WallSpec,
+    WallStructure,
+};
 pub use spec_tabs::{
     drawing_group_name, openings_area, wall_components, BalusterStyle, BandKind, CoveringBand,
     CoveringSide, NewelStyle, RailFill, RailProfile, SideCovering, WallComponent, WallCovering,
     WallInfo, WallMaterials, WallPaint, WallRailing, WallScheduleInfo, DEFAULT_DRAWING_GROUP,
     DRAWING_GROUPS,
-};
-pub use spec::{
-    default_cap_profiles, min_thickness, platform_adjust, CapPosition, CapProfile, CeilingPlatform,
-    FloorPlatform, PlatformAdjust, PlatformContext, WallBox, WallCap, WallFoundation, WallSpec,
-    WallStructure,
 };
 
 /// Smallest allowed wall thickness, inches (W-30).
@@ -1485,13 +1485,7 @@ impl Project {
                     }
                 }
                 for (lo, hi) in merged {
-                    let mut g = Wall::new(
-                        w.point_at(lo),
-                        w.point_at(hi),
-                        w.thickness,
-                        gap,
-                        w.kind,
-                    );
+                    let mut g = Wall::new(w.point_at(lo), w.point_at(hi), w.thickness, gap, w.kind);
                     g.layer = w.layer.clone();
                     g.wall_type = w.wall_type.clone();
                     g.resize_about = w.resize_about;
@@ -1507,12 +1501,48 @@ impl Project {
             }
         }
         let count = made.len();
+        // Nothing moved: keep the walls (and their ids) as they are.
+        let same_wall = |a: &Wall, b: &Wall| {
+            a.start.dist(b.start) < 1e-6
+                && a.end.dist(b.end) < 1e-6
+                && (a.height - b.height).abs() < 1e-6
+                && (a.bottom_offset - b.bottom_offset).abs() < 1e-6
+                && (a.thickness - b.thickness).abs() < 1e-6
+        };
+        let old: Vec<&Wall> = self.floors[floor]
+            .walls
+            .iter()
+            .filter(|w| w.flags.auto_generated)
+            .collect();
+        if old.len() == made.len() && made.iter().all(|m| old.iter().any(|o| same_wall(o, m))) {
+            return count;
+        }
         self.floors[floor].walls.retain(|w| !w.flags.auto_generated);
         for mut g in made {
             g.id = self.alloc_id();
             self.floors[floor].walls.push(g);
         }
         count
+    }
+
+    /// Whether any wall asks for invisible walls between platforms, or any
+    /// generated wall stands to be removed.
+    pub fn has_platform_walls(&self) -> bool {
+        self.floors.iter().any(|f| {
+            f.walls
+                .iter()
+                .any(|w| w.flags.auto_generated || w.spec.structure.generate_between_platforms)
+        })
+    }
+
+    /// Brings the generated platform walls up to date after an edit; does
+    /// nothing (and costs one scan) when no wall uses the option. Returns how
+    /// many walls are generated.
+    pub fn sync_platform_walls(&mut self) -> usize {
+        if !self.has_platform_walls() {
+            return 0;
+        }
+        self.generate_all_between_platforms()
     }
 
     /// [`Project::generate_between_platforms`] on every floor. Returns how
@@ -2431,10 +2461,24 @@ mod tests {
     #[test]
     fn the_minimum_length_holds_the_openings_from_the_locked_end() {
         let mut p = Project::new("t");
-        let id = p.add_wall(0, Point::ZERO, Point::new(240.0, 0.0), 6.0, 96.0, WallKind::Interior);
+        let id = p.add_wall(
+            0,
+            Point::ZERO,
+            Point::new(240.0, 0.0),
+            6.0,
+            96.0,
+            WallKind::Interior,
+        );
         assert_eq!(p.min_wall_length(0, id, LengthLock::Start), 0.0);
-        let d = p.add_opening(0, id, 100.0, crate::model::OpeningKind::Door).unwrap();
-        let o = p.floors[0].openings.iter().find(|o| o.id == d).unwrap().clone();
+        let d = p
+            .add_opening(0, id, 100.0, crate::model::OpeningKind::Door)
+            .unwrap();
+        let o = p.floors[0]
+            .openings
+            .iter()
+            .find(|o| o.id == d)
+            .unwrap()
+            .clone();
         let start = p.min_wall_length(0, id, LengthLock::Start);
         assert!((start - (o.end_offset() + OPENING_JAMB_MARGIN)).abs() < 1e-9);
         let end = p.min_wall_length(0, id, LengthLock::End);
@@ -2444,9 +2488,23 @@ mod tests {
 
     fn two_floor_house() -> (Project, Id, Id) {
         let mut p = Project::new("t");
-        let low = p.add_wall(0, Point::ZERO, Point::new(240.0, 0.0), 6.0, p.floors[0].ceiling_height, WallKind::Exterior);
+        let low = p.add_wall(
+            0,
+            Point::ZERO,
+            Point::new(240.0, 0.0),
+            6.0,
+            p.floors[0].ceiling_height,
+            WallKind::Exterior,
+        );
         p.build_new_floor(false);
-        let up = p.add_wall(1, Point::new(60.0, 0.0), Point::new(180.0, 0.0), 6.0, p.floors[1].ceiling_height, WallKind::Exterior);
+        let up = p.add_wall(
+            1,
+            Point::new(60.0, 0.0),
+            Point::new(180.0, 0.0),
+            6.0,
+            p.floors[1].ceiling_height,
+            WallKind::Exterior,
+        );
         (p, low, up)
     }
 
@@ -2455,17 +2513,35 @@ mod tests {
         let (mut p, low, _) = two_floor_house();
         assert_eq!(p.generate_between_platforms(0), 1);
         let w = p.floors[0].wall(low).unwrap().clone();
-        let g = p.floors[0].walls.iter().find(|x| x.flags.auto_generated).unwrap();
+        let g = p.floors[0]
+            .walls
+            .iter()
+            .find(|x| x.flags.auto_generated)
+            .unwrap();
         // Only the stretch the upper wall rests on.
-        assert_eq!((g.start, g.end), (Point::new(60.0, 0.0), Point::new(180.0, 0.0)));
+        assert_eq!(
+            (g.start, g.end),
+            (Point::new(60.0, 0.0), Point::new(180.0, 0.0))
+        );
         let gap = p.floors[1].elevation - (p.floors[0].elevation + w.bottom_offset + w.height);
-        assert!(gap > 0.0 && (g.height - gap).abs() < 1e-9, "{} vs {gap}", g.height);
+        assert!(
+            gap > 0.0 && (g.height - gap).abs() < 1e-9,
+            "{} vs {gap}",
+            g.height
+        );
         assert_eq!(g.bottom_offset, w.height);
         assert!(g.flags.invisible && g.flags.no_room_definition && g.flags.no_locate);
         assert!(!g.flags.defines_rooms());
         // Regenerating replaces, never piles up.
         assert_eq!(p.generate_between_platforms(0), 1);
-        assert_eq!(p.floors[0].walls.iter().filter(|x| x.flags.auto_generated).count(), 1);
+        assert_eq!(
+            p.floors[0]
+                .walls
+                .iter()
+                .filter(|x| x.flags.auto_generated)
+                .count(),
+            1
+        );
         // The top floor has nothing above it.
         assert_eq!(p.generate_between_platforms(1), 0);
     }
@@ -2473,11 +2549,25 @@ mod tests {
     #[test]
     fn the_option_off_or_a_balloon_wall_generates_nothing() {
         let (mut p, low, _) = two_floor_house();
-        p.floors[0].wall_mut(low).unwrap().spec.structure.generate_between_platforms = false;
+        p.floors[0]
+            .wall_mut(low)
+            .unwrap()
+            .spec
+            .structure
+            .generate_between_platforms = false;
         assert_eq!(p.generate_between_platforms(0), 0);
-        p.floors[0].wall_mut(low).unwrap().spec.structure.generate_between_platforms = true;
-        p.floors[0].wall_mut(low).unwrap().spec.structure.ceiling_platform =
-            CeilingPlatform::BalloonThroughCeilingAbove;
+        p.floors[0]
+            .wall_mut(low)
+            .unwrap()
+            .spec
+            .structure
+            .generate_between_platforms = true;
+        p.floors[0]
+            .wall_mut(low)
+            .unwrap()
+            .spec
+            .structure
+            .ceiling_platform = CeilingPlatform::BalloonThroughCeilingAbove;
         assert_eq!(p.generate_between_platforms(0), 0);
         // A wall alone on its floor, nothing above it, makes none either.
         let (mut q, _, up) = two_floor_house();
@@ -2486,9 +2576,57 @@ mod tests {
     }
 
     #[test]
+    fn syncing_keeps_ids_until_a_wall_moves_and_drops_them_when_the_option_goes() {
+        let (mut p, low, up) = two_floor_house();
+        assert_eq!(p.sync_platform_walls(), 1);
+        let ids = |p: &Project| -> Vec<Id> {
+            p.floors[0]
+                .walls
+                .iter()
+                .filter(|w| w.flags.auto_generated)
+                .map(|w| w.id)
+                .collect()
+        };
+        let first = ids(&p);
+        assert_eq!(first.len(), 1);
+        // Nothing changed: the same wall stays.
+        assert_eq!(p.sync_platform_walls(), 1);
+        assert_eq!(ids(&p), first);
+        // The upper wall is shortened: the generated one follows.
+        p.floors[1].wall_mut(up).unwrap().end = Point::new(150.0, 0.0);
+        p.sync_platform_walls();
+        let g = p.floors[0]
+            .walls
+            .iter()
+            .find(|w| w.flags.auto_generated)
+            .unwrap();
+        assert_eq!(g.end, Point::new(150.0, 0.0));
+        // The option off removes it.
+        p.floors[0]
+            .wall_mut(low)
+            .unwrap()
+            .spec
+            .structure
+            .generate_between_platforms = false;
+        p.sync_platform_walls();
+        assert!(ids(&p).is_empty());
+        // And a project that never used it is left alone.
+        let mut q = Project::new("t");
+        assert!(!q.has_platform_walls());
+        assert_eq!(q.sync_platform_walls(), 0);
+    }
+
+    #[test]
     fn two_upper_walls_make_two_generated_walls() {
         let (mut p, _, _) = two_floor_house();
-        p.add_wall(1, Point::new(200.0, 0.0), Point::new(240.0, 0.0), 6.0, 96.0, WallKind::Exterior);
+        p.add_wall(
+            1,
+            Point::new(200.0, 0.0),
+            Point::new(240.0, 0.0),
+            6.0,
+            96.0,
+            WallKind::Exterior,
+        );
         assert_eq!(p.generate_between_platforms(0), 2);
         assert_eq!(p.generate_all_between_platforms(), 2);
     }

@@ -1,24 +1,24 @@
-//! Default Settings > Dimension: one page per kind of dimension (Auto
-//! Exterior, Auto Interior, NKBA, Baseline, Story Pole, Angular, Point to
-//! Point, Temporary), next to the Dimensions list of saved default sets.
+//! Default Settings > Dimension, next to the Dimensions list of saved
+//! default sets (Primary Format, Setup Automatic, Extensions, Arrow, Text
+//! Style, Locate Objects live there): the General and Setup Temporary panels
+//! of Chief's Dimension Defaults dialog and the Auto Story Pole Dimension
+//! Defaults dialog, with Chief's panel and field names in Chief's order
+//! (manual pages 478 to 496, in our own words).
 //!
-//! The values the model has (`DimensionDefaults`: line separation, extension
-//! lines, locate-interior-surfaces) edit the active default set; the rest is
-//! stored with the defaults (`dimension.<kind>.<field>`).
+//! A field the model has (`DimensionDefaults`: baseline separation, reach,
+//! leader style) edits the active default set and is read by the dimension
+//! tools. The rest is stored with the defaults (`dimension.<panel>.<field>`),
+//! marked with `*` on the page, and no tool reads it yet
+//! (docs/integration-queue.md).
 
 use super::page::{Bind, Field as F, PageSpec};
 use plan_core::defaults::{PageValue, PlanDefaults};
 
 /// The dimension pages in tree order: `(slug, title)`.
 pub const LEAVES: &[(&str, &str)] = &[
-    ("auto_exterior", "Auto Exterior"),
-    ("auto_interior", "Auto Interior"),
-    ("nkba", "NKBA"),
-    ("baseline", "Baseline"),
-    ("story_pole", "Story Pole"),
-    ("angular", "Angular"),
-    ("point_to_point", "Point to Point"),
-    ("temporary", "Temporary"),
+    ("general", "General"),
+    ("setup_temporary", "Setup Temporary"),
+    ("auto_story_pole", "Auto Story Pole Dimensions"),
 ];
 
 /// Copies the edited dimension defaults into the active saved set, which
@@ -43,128 +43,179 @@ macro_rules! dim_num {
     };
 }
 
-macro_rules! dim_flag {
+macro_rules! dim_text {
     ($f:ident) => {
         Bind {
-            get: |d| PageValue::Bool(d.dimensions.$f),
+            get: |d| PageValue::Text(d.dimensions.$f.clone()),
             set: |d, v| {
-                d.dimensions.$f = v.flag();
+                d.dimensions.$f = v.text();
                 sync(d);
             },
         }
     };
 }
 
-/// The page of dimension kind `slug`.
+/// The page of dimension panel `slug`.
 pub fn page(slug: &str) -> Option<PageSpec> {
     let (_, title) = LEAVES.iter().find(|(s, _)| *s == slug)?;
     let id = format!("dimension.{slug}");
     let p = id.as_str();
     let spec = PageSpec::new(p, title);
+    let k = |name: &str| format!("{p}.{name}");
     Some(match slug {
-        "auto_exterior" => spec
-            .note("Offsets and spacing edit the active dimension default set.")
+        // Dimension Defaults > General panel.
+        "general" => spec
+            .note("Baseline Line Separation, Reach and Leader Style edit the active dimension default set.")
             .section(
-                "Strings",
+                "General",
                 vec![
-                    F::len(&format!("{p}.offset"), "Distance From the Wall", 24.0)
-                        .bound(dim_num!(auto_exterior_offset)),
-                    F::len(&format!("{p}.separation"), "Line Separation", 18.0)
-                        .bound(dim_num!(auto_line_separation)),
-                    F::len(&format!("{p}.reach"), "Reach", 0.0).bound(dim_num!(reach)),
-                ],
-            )
-            .section(
-                "Include",
-                vec![
-                    F::flag(&format!("{p}.openings"), "Openings", true),
-                    F::flag(&format!("{p}.wall_to_wall"), "Wall to Wall", true),
-                    F::flag(&format!("{p}.overall"), "Overall", true),
-                ],
-            ),
-        "auto_interior" => spec
-            .note("Spacing edits the active dimension default set.")
-            .section(
-                "Interior",
-                vec![
-                    F::flag(&format!("{p}.interior_surfaces"), "Locate Interior Wall Surfaces", true)
-                        .bound(dim_flag!(interior_locates_interior_surfaces)),
-                    F::len(&format!("{p}.offset"), "Distance From the Wall", 12.0),
-                    F::flag(&format!("{p}.openings"), "Include Openings", true),
-                    F::flag(&format!("{p}.cabinets"), "Include Cabinets", false),
-                ],
-            ),
-        "nkba" => spec
-            .note("Saved with the plan defaults.")
-            .section(
-                "NKBA",
-                vec![
-                    F::flag(&format!("{p}.show_clearances"), "Show Clearance Dimensions", true),
-                    F::len(&format!("{p}.aisle"), "Work Aisle", 42.0),
-                    F::len(&format!("{p}.walkway"), "Walkway", 36.0),
-                    F::flag(&format!("{p}.locate_appliances"), "Locate Appliances", true),
-                ],
-            ),
-        "baseline" => spec
-            .note("Separation edits the active dimension default set.")
-            .section(
-                "Baseline",
-                vec![
-                    F::len(&format!("{p}.separation"), "Line Separation", 12.0)
+                    F::len(&k("baseline_separation"), "Baseline Line Separation", 12.0)
                         .bound(dim_num!(baseline_separation)),
-                    F::len(&format!("{p}.start_offset"), "First Line Offset", 18.0),
-                    F::flag(&format!("{p}.cumulative"), "Show Cumulative Distances", true),
-                ],
-            ),
-        "story_pole" => spec
-            .note("Saved with the plan defaults.")
-            .section(
-                "Story Pole",
-                vec![
-                    F::len(&format!("{p}.pole_width"), "Pole Width", 6.0),
-                    F::len(&format!("{p}.tick_length"), "Tick Length", 4.0),
-                    F::flag(&format!("{p}.label_floors"), "Label the Floors", true),
-                    F::flag(&format!("{p}.show_plates"), "Mark Plate Heights", true),
-                ],
-            ),
-        "angular" => spec
-            .note("Saved with the plan defaults.")
-            .section(
-                "Angular",
-                vec![
-                    F::len(&format!("{p}.radius"), "Arc Radius", 24.0),
-                    F::int(&format!("{p}.decimals"), "Decimal Places", 1, (0, 4), ""),
-                    F::flag(&format!("{p}.show_degrees_sign"), "Show the Degree Sign", true),
-                ],
-            ),
-        "point_to_point" => spec
-            .note("Extension lines edit the active dimension default set.")
-            .section(
-                "Extension Lines",
-                vec![
-                    F::len(&format!("{p}.gap"), "Gap to the Object", 2.0)
-                        .bound(dim_num!(extension_gap)),
-                    F::len(&format!("{p}.past"), "Extension Past the Line", 2.0)
-                        .bound(dim_num!(extension_past)),
-                    F::len(&format!("{p}.arrow_size"), "Arrow Size", 6.0)
-                        .bound(dim_num!(arrow_size)),
+                    F::len(&k("reach"), "Reach", 24.0).bound(dim_num!(reach)),
                 ],
             )
             .section(
-                "Text",
-                vec![F::flag(&format!("{p}.text_above"), "Text Above the Line", true)
-                    .bound(dim_flag!(text_above_line))],
-            ),
-        "temporary" => spec
-            .note("Saved with the plan defaults.")
-            .section(
-                "Temporary Dimensions",
+                "Rounded Value Indicators",
                 vec![
-                    F::flag(&format!("{p}.show"), "Show While Drawing and Moving", true),
-                    F::flag(&format!("{p}.show_selected"), "Show for Selected Objects", true),
-                    F::len(&format!("{p}.offset"), "Distance From the Object", 12.0),
-                    F::int(&format!("{p}.hide_after"), "Hide After", 0, (0, 60), "s"),
+                    F::flag(&k("plus_minus_after"), "+ or - After Number", false),
+                    F::flag(&k("tilde_before"), "~ Before Number", false),
                 ],
+            )
+            .section(
+                "Rounding Method",
+                vec![F::pick(
+                    &k("rounding"),
+                    "Rounding Method",
+                    &["Grid Rounding", "Distance Rounding"],
+                    "Grid Rounding",
+                )],
+            )
+            .section(
+                "Dimension Text Position and Orientation",
+                vec![
+                    F::pick(
+                        &k("text_position"),
+                        "Position",
+                        &[
+                            "Centered on Dimension Line",
+                            "Above Dimension Line",
+                            "Below Dimension Line",
+                        ],
+                        "Above Dimension Line",
+                    ),
+                    F::flag(&k("angle_automatic"), "Automatic", true),
+                    F::deg(&k("angle"), "Angle", 0.0),
+                ],
+            )
+            .section(
+                "Leader Line",
+                vec![
+                    F::pick(
+                        &k("leader_style"),
+                        "Leader Style",
+                        &["None", "Square Corner", "Round Corner", "Diagonal"],
+                        "Square Corner",
+                    )
+                    .bound(dim_text!(leader_style)),
+                    F::flag(&k("second_segment"), "Include Second Segment", false),
+                    F::len(&k("second_segment_length"), "Second Segment Length", 12.0),
+                ],
+            )
+            .section(
+                "Include Arrow",
+                vec![
+                    F::flag(&k("leader_arrow"), "Include Arrow", false),
+                    F::pick(
+                        &k("leader_arrow_style"),
+                        "Style",
+                        &["Match Dimension", "Arrow", "Tick", "Dot"],
+                        "Match Dimension",
+                    ),
+                    F::flag(&k("leader_arrow_match_size"), "Match Dimension", true),
+                    F::len(&k("leader_arrow_size"), "Size", 6.0),
+                ],
+            )
+            .section(
+                "3D Display",
+                vec![
+                    F::flag(&k("extend_extensions"), "Extend Extensions to Mark", true),
+                    F::flag(&k("label_faces_camera"), "Label Faces Camera", false),
+                ],
+            ),
+        // Dimension Defaults > Setup Temporary panel.
+        "setup_temporary" => spec
+            .section(
+                "Options",
+                vec![
+                    F::int(&k("row_limit"), "Dimension Row Limit", 2, (1, 20), ""),
+                    F::len(&k("reach"), "Reach", 48.0),
+                ],
+            )
+            .section(
+                "Walls",
+                vec![F::pick(
+                    &k("walls"),
+                    "Locate Walls At",
+                    &["Surfaces", "Wall Dimension Layer"],
+                    "Surfaces",
+                )],
+            )
+            .section(
+                "Wall Options: Exterior Walls",
+                vec![
+                    F::flag(&k("exterior_primary"), "Primary Side", true),
+                    F::flag(&k("exterior_secondary"), "Secondary Side", false),
+                ],
+            )
+            .section(
+                "Wall Options: Interior Walls",
+                vec![
+                    F::flag(&k("interior_primary"), "Primary Side", true),
+                    F::flag(&k("interior_secondary"), "Secondary Side", true),
+                    F::flag(&k("interior_centers"), "Centers", false),
+                ],
+            )
+            .section(
+                "Locate Objects Inside",
+                vec![
+                    F::flag(&k("inside_cad"), "CAD Objects", true),
+                    F::flag(&k("inside_terrain"), "Terrain Objects", true),
+                ],
+            ),
+        // Auto Story Pole Dimension Defaults dialog.
+        "auto_story_pole" => spec
+            .note("General, Inner Format, Outer Format and Marker Format panels. Locate Objects, Locate Elevations and Layer are not built yet.")
+            .section(
+                "Position",
+                vec![
+                    F::flag(&k("left"), "Dimension on Left", true),
+                    F::int(&k("left_reach"), "Left Reach", 100, (1, 100), "%"),
+                    F::flag(&k("right"), "Dimension on Right", false),
+                    F::int(&k("right_reach"), "Right Reach", 100, (1, 100), "%"),
+                    F::len(&k("line_separation"), "Line Separation", 12.0),
+                    F::len(&k("first_line_offset"), "First Line Offset", 24.0),
+                ],
+            )
+            .section(
+                "Options",
+                vec![
+                    F::flag(&k("inner"), "Inner Dimension", true),
+                    F::flag(&k("between_markers"), "Dimensions Between Elevation Markers", true),
+                    F::flag(&k("primary_ridges"), "Primary Ridge Marks Only", true),
+                    F::flag(&k("primary_heights"), "Primary Height Marks Only", true),
+                ],
+            )
+            .section(
+                "Inner Format",
+                vec![F::flag(&k("inner_default"), "Use Default Formatting", true)],
+            )
+            .section(
+                "Outer Format",
+                vec![F::flag(&k("outer_default"), "Use Default Formatting", true)],
+            )
+            .section(
+                "Marker Format",
+                vec![F::flag(&k("marker_default"), "Use Default Formatting", true)],
             ),
         _ => return None,
     })

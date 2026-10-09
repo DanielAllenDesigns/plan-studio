@@ -717,7 +717,12 @@ fn extrude_profile(
         ];
         mesh.quad(
             [at(s0, a), at(s1, a), at(s1, b), at(s0, b)],
-            [[0.0, 0.0], [len_ft, 0.0], [len_ft, (l / 12.0) as f32], [0.0, (l / 12.0) as f32]],
+            [
+                [0.0, 0.0],
+                [len_ft, 0.0],
+                [len_ft, (l / 12.0) as f32],
+                [0.0, (l / 12.0) as f32],
+            ],
             normal,
         );
     }
@@ -741,7 +746,12 @@ fn extrude_profile(
 /// corners of the wall's outline. `wall` is the wall as drawn (its height is
 /// the top the crown hangs from); `holes` are its openings. A wall with no
 /// covering, and a curved wall, give nothing.
-pub fn covering_meshes(floor: &plan_core::Floor, wall: &Wall, elevation: f64, holes: &[Hole]) -> Vec<Mesh> {
+pub fn covering_meshes(
+    floor: &plan_core::Floor,
+    wall: &Wall,
+    elevation: f64,
+    holes: &[Hole],
+) -> Vec<Mesh> {
     let spec = &wall.spec.covering;
     if spec.is_empty() || wall.is_curved() || wall.length() <= EPS {
         return Vec::new();
@@ -771,9 +781,10 @@ pub fn covering_meshes(floor: &plan_core::Floor, wall: &Wall, elevation: f64, ho
         let (f0, f1) = faces[usize::from(sign < 0.0)];
         let t_face = sign * wall.thickness * 0.5;
         let plain = match (band.kind, band.side) {
-            (plan_core::walls::BandKind::Covering | plan_core::walls::BandKind::Wainscot, plan_core::walls::CoveringSide::Interior) => {
-                Material::WallInterior
-            }
+            (
+                plan_core::walls::BandKind::Covering | plan_core::walls::BandKind::Wainscot,
+                plan_core::walls::CoveringSide::Interior,
+            ) => Material::WallInterior,
             (plan_core::walls::BandKind::Covering | plan_core::walls::BandKind::Wainscot, _) => {
                 Material::WallExterior
             }
@@ -787,10 +798,17 @@ pub fn covering_meshes(floor: &plan_core::Floor, wall: &Wall, elevation: f64, ho
             }
             let mesh = set.material(material);
             match band.profile {
-                Some(def) => extrude_profile(&frame, mesh, def.section, (sign, t_face, band.lo), (a, b)),
+                Some(def) => {
+                    extrude_profile(&frame, mesh, def.section, (sign, t_face, band.lo), (a, b))
+                }
                 None => {
                     let t = (t_face, t_face + sign * band.depth);
-                    frame.cuboid(mesh, (a, b), (t.0.min(t.1), t.0.max(t.1)), (band.lo, band.hi));
+                    frame.cuboid(
+                        mesh,
+                        (a, b),
+                        (t.0.min(t.1), t.0.max(t.1)),
+                        (band.lo, band.hi),
+                    );
                 }
             }
         }

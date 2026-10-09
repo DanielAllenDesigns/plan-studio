@@ -36,6 +36,7 @@ impl ImportReview {
         }
     }
 
+    #[cfg(test)]
     pub fn plan(&self) -> &ImportPlan {
         &self.plan
     }
@@ -195,10 +196,7 @@ impl ImportReview {
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let n = self.accepted();
-                let label = format!(
-                    "Import {n} Change{}",
-                    if n == 1 { "" } else { "s" }
-                );
+                let label = format!("Import {n} Change{}", if n == 1 { "" } else { "s" });
                 if ui
                     .add_enabled(n > 0, egui::Button::new(RichText::new(label).strong()))
                     .clicked()

@@ -167,7 +167,10 @@ fn the_tools_menu_opens_the_property_manager_and_definitions_are_undoable() {
     let texts = frame_texts(&mut sim, |s, ctx| {
         pm::show_all(ctx, &mut s.app.cx, None);
     });
-    assert!(texts.iter().any(|t| t.contains("Property Manager")), "{texts:?}");
+    assert!(
+        texts.iter().any(|t| t.contains("Property Manager")),
+        "{texts:?}"
+    );
     pm::add_property(sim.cx(), rating()).unwrap();
     assert_eq!(sim.app.cx.undo_label(), Some("Add Property"));
     assert!(pm::add_property(sim.cx(), rating()).is_err());
@@ -194,8 +197,17 @@ fn a_door_dialog_gets_a_properties_tab_and_ok_is_one_undo_step() {
     note.default = String::new();
     pm::add_property(sim.cx(), note).unwrap();
     assert!(sim.open_spec(ObjectRef::Opening(ids.door1)));
-    let session = sim.app.spec.main_props().cloned().expect("the tab is armed");
-    assert_eq!(session.borrow().text("Fire Rating"), Some("None"), "the default shows");
+    let session = sim
+        .app
+        .spec
+        .main_props()
+        .cloned()
+        .expect("the tab is armed");
+    assert_eq!(
+        session.borrow().text("Fire Rating"),
+        Some("None"),
+        "the default shows"
+    );
     // The shared frame draws the tab.
     let texts = frame_texts(&mut sim, |s, ctx| s.app.dialogs(ctx));
     assert!(texts.iter().any(|t| t == "Properties"), "{texts:?}");
@@ -209,48 +221,194 @@ fn a_door_dialog_gets_a_properties_tab_and_ok_is_one_undo_step() {
     let depth = sim.app.cx.undo_depth();
     sim.ok();
     assert!(!sim.app.has_dialog());
-    assert!(sim.app.spec.main_props().is_none(), "the session ends with the dialog");
-    assert_eq!(prop_text(&sim, PropKey::door(ids.door1), PropKind::Door, "Fire Rating"), "45 min");
-    assert_eq!(prop_text(&sim, PropKey::door(ids.door1), PropKind::Door, "Install Note"), "Pre-hung");
-    assert_eq!(prop_text(&sim, PropKey::door(ids.door2), PropKind::Door, "Fire Rating"), "None");
-    let o = sim.app.cx.floor().openings.iter().find(|o| o.id == ids.door1).unwrap().clone();
+    assert!(
+        sim.app.spec.main_props().is_none(),
+        "the session ends with the dialog"
+    );
+    assert_eq!(
+        prop_text(
+            &sim,
+            PropKey::door(ids.door1),
+            PropKind::Door,
+            "Fire Rating"
+        ),
+        "45 min"
+    );
+    assert_eq!(
+        prop_text(
+            &sim,
+            PropKey::door(ids.door1),
+            PropKind::Door,
+            "Install Note"
+        ),
+        "Pre-hung"
+    );
+    assert_eq!(
+        prop_text(
+            &sim,
+            PropKey::door(ids.door2),
+            PropKind::Door,
+            "Fire Rating"
+        ),
+        "None"
+    );
+    let o = sim
+        .app
+        .cx
+        .floor()
+        .openings
+        .iter()
+        .find(|o| o.id == ids.door1)
+        .unwrap()
+        .clone();
     assert_eq!(o.width, 42.0);
-    assert_eq!(sim.app.cx.undo_depth(), depth + 1, "dialog and tab are one step");
+    assert_eq!(
+        sim.app.cx.undo_depth(),
+        depth + 1,
+        "dialog and tab are one step"
+    );
     assert_eq!(sim.undo().as_deref(), Some("Opening Specification"));
-    let o = sim.app.cx.floor().openings.iter().find(|o| o.id == ids.door1).unwrap().clone();
+    let o = sim
+        .app
+        .cx
+        .floor()
+        .openings
+        .iter()
+        .find(|o| o.id == ids.door1)
+        .unwrap()
+        .clone();
     assert_eq!(o.width, 36.0);
-    assert_eq!(prop_text(&sim, PropKey::door(ids.door1), PropKind::Door, "Fire Rating"), "None");
+    assert_eq!(
+        prop_text(
+            &sim,
+            PropKey::door(ids.door1),
+            PropKind::Door,
+            "Fire Rating"
+        ),
+        "None"
+    );
     sim.redo();
-    assert_eq!(prop_text(&sim, PropKey::door(ids.door1), PropKind::Door, "Fire Rating"), "45 min");
+    assert_eq!(
+        prop_text(
+            &sim,
+            PropKey::door(ids.door1),
+            PropKind::Door,
+            "Fire Rating"
+        ),
+        "45 min"
+    );
 }
 
 #[test]
-fn only_the_properties_tab_changed_is_a_step_named_object_properties_and_cancel_keeps_nothing() {
+fn a_tab_only_change_is_one_undo_step_and_cancel_or_an_invalid_entry_keeps_nothing() {
     let (mut sim, ids) = house();
     pm::add_property(sim.cx(), rating()).unwrap();
     assert!(sim.open_spec(ObjectRef::Opening(ids.window)));
-    assert!(sim.app.spec.main_props().is_none(), "a window has no door properties");
+    assert!(
+        sim.app.spec.main_props().is_none(),
+        "a window has no door properties"
+    );
     sim.cancel();
     assert!(sim.open_spec(ObjectRef::Opening(ids.door2)));
-    sim.app.spec.main_props().unwrap().borrow_mut().set_text("Fire Rating", "20 min");
+    sim.app
+        .spec
+        .main_props()
+        .unwrap()
+        .borrow_mut()
+        .set_text("Fire Rating", "20 min");
     sim.cancel();
-    assert_eq!(prop_text(&sim, PropKey::door(ids.door2), PropKind::Door, "Fire Rating"), "None");
+    assert_eq!(
+        prop_text(
+            &sim,
+            PropKey::door(ids.door2),
+            PropKind::Door,
+            "Fire Rating"
+        ),
+        "None"
+    );
+    // Only the tab changed: still exactly one undo step.
+    let depth = sim.app.cx.undo_depth();
     assert!(sim.open_spec(ObjectRef::Opening(ids.door2)));
-    sim.app.spec.main_props().unwrap().borrow_mut().set_text("Fire Rating", "20 min");
+    sim.app
+        .spec
+        .main_props()
+        .unwrap()
+        .borrow_mut()
+        .set_text("Fire Rating", "20 min");
     sim.ok();
-    assert_eq!(sim.app.cx.undo_label(), Some("Object Properties"));
-    assert_eq!(prop_text(&sim, PropKey::door(ids.door2), PropKind::Door, "Fire Rating"), "20 min");
+    assert_eq!(sim.app.cx.undo_depth(), depth + 1);
+    assert_eq!(
+        prop_text(
+            &sim,
+            PropKey::door(ids.door2),
+            PropKind::Door,
+            "Fire Rating"
+        ),
+        "20 min"
+    );
+    sim.undo();
+    assert_eq!(
+        prop_text(
+            &sim,
+            PropKey::door(ids.door2),
+            PropKind::Door,
+            "Fire Rating"
+        ),
+        "None"
+    );
+    // A dialog whose own apply makes no step (an unchanged cabinet) leaves a
+    // step of its own, "Object Properties".
+    pm::add_property(
+        sim.cx(),
+        PropDef::new(PropKind::Cabinet, "Tag", PropType::Text),
+    )
+    .unwrap();
+    let depth = sim.app.cx.undo_depth();
+    assert!(sim.open_spec(ObjectRef::Cabinet(ids.cabinet)));
+    sim.app
+        .spec
+        .props_mut()
+        .unwrap()
+        .borrow_mut()
+        .set_text("Tag", "T-1");
+    sim.ok();
+    assert_eq!(sim.app.cx.undo_depth(), depth + 1);
+    assert_eq!(
+        prop_text(
+            &sim,
+            PropKey::cabinet(ids.cabinet),
+            PropKind::Cabinet,
+            "Tag"
+        ),
+        "T-1"
+    );
     // An invalid entry blocks OK: the dialog stays open and nothing is stored.
     let mut gauge = PropDef::new(PropKind::Door, "Gauge", PropType::Number);
     gauge.default = "16".into();
     pm::add_property(sim.cx(), gauge).unwrap();
     assert!(sim.open_spec(ObjectRef::Opening(ids.door2)));
-    sim.app.spec.main_props().unwrap().borrow_mut().set_text("Gauge", "thick");
-    assert!(sim.app.spec.main_props().unwrap().borrow().error().unwrap().contains("not a number"));
+    sim.app
+        .spec
+        .main_props()
+        .unwrap()
+        .borrow_mut()
+        .set_text("Gauge", "thick");
+    assert!(sim
+        .app
+        .spec
+        .main_props()
+        .unwrap()
+        .borrow()
+        .error()
+        .unwrap()
+        .contains("not a number"));
     sim.dialog_frame(false);
     sim.dialog_frame(false);
     sim.dialog_frame(true);
-    assert!(sim.app.has_dialog(), "OK is refused while a property is invalid");
+    assert!(
+        sim.app.has_dialog(),
+        "OK is refused while a property is invalid"
+    );
     sim.cancel();
 }
 
@@ -266,23 +424,57 @@ fn cabinet_symbol_and_wall_dialogs_take_the_tab_through_the_shared_frame() {
     }
     // Cabinet and symbol dialogs are hosted by SpecDialogs.
     assert!(sim.open_spec(ObjectRef::Cabinet(ids.cabinet)));
-    sim.app.spec.props_mut().unwrap().borrow_mut().set_text("Supplier PO", "PO-1182");
+    sim.app
+        .spec
+        .props_mut()
+        .unwrap()
+        .borrow_mut()
+        .set_text("Supplier PO", "PO-1182");
     let texts = frame_texts(&mut sim, |s, ctx| s.app.dialogs(ctx));
     assert!(texts.iter().any(|t| t == "Properties"), "{texts:?}");
     sim.ok();
-    assert_eq!(prop_text(&sim, PropKey::cabinet(ids.cabinet), PropKind::Cabinet, "Supplier PO"), "PO-1182");
+    assert_eq!(
+        prop_text(
+            &sim,
+            PropKey::cabinet(ids.cabinet),
+            PropKind::Cabinet,
+            "Supplier PO"
+        ),
+        "PO-1182"
+    );
 
     assert!(sim.open_spec(ObjectRef::Symbol(ids.symbol)));
-    sim.app.spec.props_mut().unwrap().borrow_mut().set_text("Model No", "K-3999");
+    sim.app
+        .spec
+        .props_mut()
+        .unwrap()
+        .borrow_mut()
+        .set_text("Model No", "K-3999");
     sim.ok();
-    assert_eq!(prop_text(&sim, PropKey::symbol(ids.symbol), PropKind::Symbol, "Model No"), "K-3999");
+    assert_eq!(
+        prop_text(
+            &sim,
+            PropKey::symbol(ids.symbol),
+            PropKind::Symbol,
+            "Model No"
+        ),
+        "K-3999"
+    );
 
     // A wall dialog is hosted by main.rs.
     let wall = sim.app.cx.floor().walls[0].id;
     assert!(sim.open_spec(ObjectRef::Wall(wall)));
-    sim.app.spec.main_props().unwrap().borrow_mut().set_text("Fire Wall", "2 hr");
+    sim.app
+        .spec
+        .main_props()
+        .unwrap()
+        .borrow_mut()
+        .set_text("Fire Wall", "2 hr");
     sim.ok();
-    assert_eq!(prop_text(&sim, PropKey::wall(wall), PropKind::Wall, "Fire Wall"), "2 hr");
+    assert_eq!(
+        prop_text(&sim, PropKey::wall(wall), PropKind::Wall, "Fire Wall"),
+        "2 hr"
+    );
 }
 
 // ===================================================================
@@ -300,7 +492,12 @@ fn a_custom_property_is_a_schedule_column_and_follows_the_tab() {
     assert!(t.rows.iter().all(|r| r.last().unwrap() == "None"));
     // Set it in the dialog; the table follows.
     assert!(sim.open_spec(ObjectRef::Opening(ids.door1)));
-    sim.app.spec.main_props().unwrap().borrow_mut().set_text("Fire Rating", "45 min");
+    sim.app
+        .spec
+        .main_props()
+        .unwrap()
+        .borrow_mut()
+        .set_text("Fire Rating", "45 min");
     sim.ok();
     let t = schedule_view::table_for(&sim.app.cx, &def, 0);
     let last: Vec<&str> = t.rows.iter().map(|r| r.last().unwrap().as_str()).collect();
@@ -308,9 +505,15 @@ fn a_custom_property_is_a_schedule_column_and_follows_the_tab() {
     // The placed table is wider by the new column and sorts by it.
     let mut sorted = def.clone();
     sorted.sort.field = "prop:Fire Rating".into();
+    let t = schedule_view::table_for(&sim.app.cx, &sorted, 0);
+    assert_eq!(
+        t.rows[0].last().unwrap(),
+        "45 min",
+        "digits sort before letters"
+    );
     sorted.sort.descending = true;
     let t = schedule_view::table_for(&sim.app.cx, &sorted, 0);
-    assert_eq!(t.rows[0].last().unwrap(), "45 min");
+    assert_eq!(t.rows[0].last().unwrap(), "None");
     // Un-flag it: gone from a schedule that has no column for it.
     sim.cx().begin_change("Change Property");
     sim.cx().project.props.defs[0].show_in_schedule = false;
@@ -328,7 +531,9 @@ fn edit_cell(book: &[u8], sheet: usize, at: &str, text: &str) -> Vec<u8> {
     let mut parts: BTreeMap<String, Vec<u8>> = read_zip_entries(book).unwrap();
     let name = format!("xl/worksheets/sheet{sheet}.xml");
     let xml = String::from_utf8(parts[&name].clone()).unwrap();
-    let start = xml.find(&format!("<c r=\"{at}\"")).unwrap_or_else(|| panic!("no cell {at}"));
+    let start = xml
+        .find(&format!("<c r=\"{at}\""))
+        .unwrap_or_else(|| panic!("no cell {at}"));
     let open_end = start + xml[start..].find('>').unwrap();
     let end = if xml[..open_end].ends_with('/') {
         open_end + 1
@@ -370,7 +575,10 @@ fn review() -> ImportReview {
 fn export_edit_import_applies_the_checked_changes_as_one_undo_step() {
     let (mut sim, ids) = house();
     pm::add_property(sim.cx(), rating()).unwrap();
-    let set = vec![door_schedule(), (0, Schedule::new(ScheduleKind::Cabinet, Point::ZERO))];
+    let set = vec![
+        door_schedule(),
+        (0, Schedule::new(ScheduleKind::Cabinet, Point::ZERO)),
+    ];
     let book = pm::build_workbook(sim.cx(), &set, "/plans/house.plan");
     let mfr = col_letter(&mut sim, &set[..1], "Manufacturer");
     let fire = col_letter(&mut sim, &set[..1], "Fire Rating");
@@ -385,11 +593,19 @@ fn export_edit_import_applies_the_checked_changes_as_one_undo_step() {
     let texts = frame_texts(&mut sim, |_, ctx| {
         let _ = r.show(ctx);
     });
-    assert!(texts.iter().any(|t| t.contains("Import Property Data")), "{texts:?}");
+    assert!(
+        texts.iter().any(|t| t.contains("Import Property Data")),
+        "{texts:?}"
+    );
     assert_eq!(r.plan().changes.len(), 3, "{:#?}", r.plan().changes);
     assert_eq!(r.accepted(), 3);
     // Uncheck the cabinet label: it stays as it is.
-    let cab = r.plan().changes.iter().position(|c| c.field == "label").unwrap();
+    let cab = r
+        .plan()
+        .changes
+        .iter()
+        .position(|c| c.field == "label")
+        .unwrap();
     r.set_accept(cab, false);
     let depth = sim.app.cx.undo_depth();
     let report = r.apply(sim.cx());
@@ -397,19 +613,65 @@ fn export_edit_import_applies_the_checked_changes_as_one_undo_step() {
     assert_eq!(sim.app.cx.undo_depth(), depth + 1, "one undo step");
     assert_eq!(sim.app.cx.undo_label(), Some("Import Property Data"));
     assert_eq!(sim.app.cx.status, "Imported 2 changes from House.xlsx");
-    let o = sim.app.cx.floor().openings.iter().find(|o| o.id == ids.door1).unwrap().clone();
+    let o = sim
+        .app
+        .cx
+        .floor()
+        .openings
+        .iter()
+        .find(|o| o.id == ids.door1)
+        .unwrap()
+        .clone();
     assert_eq!(o.extras.spec.schedule.manufacturer, "Therma-Tru");
-    assert_eq!(prop_text(&sim, PropKey::door(ids.door2), PropKind::Door, "Fire Rating"), "45 min");
+    assert_eq!(
+        prop_text(
+            &sim,
+            PropKey::door(ids.door2),
+            PropKind::Door,
+            "Fire Rating"
+        ),
+        "45 min"
+    );
     assert_eq!(sim.app.cx.floor().cabinets[0]["label"], "");
     // Undo puts all of it back; redo does it again.
     assert_eq!(sim.undo().as_deref(), Some("Import Property Data"));
-    let o = sim.app.cx.floor().openings.iter().find(|o| o.id == ids.door1).unwrap().clone();
+    let o = sim
+        .app
+        .cx
+        .floor()
+        .openings
+        .iter()
+        .find(|o| o.id == ids.door1)
+        .unwrap()
+        .clone();
     assert_eq!(o.extras.spec.schedule.manufacturer, "");
-    assert_eq!(prop_text(&sim, PropKey::door(ids.door2), PropKind::Door, "Fire Rating"), "None");
+    assert_eq!(
+        prop_text(
+            &sim,
+            PropKey::door(ids.door2),
+            PropKind::Door,
+            "Fire Rating"
+        ),
+        "None"
+    );
     sim.redo();
-    assert_eq!(prop_text(&sim, PropKey::door(ids.door2), PropKind::Door, "Fire Rating"), "45 min");
+    assert_eq!(
+        prop_text(
+            &sim,
+            PropKey::door(ids.door2),
+            PropKind::Door,
+            "Fire Rating"
+        ),
+        "45 min"
+    );
     // Nothing checked: no step is left behind.
-    pm::begin_import(sim.cx(), &edit_cell(&book, 1, &format!("{mfr}3"), "Other"), "House.xlsx", false).unwrap();
+    pm::begin_import(
+        sim.cx(),
+        &edit_cell(&book, 1, &format!("{mfr}3"), "Other"),
+        "House.xlsx",
+        false,
+    )
+    .unwrap();
     let mut r = review();
     r.select_all(false);
     let depth = sim.app.cx.undo_depth();
@@ -454,14 +716,30 @@ fn deleted_objects_and_bad_values_are_noted_and_never_applied() {
     let plan = r.plan().clone();
     assert_eq!(plan.changes.len(), 2, "{:#?}", plan.changes);
     assert!(plan.changes.iter().all(|c| c.problem.is_some()));
-    assert_eq!(r.accepted(), 0, "refused values start unchecked and stay so");
+    assert_eq!(
+        r.accepted(),
+        0,
+        "refused values start unchecked and stay so"
+    );
     r.set_accept(0, true);
     assert_eq!(r.accepted(), 0);
     let kinds: Vec<NoteKind> = plan.notes.iter().map(|n| n.kind).collect();
-    assert!(kinds.contains(&NoteKind::ObjectDeleted), "{:#?}", plan.notes);
+    assert!(
+        kinds.contains(&NoteKind::ObjectDeleted),
+        "{:#?}",
+        plan.notes
+    );
     assert!(kinds.contains(&NoteKind::Computed), "{:#?}", plan.notes);
     assert_eq!(r.apply(sim.cx()).applied, 0);
-    let o = sim.app.cx.floor().openings.iter().find(|o| o.id == ids.door1).unwrap().clone();
+    let o = sim
+        .app
+        .cx
+        .floor()
+        .openings
+        .iter()
+        .find(|o| o.id == ids.door1)
+        .unwrap()
+        .clone();
     assert_eq!(o.width, 36.0, "the computed Width edit was ignored");
 }
 
@@ -473,7 +751,10 @@ fn csv_edited_in_a_text_editor_imports_the_same_way() {
     sim.app.cx.refresh();
     let csv = plan_docs::props_exchange::export_csv(
         &sim.app.cx.project,
-        &plan_docs::props_exchange::ExportSchedule { def: &def, home_floor: floor },
+        &plan_docs::props_exchange::ExportSchedule {
+            def: &def,
+            home_floor: floor,
+        },
         None,
         true,
     );
@@ -501,7 +782,15 @@ fn csv_edited_in_a_text_editor_imports_the_same_way() {
     let r = review();
     assert_eq!(r.plan().changes.len(), 1, "{:#?}", r.plan().changes);
     assert_eq!(r.apply(sim.cx()).applied, 1);
-    let o = sim.app.cx.floor().openings.iter().find(|o| o.id == ids.door1).unwrap().clone();
+    let o = sim
+        .app
+        .cx
+        .floor()
+        .openings
+        .iter()
+        .find(|o| o.id == ids.door1)
+        .unwrap()
+        .clone();
     assert_eq!(o.extras.spec.schedule.manufacturer, "CSV, Inc.");
     assert!(pm::begin_import(sim.cx(), b"Mark,Width\nD01,3'-0\"\n", "bad.csv", true).is_err());
 }
@@ -524,7 +813,15 @@ fn a_new_workbook_can_be_written_to_a_file_and_read_back_through_the_file_path()
     let r = review();
     assert_eq!(r.plan().changes.len(), 1);
     assert_eq!(r.apply(sim.cx()).applied, 1);
-    let o = sim.app.cx.floor().openings.iter().find(|o| o.id == ids.door1).unwrap().clone();
+    let o = sim
+        .app
+        .cx
+        .floor()
+        .openings
+        .iter()
+        .find(|o| o.id == ids.door1)
+        .unwrap()
+        .clone();
     assert_eq!(o.extras.spec.schedule.manufacturer, "On Disk Co");
     // A missing file is reported, not a panic.
     pm::import_path(sim.cx(), &dir.join("nope.xlsx"));
@@ -564,7 +861,11 @@ fn the_status_bar_offers_a_workbook_that_changed_after_the_export() {
     );
     // Another plan being open ends the watch.
     let _ = frame_texts(&mut sim, |s, ctx| {
-        pm::show_all(ctx, &mut s.app.cx, Some(std::path::Path::new("/other.plan")))
+        pm::show_all(
+            ctx,
+            &mut s.app.cx,
+            Some(std::path::Path::new("/other.plan")),
+        )
     });
     assert!(pm::offered().is_none());
     let _ = std::fs::remove_dir_all(&dir);
@@ -577,13 +878,24 @@ fn schedule_context_menu_and_dialog_buttons_reach_the_exchange() {
     schedule_view::select(sim.cx(), sid);
     let entries = sim.app.cx.context_entries(&[], false);
     let labels: Vec<&str> = entries.iter().map(|e| e.label.as_str()).collect();
-    assert!(labels.iter().any(|l| l.starts_with("Export for Editing")), "{labels:?}");
-    assert!(labels.iter().any(|l| l.starts_with("Import Property Data")), "{labels:?}");
+    assert!(
+        labels.iter().any(|l| l.starts_with("Export for Editing")),
+        "{labels:?}"
+    );
+    assert!(
+        labels.iter().any(|l| l.starts_with("Import Property Data")),
+        "{labels:?}"
+    );
     // The entries run as ordinary commands.
-    let e = entries.iter().find(|e| e.label.starts_with("Import")).unwrap();
+    let e = entries
+        .iter()
+        .find(|e| e.label.starts_with("Import"))
+        .unwrap();
     assert_eq!(e.action, Action::Custom(pm::IMPORT));
     // Nothing else selected: the entries are not offered.
     sim.cx().selection.clear();
     let entries = sim.app.cx.context_entries(&[], false);
-    assert!(!entries.iter().any(|e| e.label.starts_with("Export for Editing")));
+    assert!(!entries
+        .iter()
+        .any(|e| e.label.starts_with("Export for Editing")));
 }

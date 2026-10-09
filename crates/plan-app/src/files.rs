@@ -305,7 +305,27 @@ pub fn recovery_dir() -> Option<PathBuf> {
 
 /// Where the autosave of `plan` goes.
 pub fn autosave_path(plan: &Path) -> PathBuf {
+    // Preferences > Folders > Autosave puts every plan's autosave in one
+    // folder; the name keeps the plan apart from same-named plans elsewhere.
+    if let Some(dir) = crate::dialogs::preferences::pages::folder(
+        crate::dialogs::preferences::pages::FolderKind::Autosave,
+    ) {
+        return dir.join(shared_autosave_name(plan));
+    }
     archives_dir(plan).join(AUTOSAVE_FILE)
+}
+
+/// The file name of `plan`'s autosave in the shared autosave folder:
+/// `<plan name>-<hash of its path>-autosave.psplan`.
+fn shared_autosave_name(plan: &Path) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    plan.hash(&mut h);
+    format!(
+        "{}-{:08x}-{AUTOSAVE_FILE}",
+        plan_stem(plan),
+        h.finish() as u32
+    )
 }
 
 /// Is it time to autosave? Only while there are unsaved changes.
@@ -952,7 +972,9 @@ impl PlanApp {
                 "This plan has not been saved yet; there is nothing to revert to".into();
             return;
         }
-        if self.files.dirty {
+        let skip = p == Pending::Revert
+            && crate::dialogs::preferences::pages::dont_ask(unsaved::REVERT_KEY);
+        if self.files.dirty && !skip {
             let prompt = if p == Pending::Revert {
                 Prompt::revert(&self.plan_label())
             } else {
@@ -986,6 +1008,8 @@ impl PlanApp {
         match plan_io::load_project(&path) {
             Ok(p) if !p.floors.is_empty() => {
                 self.cx.set_project(p);
+                // The saved snap, Edit Type and Replicate defaults go over the plan's.
+                crate::dialogs::preferences::pages::apply_editing(&mut self.cx.defaults.editing);
                 self.cx.status = format!("Opened {}", path.display());
                 app_info::push_recent(&path);
                 self.path = Some(path.clone());
@@ -1351,10 +1375,20 @@ impl PlanApp {
                 .filter_map(|f| f.path.clone())
                 .collect()
         });
+        // Watch ~/Downloads for new material-package zips (when asked to).
+        crate::tools::materials::package::tick(ctx);
         if !dropped.is_empty() {
             match first_plan(&dropped) {
                 Some(p) => self.request_file_action(Pending::Open(Some(p))),
-                None => self.cx.status = "Drop a .psplan file to open it".into(),
+                // A dropped .zip is a material package (Lightbeans).
+                None if crate::tools::materials::package::handle_dropped(
+                    &mut self.cx,
+                    &dropped,
+                ) > 0 => {}
+                None => {
+                    self.cx.status =
+                        "Drop a .psplan file to open it, or a material package .zip".into()
+                }
             }
         }
         let down = ctx.input(|i| i.pointer.any_down());
@@ -1609,6 +1643,23 @@ mod tests {
         );
         assert!(!autosave_due(true, false, five * 3, 5));
         assert!(!autosave_due(true, true, five - Duration::from_secs(1), 5));
+    }
+
+    #[test]
+    fn the_autosave_folder_preference_moves_the_autosave() {
+        use crate::dialogs::preferences::pages::{self, FolderKind};
+        let plan = Path::new("/projects/a/house.psplan");
+        let other = Path::new("/projects/b/house.psplan");
+        let beside = autosave_path(plan);
+        assert!(beside.starts_with("/projects/a/Archives/house"));
+        pages::update(|p| p.folders.set(FolderKind::Autosave, "/tmp/ps-autosaves"));
+        let shared = autosave_path(plan);
+        assert!(shared.starts_with("/tmp/ps-autosaves"));
+        let name = shared.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(name.starts_with("house-") && name.ends_with("-autosave.psplan"));
+        assert_ne!(shared, autosave_path(other), "same-named plans stay apart");
+        pages::update(|p| p.folders.set(FolderKind::Autosave, ""));
+        assert_eq!(autosave_path(plan), beside);
     }
 
     #[test]
@@ -1888,6 +1939,46 @@ mod tests {
         a.perform(&egui::Context::default(), Pending::Revert);
         assert_eq!(a.cx.project.name, "Saved name");
         assert!(a.cx.status.starts_with("Reverted"));
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn opening_a_plan_lays_the_saved_editing_defaults_over_it() {
+        use crate::dialogs::preferences::pages;
+        let d = dir("open-editing");
+        let plan = d.join("p.psplan");
+        let mut a = app();
+        assert!(a.write_to(plan.clone()));
+        let mut mine = a.cx.defaults.editing.clone();
+        mine.snap_distance_px = 11.5;
+        assert_ne!(a.cx.defaults.editing, mine);
+        pages::remember_editing(&mine);
+        a.open_path(plan);
+        assert_eq!(a.cx.defaults.editing, mine);
+        pages::update(|p| p.editing_saved = false);
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn revert_asks_until_dont_ask_again_is_set() {
+        use crate::dialogs::preferences::pages;
+        let d = dir("revert-dont-ask");
+        let plan = d.join("p.psplan");
+        let mut a = app();
+        assert!(a.write_to(plan));
+        edit(&mut a);
+        a.request_file_action(Pending::Revert);
+        assert!(a.files.prompt.is_some(), "the confirmation shows first");
+        assert!(a.files.ready.is_none());
+        a.files.prompt = None;
+        pages::set_dont_ask(unsaved::REVERT_KEY);
+        a.request_file_action(Pending::Revert);
+        assert!(a.files.prompt.is_none());
+        assert_eq!(a.files.ready.take(), Some(Pending::Revert));
+        // Reset Options shows the question again.
+        pages::reset_dont_ask();
+        a.request_file_action(Pending::Revert);
+        assert!(a.files.prompt.is_some());
         let _ = fs::remove_dir_all(&d);
     }
 

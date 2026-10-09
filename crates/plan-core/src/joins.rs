@@ -1282,8 +1282,12 @@ pub fn crossing_merges(walls: &[Wall], tol: f64) -> Vec<CrossingMerge> {
         .iter()
         .map(|w| {
             let f = w.footprint();
-            let lo = f.iter().fold(f[0], |m, p| Point::new(m.x.min(p.x), m.y.min(p.y)));
-            let hi = f.iter().fold(f[0], |m, p| Point::new(m.x.max(p.x), m.y.max(p.y)));
+            let lo = f
+                .iter()
+                .fold(f[0], |m, p| Point::new(m.x.min(p.x), m.y.min(p.y)));
+            let hi = f
+                .iter()
+                .fold(f[0], |m, p| Point::new(m.x.max(p.x), m.y.max(p.y)));
             (lo, hi)
         })
         .collect();
@@ -1300,7 +1304,8 @@ pub fn crossing_merges(walls: &[Wall], tol: f64) -> Vec<CrossingMerge> {
             if a.direction().cross(b.direction()).abs() < MIN_SIN {
                 continue;
             }
-            let Some((t, u)) = crate::geometry::segment_intersection(a.start, a.end, b.start, b.end)
+            let Some((t, u)) =
+                crate::geometry::segment_intersection(a.start, a.end, b.start, b.end)
             else {
                 continue;
             };
@@ -2275,7 +2280,10 @@ mod tests {
         // A plus has twelve corners, and its area is the two bars less the square.
         assert_eq!(c.outline.len(), 12);
         let plus = crate::geometry::polygon_area(&ccw(&c.outline));
-        assert!((plus - (200.0 * 6.0 + 200.0 * 4.0 - 24.0)).abs() < 1e-6, "{plus}");
+        assert!(
+            (plus - (200.0 * 6.0 + 200.0 * 4.0 - 24.0)).abs() < 1e-6,
+            "{plus}"
+        );
     }
 
     #[test]
@@ -2313,6 +2321,14 @@ mod tests {
         let m = crossing_merges(&walls, 0.5);
         assert_eq!(m.len(), 1);
         assert_eq!(m[0].outline.len(), 12);
-        assert!(polygon_union(&walls[0].footprint(), &[Point::new(900.0, 900.0), Point::new(901.0, 900.0), Point::new(901.0, 901.0)]).is_none());
+        assert!(polygon_union(
+            &walls[0].footprint(),
+            &[
+                Point::new(900.0, 900.0),
+                Point::new(901.0, 900.0),
+                Point::new(901.0, 901.0)
+            ]
+        )
+        .is_none());
     }
 }

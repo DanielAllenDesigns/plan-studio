@@ -2,11 +2,9 @@
 
 use std::f64::consts::{FRAC_PI_2, PI};
 
-use plan_core::units::fmt_ft_in_frac;
 use plan_core::Point;
 
 use crate::contour::Contour;
-use crate::geom::strip_edges;
 use crate::landscape::path_length;
 use crate::model::{Terrain, PRIMARY_CONTOUR_WEIGHT, SECONDARY_CONTOUR_WEIGHT};
 
@@ -18,6 +16,8 @@ pub enum StrokeKind {
     MajorContour,
     Feature,
     RoadEdge,
+    /// A label of a terrain object (the "Terrain Labels" layer).
+    Label,
 }
 
 /// A 2D drawing primitive for the Terrain layer in plan view.
@@ -38,6 +38,12 @@ pub enum Stroke {
         /// Rotation, radians counter-clockwise (plan y up). Contour labels
         /// follow the line but are kept readable: between -90 and 90 degrees.
         angle: f64,
+        /// Contour labels: `MajorContour` or `Contour`, so the label goes on
+        /// the layer of its contour; `Label` for an object label.
+        kind: StrokeKind,
+        /// Drawn in red (a contour label below elevation 0 with
+        /// Highlight Negative Elevations on).
+        negative: bool,
     },
 }
 
@@ -118,8 +124,13 @@ pub fn plan_symbols(t: &Terrain, contours: &[Contour]) -> Vec<Stroke> {
                 StrokeKind::Contour,
             )
         };
-        let label = fmt_ft_in_frac(c.z, 2);
-        let labeled = c.major || !t.contour_label_major_only;
+        let label = t.contour_label_units.format(c.z);
+        let labeled = if c.major {
+            t.label_primary
+        } else {
+            !t.contour_label_major_only
+        };
+        let negative = t.highlight_negative && c.z < 0.0;
         let width = label.chars().count() as f64 * LABEL_HEIGHT * 0.6;
         for line in c.polylines.iter().filter(|l| l.len() >= 2) {
             let closed = line.first() == line.last() && line.len() > 3;
@@ -138,6 +149,8 @@ pub fn plan_symbols(t: &Terrain, contours: &[Contour]) -> Vec<Stroke> {
                     text: label.clone(),
                     height: LABEL_HEIGHT,
                     angle,
+                    kind,
+                    negative,
                 });
             }
         }
@@ -159,9 +172,24 @@ pub fn plan_symbols(t: &Terrain, contours: &[Contour]) -> Vec<Stroke> {
     for road in t
         .roads
         .iter()
-        .filter(|r| r.width > 0.0 && r.kind != crate::model::RoadKind::Marking)
+        .filter(|r| r.kind != crate::model::RoadKind::Marking)
     {
-        let edges = strip_edges(&road.centerline, road.width / 2.0);
+        if road.kind.is_outline_kind() || road.outline.len() >= 3 {
+            let poly = crate::roads::road_polygon(road);
+            if poly.len() >= 3 {
+                out.push(Stroke::Polyline {
+                    points: poly,
+                    closed: true,
+                    weight: if road.curb { 0.7 } else { 0.5 },
+                    kind: StrokeKind::RoadEdge,
+                });
+            }
+            continue;
+        }
+        if road.width <= 0.0 {
+            continue;
+        }
+        let edges = crate::roads::flared_edges(road);
         if edges.center.len() < 2 {
             continue;
         }

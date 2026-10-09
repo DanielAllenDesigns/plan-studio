@@ -495,7 +495,8 @@ fn dash_for(style: LineStyle, pen: f64) -> Option<Vec<f64>> {
 /// CAD lines, arcs, circles, polylines and text on visible layers.
 fn draw_cad(doc: &mut PdfDoc, f: &Floor, tp: &impl Fn(Point) -> (f64, f64), ctx: &Ctx) {
     let attrs = f.cad_attr_map();
-    for o in &f.cad {
+    // In drawing-group order (Edit > Drawing Group).
+    for o in f.cad_draw_order() {
         if !ctx.layers.is_visible(&o.layer) {
             continue;
         }
@@ -1101,6 +1102,37 @@ mod tests {
         p.layers.set_display("CAD, Default", false);
         let r = plan_sheet(&p, 0, &[], SheetSize::ArchD, Scale::QuarterInch, &tb());
         assert!(!text_of(&r.pdf).contains("NOTE ONE"));
+    }
+
+    #[test]
+    fn cad_draws_in_drawing_group_order() {
+        let mut p = house();
+        for (i, t) in ["FIRSTTEXT", "SECONDTEXT"].iter().enumerate() {
+            p.floors[0].cad.push(CadObject {
+                id: 800 + i as u64,
+                layer: "CAD, Default".into(),
+                item: CadItem::Text {
+                    pos: Point::new(10.0, -100.0 - 20.0 * i as f64),
+                    text: (*t).into(),
+                    height: 4.0,
+                    angle: 0.0,
+                },
+            });
+        }
+        let order = |p: &plan_core::Project| {
+            let r = plan_sheet(p, 0, &[], SheetSize::ArchD, Scale::QuarterInch, &tb());
+            let t = text_of(&r.pdf);
+            (
+                t.find("(FIRSTTEXT) Tj").expect("first drawn"),
+                t.find("(SECONDTEXT) Tj").expect("second drawn"),
+            )
+        };
+        let (a, b) = order(&p);
+        assert!(a < b, "drawn in the order they were made");
+        // Bring the first to the front: it now draws last.
+        p.drawing_group_to_front(0, &[plan_core::ObjectRef::Cad(800)]);
+        let (a, b) = order(&p);
+        assert!(b < a, "the first text is in front of the second now");
     }
 
     /// The font size in points a string is drawn at (`BT /F size Tf ... (text) Tj`).

@@ -8,6 +8,7 @@
 //! carries out (so tests can drive them without a frame).
 
 use super::{preview_shapes, trim_num, LibraryEvent};
+use crate::shell::library_panel::{Thumb, ThumbService};
 use crate::tools::library::user::{self as store, ModelImport, UiRequest};
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, TextureHandle, Vec2};
 use plan_import::{ImportedModel, UpAxis};
@@ -35,14 +36,20 @@ pub enum View {
     Favorites,
     /// The recently used items.
     Recent,
+    /// Deleted items that can be restored.
+    Trash,
 }
 
 /// 2D symbol or 3D model in the preview pane.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum PreviewMode {
-    #[default]
+    /// The 2D plan symbol.
     Plan,
+    /// The software-shaded 3D view, rotatable.
     Model,
+    /// The path-traced thumbnail (cached under `~/.plan-studio/thumbs`).
+    #[default]
+    Render,
 }
 
 /// Something a menu, a drop or a button asks for.
@@ -61,11 +68,37 @@ pub enum UserAction {
     RenameFolder(Vec<String>),
     DeleteFolder(Vec<String>),
     MoveFolder(Vec<String>, Vec<String>),
+    /// Open Object: the Library Object Specification of any item.
+    OpenObject(String),
+    /// Put a trashed item back in its folder.
+    Restore(String),
+    /// Erase one trashed item for good (asks first).
+    Purge(String),
+    /// Erase everything in the Trash (asks first).
+    EmptyTrash,
+    /// Replace the selected plan objects with this item.
+    ReplaceSelected(String),
+    /// Run a Library menu command (Export Library, Import Library, ...).
+    Run(&'static str),
 }
 
-/// What is dragged from a row onto a folder.
-#[derive(Clone, Debug)]
-pub struct DragItem(pub String);
+/// Something the panel does for the user's click because it needs the editor
+/// (the dialogs, the selection, the file pickers).
+#[derive(Clone, Debug, PartialEq)]
+pub enum PanelRequest {
+    /// Run a library command id (`tools::library::user::run_command`).
+    Run(&'static str),
+    /// Open the Library Object Specification of this item.
+    OpenObject(String),
+    /// Replace the selected objects with this library item.
+    ReplaceSelected(String),
+    /// A Chief catalog was added or removed: scan again.
+    RescanChief,
+}
+
+/// What is dragged from a row: onto a folder it moves the item, onto the plan
+/// it places it.
+pub use crate::tools::library::LibraryDrag as DragItem;
 
 /// A small dialog asking for a name or a yes.
 #[derive(Clone, Debug, PartialEq)]
@@ -75,6 +108,8 @@ enum Prompt {
     RenameItem { id: String, name: String },
     DeleteItem { id: String, name: String },
     DeleteFolder { path: Vec<String>, count: usize },
+    PurgeItem { id: String, name: String },
+    EmptyTrash { count: usize },
 }
 
 /// The Object Information editor.
@@ -149,6 +184,12 @@ pub struct UserUi {
     pub meta: UserMeta,
     /// User folders as of this frame.
     pub folders: Vec<Vec<String>>,
+    /// What the panel does after drawing (it has the editor context).
+    pub requests: Vec<PanelRequest>,
+    /// The path-traced thumbnails of the preview pane.
+    pub thumbs: ThumbService,
+    /// Just the names with a file icon (the Names view).
+    pub names: bool,
 }
 
 impl Default for UserUi {
@@ -159,7 +200,7 @@ impl Default for UserUi {
             show_filters: false,
             grid: false,
             selected: None,
-            mode: PreviewMode::Plan,
+            mode: PreviewMode::Render,
             yaw: DEFAULT_YAW,
             pitch: DEFAULT_PITCH,
             min_on: false,
@@ -173,6 +214,9 @@ impl Default for UserUi {
             prompt: None,
             meta: UserMeta::default(),
             folders: Vec::new(),
+            requests: Vec::new(),
+            thumbs: ThumbService::default(),
+            names: false,
         }
     }
 }
@@ -475,6 +519,7 @@ impl UserUi {
     pub fn narrows(&self) -> bool {
         self.view != View::Category
             || !self.filter.kinds.is_empty()
+            || !self.filter.types.is_empty()
             || self.filter.catalog.is_some()
             || !self.filter.style.trim().is_empty()
             || self.filter.favorites_only
@@ -484,6 +529,7 @@ impl UserUi {
 
     fn filter_count(&self) -> usize {
         usize::from(!self.filter.kinds.is_empty())
+            + usize::from(!self.filter.types.is_empty())
             + usize::from(self.filter.catalog.is_some())
             + usize::from(!self.filter.style.trim().is_empty())
             + usize::from(self.min_on || self.max_on)
@@ -501,7 +547,7 @@ impl UserUi {
         ui.horizontal(|ui| {
             if ui
                 .selectable_label(self.show_filters, label)
-                .on_hover_text("Type, catalog, style and size filters")
+                .on_hover_text("Kind, catalog, style and size filters")
                 .clicked()
             {
                 self.show_filters = !self.show_filters;
@@ -513,8 +559,21 @@ impl UserUi {
                         ui.selectable_value(&mut self.filter.sort, k, k.label());
                     }
                 });
-            ui.selectable_value(&mut self.grid, false, "List");
-            ui.selectable_value(&mut self.grid, true, "Grid");
+            if ui
+                .selectable_label(!self.grid && !self.names, "List")
+                .clicked()
+            {
+                (self.grid, self.names) = (false, false);
+            }
+            if ui
+                .selectable_label(self.grid && !self.names, "Grid")
+                .clicked()
+            {
+                (self.grid, self.names) = (true, false);
+            }
+            if ui.selectable_label(self.names, "Names").clicked() {
+                (self.grid, self.names) = (false, true);
+            }
             if n > 0 && ui.small_button("Clear").clicked() {
                 self.filter = Filter {
                     sort: self.filter.sort,
@@ -529,7 +588,7 @@ impl UserUi {
         }
         ui.indent("library_filters", |ui| {
             ui.horizontal(|ui| {
-                ui.label("Type");
+                ui.label("Kind");
                 let text = match self.filter.kinds.as_slice() {
                     [] => "Any".to_string(),
                     [k] => k.label().to_string(),
@@ -653,13 +712,26 @@ impl UserUi {
                 ui_highlight(resp);
             }
             if let Some(d) = resp.dnd_release_payload::<DragItem>() {
-                out = Some(UserAction::MoveTo(d.0.clone(), path.to_vec()));
+                if d.0.starts_with("user.") {
+                    out = Some(UserAction::MoveTo(d.0.clone(), path.to_vec()));
+                }
             }
         }
         resp.context_menu(|ui| {
             if ui.button("New Folder\u{2026}").clicked() {
                 out = Some(UserAction::NewFolder(path.to_vec()));
                 ui.close_menu();
+            }
+            if path.len() == 1 {
+                ui.separator();
+                if ui.button("Export Library\u{2026}").clicked() {
+                    out = Some(UserAction::Run(store::EXPORT_LIBRARY));
+                    ui.close_menu();
+                }
+                if ui.button("Import Library\u{2026}").clicked() {
+                    out = Some(UserAction::Run(store::IMPORT_LIBRARY));
+                    ui.close_menu();
+                }
             }
             if path.len() >= 2 {
                 if ui.button("Rename Folder\u{2026}").clicked() {
@@ -708,14 +780,28 @@ impl UserUi {
             ui.close_menu();
         }
         if ui.button("Open Object").clicked() {
-            out = Some(if mine {
-                UserAction::ObjectInfo(item.id.clone())
-            } else {
-                UserAction::Select(item.id.clone())
-            });
+            out = Some(UserAction::OpenObject(item.id.clone()));
+            ui.close_menu();
+        }
+        if ui
+            .button("Replace Selected With This")
+            .on_hover_text("Replace From Library: the selected plan objects take this item")
+            .clicked()
+        {
+            out = Some(UserAction::ReplaceSelected(item.id.clone()));
+            ui.close_menu();
+        }
+        if !crate::tools::library::chief::is_chief_id(&item.id)
+            && ui.button("Add to Library").clicked()
+        {
+            out = Some(UserAction::AddCopy(item.id.clone()));
             ui.close_menu();
         }
         if mine {
+            if ui.button("Object Information\u{2026}").clicked() {
+                out = Some(UserAction::ObjectInfo(item.id.clone()));
+                ui.close_menu();
+            }
             if ui.button("Rename\u{2026}").clicked() {
                 out = Some(UserAction::Rename(item.id.clone()));
                 ui.close_menu();
@@ -735,13 +821,19 @@ impl UserUi {
                     }
                 }
             });
-            if ui.button("Delete\u{2026}").clicked() {
+            if ui.button("New Folder\u{2026}").clicked() {
+                let parent = if item.category.is_empty() {
+                    vec![USER_ROOT.to_string()]
+                } else {
+                    item.category.clone()
+                };
+                out = Some(UserAction::NewFolder(parent));
+                ui.close_menu();
+            }
+            if ui.button("Delete (to Trash)\u{2026}").clicked() {
                 out = Some(UserAction::Delete(item.id.clone()));
                 ui.close_menu();
             }
-        } else if ui.button("Add to User Library").clicked() {
-            out = Some(UserAction::AddCopy(item.id.clone()));
-            ui.close_menu();
         }
         out
     }
@@ -835,6 +927,44 @@ impl UserUi {
                 self.prompt = Some(Prompt::DeleteFolder { path, count });
                 None
             }
+            UserAction::OpenObject(id) => {
+                self.selected = Some(id.clone());
+                self.requests.push(PanelRequest::OpenObject(id));
+                None
+            }
+            UserAction::Restore(id) => {
+                let r = store::restore(&id).map(|back| {
+                    self.selected = Some(back);
+                    "Restored from the Trash".to_string()
+                });
+                self.refresh();
+                msg(r)
+            }
+            UserAction::Purge(id) => {
+                let name = store::trash()
+                    .items()
+                    .find(|i| i.id == id)
+                    .map(|i| i.name.clone())
+                    .unwrap_or_default();
+                self.prompt = Some(Prompt::PurgeItem { id, name });
+                None
+            }
+            UserAction::EmptyTrash => {
+                let count = store::trash().len();
+                if count == 0 {
+                    return Some("The Trash is empty".into());
+                }
+                self.prompt = Some(Prompt::EmptyTrash { count });
+                None
+            }
+            UserAction::ReplaceSelected(id) => {
+                self.requests.push(PanelRequest::ReplaceSelected(id));
+                None
+            }
+            UserAction::Run(id) => {
+                self.requests.push(PanelRequest::Run(id));
+                None
+            }
             UserAction::MoveFolder(path, to) => {
                 let r = store::move_folder(&path, &to)
                     .map(|n| format!("Moved the folder ({n} item(s))"));
@@ -894,6 +1024,13 @@ impl UserUi {
         let mut out = None;
         ui.horizontal(|ui| {
             ui.strong(&item.name);
+            if ui
+                .small_button("Open")
+                .on_hover_text("Open Object: the Library Object Specification")
+                .clicked()
+            {
+                out = Some(UserAction::OpenObject(item.id.clone()));
+            }
             if item.id.starts_with("user.") && ui.small_button("Edit\u{2026}").clicked() {
                 out = Some(UserAction::ObjectInfo(item.id.clone()));
             } else if !item.id.starts_with("user.")
@@ -914,6 +1051,8 @@ impl UserUi {
         ui.horizontal(|ui| {
             ui.selectable_value(&mut self.mode, PreviewMode::Plan, "2D");
             ui.selectable_value(&mut self.mode, PreviewMode::Model, "3D");
+            ui.selectable_value(&mut self.mode, PreviewMode::Render, "Render")
+                .on_hover_text("Path-traced thumbnail, kept in ~/.plan-studio/thumbs");
             if self.mode == PreviewMode::Model {
                 if ui
                     .small_button("\u{25C0}")
@@ -959,6 +1098,42 @@ impl UserUi {
                     ui.painter().add(shape);
                 }
             }
+            PreviewMode::Render => {
+                let (model, _real) = preview_model(item);
+                let model = if item.model_rotation != 0.0 {
+                    model.rotated_y(item.model_rotation)
+                } else {
+                    model
+                };
+                match self.thumbs.get(ui.ctx(), item, &model) {
+                    Thumb::Ready(tex) => {
+                        ui.painter().image(
+                            tex.id(),
+                            rect,
+                            Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                            Color32::WHITE,
+                        );
+                    }
+                    Thumb::Rendering => {
+                        ui.painter().text(
+                            rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            "Rendering\u{2026}",
+                            egui::FontId::proportional(12.0),
+                            Color32::from_gray(0x60),
+                        );
+                    }
+                    Thumb::Unavailable => {
+                        ui.painter().text(
+                            rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            "No 3D shape",
+                            egui::FontId::proportional(12.0),
+                            Color32::from_gray(0x60),
+                        );
+                    }
+                }
+            }
             PreviewMode::Model => {
                 if resp.dragged() {
                     let d = resp.drag_delta();
@@ -996,6 +1171,8 @@ impl UserUi {
                 UiRequest::ObjectInfo(id) => {
                     self.open_info(&id);
                 }
+                UiRequest::OpenObject(id) => self.requests.push(PanelRequest::OpenObject(id)),
+                UiRequest::RescanChief => self.requests.push(PanelRequest::RescanChief),
             }
         }
         let mut message = None;
@@ -1017,6 +1194,8 @@ impl UserUi {
             Prompt::RenameItem { .. } => "Rename Library Item",
             Prompt::DeleteItem { .. } => "Delete Library Item",
             Prompt::DeleteFolder { .. } => "Delete Folder",
+            Prompt::PurgeItem { .. } => "Delete Permanently",
+            Prompt::EmptyTrash { .. } => "Empty Trash",
         };
         egui::Window::new(title)
             .collapsible(false)
@@ -1040,12 +1219,20 @@ impl UserUi {
                         }
                     }
                     Prompt::DeleteItem { name, .. } => {
-                        ui.label(format!("Delete \"{name}\" from the User Catalog?"));
+                        ui.label(format!("Move \"{name}\" to the Trash?"));
                     }
                     Prompt::DeleteFolder { path, count } => {
                         ui.label(format!(
-                            "Delete {} and the {count} item(s) inside it?",
+                            "Delete {} and move the {count} item(s) inside it to the Trash?",
                             folder_text(path)
+                        ));
+                    }
+                    Prompt::PurgeItem { name, .. } => {
+                        ui.label(format!("Erase \"{name}\" for good? This cannot be undone."));
+                    }
+                    Prompt::EmptyTrash { count } => {
+                        ui.label(format!(
+                            "Erase the {count} item(s) in the Trash for good? This cannot be undone."
                         ));
                     }
                 }
@@ -1075,10 +1262,16 @@ impl UserUi {
                     if self.selected.as_deref() == Some(id.as_str()) {
                         self.selected = None;
                     }
-                    store::delete(&id).map(|_| "Deleted".to_string())
+                    store::delete(&id).map(|_| "Moved to the Trash".to_string())
                 }
                 Prompt::DeleteFolder { path, .. } => store::delete_folder(&path)
-                    .map(|n| format!("Deleted the folder and {n} item(s)")),
+                    .map(|n| format!("Deleted the folder; {n} item(s) are in the Trash")),
+                Prompt::PurgeItem { id, .. } => {
+                    store::purge(&id).map(|_| "Erased from the Trash".to_string())
+                }
+                Prompt::EmptyTrash { .. } => {
+                    store::empty_trash().map(|n| format!("Erased {n} item(s) from the Trash"))
+                }
             };
             match r {
                 Ok(m) => {

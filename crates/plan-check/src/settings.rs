@@ -617,6 +617,7 @@ pub fn finding_key(floor: usize, f: &Finding) -> String {
         Some(Target::Cabinet(i)) => format!("cabinet{i}"),
         Some(Target::Roof(i)) => format!("roof{i}"),
         Some(Target::Detail(i)) => format!("detail{i}"),
+        Some(Target::Foundation(i)) => format!("foundation{i}"),
         Some(Target::Room(_)) => "room".to_string(),
         None => "-".to_string(),
     };

@@ -132,6 +132,17 @@ const WALL_FIELDS: &[Field] = &[
     f("area", "Area sq ft", true),
     f("openings", "Openings", true),
     f("floor", "Floor", false),
+    // Wall Specification tabs: Wall Types, Wall Covering, Object
+    // Information and Schedule.
+    f("wall_type", "Wall Type", false),
+    f("interior_covering", "Interior Covering", false),
+    f("exterior_covering", "Exterior Covering", false),
+    f("code", "Code", false),
+    f("description", "Description", false),
+    f("manufacturer", "Manufacturer", false),
+    f("model", "Model", false),
+    f("supplier", "Supplier", false),
+    f("comment", "Comment", false),
 ];
 const CABINET_FIELDS: &[Field] = &[
     f("mark", "Mark", true),
@@ -155,6 +166,8 @@ const ELECTRICAL_FIELDS: &[Field] = &[
     f("label", "Label", true),
     f("height", "Mount Height", true),
     f("circuit", "Circuit", true),
+    f("voltage", "Voltage", false),
+    f("flags", "Flags", false),
     f("wall", "Wall", false),
     f("floor", "Floor", false),
 ];
@@ -559,7 +572,7 @@ impl ScheduleLayer {
         let mut layer: ScheduleLayer = floor
             .schedules
             .as_ref()
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .map(crate::foreign::read_layer)
             .unwrap_or_default();
         for s in &mut layer.schedules {
             s.reconcile_columns();
@@ -569,11 +582,9 @@ impl ScheduleLayer {
 
     /// Stores the layer on `floor`; an empty layer clears the slot.
     pub fn store(&self, floor: &mut Floor) {
-        floor.schedules = if self.is_empty() {
-            None
-        } else {
-            serde_json::to_value(self).ok()
-        };
+        // Records this build cannot read stay in the slot (QA-28).
+        floor.schedules =
+            crate::foreign::layer_slot(self, self.is_empty(), floor.schedules.as_ref());
     }
 }
 

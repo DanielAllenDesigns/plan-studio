@@ -7,6 +7,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::landscape::{Landscape, ObjectStyle, TerrainBreak, TerrainWall};
 use crate::query::TriIndex;
+use crate::spec::{
+    AbsoluteElevation, BuildStats, LabelUnits, ObjectExtras, Skirt, SmoothingLevel, TriangleDetail,
+    DEFAULT_CONTOUR_SMOOTH_PASSES, DEFAULT_CUSTOM_TRIANGLES, DEFAULT_SURFACE_OFFSET,
+};
 
 /// A spot height (Elevation Point tool).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -33,6 +37,8 @@ pub struct ElevationLine {
     pub control: Vec<Point>,
     /// Spline tension, 0 (straight segments) to 1 (loose); 0.5 is Catmull-Rom.
     pub tension: f64,
+    /// Label, schedule category and object information.
+    pub extras: ObjectExtras,
 }
 
 impl Default for ElevationLine {
@@ -42,6 +48,7 @@ impl Default for ElevationLine {
             z: 0.0,
             control: Vec::new(),
             tension: DEFAULT_TENSION,
+            extras: ObjectExtras::default(),
         }
     }
 }
@@ -64,6 +71,7 @@ impl ElevationLine {
             z,
             control,
             tension,
+            extras: ObjectExtras::default(),
         }
     }
 
@@ -152,6 +160,14 @@ pub struct Feature {
     pub center: Point,
     /// Radius of a round feature, inches (0 for every other kind).
     pub radius: f64,
+    /// Thickness of the feature, inches. 0 is solid down to the ground; a
+    /// positive value makes a shell of that thickness under the top (a
+    /// planter or a pool).
+    pub thickness: f64,
+    /// Hide the part of this feature that a lower feature cuts (planters and pools).
+    pub clip_overlap: bool,
+    /// Label, schedule category and object information.
+    pub extras: ObjectExtras,
 }
 
 /// Corners of the polygon a round feature is drawn with.
@@ -170,6 +186,9 @@ impl Default for Feature {
             control: Vec::new(),
             center: Point::new(0.0, 0.0),
             radius: 0.0,
+            thickness: 0.0,
+            clip_overlap: false,
+            extras: ObjectExtras::default(),
         }
     }
 }
@@ -229,6 +248,11 @@ pub enum RoadKind {
     /// Road Marking / Stripe: a thin painted line laid on the ground or on a
     /// road (centerline stripe, crosswalk bar, parking line).
     Marking,
+    /// A polyline island inside a road: it cuts a hole in the road that
+    /// shows the terrain material, with its own curb when the road has one.
+    Median,
+    /// A round road end placed on the end of a road.
+    CulDeSac,
 }
 
 impl RoadKind {
@@ -239,16 +263,24 @@ impl RoadKind {
             RoadKind::Driveway => "Driveway",
             RoadKind::Sidewalk => "Sidewalk",
             RoadKind::Marking => "Road Marking",
+            RoadKind::Median => "Median",
+            RoadKind::CulDeSac => "Cul-de-sac",
         }
     }
 
     /// Material a strip of this kind is built of until it names its own.
     pub fn default_material(self) -> &'static str {
         match self {
-            RoadKind::Road | RoadKind::Driveway => "Asphalt",
+            RoadKind::Road | RoadKind::Driveway | RoadKind::CulDeSac => "Asphalt",
             RoadKind::Sidewalk => "Concrete",
             RoadKind::Marking => "Paint",
+            RoadKind::Median => "Grass",
         }
+    }
+
+    /// Kinds drawn as a closed outline rather than along a centerline.
+    pub fn is_outline_kind(self) -> bool {
+        matches!(self, RoadKind::Median | RoadKind::CulDeSac)
     }
 }
 
@@ -275,6 +307,29 @@ pub struct RoadStrip {
     pub color: Option<[u8; 3]>,
     /// Layer the strip is drawn on; empty draws it on the terrain's own layer.
     pub layer: String,
+    /// A polyline road, driveway or sidewalk (and a median or cul-de-sac) is
+    /// a closed outline instead of a centerline strip: when this has three
+    /// or more points it is the shape and `centerline` is ignored.
+    pub outline: Vec<Point>,
+    /// Center of a cul-de-sac.
+    pub center: Point,
+    /// Radius of a cul-de-sac, inches (0 for every other kind).
+    pub radius: f64,
+    /// How far the top stands above the terrain, inches (negative sinks it).
+    pub to_top: f64,
+    /// Thickness of the slab, inches (0 draws a thin sheet on the ground).
+    pub thickness: f64,
+    /// Flare at the start of the strip: radius of the fillet where it meets
+    /// another road, inches (`None` has no flare).
+    pub flare_start: Option<f64>,
+    /// Flare at the end of the strip.
+    pub flare_end: Option<f64>,
+    /// Width of the curb blocks, inches.
+    pub curb_width: f64,
+    /// Leave a gap in the curb where a driveway or sidewalk crosses it.
+    pub cut_curb: bool,
+    /// Label, schedule category and object information.
+    pub extras: ObjectExtras,
 }
 
 /// Default width of a road marking, inches.
@@ -323,9 +378,22 @@ impl Default for RoadStrip {
             dashed: false,
             color: None,
             layer: String::new(),
+            outline: Vec::new(),
+            center: Point::new(0.0, 0.0),
+            radius: 0.0,
+            to_top: 0.0,
+            thickness: 0.0,
+            flare_start: None,
+            flare_end: None,
+            curb_width: DEFAULT_CURB_WIDTH,
+            cut_curb: true,
+            extras: ObjectExtras::default(),
         }
     }
 }
+
+/// Default width of the curb blocks, inches.
+pub const DEFAULT_CURB_WIDTH: f64 = 6.0;
 
 /// The building pad: the terrain under the house is levelled to the first
 /// floor less the plan's "terrain to first floor" distance
@@ -428,6 +496,8 @@ pub struct Terrain {
     pub contour_label_spacing: f64,
     /// Label only the major contours.
     pub contour_label_major_only: bool,
+    /// Label the primary (major) contours at all.
+    pub label_primary: bool,
     /// The building pad, levelled under the house.
     pub building_pad: Option<BuildingPad>,
     /// Level the building pad (when one is defined).
@@ -447,6 +517,48 @@ pub struct Terrain {
     pub contour_primary: ContourStyle,
     /// Line style of the secondary (minor) contours.
     pub contour_secondary: ContourStyle,
+    /// Absolute Elevation: how the terrain meets Floor 1.
+    pub absolute_elevation: AbsoluteElevation,
+    /// The placed Terrain Elevation Reference Point (`None` uses the middle of
+    /// the perimeter's box).
+    pub reference_point: Option<Point>,
+    /// Vertical distance from the Floor 1 subfloor to the surface at the
+    /// Reference Point or at contour 0 (normally negative), inches.
+    pub surface_offset: f64,
+    /// Elevation of the Floor 1 subfloor the retained modes measure from, inches.
+    pub floor_one_elevation: f64,
+    /// The 3D skirt around the terrain edge.
+    pub skirt: Skirt,
+    /// Leave the terrain out inside the building (Hide Terrain Intersected by
+    /// Building): no surface or contours under the house.
+    pub hide_under_building: bool,
+    /// Terrain Surface Smoothing.
+    pub smoothing_level: SmoothingLevel,
+    /// Surface triangle detail.
+    pub triangle_detail: TriangleDetail,
+    /// Triangle count of the Custom detail.
+    pub custom_triangles: u32,
+    /// Largest triangle edge, inches (0 = not used).
+    pub max_triangle_size: f64,
+    /// Contour offset: contours fall at the offset plus whole intervals, inches.
+    pub contour_offset: f64,
+    /// Units of the contour labels.
+    pub contour_label_units: LabelUnits,
+    /// Label the contours below elevation 0 in red.
+    pub highlight_negative: bool,
+    /// Smooth the contour lines in 2D.
+    pub contour_smoothing: bool,
+    /// Passes of the 2D contour smoothing.
+    pub contour_smooth_passes: u32,
+    /// What the last Build Terrain made (`None` before the first build and
+    /// after Clear Terrain).
+    pub last_build: Option<BuildStats>,
+    /// Label, schedule category and object information of the perimeter.
+    pub perimeter_extras: ObjectExtras,
+    /// The season plant images are shown in.
+    pub season: crate::plants::Season,
+    /// Extras of the objects that do not carry them (points, regions, modifiers).
+    pub side_extras: crate::spec::SideExtras,
 }
 
 impl Default for Terrain {
@@ -476,6 +588,7 @@ impl Default for Terrain {
             contour_major_every: DEFAULT_MAJOR_EVERY,
             contour_label_spacing: DEFAULT_LABEL_SPACING,
             contour_label_major_only: true,
+            label_primary: true,
             building_pad: None,
             flatten_pad: true,
             north_angle: 0.0,
@@ -484,6 +597,25 @@ impl Default for Terrain {
             dirt_material: DEFAULT_DIRT_MATERIAL.into(),
             contour_primary: ContourStyle::default(),
             contour_secondary: ContourStyle::default(),
+            absolute_elevation: AbsoluteElevation::Automatic,
+            reference_point: None,
+            surface_offset: DEFAULT_SURFACE_OFFSET,
+            floor_one_elevation: 0.0,
+            skirt: Skirt::default(),
+            hide_under_building: false,
+            smoothing_level: SmoothingLevel::Passes,
+            triangle_detail: TriangleDetail::Grid,
+            custom_triangles: DEFAULT_CUSTOM_TRIANGLES,
+            max_triangle_size: 0.0,
+            contour_offset: 0.0,
+            contour_label_units: LabelUnits::FeetInches,
+            highlight_negative: false,
+            contour_smoothing: false,
+            contour_smooth_passes: DEFAULT_CONTOUR_SMOOTH_PASSES,
+            last_build: None,
+            perimeter_extras: ObjectExtras::default(),
+            season: crate::plants::Season::Summer,
+            side_extras: Default::default(),
         }
     }
 }

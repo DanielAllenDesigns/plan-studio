@@ -3,7 +3,9 @@ use serde::{Deserialize, Serialize};
 /// A 2D point or vector in plan space (inches, Y up).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
 pub struct Point {
+    #[serde(default, deserialize_with = "crate::foreign::finite_or_zero")]
     pub x: f64,
+    #[serde(default, deserialize_with = "crate::foreign::finite_or_zero")]
     pub y: f64,
 }
 

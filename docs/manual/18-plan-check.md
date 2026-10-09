@@ -131,3 +131,31 @@ The limits Plan Check checks are also the minimums the rest of the program holds
 **Check while drawing.** With **Tools > Checks > Check While Drawing** on (it is on by default, and a preference on the Architectural page), Plan Check re-counts after each edit the rule groups the edit touched: Stairs and guards, Doors and windows, Rooms and Foundation. The status bar shows `Live check: 2 errors, 1 warning` while there are any, and a Plan Check button on a toolbar shows the count as a red badge. The full list is still **Tools > Checks > Plan Check**.
 
 Local amendments: the settings dialog edits the limits Plan Check has fields for. A limit with no field there (receptacle spacing, for example) can be amended in the plan file under `plancheck.minimum_overrides`, a name to number map (`CodeMinimums::numeric_keys` lists the names).
+
+## 18.7 NKBA kitchen and bath guidelines
+
+Plan Check also holds kitchens and bathrooms to the NKBA Kitchen Planning Guidelines and Bathroom Planning Guidelines. The rules are the group **NKBA** in Plan Check Settings, with a switch for the whole group and a tick for each guideline. They look only at rooms that have a name and type: name a room **Kitchen** or **Bath** (Room Name or Room Specification). An unnamed room is not judged.
+
+**Kitchen.** The doorway into the kitchen is 32" clear and no door swings into a cabinet or appliance. The work triangle (sink, cooktop, refrigerator) has legs of 4' to 9', a total of 13' to 26', and no cabinet or tall appliance cutting into a leg by more than 12". A work aisle is 42" for one cook and 48" for two; seating has knee space for its counter height (15" at 36", 12" at 42", 18" at 30") and 36" behind it (44" where people pass). Landing areas: sink 24" on one side and 18" on the other, cooking surface 15" and 12", refrigerator, oven and microwave 15" beside or across within 48". The dishwasher is within 36" of the sink with 21" of standing space. The cooking surface has 24" (protected) or 30" to a cabinet above, is not under or beside an operable window, and has a hood or fan as wide as the cooktop. The kitchen has a waste receptacle, 158" of counter frontage (198" at 150 sq ft or more; corner cabinets do not count), clipped or rounded island corners, a receptacle within 24" of every counter point and at an island, and GFCI protection within 6' of the sink.
+
+**Bathroom.** The doorway is 32" clear; there is 30" of clear floor in front of the lavatory, tub and shower; the toilet is 16" from a side obstruction (centre line) with 30" clear in front; a shower is at least 36" x 36" inside; shower controls are 38" to 48" up; the walls at the toilet, tub and shower have blocking for grab bars; the lavatory top is 32" to 43" up; lavatories are 30" apart (15" from a side obstruction); there is a mirror at the lavatory; an exhaust fan or a 3 sq ft window; a receptacle within 36" of each lavatory; and GFCI protection near the lavatory, tub and shower.
+
+Each finding names the room and the measured value, and **Zoom to** selects the object (fixture, cabinet, door) or the place.
+
+**Kitchen and Bath report.** **Tools > Checks > Kitchen and Bath Report** lists every guideline of every kitchen and bathroom as *Met*, *Not met*, *Not in the plan* (nothing for it to apply to), *Not checked* (the model has no data: storage totals, lighting, exhaust cfm, traffic through the triangle, anti-scald valves) or *Switched off*. **Kitchen and Bath Report to Excel...** writes the same rows (Room, Guideline, Requirement, Result, Detail) to a workbook.
+
+## 18.8 Structural calculators
+
+**Tools > Calculators** opens one window with five tabs: **Header/Beam** (IRC R602.7), **Joist Span** (R502.3), **Rafter Span** (R802.4), **Stair** (R311.7.5) and **Deck Beam/Joist** (DCA 6). Pick the species and grade (or type your own values with Custom), the spacing, the loads and the span; the tab shows the span the section makes, what governs it (bending, shear or deflection) and, for headers, the lightest section that carries the opening with its jack studs.
+
+| Tab | Apply button | What it changes |
+|---|---|---|
+| Header/Beam | Apply to Selected Openings | the header (plies, depth, material, jack studs) in the Framing tab of every selected door or window, each sized from its own width |
+| Joist Span | Apply to Floor Framing Defaults | joist size and spacing in Framing Defaults (Build Framing uses them) |
+| Rafter Span | Apply to Roof Framing Defaults | rafter size and spacing in Framing Defaults |
+| Stair | Apply to Selected Stair | total rise, number of risers and tread depth of the selected stair |
+| Deck Beam/Joist | Apply to Selected Deck | joist, spacing, beam, plies and post spacing in the selected deck room's Deck Specification |
+
+Each Apply is one step in Undo. **Use Selection** takes the width of the selected opening or the rise of the selected stair. The stair limits come from the plan's Plan Check Settings.
+
+The spans are computed from the lumber's published design values, not copied from the printed tables, and Southern Pine is not built in. The calculators are a design aid and not a structural design: the printed table of the adopted code decides.

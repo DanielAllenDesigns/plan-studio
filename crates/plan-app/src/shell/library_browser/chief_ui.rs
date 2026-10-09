@@ -10,6 +10,7 @@
 //! window. Licensed content is read in place and never copied.
 
 use super::png;
+use crate::shell::library_panel;
 use crate::tools::library::chief::{self, ChiefSettings, LICENSE_NOTE};
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, TextureHandle, Vec2};
 use plan_calib::{
@@ -178,6 +179,9 @@ pub struct ChiefBrowser {
     pub settings: ChiefSettings,
     /// "Search Chief catalogs".
     pub search_chief: bool,
+    /// The browser's type filter (cabinets, doors, ...); empty keeps all.
+    /// The panel copies it here each frame.
+    pub types: Vec<plan_library::LibType>,
     /// The category (or whole catalog, path empty) whose objects are listed.
     pub selected: Option<(usize, Vec<String>)>,
     pub info: Option<ObjectInfo>,
@@ -202,6 +206,7 @@ impl ChiefBrowser {
         Self {
             settings,
             search_chief: false,
+            types: Vec::new(),
             selected: None,
             info: None,
             scan: Scan::Idle,
@@ -273,6 +278,11 @@ impl ChiefBrowser {
             let folder = self.settings.folder.clone();
             self.scan = Scan::Running(spawn(ctx, move || chief::discover(folder.as_deref())));
         }
+    }
+
+    /// Scans the Chief catalogs again (after Import Library added one).
+    pub fn rescan(&mut self) {
+        self.reset_scan();
     }
 
     fn reset_scan(&mut self) {
@@ -547,10 +557,18 @@ pub fn tree(ui: &mut egui::Ui, st: &mut ChiefBrowser) -> Option<ChiefAction> {
             Some(g) => format!("{title} ({})", g.catalogs.len()),
             None => (*title).to_string(),
         };
-        egui::CollapsingHeader::new(label)
-            .id_salt(("library_chief_group", n))
-            .default_open(false)
-            .show(ui, |ui| {
+        let id = ui.make_persistent_id(("library_chief_group", n));
+        let state =
+            egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false);
+        let open = state.is_open();
+        let mut toggled = false;
+        state
+            .show_header(ui, |ui| {
+                library_panel::folder_icon(ui, open);
+                // The whole title opens and closes the folder.
+                toggled = ui.selectable_label(false, label).clicked();
+            })
+            .body(|ui| {
                 st.ensure_scan(ui.ctx());
                 match &group {
                     None => {
@@ -566,6 +584,15 @@ pub fn tree(ui: &mut egui::Ui, st: &mut ChiefBrowser) -> Option<ChiefAction> {
                     }
                 }
             });
+        if toggled {
+            let mut s = egui::collapsing_header::CollapsingState::load_with_default_open(
+                ui.ctx(),
+                id,
+                false,
+            );
+            s.set_open(!open);
+            s.store(ui.ctx());
+        }
     }
     let status = st.status_line();
     if !status.is_empty() {
@@ -607,6 +634,7 @@ fn catalog_node(ui: &mut egui::Ui, st: &mut ChiefBrowser, idx: usize) {
         .is_some_and(|(i, p)| *i == idx && *p == prefix);
     let mut pick: Option<(usize, Vec<String>)> = None;
     let header = state.show_header(ui, |ui| {
+        library_panel::folder_icon(ui, open);
         if ui.selectable_label(selected_here, &name).clicked() {
             pick = Some((idx, prefix.clone()));
         }
@@ -654,9 +682,12 @@ fn chief_category(
         .is_some_and(|(i, p)| *i == idx && p == path);
     let label = format!("{} ({})", node.name, node.total_count());
     if node.children.is_empty() {
-        if ui.selectable_label(here, label).clicked() {
-            *pick = Some((idx, path.clone()));
-        }
+        ui.horizontal(|ui| {
+            library_panel::folder_icon(ui, here);
+            if ui.selectable_label(here, label).clicked() {
+                *pick = Some((idx, path.clone()));
+            }
+        });
         return;
     }
     let id = ui.make_persistent_id(("library_chief_cat", idx, path.clone()));
@@ -664,6 +695,7 @@ fn chief_category(
         egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false);
     state
         .show_header(ui, |ui| {
+            library_panel::folder_icon(ui, here);
             if ui.selectable_label(here, label).clicked() {
                 *pick = Some((idx, path.clone()));
             }
@@ -710,7 +742,9 @@ pub fn category_list(
             return (true, None);
         }
     };
-    let objs = view.objects_in(&path, query);
+    let mut objs = view.objects_in(&path, query);
+    let types = st.types.clone();
+    objs.retain(|o| type_ok(&types, o));
     ui.weak(format!(
         "{} object{}",
         objs.len(),
@@ -740,6 +774,21 @@ pub fn category_list(
             }
         });
     (true, action)
+}
+
+/// Does a Chief object pass the browser's type filter? Its category path,
+/// name and keywords are classified like a library item's.
+fn type_ok(types: &[plan_library::LibType], o: &ObjectSummary) -> bool {
+    if types.is_empty() {
+        return true;
+    }
+    let text = format!(
+        "{} {} {}",
+        o.category_path.join(" "),
+        o.name,
+        o.keywords.join(" ")
+    );
+    plan_library::types::classify_text(&text).is_some_and(|t| types.contains(&t))
 }
 
 /// Cross-catalog search results (when "Search Chief catalogs" is on).
@@ -775,7 +824,13 @@ pub fn search_results(
             ""
         }
     ));
-    let hits = st.hits.clone();
+    let types = st.types.clone();
+    let hits: Vec<SearchHit> = st
+        .hits
+        .iter()
+        .filter(|h| type_ok(&types, &h.object))
+        .cloned()
+        .collect();
     let mut thumbs = THUMBS_PER_FRAME;
     let mut sizes = SIZES_PER_FRAME;
     for h in &hits {

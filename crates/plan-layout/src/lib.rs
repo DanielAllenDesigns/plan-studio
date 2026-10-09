@@ -21,12 +21,15 @@
 
 mod annot;
 mod arrange;
+mod cadattrs;
 mod canvas;
 mod clip;
 mod extent;
 mod hatch;
 mod layers;
 mod model;
+mod overlay;
+mod pages;
 mod print;
 mod render;
 mod send;
@@ -48,7 +51,12 @@ pub use model::{
     perspective_pixels, BoxSource, CustomSheetSize, Layout, LayoutBox, LayoutPage, ScaleExt,
     ScheduleKind, SheetChoice, TextAlign, DANIEL_SIZES, DEFAULT_PERSPECTIVE_DPI,
     DEFAULT_PERSPECTIVE_SAMPLES, LABEL_GAP_IN, LAYOUT_EDGE_WEIGHT, MAX_PERSPECTIVE_PIXELS,
-    MAX_PERSPECTIVE_SIDE_PX, MAX_SHEET_SIDE_IN, MIN_SHEET_SIDE_IN,
+    MAX_PERSPECTIVE_SIDE_PX, MAX_SHEET_SIDE_IN, MAX_SNAP_UNIT_IN, MIN_SHEET_SIDE_IN,
+    MIN_SNAP_UNIT_IN, DEFAULT_SNAP_UNIT_IN,
+};
+pub use pages::{
+    resolve_labels, revision_rows, PageInfo, PageNumbers, PageRevision, PAGE_TABLE_COLUMNS,
+    REVISION_TABLE_COLUMNS,
 };
 pub use print::{
     layout_print_preview, plan_print_scale, plan_view_image, plan_view_print_preview,
@@ -70,15 +78,20 @@ pub use send::{
 pub use template::{template_file_stem, LayoutTemplate, TEMPLATE_EXTENSION, TEMPLATE_VERSION};
 pub use textfit::{fit_text_box, wrap_lines, FittedText, TextFit, MIN_SHRINK_PT};
 pub use titleblock::{
-    long_date, MacroContext, TitleBlockStyle, TitleBlockTemplate, DANIEL_REVISION_ROWS,
+    long_date, MacroContext, PageMacros, TitleBlockStyle, TitleBlockTemplate, DANIEL_REVISION_ROWS,
 };
 
 pub use extent::{box_table, source_size_in};
+pub use overlay::{OverlayShape, PlanOverlayFn, PlanOverlayItem};
 
+#[cfg(test)]
+mod drawing_group_tests;
 #[cfg(test)]
 mod feature_tests;
 #[cfg(test)]
 mod font_tests;
+#[cfg(test)]
+mod overlay_tests;
 #[cfg(test)]
 mod page_tools_tests;
 #[cfg(test)]

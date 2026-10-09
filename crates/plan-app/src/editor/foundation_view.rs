@@ -88,59 +88,66 @@ pub fn edit(cx: &mut EditorContext, label: &str, edit: impl FnOnce(&mut Foundati
     cx.mark_dirty();
 }
 
+/// Like [`edit`] for an edit that adds an object: the new id is taken after
+/// the undo step is recorded, so undo gives it back (QA-27).
+fn edit_new(
+    cx: &mut EditorContext,
+    label: &str,
+    edit: impl FnOnce(Id, &mut FoundationLayer),
+) -> Id {
+    cx.begin_change(label);
+    let id = cx.project.alloc_id();
+    let mut layer = load(cx);
+    edit(id, &mut layer);
+    let fl = cx.floor;
+    save(&mut cx.project, fl, &layer);
+    cx.mark_dirty();
+    id
+}
+
 /// Adds a slab (with the default footing when `footing`); returns its id.
 pub fn add_slab(cx: &mut EditorContext, outline: Vec<Point>, footing: bool) -> Id {
-    let id = cx.project.alloc_id();
     let label = if footing { "Slab with Footing" } else { "Slab" };
-    edit(cx, label, |l| {
+    edit_new(cx, label, |id, l| {
         let mut s = Slab::new(id, outline);
         if footing {
             s.footing = Some(Footing::default());
         }
         l.slabs.push(s);
-    });
-    id
+    })
 }
 
 /// Adds a hole in the slab floor; returns its id.
 pub fn add_slab_hole(cx: &mut EditorContext, outline: Vec<Point>, footing: bool) -> Id {
-    let id = cx.project.alloc_id();
     let label = if footing {
         "Slab Hole with Footing"
     } else {
         "Slab Hole"
     };
-    edit(cx, label, |l| {
+    edit_new(cx, label, |id, l| {
         l.holes.push(SlabHole::new(id, outline, footing));
-    });
-    id
+    })
 }
 
 /// Adds a square pad centered on `center`; returns its id.
 pub fn add_pad(cx: &mut EditorContext, center: Point) -> Id {
-    let id = cx.project.alloc_id();
-    edit(cx, "Square Pad", |l| l.pads.push(Pad::new(id, center)));
-    id
+    edit_new(cx, "Square Pad", |id, l| l.pads.push(Pad::new(id, center)))
 }
 
 /// Adds a round pier centered on `center`; returns its id.
 pub fn add_pier(cx: &mut EditorContext, center: Point) -> Id {
-    let id = cx.project.alloc_id();
-    edit(cx, "Round Pier", |l| l.piers.push(Pier::new(id, center)));
-    id
+    edit_new(cx, "Round Pier", |id, l| l.piers.push(Pier::new(id, center)))
 }
 
 /// Adds a hole in the floor or ceiling platform; returns its id.
 pub fn add_platform_hole(cx: &mut EditorContext, outline: Vec<Point>, kind: PlatformKind) -> Id {
-    let id = cx.project.alloc_id();
     let label = match kind {
         PlatformKind::Floor => "Hole in Floor Platform",
         PlatformKind::Ceiling => "Hole in Ceiling Platform",
     };
-    edit(cx, label, |l| {
+    edit_new(cx, label, |id, l| {
         l.platform_holes.push(PlatformHole::new(id, outline, kind));
-    });
-    id
+    })
 }
 
 /// Deletes the object as one undo step; returns whether it existed.

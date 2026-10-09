@@ -183,6 +183,13 @@ pub fn report_camera(center: Point, zoom: f64) {
     with_tabs(|t| t.report_camera(center, zoom));
 }
 
+/// Where the shell last reported the camera: the plan point at the centre of
+/// the drawing area and the zoom in pixels per inch (a Library Browser drop
+/// turns the pointer into a plan point with it).
+pub fn reported_camera() -> Option<CameraState> {
+    with_tabs(|t| t.camera)
+}
+
 /// The camera to show now, if a tab switch or Reset Plan View asked for one.
 pub fn take_pending_camera() -> Option<CameraState> {
     with_tabs(PlanTabs::take_pending_camera)

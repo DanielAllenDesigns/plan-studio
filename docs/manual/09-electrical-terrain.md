@@ -232,15 +232,17 @@ Specification, with sloped sides. The Building Pad page edits the margin, the sl
 | Straight Terrain Wall, Straight Terrain Curb | Click a polyline. |
 | Curved Terrain Wall, Curved Terrain Curb | Click the start and end, then a third click sets the bulge of the arc. |
 
-A terrain wall follows the ground: its top is a set height above the terrain along the whole path (3'-0" for a
+A terrain wall sits on top of the terrain and follows it: its top is a set height above the terrain along the whole path (5'-0" for a
 wall, 6" for a curb) and its bottom a footing depth below it (1'-0" and 4"). Thickness defaults to 8" and 6".
 
 A wall also **cuts the terrain surface**. The strip under the wall is a gap with vertical faces, so contours stop
 at the wall. The ground on the left of the drawing direction keeps its grade (the retained side) and the ground on
-the right is lowered by the wall's *grade step* (2'-0" for a new wall, none for a curb), sloping back up to the
+the right is lowered by the wall's *grade step* (none for a new wall or curb; set it in the specification), sloping back up to the
 existing ground at 1:4. Untick "Cut the terrain along the wall" to leave the surface whole.
 
-A new terrain wall is a **retaining wall with a stepped top**: in 3D its top holds level and drops in whole courses (8" by default; the *Course height* in the specification) as the ground falls, with a vertical riser at each step, instead of following every bump of the ground. Untick "Stepped top" for a top that follows the ground. A curb is never stepped.
+**Stepped top** is an option of the specification: in 3D the top then holds level and drops in whole courses (8" by default; the *Course height*) as the ground falls, with a vertical riser at each step, instead of following every bump of the ground. A new wall and a curb are not stepped.
+
+**Straight Retaining Wall and Curved Retaining Wall** (Terrain Wall and Curb flyout) make a **Terrain Break plus a wall** in one undo step. The program reads the ground 3' either side of the wall, turns the path round when needed so the **high side is on its left** (the retained side), puts the wall's top at the high side and its bottom a 1'-0" footing below the low side, and sets the wall's grade step to the drop between the two sides. The break follows the ground (it holds no elevation of its own), so the contours stay sharp at the wall. On flat ground a retaining wall is a concrete strip.
 
 ### Landscaping
 
@@ -265,10 +267,12 @@ kidney shapes are stored flattened as polylines.
 
 | Variant | Gesture |
 |---|---|
-| Polyline Road | Click a polyline, `Enter` or double-click, type the width (default 20'-0"). |
-| Polyline Driveway | Same, default width 12'-0". |
-| Polyline Sidewalk | Same, default width 4'-0". |
+| Straight Road | Click a polyline, `Enter` or double-click, type the width (default 20'-0"). |
+| Straight Driveway | Same, default width 12'-0". |
+| Straight Sidewalk | Same, default width 4'-0". |
 | Spline Road, Spline Driveway, Spline Sidewalk | The same, with the clicks as control points of a curve. |
+| Polyline Road, Polyline Driveway, Polyline Sidewalk, Median | Click the corners of an outline, `Enter` closes it (see Round 15 below). |
+| Cul-de-sac, Auto Generate Sidewalk | Click on the end of a road; click a road and type the offset. |
 | Polyline Road Marking, Spline Road Marking | A painted stripe: click a polyline, `Enter`, type the line width (default 4"). Dashed, color and layer are in the specification. |
 
 A **road marking** (stripe) lies on whatever is under it: on the ground, or on the crown of a road it crosses (0.3" above the surface), in white paint in 3D; a dashed marking is cut into 10' dashes with 20' gaps. The plan draws it as a line of its true width in traffic yellow (or the color you pick). A road's *Material* (Asphalt, Concrete, Gravel, Brick, Stone) sets its 3D surface.
@@ -294,9 +298,9 @@ At the top of the Terrain menu:
 | Create Terrain Perimeter | Starts the Terrain Perimeter tool. |
 | Terrain Specification... | Opens the Terrain Specification (9.8). |
 | Build Terrain | Builds the surface and contours. |
-| Clear Terrain | Resets the terrain record (one undo step). "There is no terrain to clear" if none. |
+| Clear Terrain | Removes what Build Terrain generated (see Round 15 below); "There is no terrain to clear" if none. |
 | Make Terrain Hole Around Building | Cuts a hole in the surface 12" outside the building footprint. |
-| Site Objects > Import Terrain Data... | Opens the Import Terrain Data dialog (9.8a). |
+| Site Objects > Import Terrain Data... , Import GPS Data... (also File > Import) | Open the Import Terrain Assistant and the Import GPS Data Assistant (9.8a). |
 | Site Objects > Terrain Cut and Fill Report... | Opens the report of the soil every graded pad moves (9.8a). |
 
 ### Editing
@@ -368,10 +372,39 @@ Stepping Stone, Plant, Sprinkler, Road, Driveway, Sidewalk, Road Marking, Elevat
 Elevation lines, points, regions, modifiers and holes show General only; a road shows General and Layer; a path object (break, stepping stones, plants, sprinklers) has General,
 Line Style and Layer.
 
+### Round 15: the rest of the Terrain Specification
+
+The **General** page now follows Chief's Absolute Elevation. *Absolute elevation: automatic* (the default) lets the program set the distance between Floor 1 and the terrain (6"; the field shows it). Unticked, you choose **Retain surface elevation at: Reference Point or Contour 0**, type *Surface at Reference Point* (or *at Contour 0*, the vertical distance from the Floor 1 subfloor to the surface, normally negative) and the *Floor 1 subfloor elevation*. The whole terrain then moves vertically so that the surface at that place sits where you said, which lets real survey elevations (1,000 ft above sea level) sit under a Floor 1 that starts at 0. The **Terrain Elevation Reference Point** has its own tools in the Elevation Data flyout (*Terrain Elevation Reference Point* places it by a click, *Remove Terrain Elevation Reference Point* takes it away); the plan draws a ringed cross at it while the perimeter is selected, and the page has X and Y fields. Without a placed point the middle of the perimeter's box is used.
+
+Also on General: *Hide terrain intersected by building* (no surface or contours inside the building footprint); **Skirt** (a wall hanging from the terrain edge in 3D: thickness, *Flat base* below the lowest point or *Follow terrain* at a constant distance under the surface; its material is on the Materials page); **Terrain surface smoothing** (*Linear*: flat triangles between the data points; *Low*, *Medium*, *High*; or a custom number of passes); **Triangle count** (*Low* 1000, *Medium* 2000, *High* 4000, *Custom*, or the grid spacing with a *Maximum triangle size*) with a readout of the estimate and of the triangles of the last build; and the *Season* plant images are shown in.
+
+**Contours** adds *Offset* (lines fall at the offset plus whole intervals), *Smooth the contour lines* with its passes, *Label units* (feet and inches, inches, decimal feet) and *Highlight negative elevations* (labels below 0 in red), with separate switches to label the primary and the secondary contours. Primary and secondary contours and their labels draw on the layers **Terrain, Primary Contours** and **Terrain, Secondary Contours**, so Layer Display Options can hide either family.
+
+The perimeter has **Polyline** (perimeter, area, number of lines), **Label**, **Object Information** and **Schedule** pages. **Clear Terrain** is meant to remove only what Build Terrain generated (the surface and the contours) and keep the perimeter, the elevation data and the objects; `TerrainRecord::clear_generated` does that; wiring the menu command to it is on the integration queue, so until then the command still resets the record.
+
+### Round 15: object panels and labels
+
+Every terrain object now has the panels Chief gives it. **Polyline** shows the perimeter or length, area, volume and number of lines (read only). **Label** switches a label on (the *Terrain Labels* layer), with custom text or the automatic one and an offset; the **Terrain Labels** tool (Elevation Data flyout) switches a label on or off with a click. **Object Information** holds manufacturer, supplier, code, comment and URL. **Schedule** moves the object to another category of the terrain schedule: *Terrain Perimeter*, *Driveways*, *Medians*, *Roads*, *Road Markings*, *Terrain Paths* (sidewalks, terrain walls and curbs) and *Terrain Features* (features, modifiers, garden beds, grass, water features, stepping stones); the General schedule lists them under those categories.
+
+Elevation data: an **Elevation Point** has **Display** (a note beside the point with an *Insert Macro* button for `%elevation%`, and the marker radius) and Line Style; an **Elevation Region** has *Interior is flat* (unticked, only the outline is held) and *Interpolate tangent to the edge*; a **Terrain Break** has a *Transition distance* (how far its elevation reaches) and can *follow the ground*. Modifiers (Hill, Valley, Raised, Lowered, Flat) have Polyline, Line Style, Fill Style, Label, Object Information and Schedule pages. A **Terrain Feature** has *Terrain to top* (negative sinks it), *Thickness* (a shell under the top, for a planter or a pool) and *Clip overlapping terrain features* (the part of a feature that a lower feature covers is left out). A **Grass Region** has **Blades** (density, minimum and maximum height, width and curve) and **Appearance** (blade colors, noise frequency, roughness and mowing); in 3D the region takes the average blade color. A **Garden Bed** has a **Distributed Plant** page: pick a plant and a spacing and copies of it are spread over the bed (staggered rows, an edge margin), drawn in plan and in 3D.
+
+### Round 15: roads
+
+Roads have **Polyline Road, Polyline Driveway, Polyline Sidewalk** (click the corners of an outline; the vertex handles reshape it), **Median** (a polyline inside a road: the terrain material over the road with its own curb when the road has one), **Cul-de-sac** (click on the end of a road: a round road end; a click away from any road end places a free one) and **Auto Generate Sidewalk** (click a road, type the offset from it: a sidewalk on each side of the road and of every road joined to it). The old Polyline tools are now called Straight Road, Straight Driveway and Straight Sidewalk. A road or path specification adds **Terrain to top**, **Thickness** (a slab with side faces), **Flare** (check Start or End and give a radius: the strip widens into a quarter-circle fillet where it meets another road) and **Curb** (height, width, and *Cut the curb for driveways and sidewalks* so a gap is left where they cross).
+
+### Round 15: survey and GPS import, plants
+
+**File > Import > Terrain Data** is the Import Terrain Assistant in three pages. *Select File* picks a DXF, GPX or text file (or paste text) and the **data organization**: detected, XYZ, #XYZ, #XYZ Description, YXZ, #YXZ or #YXZ Description, with the delimiter and the header lines to skip. *Filter Data* shows the point count and the extent of each axis, lets you limit X, Y and Z to a range and **reduce to a number of evenly spread points** (it warns above 2,000 points). *Scale Data* sets the units of each axis, maps a file point to the plan origin, scales the relief and **rotates north counterclockwise**; options center the survey on the perimeter, lower the lowest point to 0, and **create a perimeter around the data when there is none**.
+
+**File > Import > GPS Data** is the Import GPS Data Assistant: *Select File* (a GPX 1.1 file; way points carry elevation, track points do not, route points are ignored), *Import As* (way points as Elevation Data, Marker, Polyline or Terrain Perimeter; track points as Marker, Polyline or Perimeter) and *Transform Coordinates* (lower the elevation data by an amount, rotate north, map a latitude and longitude to the plan origin). Markers and polylines become CAD objects on the Site Plan layer; the whole import is one undo step.
+
+A plant run can use **plant images**: tick *Draw the plants as images* on the Plant Image page (image file, 2D symbol, size with an aspect-ratio lock, elevation to top or bottom, center point, reverse, always face the camera, copyright, transparent color). In 3D each plant is a billboard tinted for the plan's *Season* (spring, summer, autumn, winter, each with a tint and a foliage share; a bare winter tree has a thin crown). **Terrain > Plant > Grow All Plants** opens a 0 to 20 year slider that scales every plant run that has a mature height and age (the Plant Chooser sets them from the catalog); OK stores the sizes as one undo step. A **Sprinkler Line** (Polyline Sprinkler Line, Spline Sprinkler Line) is 2D irrigation pipe: a dashed line in plan, nothing in 3D.
+
 ## 9.9 Differences from Chief
 
 - Sprinkler heads are not connected to a supply, and the 3D water surface is flat (the ripple is a plan fill).
 - Build Terrain runs on the UI thread: it reports its stages (with a percentage) in the readout while it builds and ends with a triangle count and time, with no separate progress bar.
+- Round 15 estimates that Chief does not publish and marks "verify in Chief": the automatic floor-to-terrain distance (6", not the foundation-dependent value), the skirt and Hide Terrain Intersected by Building being off by default, the Low, Medium and High smoothing passes (1, 3, 6), the median as a patch laid over the road instead of a hole cut in it, the flare as a quarter circle, the 3D grass being a tinted surface (no blades) and the plant-image seasons.
 - The tab layout of the Terrain Specification, the stepped-wall course height, the road-marking defaults (4" wide, 10' dashes with 20' gaps, yellow in plan, white in 3D) and the Import Terrain Data dialog are modeled on Chief's but not captured from it (verify in Chief); see `DECISIONS.md`.
 - Plants are terrain-owned runs, not placed library symbols: the Plant Schedule (chapter 11.2) does not list them and Replace
   From Library does not see them.

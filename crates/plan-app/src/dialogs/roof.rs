@@ -251,6 +251,10 @@ impl SpecPages for BuildPages {
                 .on_hover_text(
                     "Rooms with Ceiling Over This Room turned off get ceiling planes that follow the roof",
                 );
+                ui.checkbox(&mut self.s.build_attic_floor, "Build attic floor")
+                    .on_hover_text(
+                        "Also add the attic floor (attic walls and an Attic room) under the roof",
+                    );
                 section(ui, "Defaults for walls without their own roof settings");
                 pitch_row(ui, "Pitch", &mut self.s.pitch);
                 self.fields

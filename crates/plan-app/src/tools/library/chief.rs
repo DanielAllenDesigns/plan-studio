@@ -144,12 +144,147 @@ pub fn install_folder_exists(folder: Option<&Path>) -> bool {
     }
 }
 
+// ----- imported catalogs (Library > Import Library, .calib / .calibz) -----
+
+/// Settings key of the catalogs the user added with Import Library.
+const IMPORTS_KEY: &str = "library_imports";
+
+thread_local! {
+    /// Tests point the imports at a temporary file.
+    static IMPORTS_PATH: RefCell<Option<Option<PathBuf>>> = const { RefCell::new(None) };
+}
+
+/// Makes the imported-catalog list live in `path` (or nowhere, for `None`)
+/// instead of `~/.plan-studio/settings.json`. For tests.
+#[cfg(test)]
+pub(crate) fn set_imports_path(path: Option<Option<PathBuf>>) {
+    IMPORTS_PATH.with(|p| *p.borrow_mut() = path);
+}
+
+fn imports_path() -> Option<PathBuf> {
+    match IMPORTS_PATH.with(|p| p.borrow().clone()) {
+        Some(over) => over,
+        None => crate::paths::user_file("settings.json"),
+    }
+}
+
+fn read_imports(doc: &Value) -> Vec<PathBuf> {
+    doc.get(IMPORTS_KEY)
+        .and_then(|o| o.get("catalogs"))
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(Value::as_str)
+                .map(PathBuf::from)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn load_doc(path: &Path) -> Value {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .filter(Value::is_object)
+        .unwrap_or_else(|| json!({}))
+}
+
+/// The catalog files the user imported (read in place, never copied).
+pub fn imported_catalogs() -> Vec<PathBuf> {
+    imports_path()
+        .map(|p| read_imports(&load_doc(&p)))
+        .unwrap_or_default()
+}
+
+fn save_imports(list: &[PathBuf]) -> Result<(), String> {
+    let path = imports_path().ok_or(crate::paths::NO_HOME)?;
+    let mut doc = load_doc(&path);
+    doc[IMPORTS_KEY] = json!({
+        "catalogs": list.iter().map(|p| p.to_string_lossy().into_owned()).collect::<Vec<_>>(),
+    });
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    let text = serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?;
+    std::fs::write(&path, text).map_err(|e| e.to_string())
+}
+
+/// Registry entries for the imported catalogs that still exist (kind User:
+/// they list under the User Catalog node).
+fn imported_entries() -> Vec<RegistryEntry> {
+    imported_catalogs()
+        .into_iter()
+        .filter(|p| p.is_file())
+        .map(|p| RegistryEntry {
+            uuid: ChiefCatalog::peek_id(&p)
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| p.to_string_lossy().into_owned()),
+            name: p
+                .file_stem()
+                .map_or_else(String::new, |s| s.to_string_lossy().into_owned()),
+            kind: CatalogKind::User,
+            path: Some(p),
+        })
+        .collect()
+}
+
+/// Adds a Chief `.calib` / `.calibz` file to the Library Browser, read in
+/// place and read-only (nothing is copied). Returns the catalog's name. The
+/// file must open as a Chief catalog.
+pub fn register_catalog(path: &Path) -> Result<String, String> {
+    let cat = ChiefCatalog::open(path).map_err(|e| {
+        format!(
+            "{} is not a readable Chief Architect catalog: {e}",
+            path.display()
+        )
+    })?;
+    let name = path.file_stem().map_or_else(
+        || cat.name().to_owned(),
+        |s| s.to_string_lossy().into_owned(),
+    );
+    let mut list = imported_catalogs();
+    if !list.iter().any(|p| p == path) {
+        list.push(path.to_path_buf());
+        save_imports(&list)?;
+    }
+    Ok(name)
+}
+
+/// Removes an imported catalog from the Library Browser (the file stays).
+pub fn unregister_catalog(path: &Path) -> Result<bool, String> {
+    let mut list = imported_catalogs();
+    let n = list.len();
+    list.retain(|p| p != path);
+    if list.len() == n {
+        return Ok(false);
+    }
+    save_imports(&list)?;
+    Ok(true)
+}
+
 // ----- discovery -----
 
 /// Finds the catalogs: the standard registry and install folders, or, with an
 /// override, `folder` as the install root (registry file from the standard
 /// place when present, else a plain scan of the folders).
 pub fn discover(folder: Option<&Path>) -> ChiefLibrary {
+    let base = discover_install(folder);
+    let extra = imported_entries();
+    if extra.is_empty() {
+        return base;
+    }
+    let mut entries = base.catalogs().to_vec();
+    let fresh: Vec<RegistryEntry> = extra
+        .into_iter()
+        .filter(|e| !entries.iter().any(|x| x.path == e.path))
+        .collect();
+    entries.extend(fresh);
+    ChiefLibrary::from_entries(entries)
+}
+
+/// The install's own catalogs (no imported ones).
+fn discover_install(folder: Option<&Path>) -> ChiefLibrary {
     let Some(root) = folder else {
         return ChiefLibrary::discover();
     };
@@ -656,6 +791,78 @@ mod tests {
             strokes.is_some_and(|s| !s.is_empty()),
             "2D uses the bridged symbol"
         );
+    }
+
+    #[test]
+    fn imported_catalogs_are_listed_saved_and_forgotten() {
+        let dir = std::env::temp_dir().join(format!(
+            "ps-imports-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let settings = dir.join("settings.json");
+        // The settings file keeps its other keys.
+        std::fs::write(&settings, r#"{"theme":"dark"}"#).unwrap();
+        set_imports_path(Some(Some(settings.clone())));
+        assert!(imported_catalogs().is_empty());
+        // Something that is no Chief catalog is refused and not remembered.
+        let junk = dir.join("junk.calib");
+        std::fs::write(&junk, "not a database").unwrap();
+        assert!(register_catalog(&junk).is_err());
+        assert!(imported_catalogs().is_empty());
+        // The saved list round trips, ignoring files that vanished.
+        save_imports(&[junk.clone(), dir.join("gone.calib")]).unwrap();
+        assert_eq!(
+            imported_catalogs(),
+            vec![junk.clone(), dir.join("gone.calib")]
+        );
+        assert!(imported_entries().iter().all(|e| e.path.is_some()));
+        let doc: Value =
+            serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+        assert_eq!(doc["theme"], "dark");
+        assert!(unregister_catalog(&junk).unwrap());
+        assert!(!unregister_catalog(&junk).unwrap());
+        assert_eq!(imported_catalogs(), vec![dir.join("gone.calib")]);
+        set_imports_path(None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Library > Import Library on a real `.calib` that Chief's registry does
+    /// not list (its Trash): added read-only, in place; run with `--ignored`.
+    #[test]
+    #[ignore = "reads Daniel's Chief data folder"]
+    fn real_install_import_library_adds_a_calib_in_place() {
+        let home = crate::paths::home_dir().expect("a home");
+        let trash =
+            home.join("Documents/Chief Architect Premier X18 Data/Database Libraries/Trash.calib");
+        if !trash.is_file() {
+            eprintln!("no Chief Trash.calib: skipped");
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("ps-imports-real-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        set_imports_path(Some(Some(dir.join("settings.json"))));
+        let before = std::fs::metadata(&trash).unwrap().modified().unwrap();
+        assert_eq!(register_catalog(&trash).unwrap(), "Trash");
+        let lib = discover(None);
+        let e = lib
+            .catalogs()
+            .iter()
+            .position(|e| e.path.as_deref() == Some(trash.as_path()))
+            .expect("the imported catalog is listed");
+        assert_eq!(lib.catalogs()[e].kind, CatalogKind::User);
+        lib.open(e).expect("it opens read-only");
+        // Read in place: the file is untouched and nothing was copied.
+        assert_eq!(
+            std::fs::metadata(&trash).unwrap().modified().unwrap(),
+            before
+        );
+        assert!(unregister_catalog(&trash).unwrap());
+        set_imports_path(None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Needs Daniel's installed Chief catalogs; run with `--ignored`.

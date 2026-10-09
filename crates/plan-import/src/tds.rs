@@ -96,7 +96,9 @@ fn color_of(chunk_body: &[u8]) -> Option<[u8; 3]> {
                 return Some([*c.body.first()?, *c.body.get(1)?, *c.body.get(2)?]);
             }
             COLOR_FLOAT | COLOR_FLOAT_GAMMA => {
-                let q = |i: usize| (f32_at(c.body, i * 4).unwrap_or(0.0).clamp(0.0, 1.0) * 255.0).round() as u8;
+                let q = |i: usize| {
+                    (f32_at(c.body, i * 4).unwrap_or(0.0).clamp(0.0, 1.0) * 255.0).round() as u8
+                };
                 return Some([q(0), q(1), q(2)]);
             }
             _ => {}
@@ -147,16 +149,22 @@ fn read_mesh(name: &str, body: &[u8]) -> Option<Mesh> {
                 let n = u16_at(c.body, 0)? as usize;
                 for i in 0..n {
                     let o = 2 + i * 12;
-                    mesh.verts
-                        .push([f32_at(c.body, o)?, f32_at(c.body, o + 4)?, f32_at(c.body, o + 8)?]);
+                    mesh.verts.push([
+                        f32_at(c.body, o)?,
+                        f32_at(c.body, o + 4)?,
+                        f32_at(c.body, o + 8)?,
+                    ]);
                 }
             }
             FACES => {
                 let n = u16_at(c.body, 0)? as usize;
                 for i in 0..n {
                     let o = 2 + i * 8;
-                    mesh.faces
-                        .push([u16_at(c.body, o)?, u16_at(c.body, o + 2)?, u16_at(c.body, o + 4)?]);
+                    mesh.faces.push([
+                        u16_at(c.body, o)?,
+                        u16_at(c.body, o + 2)?,
+                        u16_at(c.body, o + 4)?,
+                    ]);
                 }
                 // Sub-chunks follow the face list.
                 let rest = c.body.get(2 + n * 8..).unwrap_or(&[]);
@@ -324,10 +332,7 @@ pub(crate) mod tests {
 
         let mut lid = chunk(MAT_NAME, &cstr("Lid"));
         lid.extend(chunk(MAT_DIFFUSE, &chunk(COLOR_BYTE, &[200, 30, 20])));
-        lid.extend(chunk(
-            MAT_TEXMAP,
-            &chunk(MAT_TEXFILE, &cstr("lid_oak.jpg")),
-        ));
+        lid.extend(chunk(MAT_TEXMAP, &chunk(MAT_TEXFILE, &cstr("lid_oak.jpg"))));
         let mut editor = chunk(MATERIAL, &lid);
         editor.extend(chunk(OBJECT, &obj));
         chunk(MAIN, &chunk(EDITOR, &editor))
@@ -338,7 +343,11 @@ pub(crate) mod tests {
         let m = parse_3ds(&box_3ds(10.0, 20.0, 30.0), &ModelOptions::default()).unwrap();
         assert_eq!(m.triangle_count(), 12);
         assert_eq!(m.extent().unwrap(), [10.0, 20.0, 30.0]);
-        let lid = m.parts.iter().find(|p| p.material.as_deref() == Some("Lid")).unwrap();
+        let lid = m
+            .parts
+            .iter()
+            .find(|p| p.material.as_deref() == Some("Lid"))
+            .unwrap();
         assert_eq!(lid.triangle_count(), 2);
         assert_eq!(lid.color, Some([200, 30, 20]));
         assert_eq!(lid.texture.as_deref(), Some("lid_oak.jpg"));

@@ -19,10 +19,95 @@ pub struct Connection {
 }
 
 /// All electrical devices and connections of one floor.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+///
+/// Read record by record: a device or connection this build cannot parse (a
+/// newer build's device kind) is kept as raw JSON in `unreadable_devices` /
+/// `unreadable_connections` and written back after the readable ones, so one
+/// strange record never takes its neighbours with it (QA-28). Keys of the
+/// layer this build has no field for are kept in `extra`.
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct ElectricalLayer {
     pub devices: Vec<Device>,
     pub connections: Vec<Connection>,
+    /// Device records that did not parse, as they were read.
+    pub unreadable_devices: Vec<serde_json::Value>,
+    /// Connection records that did not parse, as they were read.
+    pub unreadable_connections: Vec<serde_json::Value>,
+    /// Keys of the layer object that no field here holds.
+    pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+#[derive(Deserialize)]
+struct ElectricalLayerDe {
+    #[serde(default)]
+    devices: Vec<serde_json::Value>,
+    #[serde(default)]
+    connections: Vec<serde_json::Value>,
+    #[serde(flatten)]
+    extra: serde_json::Map<String, serde_json::Value>,
+}
+
+impl<'de> Deserialize<'de> for ElectricalLayer {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let de = ElectricalLayerDe::deserialize(d)?;
+        let (devices, bad_devices) = plan_core::foreign::read_each::<Device>(&de.devices);
+        let (connections, bad_connections) =
+            plan_core::foreign::read_each::<Connection>(&de.connections);
+        Ok(ElectricalLayer {
+            devices,
+            connections,
+            unreadable_devices: bad_devices.into_iter().map(|(_, v)| v).collect(),
+            unreadable_connections: bad_connections.into_iter().map(|(_, v)| v).collect(),
+            extra: de.extra,
+        })
+    }
+}
+
+/// A list of typed records followed by raw ones, written as one JSON array.
+struct Records<'a, T> {
+    typed: &'a [T],
+    raw: &'a [serde_json::Value],
+}
+
+impl<T: Serialize> Serialize for Records<'_, T> {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeSeq;
+        let mut seq = s.serialize_seq(Some(self.typed.len() + self.raw.len()))?;
+        for t in self.typed {
+            seq.serialize_element(t)?;
+        }
+        for r in self.raw {
+            seq.serialize_element(r)?;
+        }
+        seq.end()
+    }
+}
+
+impl Serialize for ElectricalLayer {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut m = s.serialize_map(None)?;
+        m.serialize_entry(
+            "devices",
+            &Records {
+                typed: &self.devices,
+                raw: &self.unreadable_devices,
+            },
+        )?;
+        m.serialize_entry(
+            "connections",
+            &Records {
+                typed: &self.connections,
+                raw: &self.unreadable_connections,
+            },
+        )?;
+        for (k, v) in &self.extra {
+            if k != "devices" && k != "connections" {
+                m.serialize_entry(k, v)?;
+            }
+        }
+        m.end()
+    }
 }
 
 /// Arc sagitta as a fraction of the chord, clamped to a readable range (inches).
@@ -42,8 +127,20 @@ impl ElectricalLayer {
     /// Add a device and return its id. A zero or already-used id is replaced
     /// with the next free one; any other id is kept.
     pub fn add(&mut self, mut device: Device) -> Id {
-        if device.id == 0 || self.device(device.id).is_some() {
-            device.id = self.devices.iter().map(|d| d.id).max().unwrap_or(0) + 1;
+        let unreadable = |id: Id| {
+            self.unreadable_devices
+                .iter()
+                .any(|v| v.get("id").and_then(serde_json::Value::as_u64) == Some(id))
+        };
+        if device.id == 0 || self.device(device.id).is_some() || unreadable(device.id) {
+            let top = self.devices.iter().map(|d| d.id).max().unwrap_or(0);
+            let top_raw = self
+                .unreadable_devices
+                .iter()
+                .filter_map(|v| v.get("id").and_then(serde_json::Value::as_u64))
+                .max()
+                .unwrap_or(0);
+            device.id = top.max(top_raw) + 1;
         }
         let id = device.id;
         self.devices.push(device);

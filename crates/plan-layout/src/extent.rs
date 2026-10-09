@@ -228,6 +228,8 @@ pub fn box_table(b: &crate::model::LayoutBox, cx: &LayoutRenderContext) -> Optio
             Some(cx.materials_table(*floor, category.as_deref()))
         }
         BoxSource::SheetIndex => Some(cx.sheet_index_table()),
+        BoxSource::PageTable => Some(cx.page_table()),
+        BoxSource::RevisionTable => Some(cx.revision_table()),
         _ => None,
     }
 }
@@ -355,6 +357,18 @@ pub(crate) fn frame_for(
         }
         BoxSource::SheetIndex => {
             let m = table_metrics(&cx.sheet_index_table());
+            Frame::Paper {
+                w_in: (m.width / 72.0).max(3.0),
+                h_in: m.height / 72.0,
+            }
+        }
+        BoxSource::PageTable | BoxSource::RevisionTable => {
+            let t = if matches!(source, BoxSource::PageTable) {
+                cx.page_table()
+            } else {
+                cx.revision_table()
+            };
+            let m = table_metrics(&t);
             Frame::Paper {
                 w_in: (m.width / 72.0).max(3.0),
                 h_in: m.height / 72.0,

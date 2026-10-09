@@ -4,7 +4,9 @@
 //! All lengths are inches; grade is elevation 0 and `elevation` is the top of
 //! the boards. Scene space is X right, Y up, Z = -plan y (see `plan-3d`).
 
-use crate::railing::{bar, railing_segments, run_meshes, RailingGeometry, RailingParams};
+use crate::railing::{
+    bar, railing_segments, run_meshes, PostSkip, RailingGeometry, RailingParams,
+};
 use crate::Stroke;
 use plan_3d::{Material, Mesh};
 use plan_core::Point;
@@ -251,7 +253,7 @@ impl Deck {
     /// Meshes of railings on the given polygon edges, standing on the deck.
     pub fn edge_railing_meshes(&self, open_edges: &[usize], params: &RailingParams) -> Vec<Mesh> {
         let runs = edge_runs(&self.polygon, open_edges);
-        run_meshes(&runs, self.elevation, params, None)
+        run_meshes(&runs, self.elevation, params, None, PostSkip::default())
     }
 
     /// Plan symbol: the outline and one line along each board.

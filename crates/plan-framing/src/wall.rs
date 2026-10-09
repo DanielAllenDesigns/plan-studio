@@ -902,7 +902,10 @@ mod tests {
         let w = wall();
         let mut win = Opening::default_window(2, w.id, 60.0);
         let d = FramingDefaults::default();
-        assert_eq!(of(&frame_wall(&w, &[&win], 0.0, &d), MemberKind::Sill).len(), 1);
+        assert_eq!(
+            of(&frame_wall(&w, &[&win], 0.0, &d), MemberKind::Sill).len(),
+            1
+        );
         win.extras.spec.framing.sill = false;
         assert!(of(&frame_wall(&w, &[&win], 0.0, &d), MemberKind::Sill).is_empty());
         // The rough sill drops with the rough opening's bottom extra.

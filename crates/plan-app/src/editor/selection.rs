@@ -13,7 +13,7 @@ use plan_core::cad::CadItem;
 use plan_core::details::DetailsLayer;
 use plan_core::foundation::FoundationLayer;
 use plan_core::geometry::{dist_to_segment, point_in_polygon, Point};
-use plan_core::{CadObject, DimensionKind, Floor, Id, LayerSet, OpeningKind, Project};
+use plan_core::{CadObject, DimensionKind, Floor, Id, LayerSet, Project};
 use std::f64::consts::TAU;
 
 /// Addresses one object of the plan.
@@ -268,13 +268,11 @@ impl Selection {
 pub fn layer_of(floor: &Floor, o: ObjectRef) -> Option<String> {
     match o {
         ObjectRef::Wall(i) => floor.wall(i).map(|w| w.layer.clone()),
-        ObjectRef::Opening(i) => floor.openings.iter().find(|x| x.id == i).map(|x| {
-            match x.kind {
-                OpeningKind::Door => "Doors",
-                OpeningKind::Window => "Windows",
-            }
-            .to_string()
-        }),
+        ObjectRef::Opening(i) => floor
+            .openings
+            .iter()
+            .find(|x| x.id == i)
+            .map(|x| x.layer_name().to_string()),
         ObjectRef::Dimension(i) => floor.dimensions.iter().find(|d| d.id == i).map(|d| {
             match d.kind {
                 DimensionKind::AutoExterior => "Dimensions, Automatic",
@@ -828,7 +826,7 @@ pub fn cad_by_id(floor: &Floor, id: Id) -> Option<&CadObject> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use plan_core::{Project, WallKind};
+    use plan_core::{OpeningKind, Project, WallKind};
 
     fn plan() -> (Project, Id) {
         let mut p = Project::new("t");

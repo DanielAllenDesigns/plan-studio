@@ -531,7 +531,8 @@ pub fn read_xlsx(bytes: &[u8]) -> Result<Vec<ReadSheet>, String> {
             .get(name)
             .map(|b| String::from_utf8_lossy(b).into_owned())
     };
-    let wb = text("xl/workbook.xml").ok_or("This is not an Excel workbook (no xl/workbook.xml).")?;
+    let wb =
+        text("xl/workbook.xml").ok_or("This is not an Excel workbook (no xl/workbook.xml).")?;
     let rels = relationships(&text("xl/_rels/workbook.xml.rels").unwrap_or_default());
     let strings = text("xl/sharedStrings.xml")
         .map(|x| shared_strings(&x))
@@ -631,7 +632,10 @@ mod tests {
 
     #[test]
     fn xml_entities_and_excel_escapes_are_decoded() {
-        assert_eq!(unescape("R&amp;D &lt;x&gt; &#65;&#x42; &bogus;"), "R&D <x> AB &bogus;");
+        assert_eq!(
+            unescape("R&amp;D &lt;x&gt; &#65;&#x42; &bogus;"),
+            "R&D <x> AB &bogus;"
+        );
         assert_eq!(unescape_x("a_x000D_b_x0041_ _x00"), "a\rbA _x00");
     }
 
@@ -644,7 +648,10 @@ mod tests {
         assert_eq!(number_text("3.1400000000000001"), "3.14");
         assert_eq!(number_text("1E3"), "1000");
         assert_eq!(resolve("worksheets/sheet1.xml"), "xl/worksheets/sheet1.xml");
-        assert_eq!(resolve("/xl/worksheets/sheet2.xml"), "xl/worksheets/sheet2.xml");
+        assert_eq!(
+            resolve("/xl/worksheets/sheet2.xml"),
+            "xl/worksheets/sheet2.xml"
+        );
         assert_eq!(resolve("../xl/styles.xml"), "xl/styles.xml");
     }
 
@@ -737,8 +744,18 @@ mod tests {
             },
         ];
         let rows = vec![
-            vec!["door:1".into(), "007".into(), "2".into(), "3'-0\" x 6'-8\"".into()],
-            vec!["door:2".into(), "R&D <odd> \"q\"".into(), "".into(), "12.5".into()],
+            vec![
+                "door:1".into(),
+                "007".into(),
+                "2".into(),
+                "3'-0\" x 6'-8\"".into(),
+            ],
+            vec![
+                "door:2".into(),
+                "R&D <odd> \"q\"".into(),
+                "".into(),
+                "12.5".into(),
+            ],
             vec!["door:3".into(), "1.50".into(), "x".into(), "".into()],
         ];
         let book = to_xlsx_edit(&[

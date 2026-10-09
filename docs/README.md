@@ -6,7 +6,7 @@ An index of everything under `docs/`. The repository front door is the [README](
 ## Using Plan Studio
 
 The [reference manual](manual/00-index.md) is the user documentation. It is also built into the program (Help > Launch
-Help) and every feature carries an honest status mark. There is no chapter 19: the numbers go 1 to 18, then 20.
+Help) and every feature carries an honest status mark. There are 20 chapters.
 
 | Chapter | Covers |
 |---|---|
@@ -28,6 +28,7 @@ Help) and every feature carries an honest status mark. There is no chapter 19: t
 | [16 Slabs, pads, piers and platform holes](manual/16-foundation-slabs.md) | Foundation slabs and holes in floor and ceiling platforms |
 | [17 Exterior details](manual/17-exterior-details.md) | Trim, material regions, decks and 3D solids |
 | [18 Plan Check](manual/18-plan-check.md) | The IRC-based Plan Check and Door/Window Check |
+| [19 Framing](manual/19-framing.md) | Build Framing: the dialog, auto rebuild and retain, framing layers, the Framing Overview, the wall detail |
 | [20 Pictures, underlays and CAD details](manual/20-cad-details.md) | Images, underlays to trace over, CAD details |
 
 [Sample plans](../samples/README.md) open from File > Open Plan.

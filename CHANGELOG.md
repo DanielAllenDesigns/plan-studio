@@ -12,7 +12,7 @@ Test counts are the workspace totals the commit messages and manual state.
 
 ## [Unreleased]
 
-No version has been tagged yet; the first tagged release (`v0.1.0`) will fold all of the rounds together (see [docs/release-checklist.md](docs/release-checklist.md)). Round 13 is commit `9ba0ae7`; the Round 14 integration items are listed at the end of its section.
+No version has been tagged yet; the first tagged release (`v0.1.0`) will fold all of the rounds together (see [docs/release-checklist.md](docs/release-checklist.md)). Round 13 is commit `9ba0ae7`; Round 14 is in the working tree.
 
 ### Round 13 - 2026-10-08 (commit 9ba0ae7)
 
@@ -26,11 +26,22 @@ No version has been tagged yet; the first tagged release (`v0.1.0`) will fold al
 - **Stairs**: spiral stairs, flared bottom treads, landing rails and stair labels.
 - **Walls**: radius-to and lock on the wall tool, Reverse Layers.
 - **Layout**: page templates, bent leaders, the revision table, XLSX schedule export and the print preview modes.
-- **Tools > Checks > Plan Check Settings** opens the Plan Check Settings dialog directly; 3D menu camera commands (Move, Orbit, Tilt, View Direction, Isometric); the Default Settings Terrain page.
+
+### Round 14 - integration pass (working tree; the commit is not made yet)
+
+#### Added
+
+- **Plan Check Settings** in the Tools > Checks menu opens the Plan Check window with its Settings dialog showing (`dialogs/plan_check.rs`); a text report window (`open_text_report`) for logs that are not findings.
+- **Camera steps in the 3D menu** (`shell/view3d_panel/nudge.rs`): Move Camera with Mouse and with Keyboard, Move Camera, Orbit Camera, Tilt Camera and View Direction (eight compass snaps); 24" per Move step, 15 degrees per Orbit or Turn step, 5 degrees per Tilt step. Isometric Views and Undo Zoom in 3D are still open (`docs/integration-queue.md`).
+- **Default Settings > Terrain > Terrain Defaults** (`dialogs/default_settings_terrain.rs`) opens the Terrain Specification on the plan's terrain record, one undo step.
+- **Stand-in blocks**: a placed symbol whose catalog item is unknown (the importer's `chief-plan.<name>`, a Chief object whose catalog is not installed) is a labelled box in plan and a block with the same label painted over it in 3D (`plan_library::standin`, `view3d_panel/stand_in.rs`); a Chief object whose catalog is missing used to draw nothing in 3D.
+- **Tests**: `scenarios/r14_integration.rs` (11 tests), including one that runs every row of the Tools menu.
 
 #### Changed
 
-- Round 14 integration: File > Import > Chief Plan... asks about unsaved changes first, like File > Open; the status bar gets a one-line headline of the counts and the full summary (counts and warnings) opens in a report window. Font notes (a family that is not installed, a font that does not allow embedding) reach the status bar, once each.
+- File > Import > Chief Plan... asks about unsaved changes first, like File > Open (`Pending::ImportChief`); the status bar gets a one-line headline of the counts and the full summary (counts and warnings) opens in a report window.
+- Font notes (a family that is not installed, a font that does not allow embedding) reach the status bar, once each (`fonts::post_notes`).
+- The "Known issues" line of Round 12 about the Chief import having no prompt and no report window is fixed by the two changes above.
 
 ### Planned
 

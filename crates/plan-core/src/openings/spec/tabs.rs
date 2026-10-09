@@ -160,7 +160,7 @@ impl HeaderMaterial {
 /// The Framing tab (DW-114): the header, trimmers, king studs and sill of
 /// this opening where they differ from the Framing Defaults. `None` follows
 /// the defaults (and, for the header depth, the table by width).
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct OpeningFraming {
     /// Include Header.

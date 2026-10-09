@@ -19,6 +19,7 @@
 //! Units follow `plan-core`: lengths are inches. Floors are addressed by
 //! index into `Project::floors`, as in `Project::add_wall`.
 
+pub mod master_list;
 pub mod materials;
 pub mod pdf;
 pub mod props_exchange;

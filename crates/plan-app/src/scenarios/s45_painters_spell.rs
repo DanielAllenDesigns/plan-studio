@@ -646,7 +646,7 @@ fn every_painter_has_a_toolbar_toggle_and_check_spelling_a_button() {
         .collect();
     for m in P::ALL {
         assert!(
-            items.contains(&(m.name(), Action::SetTool(ToolId::PainterVariant(m)))),
+            items.contains(&(m.toolbar_name(), Action::SetTool(ToolId::PainterVariant(m)))),
             "{}",
             m.name()
         );

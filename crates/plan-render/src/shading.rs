@@ -55,6 +55,9 @@ pub(crate) struct Custom {
     pub material: Material,
     pub color: [u8; 3],
     pub paint: Option<plan_3d::surface::PaintSurface>,
+    /// Key of the material package maps painting the mesh
+    /// (`plan_materials::pbr`), if any.
+    pub maps: Option<u64>,
 }
 
 /// Radiance of a fully emissive surface, in units of its colour.

@@ -120,10 +120,7 @@ pub fn map_materials(
 ) -> Vec<MaterialMatch> {
     let mut out = Vec::new();
     for part in &mut model.parts {
-        let found = part
-            .texture
-            .as_deref()
-            .and_then(|t| match_texture(lib, t));
+        let found = part.texture.as_deref().and_then(|t| match_texture(lib, t));
         let mut m = MaterialMatch {
             part: part.name.clone(),
             file_material: part.material.clone(),
@@ -209,7 +206,9 @@ impl ImportSymbol {
         let bytes = std::fs::read(path).unwrap_or_default();
         let suggestion = plan_import::suggest(&ext, &bytes);
         let o = suggestion.options;
-        let unit_index = UNITS.iter().position(|(_, k)| (*k - o.unit_scale).abs() < 1e-6 * k);
+        let unit_index = UNITS
+            .iter()
+            .position(|(_, k)| (*k - o.unit_scale).abs() < 1e-6 * k);
         let defaults = store::import_defaults(path);
         let mut s = ImportSymbol {
             path: path.to_path_buf(),
@@ -385,7 +384,10 @@ impl ImportSymbol {
             return Err(e.clone());
         }
         self.refresh();
-        let shaped = self.shaped.as_ref().ok_or("The file has nothing to import")?;
+        let shaped = self
+            .shaped
+            .as_ref()
+            .ok_or("The file has nothing to import")?;
         let (mut item, model) = store::build_model_item(shaped, &self.settings())?;
         item.elevation = self.elevation.max(0.0);
         if !self.layer.trim().is_empty() {
@@ -463,7 +465,8 @@ pub fn accept(cx: &mut EditorContext) -> bool {
         Ok((id, name)) => {
             crate::tools::library::set_active_item(cx, &id);
             cx.requests.push(EditorRequest::SetTool(ToolId::Library));
-            cx.status = format!("Imported \"{name}\" into the User Catalog; click in the plan to place it");
+            cx.status =
+                format!("Imported \"{name}\" into the User Catalog; click in the plan to place it");
             true
         }
         Err(e) => {
@@ -514,7 +517,8 @@ pub fn show_import(ctx: &egui::Context, cx: &mut EditorContext) {
         s.preview = s.shaped.as_ref().map(|m| {
             let model = crate::tools::library::make::model_from_import(m);
             let img = plan_library::preview::render_preview(&model, 160, 30.0, 20.0);
-            let color = egui::ColorImage::from_rgba_unmultiplied([img.width, img.height], &img.rgba);
+            let color =
+                egui::ColorImage::from_rgba_unmultiplied([img.width, img.height], &img.rgba);
             (
                 key,
                 ctx.load_texture("import3d_preview", color, egui::TextureOptions::LINEAR),
@@ -549,7 +553,8 @@ pub fn show_import(ctx: &egui::Context, cx: &mut EditorContext) {
                 if let Some((_, tex)) = &s.preview {
                     let (rect, _) =
                         ui.allocate_exact_size(egui::Vec2::splat(120.0), egui::Sense::hover());
-                    ui.painter().rect_filled(rect, 3.0, Color32::from_gray(0xEC));
+                    ui.painter()
+                        .rect_filled(rect, 3.0, Color32::from_gray(0xEC));
                     ui.painter().image(
                         tex.id(),
                         rect,
@@ -596,9 +601,7 @@ pub fn show_import(ctx: &egui::Context, cx: &mut EditorContext) {
                     });
                     ui.end_row();
                     ui.label("Scale units");
-                    let shown = s
-                        .unit_index
-                        .map_or("Declared by the file", |i| UNITS[i].0);
+                    let shown = s.unit_index.map_or("Declared by the file", |i| UNITS[i].0);
                     egui::ComboBox::from_id_salt("i3d_units")
                         .selected_text(shown)
                         .show_ui(ui, |ui| {
@@ -656,7 +659,12 @@ pub fn show_import(ctx: &egui::Context, cx: &mut EditorContext) {
                         });
                     ui.end_row();
                     ui.label("Elevation");
-                    ui.add(egui::DragValue::new(&mut s.elevation).speed(0.5).range(0.0..=240.0).suffix(" in"));
+                    ui.add(
+                        egui::DragValue::new(&mut s.elevation)
+                            .speed(0.5)
+                            .range(0.0..=240.0)
+                            .suffix(" in"),
+                    );
                     ui.end_row();
                     ui.label("Layer");
                     ui.add(
@@ -674,11 +682,9 @@ pub fn show_import(ctx: &egui::Context, cx: &mut EditorContext) {
             if s.resize {
                 ui.horizontal(|ui| {
                     ui.add_space(8.0);
-                    for (label, side) in [
-                        ("W", Side::Width),
-                        ("D", Side::Depth),
-                        ("H", Side::Height),
-                    ] {
+                    for (label, side) in
+                        [("W", Side::Width), ("D", Side::Depth), ("H", Side::Height)]
+                    {
                         ui.label(label);
                         let mut v = match side {
                             Side::Width => s.width,
@@ -686,20 +692,31 @@ pub fn show_import(ctx: &egui::Context, cx: &mut EditorContext) {
                             Side::Height => s.height,
                         };
                         if ui
-                            .add(egui::DragValue::new(&mut v).speed(0.25).range(0.1..=2400.0).suffix(" in"))
+                            .add(
+                                egui::DragValue::new(&mut v)
+                                    .speed(0.25)
+                                    .range(0.1..=2400.0)
+                                    .suffix(" in"),
+                            )
                             .changed()
                         {
                             s.set_side(side, v);
                         }
                     }
-                    if ui.checkbox(&mut s.keep_proportions, "Keep proportions").changed() {
+                    if ui
+                        .checkbox(&mut s.keep_proportions, "Keep proportions")
+                        .changed()
+                    {
                         reshape = true;
                     }
                 });
             }
             ui.separator();
             if ui
-                .checkbox(&mut s.map_materials, "Map textures and colors to Plan Studio materials")
+                .checkbox(
+                    &mut s.map_materials,
+                    "Map textures and colors to Plan Studio materials",
+                )
                 .changed()
             {
                 reshape = true;
@@ -715,20 +732,32 @@ pub fn show_import(ctx: &egui::Context, cx: &mut EditorContext) {
                             (None, Some(f)) => format!("material {f}"),
                             _ => "no material".to_string(),
                         };
-                        let to = m.plan_material.as_deref().map_or("no match".to_string(), |p| {
-                            if m.applied {
-                                format!("{p} (color applied)")
-                            } else {
-                                format!("nearest: {p}")
-                            }
-                        });
-                        let name = if m.part.is_empty() { "(part)" } else { m.part.as_str() };
+                        let to = m
+                            .plan_material
+                            .as_deref()
+                            .map_or("no match".to_string(), |p| {
+                                if m.applied {
+                                    format!("{p} (color applied)")
+                                } else {
+                                    format!("nearest: {p}")
+                                }
+                            });
+                        let name = if m.part.is_empty() {
+                            "(part)"
+                        } else {
+                            m.part.as_str()
+                        };
                         ui.horizontal(|ui| {
                             if let Some(c) = m.color {
-                                let (r, _) =
-                                    ui.allocate_exact_size(egui::Vec2::splat(12.0), egui::Sense::hover());
-                                ui.painter()
-                                    .rect_filled(r, 2.0, Color32::from_rgb(c[0], c[1], c[2]));
+                                let (r, _) = ui.allocate_exact_size(
+                                    egui::Vec2::splat(12.0),
+                                    egui::Sense::hover(),
+                                );
+                                ui.painter().rect_filled(
+                                    r,
+                                    2.0,
+                                    Color32::from_rgb(c[0], c[1], c[2]),
+                                );
                             }
                             ui.label(format!("{name}: {what} -> {to}"));
                         });

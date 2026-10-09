@@ -102,17 +102,16 @@ fn a_page_packs_boxes_into_its_own_sheet_and_can_drop_its_title_block() {
 }
 
 #[test]
-fn page_numbers_stay_unique() {
+fn duplicate_labels_are_legal() {
+    // Round 16 (DECISIONS 62 changed): the label is text, not a unique
+    // number; a pattern with # numbers the pages that share it.
     let mut l = two_page_layout();
-    assert_eq!(
-        l.set_page_number(1, 1),
-        Err("Another page already has that sheet number")
-    );
-    assert_eq!(l.set_page_number(1, 7), Ok(()));
-    assert_eq!(l.pages[1].sheet_number(), "A-7");
-    // Keeping a page's own number is fine.
-    assert_eq!(l.set_page_number(1, 7), Ok(()));
-    assert!(l.set_page_number(9, 3).is_err());
+    l.pages[0].label = "A-#".into();
+    l.pages[1].label = "A-#".into();
+    assert_eq!(l.sheet_number_of(&l.pages[1]), "A-2");
+    l.pages[1].label = "A-1".into();
+    assert_eq!(l.sheet_number_of(&l.pages[0]), "A-1");
+    assert_eq!(l.sheet_number_of(&l.pages[1]), "A-1");
 }
 
 #[test]

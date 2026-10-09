@@ -13,7 +13,8 @@
 use super::page::{Field as F, ListSource, PageSpec};
 use crate::{bind_num, bind_text};
 
-const LAYER_NOTE: &str = "Saved with the plan defaults (File > Templates > Save Current Defaults as My Template).";
+const LAYER_NOTE: &str =
+    "Saved with the plan defaults (File > Templates > Save Current Defaults as My Template).";
 
 pub fn solid_3d() -> PageSpec {
     PageSpec::new("solid3d", "3D Solid")
@@ -54,7 +55,11 @@ pub fn corner_trim() -> PageSpec {
                 F::len("corner_trim.quoin_width", "Quoin Width", 12.0),
                 F::len("corner_trim.quoin_height", "Quoin Height", 8.0),
                 F::len("corner_trim.quoin_projection", "Projection", 0.75),
-                F::flag("corner_trim.quoin_alternate", "Alternate Long and Short", true),
+                F::flag(
+                    "corner_trim.quoin_alternate",
+                    "Alternate Long and Short",
+                    true,
+                ),
                 F::text("corner_trim.quoin_material", "Material", "Stone"),
             ],
         )
@@ -104,7 +109,11 @@ pub fn image() -> PageSpec {
             "Display",
             vec![
                 F::int("image.transparency", "Transparency", 0, (0, 100), "%"),
-                F::flag("image.billboard", "Billboard (Always Face the Camera)", false),
+                F::flag(
+                    "image.billboard",
+                    "Billboard (Always Face the Camera)",
+                    false,
+                ),
                 F::flag("image.show_in_3d", "Show in 3D Views", true),
                 F::text("image.layer", "Layer", "Images"),
             ],
@@ -364,8 +373,16 @@ pub fn materials_list() -> PageSpec {
             "Quantities",
             vec![
                 F::int("materials_list.waste", "Waste Factor", 10, (0, 100), "%"),
-                F::flag("materials_list.round_up", "Round Counts Up to Whole Units", true),
-                F::flag("materials_list.group_by_category", "Group by Category", true),
+                F::flag(
+                    "materials_list.round_up",
+                    "Round Counts Up to Whole Units",
+                    true,
+                ),
+                F::flag(
+                    "materials_list.group_by_category",
+                    "Group by Category",
+                    true,
+                ),
             ],
         )
         .section(
@@ -394,7 +411,11 @@ pub fn molding_polylines() -> PageSpec {
             "Options",
             vec![
                 F::flag("molding_polylines.miter", "Miter Corners", true),
-                F::flag("molding_polylines.count_in_list", "Count in Materials List", true),
+                F::flag(
+                    "molding_polylines.count_in_list",
+                    "Count in Materials List",
+                    true,
+                ),
                 F::text("molding_polylines.material", "Material", "Trim - White"),
                 F::text("molding_polylines.layer", "Layer", "Moldings"),
             ],

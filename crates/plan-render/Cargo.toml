@@ -11,3 +11,6 @@ plan-3d = { path = "../plan-3d" }
 plan-materials = { path = "../plan-materials" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+
+[dev-dependencies]
+plan-library = { path = "../plan-library" }

@@ -330,7 +330,8 @@ fn render_lines(
     } else {
         (f64::from(cw) / 1700.0).clamp(1.0, 6.0)
     };
-    let raster: Vec<((f64, f64), (f64, f64), f64)> = lines
+    type Seg = ((f64, f64), (f64, f64), f64);
+    let raster: Vec<Seg> = lines
         .iter()
         .map(|l| {
             let px = match l.weight {
@@ -644,7 +645,10 @@ fn window(ctx: &egui::Context, cx: &mut EditorContext, w: &mut ExportWindow) -> 
                         ui.label("Floor");
                         egui::ComboBox::from_id_salt("ep_floor")
                             .selected_text(
-                                w.floors.get(w.o.floor).cloned().unwrap_or_else(|| "-".into()),
+                                w.floors
+                                    .get(w.o.floor)
+                                    .cloned()
+                                    .unwrap_or_else(|| "-".into()),
                             )
                             .show_ui(ui, |ui| {
                                 for (i, n) in w.floors.iter().enumerate() {
@@ -719,7 +723,11 @@ fn window(ctx: &egui::Context, cx: &mut EditorContext, w: &mut ExportWindow) -> 
                                         w.o.scale.map_or("Fit to the paper", |s| s.label()),
                                     )
                                     .show_ui(ui, |ui| {
-                                        ui.selectable_value(&mut w.o.scale, None, "Fit to the paper");
+                                        ui.selectable_value(
+                                            &mut w.o.scale,
+                                            None,
+                                            "Fit to the paper",
+                                        );
                                         for s in Scale::ALL {
                                             ui.selectable_value(&mut w.o.scale, Some(s), s.label());
                                         }
@@ -878,7 +886,10 @@ mod tests {
         };
         let white = render_picture(&p, &o, None).unwrap();
         assert_eq!(&white.rgba[..4], &[255, 255, 255, 255], "white corner");
-        assert!(white.rgba.chunks(4).any(|px| px[0] < 128), "walls are drawn");
+        assert!(
+            white.rgba.chunks(4).any(|px| px[0] < 128),
+            "walls are drawn"
+        );
         o.transparent = true;
         let clear = render_picture(&p, &o, None).unwrap();
         assert_eq!(clear.rgba[3], 0, "transparent corner");
@@ -959,7 +970,10 @@ mod tests {
         };
         let pic = render_picture(&p, &o, Some(&snap)).unwrap();
         assert_eq!((pic.width, pic.height), (64, 48));
-        assert!(pic.rgba.chunks(4).any(|px| px[0] != pic.rgba[0]), "not flat");
+        assert!(
+            pic.rgba.chunks(4).any(|px| px[0] != pic.rgba[0]),
+            "not flat"
+        );
     }
 
     #[test]

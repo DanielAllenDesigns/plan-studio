@@ -640,6 +640,46 @@ pub fn material_look(name: &str) -> (Pattern, [u8; 3]) {
     })
 }
 
+thread_local! {
+    /// [`material_look_in`]'s answers, kept until the material library changes
+    /// (looking a material up copies the whole library).
+    static LOOKS: RefCell<(u64, HashMap<String, (Pattern, [u8; 3])>)> =
+        RefCell::new((u64::MAX, HashMap::new()));
+}
+
+/// [`material_look`] for the plan: the user's materials (and their copies of
+/// the core ones) count, so a pattern or colour edited in the Material
+/// Specification shows in the plan too.
+pub fn material_look_in(project: &Project, name: &str) -> (Pattern, [u8; 3]) {
+    let revision = crate::tools::materials::library_revision();
+    let hit = LOOKS.with(|l| {
+        let mut l = l.borrow_mut();
+        if l.0 != revision {
+            *l = (revision, HashMap::new());
+        }
+        l.1.get(name).cloned()
+    });
+    if let Some(hit) = hit {
+        return hit;
+    }
+    let look = crate::tools::materials::hatch_material(project, name)
+        .map_or_else(|| material_look(name), |m| (m.pattern, m.color));
+    LOOKS.with(|l| l.borrow_mut().1.insert(name.to_string(), look.clone()));
+    look
+}
+
+/// The strokes that fill a floor region with its material's pattern at the
+/// Pattern tab's scale and angle (the user's materials count), clipped to
+/// `polygon`; see [`region_strokes`] for the core library alone.
+pub fn region_strokes_in(
+    project: &Project,
+    region: &MaterialRegion,
+    polygon: &[Point],
+    paper: f64,
+) -> Vec<(Point, Point)> {
+    crate::tools::materials::hatch_strokes(project, &region.material, polygon, paper)
+}
+
 /// The pattern names a wall hatch can use.
 pub const PATTERN_NAMES: [&str; 13] = [
     "Lines",
@@ -885,7 +925,7 @@ fn draw_floor_region(
         return;
     }
     let ink = ink_of(cx, &r.style, &r.layer, [110, 110, 140]);
-    let (pattern, color) = material_look(&r.material);
+    let (pattern, color) = material_look_in(&cx.project, &r.material);
     fill_polygon(painter, cam, &r.outline, rgb(color).gamma_multiply(0.35));
     if cam.px_per_in >= MIN_HATCH_PX_PER_IN && pattern != Pattern::None {
         let scale = paper(cx);
@@ -895,8 +935,9 @@ fn draw_floor_region(
                 &r.material,
                 hash_points(&r.outline),
                 scale.to_bits(),
+                crate::tools::materials::library_revision(),
             ),
-            || region_strokes(r, &r.outline, scale),
+            || region_strokes_in(&cx.project, r, &r.outline, scale),
         );
         draw_strokes(
             painter,
@@ -1026,13 +1067,19 @@ fn draw_wall_region(
     };
     let strip = wall_strip(wall, u0, u1);
     let ink = ink_of(cx, &r.style, &r.layer, [110, 110, 140]);
-    let (pattern, color) = material_look(&r.material);
+    let (pattern, color) = material_look_in(&cx.project, &r.material);
     fill_polygon(painter, cam, &strip, rgb(color).gamma_multiply(0.5));
     if cam.px_per_in >= MIN_HATCH_PX_PER_IN && pattern != Pattern::None {
         let scale = paper(cx);
         let strokes = cached_strokes(
-            ("wall", &r.material, hash_points(&strip), scale.to_bits()),
-            || strokes_in(&pattern, &strip, scale),
+            (
+                "wall",
+                &r.material,
+                hash_points(&strip),
+                scale.to_bits(),
+                crate::tools::materials::library_revision(),
+            ),
+            || crate::tools::materials::hatch_strokes(&cx.project, &r.material, &strip, scale),
         );
         draw_strokes(painter, cam, &strokes, Stroke::new(0.75_f32, ink));
     }

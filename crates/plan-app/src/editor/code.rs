@@ -350,6 +350,13 @@ pub fn raise_defaults(cx: &mut EditorContext) -> String {
     }
 }
 
+/// `d` as a new plan starts from it: seeded from the code minimums when the
+/// preference is on.
+pub fn seeded(mut d: PlanDefaults) -> PlanDefaults {
+    seed_new_plan(&mut d);
+    d
+}
+
 /// Default Settings > Plan Check > Apply code minimums to defaults: raises
 /// the defaults to the minimums of the plan's settings and returns what
 /// moved for the status bar. The plan's history gets one step ("Apply Code
@@ -424,20 +431,22 @@ pub fn outlet_options(m: &CodeMinimums, o: &mut plan_electrical::AutoOutletOptio
 
 /// Whether [`fix_finding`] knows how to correct `f`.
 pub fn can_fix(f: &Finding) -> bool {
-    match (f.rule, f.object) {
+    matches!(
+        (f.rule, f.object),
         (
             "IRC R311.7.1 stair width"
-            | "IRC R311.7.2 headroom"
-            | "IRC R311.7.5.1 riser height"
-            | "IRC R311.7.5.2 tread depth"
-            | "IRC R311.7.8.1 handrail height"
-            | "IRC R312.1.2 guard height"
-            | "IRC R312.1.3 opening limitation",
+                | "IRC R311.7.2 headroom"
+                | "IRC R311.7.5.1 riser height"
+                | "IRC R311.7.5.2 tread depth"
+                | "IRC R311.7.8.1 handrail height"
+                | "IRC R312.1.2 guard height"
+                | "IRC R312.1.3 opening limitation",
             Some(Target::Stair(_)),
-        ) => true,
-        ("IRC R403.1.1 footing size" | "IRC R403.1.4 footing depth", _) => true,
-        _ => false,
-    }
+        ) | (
+            "IRC R403.1.1 footing size" | "IRC R403.1.4 footing depth",
+            _
+        )
+    )
 }
 
 /// Writes the minimum a finding is about into the stair or footing it names.

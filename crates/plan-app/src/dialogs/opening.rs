@@ -575,6 +575,7 @@ impl OpeningDialog {
 
     /// The layers of the plan, for the Layer tab to list. Call before the
     /// dialog is shown; without it the tab lists the usual opening layers.
+    #[allow(dead_code)] // main.rs calls it where the dialog opens (docs/integration-queue.md)
     pub fn with_layer_choices(mut self, layers: Vec<String>) -> Self {
         self.form.layer_choices = layers;
         self
@@ -2865,5 +2866,87 @@ mod tests {
         // Touching the last window (ending at 190) is too close, 2" clear is fine.
         assert!(place_from_template(&mut p, 0, w, 205.0, &door).is_none());
         assert!(place_from_template(&mut p, 0, w, 207.0, &door).is_some());
+    }
+
+    #[test]
+    fn the_round_15_tabs_are_live_and_their_values_survive_the_dialog() {
+        use plan_core::openings::spec::{CurtainStyle, ShapeKind, WindowShape};
+        let ctx = egui::Context::default();
+        let door_tabs = [
+            "Rough Opening",
+            "Framing",
+            "Energy Values",
+            "Layer",
+            "Materials",
+            "Object Information",
+        ];
+        let mut d = OpeningDialog::for_opening(
+            Opening::default_door(5, 1, 100.0),
+            &host(),
+            Vec::new(),
+            OpeningExtras::default(),
+        );
+        for tab in door_tabs {
+            assert!(d.draw_tab_for_test(&ctx, tab), "door {tab}");
+        }
+        // Only a window has a Shape and a Treatments tab.
+        assert!(!d.draw_tab_for_test(&ctx, "Shape"));
+        assert!(!d.draw_tab_for_test(&ctx, "Treatments"));
+        // The Components tab is still dimmed.
+        assert!(!d.draw_tab_for_test(&ctx, "Components"));
+        let mut w = OpeningDialog::for_opening(
+            Opening::default_window(6, 1, 100.0),
+            &host(),
+            Vec::new(),
+            OpeningExtras::default(),
+        );
+        for tab in door_tabs.iter().copied().chain(["Shape", "Treatments"]) {
+            assert!(w.draw_tab_for_test(&ctx, tab), "window {tab}");
+        }
+        // What the pages edit stays on the draft through the per-frame sync.
+        {
+            let (width, height) = (w.draft().width, w.draft().height);
+            let spec = &mut w.draft_mut().extras.spec;
+            spec.shape = WindowShape::preset(ShapeKind::Triangle, width, height);
+            spec.treatments.curtain = CurtainStyle::Pleated;
+            spec.rough.add_width = 2.0;
+            spec.framing.trimmers = Some(2);
+            spec.energy.u_factor = 0.25;
+            spec.layer = Some("Windows, Labels".into());
+            spec.materials.set("Frame", Some(("Oak", [1, 2, 3])));
+            spec.info.id = "W-9".into();
+        }
+        for tab in ["Shape", "Treatments", "Rough Opening", "Materials"] {
+            assert!(w.draw_tab_for_test(&ctx, tab));
+        }
+        let spec = &w.draft().extras.spec;
+        assert!(spec.shape.is_shaped());
+        assert_eq!(spec.treatments.curtain, CurtainStyle::Pleated);
+        assert_eq!(spec.rough.add_width, 2.0);
+        assert_eq!(spec.framing.trimmers, Some(2));
+        assert_eq!(spec.energy.u_factor, 0.25);
+        assert_eq!(w.draft().layer_name(), "Windows, Labels");
+        assert_eq!(spec.materials.color("Frame"), Some([1, 2, 3]));
+        assert_eq!(spec.info.id, "W-9");
+        // A double door shows its Door Swing group on the Options tab.
+        let mut dd = Opening::default_door(7, 1, 100.0);
+        dd.style = OpeningStyle::DoubleDoor;
+        dd.width = 60.0;
+        let mut dd = OpeningDialog::for_opening(dd, &host(), Vec::new(), OpeningExtras::default());
+        assert!(dd.draw_tab_for_test(&ctx, "Options"));
+        // The default window dialog hands the new values to the variants.
+        let mut defaults = OpeningDialog::for_default(
+            OpeningTarget::DefaultWindow,
+            Opening::default_window(0, 0, 0.0),
+            OpeningExtras::default(),
+        );
+        defaults.draft_mut().extras.spec.treatments.curtain = CurtainStyle::Panels;
+        defaults.draft_mut().extras.spec.energy.u_factor = 0.2;
+        defaults.sync_stored();
+        let mut v = OpeningVariantDefaults::default();
+        defaults.apply_to_variants(&mut v);
+        assert_eq!(v.window_spec.treatments.curtain, CurtainStyle::Panels);
+        assert_eq!(v.window_spec.energy.u_factor, 0.2);
+        assert_eq!(v.door_spec, OpeningSpec::default());
     }
 }

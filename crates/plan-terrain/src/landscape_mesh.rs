@@ -24,6 +24,7 @@ use crate::geom::{bounds, dedup_points, densify, dist_to_boundary, offset_polygo
 use crate::landscape::{Landscape, LandscapeKind, PlantForm, TerrainWall};
 use crate::mesh::{terrain_object_id, to_scene, MeshBuilder, TerrainPart, UP};
 use crate::model::{Feature, FeatureKind, Terrain, TerrainSurface};
+use crate::plants::Season;
 use crate::query::elevation_at;
 
 /// Longest span of a draped wall or ring segment, inches.
@@ -50,6 +51,14 @@ impl<'a> Ground<'a> {
         Ground { surface, default_z }
     }
 
+    /// A level ground at `z` (no surface).
+    pub(crate) fn flat(z: f64) -> Ground<'static> {
+        Ground {
+            surface: None,
+            default_z: z,
+        }
+    }
+
     pub(crate) fn z(&self, p: Point) -> f64 {
         self.surface
             .and_then(|s| elevation_at(s, p))
@@ -69,12 +78,25 @@ pub fn landscape_meshes(t: &Terrain, surface: Option<&TerrainSurface>) -> Vec<Me
         .enumerate()
         .filter(|(_, f)| f.kind != FeatureKind::Hole)
     {
-        let mut ms = feature_meshes(f, &ground);
+        // A feature that clips hides what a lower feature cuts out of it.
+        let lower: Vec<&[Point]> = if f.clip_overlap {
+            t.features
+                .iter()
+                .enumerate()
+                .filter(|(j, g)| {
+                    *j != i && g.kind != FeatureKind::Hole && g.height < f.height - 1e-9
+                })
+                .map(|(_, g)| g.polygon.as_slice())
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let mut ms = feature_meshes(f, &ground, &lower);
         tag(&mut ms, TerrainPart::Feature, i);
         out.extend(ms);
     }
     for (i, l) in t.landscape.iter().enumerate() {
-        let mut ms = object_meshes(l, &ground);
+        let mut ms = object_meshes(l, &ground, t.season);
         tag(&mut ms, TerrainPart::Landscape, i);
         out.extend(ms);
     }
@@ -326,7 +348,23 @@ fn flat_polygon(poly: &[Point], z: f64, material: Material) -> Option<Mesh> {
 }
 
 /// A region lying on the ground (`lift` inches above it).
-fn draped_region(poly: &[Point], ground: &Ground, lift: f64, material: Material) -> Option<Mesh> {
+pub(crate) fn draped_region(
+    poly: &[Point],
+    ground: &Ground,
+    lift: f64,
+    material: Material,
+) -> Option<Mesh> {
+    draped_region_clipped(poly, ground, lift, material, &|_| false)
+}
+
+/// [`draped_region`] without the triangles whose middle `hide` names.
+pub(crate) fn draped_region_clipped(
+    poly: &[Point],
+    ground: &Ground,
+    lift: f64,
+    material: Material,
+    hide: &dyn Fn(Point) -> bool,
+) -> Option<Mesh> {
     let outline = dedup_points(poly, true);
     if outline.len() < 3 {
         return None;
@@ -359,7 +397,7 @@ fn draped_region(poly: &[Point], ground: &Ground, lift: f64, material: Material)
     let mut any = false;
     for [a, c, d] in triangulate(&pts) {
         let centroid = pts[a].add(pts[c]).add(pts[d]).scale(1.0 / 3.0);
-        if !point_in_polygon(centroid, &outline) {
+        if !point_in_polygon(centroid, &outline) || hide(centroid) {
             continue;
         }
         b.push_facing([ids[a], ids[c], ids[d]], UP);
@@ -368,9 +406,28 @@ fn draped_region(poly: &[Point], ground: &Ground, lift: f64, material: Material)
     any.then(|| b.finish(material))
 }
 
+/// A curb block ring just inside the outline `poly`: `width` wide and `height`
+/// tall over the ground plus `lift` (a median's curb, a cul-de-sac's).
+pub(crate) fn polygon_curb(
+    poly: &[Point],
+    ground: &Ground,
+    height: f64,
+    width: f64,
+    lift: f64,
+) -> Option<Mesh> {
+    let rows = ring_rows(poly, 0.0, -width);
+    if rows.is_empty() {
+        return None;
+    }
+    let rows = reground(rows, ground, |g| (g + lift + height, g + lift));
+    sweep(&rows, true, Material::Concrete)
+}
+
 // ----- features -----
 
-fn feature_meshes(f: &Feature, ground: &Ground) -> Vec<Mesh> {
+fn feature_meshes(f: &Feature, ground: &Ground, lower: &[&[Point]]) -> Vec<Mesh> {
+    let hide = |p: Point| lower.iter().any(|poly| point_in_polygon(p, poly));
+    let clipped = !lower.is_empty();
     let outline = densify(&dedup_points(&f.polygon, true), SPAN, true);
     if outline.len() < 3 {
         return Vec::new();
@@ -385,16 +442,29 @@ fn feature_meshes(f: &Feature, ground: &Ground) -> Vec<Mesh> {
                 .fold(f64::NEG_INFINITY, f64::max),
         );
         let material = named_material(&f.material, Material::Concrete);
+        if clipped {
+            return draped_region_clipped(&outline, &Ground::flat(top), LIFT, material, &hide)
+                .into_iter()
+                .collect();
+        }
         return flat_polygon(&outline, top + LIFT, material)
             .into_iter()
             .collect();
     }
     let zs: Vec<f64> = outline.iter().map(|p| ground.z(*p)).collect();
     let mean = zs.iter().sum::<f64>() / zs.len() as f64;
-    let top = mean + f.height.max(LIFT);
+    let top = mean + if f.height < 0.0 { f.height } else { f.height.max(LIFT) };
     let material = named_material(&f.material, Material::Concrete);
-    let mut out: Vec<Mesh> = flat_polygon(&outline, top, material).into_iter().collect();
-    // Skirt down to the ground all round.
+    let mut out: Vec<Mesh> = if clipped {
+        draped_region_clipped(&outline, &Ground::flat(top), 0.0, material, &hide)
+            .into_iter()
+            .collect()
+    } else {
+        flat_polygon(&outline, top, material).into_iter().collect()
+    };
+    // Skirt down to the ground all round (or, for a feature with a
+    // thickness, down by that thickness: a planter or a pool shell).
+    let thick = f.thickness > 0.0;
     let rows: Vec<WRow> = {
         let mut along = 0.0;
         outline
@@ -410,7 +480,7 @@ fn feature_meshes(f: &Feature, ground: &Ground) -> Vec<Mesh> {
                     r: *p,
                     along,
                     top,
-                    bottom: g.min(top - LIFT),
+                    bottom: if thick { top - f.thickness } else { g.min(top - LIFT) },
                 }
             })
             .collect()
@@ -456,22 +526,32 @@ fn centroid_of(pts: &[Point]) -> Point {
 
 // ----- landscape objects -----
 
-fn object_meshes(l: &Landscape, ground: &Ground) -> Vec<Mesh> {
+fn object_meshes(l: &Landscape, ground: &Ground, season: Season) -> Vec<Mesh> {
     match l.kind {
-        LandscapeKind::GardenBed => bed_meshes(l, ground),
+        LandscapeKind::GardenBed => bed_meshes(l, ground, season),
         LandscapeKind::GrassRegion => {
-            draped_region(&l.points, ground, l.height.max(LIFT), Material::Grass)
-                .into_iter()
-                .collect()
+            let mut m: Vec<Mesh> =
+                draped_region(&l.points, ground, l.height.max(LIFT), Material::Grass)
+                    .into_iter()
+                    .collect();
+            if l.grass_look != crate::plants::GrassLook::default() {
+                let c = l.grass_look.average_color();
+                for mesh in &mut m {
+                    mesh.color = Some(c);
+                }
+            }
+            m
         }
         LandscapeKind::WaterFeature => water_meshes(l, ground),
         LandscapeKind::SteppingStones => stone_meshes(l, ground).into_iter().collect(),
-        LandscapeKind::Plants => plant_meshes(l, ground),
+        LandscapeKind::Plants => plant_meshes(l, &l.plant_positions(), ground, season),
         LandscapeKind::Sprinklers => sprinkler_mesh(l, ground).into_iter().collect(),
+        // Irrigation pipe is a 2D line: nothing in 3D.
+        LandscapeKind::SprinklerLine => Vec::new(),
     }
 }
 
-fn bed_meshes(l: &Landscape, ground: &Ground) -> Vec<Mesh> {
+fn bed_meshes(l: &Landscape, ground: &Ground, season: Season) -> Vec<Mesh> {
     let mut out: Vec<Mesh> = draped_region(
         &l.points,
         ground,
@@ -484,6 +564,17 @@ fn bed_meshes(l: &Landscape, ground: &Ground) -> Vec<Mesh> {
         let rows = ring_rows(&l.points, EDGING_THICKNESS, 0.0);
         let rows = reground(rows, ground, |g| (g + l.size, g - EDGING_THICKNESS));
         out.extend(sweep(&rows, true, Material::Stone));
+    }
+    // Plants spread over the bed by its Distributed Plant panel.
+    if let Some(d) = l.distribution.as_ref().filter(|d| !d.plant.is_empty()) {
+        let run = Landscape {
+            kind: LandscapeKind::Plants,
+            plant: d.plant.clone(),
+            size: d.size,
+            height: d.height,
+            ..Landscape::default()
+        };
+        out.extend(plant_meshes(&run, &l.distributed_positions(), ground, season));
     }
     out
 }
@@ -637,18 +728,20 @@ fn cylinder(b: &mut MeshBuilder, base: [f64; 3], radius: f64, height: f64) {
     }
 }
 
-fn plant_meshes(l: &Landscape, ground: &Ground) -> Vec<Mesh> {
+fn plant_meshes(l: &Landscape, positions: &[Point], ground: &Ground, season: Season) -> Vec<Mesh> {
     if l.size <= 0.0 || l.height <= 0.0 {
         return Vec::new();
+    }
+    if let Some(img) = l.image.as_ref() {
+        return image_plant_meshes(img, positions, ground, season);
     }
     let (mut canopy, mut trunks) = (MeshBuilder::default(), MeshBuilder::default());
     let form = l.plant_form();
     let tree = l.height >= TREE_HEIGHT;
-    let positions = l.plant_positions();
     if positions.is_empty() {
         return Vec::new();
     }
-    for p in &positions {
+    for p in positions {
         let at = to_scene(*p, ground.z(*p));
         match form {
             PlantForm::Billboard => billboard(&mut canopy, at, l.size, l.height),
@@ -680,6 +773,31 @@ fn plant_meshes(l: &Landscape, ground: &Ground) -> Vec<Mesh> {
         out.push(trunks.finish(Material::Framing));
     }
     out
+}
+
+/// Plant images: crossed billboards of the image's size, tinted for the
+/// season; a bare winter deciduous plant keeps a thin crown.
+fn image_plant_meshes(
+    img: &crate::plants::PlantImage,
+    positions: &[Point],
+    ground: &Ground,
+    season: Season,
+) -> Vec<Mesh> {
+    if positions.is_empty() || img.width <= 0.0 || img.height <= 0.0 {
+        return Vec::new();
+    }
+    let look = img.look(season);
+    let mut b = MeshBuilder::default();
+    let width = img.width * (0.35 + 0.65 * look.foliage.clamp(0.0, 1.0));
+    for p in positions {
+        let c = Point::new(p.x + img.center.x, p.y + img.center.y);
+        let mut at = to_scene(c, ground.z(c));
+        at[1] += img.bottom_above_ground();
+        billboard(&mut b, at, width, img.height);
+    }
+    let mut mesh = b.finish(Material::Foliage);
+    mesh.color = Some(look.tint);
+    vec![mesh]
 }
 
 /// A cone of `radius` at `base` rising `height` to a tip.

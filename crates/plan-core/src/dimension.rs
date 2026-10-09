@@ -5,6 +5,20 @@ use crate::model::{Id, Opening, Wall, WallKind};
 use crate::units::{fmt_ft_in_frac, format_length, LengthFormat, LengthUnit};
 use serde::{Deserialize, Serialize};
 
+mod label;
+mod seg;
+mod settings;
+
+pub use label::{
+    angle_text, grid_round, indicators, round_to_step, step_inches, DimLabelOptions, LabelParts,
+    SecondFormat, TolMode, Tolerance,
+};
+pub use seg::{CurveKind, DimCurve, DimSeg, LeaderStyle};
+pub use settings::{
+    exterior_strings_for, mark_default, DimSetup, LocateTool, MarkKind, OffsetFrom, PoleMark,
+    PoleSetup, RoundMethod, TempWalls, TextPos, ToolLocate, ToolLocates, LOCATE_MARKS,
+};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DimensionKind {
     Manual,
@@ -57,14 +71,17 @@ pub enum DimArrow {
     /// An arrowhead; `filled` decides between a solid and an open one.
     Arrow,
     Dot,
+    /// A long diagonal stroke across the line (drafting slash).
+    Slash,
     None,
 }
 
 impl DimArrow {
-    pub const ALL: [DimArrow; 4] = [
+    pub const ALL: [DimArrow; 5] = [
         DimArrow::Tick,
         DimArrow::Arrow,
         DimArrow::Dot,
+        DimArrow::Slash,
         DimArrow::None,
     ];
 
@@ -73,6 +90,7 @@ impl DimArrow {
             DimArrow::Tick => "Tick",
             DimArrow::Arrow => "Arrow",
             DimArrow::Dot => "Dot",
+            DimArrow::Slash => "Slash",
             DimArrow::None => "None",
         }
     }
@@ -85,6 +103,8 @@ impl DimArrow {
             DimArrow::Arrow
         } else if n.contains("dot") {
             DimArrow::Dot
+        } else if n.contains("slash") {
+            DimArrow::Slash
         } else if n == "none" {
             DimArrow::None
         } else {
@@ -123,6 +143,15 @@ pub struct DimOverrides {
     /// A fixed extension line length, measured back from the dimension line
     /// toward the measured point (0 or `None`: the whole way).
     pub ext_length: Option<f64>,
+    // --- Secondary Format and tolerance ---
+    /// This dimension's own second format (Secondary Format tab).
+    pub second: Option<SecondFormat>,
+    pub tolerance: Option<Tolerance>,
+    /// Rounded value indicators `(+ or - after, ~ before)`.
+    pub indicators: Option<(bool, bool)>,
+    pub text_pos: Option<TextPos>,
+    // --- Segment, string, label and curve ---
+    pub seg: DimSeg,
 }
 
 impl DimOverrides {
@@ -140,19 +169,10 @@ impl DimOverrides {
             || self.suppress_zero_feet.is_some()
     }
 
-    /// `inches` as dimension text: the dimension's own format laid over
-    /// `base` (the Dimension Defaults' format).
-    pub fn format_len(&self, base: &DimFormat, inches: f64) -> String {
-        if !self.has_format() {
-            return base.fmt_len(inches);
-        }
-        let mut f = base.length.unwrap_or(LengthFormat {
-            unit: LengthUnit::FeetInches,
-            fraction_denominator: base.smallest_fraction.max(1),
-            decimals: 2,
-            unit_indicators: base.unit_indicators,
-            trailing_zeroes: false,
-        });
+    /// The number format in force for the dimension: its own settings laid
+    /// over the Dimension Defaults' format `base`.
+    pub fn effective_format(&self, base: &DimFormat) -> LengthFormat {
+        let mut f = base.effective();
         if let Some(u) = self.units {
             f.unit = u;
         }
@@ -168,12 +188,42 @@ impl DimOverrides {
         if let Some(t) = self.trailing_zeroes {
             f.trailing_zeroes = t;
         }
+        f
+    }
+
+    /// `inches` as dimension text: the dimension's own format laid over
+    /// `base` (the Dimension Defaults' format).
+    pub fn format_len(&self, base: &DimFormat, inches: f64) -> String {
+        if !self.has_format() {
+            return base.fmt_len(inches);
+        }
+        let f = self.effective_format(base);
         let s = format_length(inches, &f);
         if self.suppress_zero_feet == Some(true) && f.unit == LengthUnit::FeetInches {
             suppress_zero_feet(&s, f.unit_indicators)
         } else {
             s
         }
+    }
+
+    /// The label options in force: the defaults' with this dimension's own
+    /// second format, tolerance, indicators and text position laid over.
+    pub fn label_options(&self, base: &DimFormat) -> DimLabelOptions {
+        let mut o = base.label;
+        if let Some(s) = self.second {
+            o.second = s;
+        }
+        if let Some(t) = self.tolerance {
+            o.tolerance = t;
+        }
+        if let Some((after, tilde)) = self.indicators {
+            o.plus_minus_after = after;
+            o.tilde_before = tilde;
+        }
+        if let Some(p) = self.text_pos {
+            o.position = p;
+        }
+        o
     }
 }
 
@@ -360,7 +410,7 @@ impl Default for LocateGroup {
 }
 
 /// How dimension text is formatted.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct DimFormat {
     /// Smallest fraction denominator shown: 8 or 16.
     pub smallest_fraction: u32,
@@ -370,6 +420,9 @@ pub struct DimFormat {
     /// from `smallest_fraction` / `unit_indicators`.
     #[serde(default)]
     pub length: Option<LengthFormat>,
+    /// The second format, tolerance, rounding method and indicators.
+    #[serde(default)]
+    pub label: DimLabelOptions,
 }
 
 impl Default for DimFormat {
@@ -378,11 +431,24 @@ impl Default for DimFormat {
             smallest_fraction: 16,
             unit_indicators: true,
             length: None,
+            label: DimLabelOptions::default(),
         }
     }
 }
 
 impl DimFormat {
+    /// The length format this describes: `length`, else feet-inches at
+    /// `smallest_fraction`.
+    pub fn effective(&self) -> LengthFormat {
+        self.length.unwrap_or(LengthFormat {
+            unit: LengthUnit::FeetInches,
+            fraction_denominator: self.smallest_fraction.max(1),
+            decimals: 2,
+            unit_indicators: self.unit_indicators,
+            trailing_zeroes: false,
+        })
+    }
+
     /// Whole-millimetre dimension text with no unit marks, e.g. `3048`.
     pub fn metric_mm() -> Self {
         Self {
@@ -457,11 +523,11 @@ impl Dimension {
             .collect()
     }
 
+    /// The label on one line: the number with any additional text, tolerance
+    /// and indicators, and the second format in parentheses
+    /// ([`Dimension::label_parts`] has the lines apart).
     pub fn label(&self, fmt: &DimFormat) -> String {
-        match &self.text_override {
-            Some(t) => t.clone(),
-            None => self.look.format_len(fmt, self.length()),
-        }
+        self.label_parts(fmt).one_line()
     }
 
     /// Reverse Dimension (DIM-37): the measured points swap ends (with their
@@ -1442,6 +1508,7 @@ mod tests {
             smallest_fraction: 8,
             unit_indicators: true,
             length: None,
+            label: DimLabelOptions::default(),
         };
         assert_eq!(eighths.fmt_len(150.07), "12'-6 1/8\"");
         assert_eq!(eighths.fmt_len(150.0), "12'-6\"");
@@ -1449,6 +1516,7 @@ mod tests {
             smallest_fraction: 16,
             unit_indicators: false,
             length: None,
+            label: DimLabelOptions::default(),
         };
         assert_eq!(bare.fmt_len(150.5), "12-6 1/2");
         let mm = DimFormat::metric_mm();

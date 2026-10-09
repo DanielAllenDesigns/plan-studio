@@ -13,14 +13,12 @@ use serde::{Deserialize, Serialize};
 
 mod shape;
 mod tabs;
-pub use shape::{
-    clip_segment_convex, inset_convex, section, CornerCut, ShapeKind, WindowShape,
-};
+pub use shape::{clip_segment_convex, inset_convex, section, CornerCut, ShapeKind, WindowShape};
 pub use tabs::{
-    BlindStyle, CurtainStyle, CurvedCasing, DoorSwing, EnergyValues, FramedOpening,
-    HeaderMaterial, InteriorShutterStyle, MillworkStyle, OpeningFraming, OpeningInfo,
-    OpeningMaterials, PartPaint, RoughBox, RoughMode, RoughOpening, Treatments, DOOR_ENERGY_TYPES,
-    DOOR_PARTS, WINDOW_ENERGY_TYPES, WINDOW_PARTS,
+    BlindStyle, CurtainStyle, CurvedCasing, DoorSwing, EnergyValues, FramedOpening, HeaderMaterial,
+    InteriorShutterStyle, MillworkStyle, OpeningFraming, OpeningInfo, OpeningMaterials, PartPaint,
+    RoughBox, RoughMode, RoughOpening, Treatments, DOOR_ENERGY_TYPES, DOOR_PARTS,
+    WINDOW_ENERGY_TYPES, WINDOW_PARTS,
 };
 
 // ----- lites -----

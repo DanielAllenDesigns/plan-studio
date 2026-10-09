@@ -225,6 +225,7 @@ pub fn zoom_to_finding(cx: &mut EditorContext, cam: &mut Camera, f: &Finding) {
         Some(Target::Cabinet(id)) => cx.select_only(ObjectRef::Cabinet(id)),
         Some(Target::Roof(id)) => cx.select_only(ObjectRef::RoofPlane(id)),
         Some(Target::Detail(id)) => cx.select_only(ObjectRef::Detail(id)),
+        Some(Target::Foundation(id)) => cx.select_only(ObjectRef::Foundation(id)),
         None => {}
     }
 }
@@ -310,7 +311,9 @@ pub fn check_window(
                 let fixable = w.current().is_some_and(crate::editor::code::can_fix);
                 c.fix = ui
                     .add_enabled(fixable, egui::Button::new("Fix"))
-                    .on_hover_text("Set the stair, railing or footing to the code minimum (one undo step)")
+                    .on_hover_text(
+                        "Set the stair, railing or footing to the code minimum (one undo step)",
+                    )
                     .clicked();
             });
             ui.checkbox(&mut w.zoom_each, "Zoom to each finding");
@@ -602,6 +605,64 @@ pub const SETTINGS: &str = "check.settings";
 pub const CHECK_LIVE: &str = "check.live";
 /// Menu id: Tools > Checks > Apply Code Minimums to Defaults.
 pub const APPLY_DEFAULTS: &str = "check.apply_defaults";
+/// Menu id: Tools > Checks > Kitchen and Bath Report (NKBA guidelines).
+pub const NKBA_REPORT: &str = "check.nkba_report";
+/// Menu id: Tools > Checks > Kitchen and Bath Report (Excel).
+pub const NKBA_XLSX: &str = "check.nkba_xlsx";
+
+/// The NKBA kitchen and bath report of the active floor: every guideline of
+/// every kitchen and bathroom, met, not met or switched off.
+pub fn nkba_report(cx: &mut EditorContext) -> plan_check::NkbaReport {
+    cx.refresh();
+    let room_types: Vec<(usize, String)> = cx
+        .rooms
+        .iter()
+        .enumerate()
+        .filter_map(|(i, r)| rooms_edit::name_entry(cx, r).map(|n| (i, n.room_type.clone())))
+        .collect();
+    let stairs: Vec<Stair> = cx.floor().stairs_as().unwrap_or_default();
+    plan_check::nkba_report(&cx.project, cx.floor, &cx.rooms, &room_types, &stairs)
+}
+
+/// The report as a plan-docs table (layout page, PDF and Excel outputs).
+pub fn nkba_schedule(report: &plan_check::NkbaReport, floor_name: &str) -> Schedule {
+    let t = report.table(floor_name);
+    Schedule {
+        title: t.title,
+        columns: t.columns,
+        rows: t.rows,
+    }
+}
+
+fn open_nkba_report(cx: &mut EditorContext) {
+    let report = nkba_report(cx);
+    let summary = report.summary();
+    open_text_report("Kitchen and Bath Report", &summary, &report.markdown());
+    cx.status = summary;
+}
+
+fn export_nkba_xlsx(cx: &mut EditorContext) {
+    let report = nkba_report(cx);
+    if report.rows.is_empty() {
+        cx.status = "No kitchen or bathroom to report: name the rooms Kitchen and Bath".into();
+        return;
+    }
+    let floor_name = cx.floor().name.clone();
+    let sched = nkba_schedule(&report, &floor_name);
+    let name = format!("{}.xlsx", sched.title.replace(' ', "_"));
+    let Some(path) = rfd::FileDialog::new()
+        .set_file_name(&name)
+        .add_filter("xlsx", &["xlsx"])
+        .save_file()
+    else {
+        cx.status = "Export cancelled".into();
+        return;
+    };
+    cx.status = match std::fs::write(&path, sched.to_xlsx()) {
+        Ok(()) => format!("Saved {}", path.display()),
+        Err(e) => format!("Could not save {}: {e}", path.display()),
+    };
+}
 
 /// Runs this module's menu commands by id; false when `id` is not ours.
 pub fn run_command(cx: &mut EditorContext, id: &str) -> bool {
@@ -624,7 +685,15 @@ pub fn run_command(cx: &mut EditorContext, id: &str) -> bool {
             cx.status = crate::editor::code::apply_to_defaults(cx);
             true
         }
-        _ => false,
+        NKBA_REPORT => {
+            open_nkba_report(cx);
+            true
+        }
+        NKBA_XLSX => {
+            export_nkba_xlsx(cx);
+            true
+        }
+        _ => super::calculators::run_command(cx, id),
     }
 }
 
@@ -762,6 +831,21 @@ const LIMITS: &[(&str, LimitField, &str)] = &[
         |o| &mut o.roof_pitch_steep,
         ":12",
     ),
+    ("Frost depth", |o| &mut o.frost_depth, "\""),
+    (
+        "Floor above finished grade",
+        |o| &mut o.grade_below_floor,
+        "\"",
+    ),
+    ("Footing thickness", |o| &mut o.footing_min_thickness, "\""),
+    ("Handrail height (max)", |o| &mut o.handrail_max, "\""),
+    ("Guard opening sphere", |o| &mut o.guard_sphere, "\""),
+    (
+        "Shower front clearance",
+        |o| &mut o.shower_front_clear,
+        "\"",
+    ),
+    ("Garage wall gypsum", |o| &mut o.garage_gypsum_min, "\""),
 ];
 
 enum SettingsResult {

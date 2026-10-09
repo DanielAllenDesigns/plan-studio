@@ -825,10 +825,11 @@ mod tests {
             center: p(100.0, 50.0),
             radius: 50.0,
             start_angle: -std::f64::consts::FRAC_PI_2,
-            end_angle: 0.0,
+            end_angle: std::f64::consts::FRAC_PI_2,
         };
-        // It already leaves toward +x (tangent). Tilt the requirement: the line
-        // arrives heading up-right, so the arc must leave that way.
+        // It leaves toward +x (tangent). Tilt the requirement: the line
+        // arrives heading up-right, so the arc must leave that way (its far
+        // end, (100, 100), is not on that line, so a circle exists).
         let dir = p(1.0, 1.0);
         let CadItem::Arc {
             center,
@@ -851,7 +852,7 @@ mod tests {
             near(start, p(100.0, 0.0)),
             "keeps the shared end: {start:?}"
         );
-        assert!(near(end, p(150.0, 50.0)), "keeps the other end: {end:?}");
+        assert!(near(end, p(100.0, 100.0)), "keeps the other end: {end:?}");
         // The arc's tangent at the start is along the requested direction.
         let t = p(-start_angle.sin(), start_angle.cos());
         let d = dir.normalized();
@@ -999,7 +1000,7 @@ mod tests {
                 center: p(100.0, 50.0),
                 radius: 50.0,
                 start_angle: -std::f64::consts::FRAC_PI_2,
-                end_angle: 0.0,
+                end_angle: std::f64::consts::FRAC_PI_2,
             },
         );
         let mut t = tool(CadMode::MakeArcTangent);

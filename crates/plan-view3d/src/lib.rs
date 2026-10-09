@@ -28,7 +28,7 @@ mod texturing;
 mod viewport;
 pub mod walkthrough;
 
-pub use backdrop::BackdropImage;
+pub use backdrop::{BackdropImage, Fog, Ground};
 pub use camera::{standard_views, Camera, CameraMode};
 pub use quality::{
     nearest_lights, shadow_map, ssao_kernel, tone_map, Look, LookParams, Quality, ShadowMap,

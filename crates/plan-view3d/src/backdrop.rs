@@ -73,6 +73,59 @@ impl BackdropImage {
     }
 }
 
+/// What lies below the horizon behind the model.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum Ground {
+    /// The look's own ground fade.
+    #[default]
+    Fade,
+    /// A flat colour (display-encoded 0..1) below the horizon.
+    Solid([f32; 3]),
+    /// No ground: the sky carries on below the horizon.
+    Sky,
+}
+
+impl Ground {
+    /// Shader code (`u_ground_mode`) and the solid colour.
+    pub fn shader(self) -> (i32, [f32; 3]) {
+        match self {
+            Ground::Fade => (0, [0.0; 3]),
+            Ground::Solid(c) => (1, c),
+            Ground::Sky => (2, [0.0; 3]),
+        }
+    }
+}
+
+/// Distance haze: surfaces fade toward a colour with the distance from the
+/// eye as `1 - exp(-density * distance)`.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Fog {
+    /// Per inch; 0 is off.
+    pub density: f32,
+    /// Display-encoded 0..1; `None` uses the horizon colour of the sky.
+    pub color: Option<[f32; 3]>,
+}
+
+impl Fog {
+    /// Is any haze drawn?
+    pub fn is_on(&self) -> bool {
+        self.density > 0.0 && self.density.is_finite()
+    }
+
+    /// The fraction of the fog colour at `distance` inches from the eye.
+    pub fn amount(&self, distance: f32) -> f32 {
+        if !self.is_on() || !distance.is_finite() || distance <= 0.0 {
+            return 0.0;
+        }
+        1.0 - (-self.density * distance).exp()
+    }
+
+    /// The colour the fog fades to given the sky's `horizon` colour.
+    pub fn colour_or(&self, horizon: [f32; 3]) -> [f32; 3] {
+        self.color.unwrap_or(horizon)
+    }
+}
+
 /// Texture-coordinate scale that makes a picture of `image_aspect` cover a
 /// view of `view_aspect` (centred, the overflow cropped): multiply the
 /// distance of a screen coordinate from the centre by this.
@@ -154,6 +207,44 @@ mod tests {
         assert_eq!(&img.rgba[..4], &[200, 100, 50, 255]);
         let avg = img.average();
         assert!((avg[0] - 200.0 / 255.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn fog_grows_with_distance_and_is_off_at_zero_density() {
+        let off = Fog::default();
+        assert!(!off.is_on());
+        assert_eq!(off.amount(1000.0), 0.0);
+        let f = Fog {
+            density: 1.0 / 1200.0,
+            color: None,
+        };
+        assert_eq!(f.amount(0.0), 0.0);
+        let near = f.amount(120.0);
+        let at_distance = f.amount(1200.0);
+        let far = f.amount(12_000.0);
+        assert!(near < at_distance && at_distance < far && far < 1.0);
+        assert!(
+            (at_distance - (1.0 - (-1.0_f32).exp())).abs() < 1e-5,
+            "63 percent at the distance"
+        );
+        assert_eq!(f.amount(f32::NAN), 0.0);
+        assert_eq!(f.colour_or([0.1, 0.2, 0.3]), [0.1, 0.2, 0.3]);
+        let own = Fog {
+            color: Some([1.0, 0.0, 0.0]),
+            ..f
+        };
+        assert_eq!(own.colour_or([0.1, 0.2, 0.3]), [1.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn ground_modes_map_to_shader_codes() {
+        assert_eq!(Ground::Fade.shader().0, 0);
+        assert_eq!(
+            Ground::Solid([0.2, 0.3, 0.4]).shader(),
+            (1, [0.2, 0.3, 0.4])
+        );
+        assert_eq!(Ground::Sky.shader().0, 2);
+        assert_eq!(Ground::default(), Ground::Fade);
     }
 
     #[test]

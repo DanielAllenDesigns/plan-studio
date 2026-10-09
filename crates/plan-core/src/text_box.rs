@@ -262,7 +262,11 @@ fn merge_runs(line: &mut Vec<RichRun>) {
                     && last.italic == r.italic
                     && last.underline == r.underline
                     && (last.scale - r.scale).abs() < 1e-9
-                    && last.color == r.color =>
+                    && last.color == r.color
+                    && last.font == r.font
+                    && last.strike == r.strike
+                    && last.upper == r.upper
+                    && last.link == r.link =>
             {
                 last.text.push_str(&r.text);
             }
@@ -281,6 +285,20 @@ fn push_piece(lines: &mut [Vec<RichRun>], piece: RichRun) {
 /// Lays `runs` out in the box `tb` for text of height `base`.
 pub fn layout_runs(runs: &[RichRun], base: f64, tb: &TextBox) -> BoxLayout {
     let lines = wrap_runs(runs, base, tb.width);
+    // Uppercase runs show in capitals (Edit Bar).
+    let lines: Vec<Vec<RichRun>> = lines
+        .into_iter()
+        .map(|l| {
+            l.into_iter()
+                .map(|mut r| {
+                    if r.upper {
+                        r.text = r.text.to_uppercase();
+                    }
+                    r
+                })
+                .collect()
+        })
+        .collect();
     let widths: Vec<f64> = lines.iter().map(|l| runs_width(l, base)).collect();
     let pitches: Vec<f64> = lines.iter().map(|l| line_pitch(l, base)).collect();
     let content: f64 = pitches.iter().sum();

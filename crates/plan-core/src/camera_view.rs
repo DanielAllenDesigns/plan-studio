@@ -62,8 +62,76 @@ impl BackdropKind {
     }
 }
 
+/// What lies below the horizon behind the model (the Backdrop tab's Ground).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum GroundKind {
+    /// The technique's own ground fade.
+    #[default]
+    Default,
+    /// A flat ground colour below the horizon.
+    Color,
+    /// No ground: the sky carries on below the horizon.
+    None,
+}
+
+impl GroundKind {
+    pub const ALL: [GroundKind; 3] = [GroundKind::Default, GroundKind::Color, GroundKind::None];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            GroundKind::Default => "Default ground",
+            GroundKind::Color => "Ground color",
+            GroundKind::None => "No ground",
+        }
+    }
+}
+
 fn default_sky() -> [u8; 3] {
     [217, 227, 240]
+}
+
+fn default_ground() -> [u8; 3] {
+    [140, 150, 130]
+}
+
+fn default_fog_distance() -> f64 {
+    300.0
+}
+
+/// Distance haze: surfaces fade toward the fog colour the farther they are
+/// from the eye (the Backdrop tab's Fog).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Fog {
+    pub on: bool,
+    /// Distance at which about 63 percent of the colour is fog, feet.
+    pub distance_ft: f64,
+    /// Fog colour; `None` uses the horizon colour of the sky so the haze
+    /// melts into the backdrop.
+    pub color: Option<[u8; 3]>,
+}
+
+impl Default for Fog {
+    fn default() -> Self {
+        Self {
+            on: false,
+            distance_ft: default_fog_distance(),
+            color: None,
+        }
+    }
+}
+
+/// Smallest and largest fog distance, feet.
+pub const FOG_FEET: (f64, f64) = (10.0, 5000.0);
+
+impl Fog {
+    /// The fog density the renderer uses, per inch (0 when the fog is off).
+    pub fn density_per_inch(&self) -> f32 {
+        if !self.on || !self.distance_ft.is_finite() {
+            return 0.0;
+        }
+        (1.0 / (self.distance_ft.clamp(FOG_FEET.0, FOG_FEET.1) * 12.0)) as f32
+    }
 }
 
 /// The Backdrop tab of a camera.
@@ -77,6 +145,13 @@ pub struct Backdrop {
     /// [`BackdropKind::Image`]. Never the picture itself: it is read from
     /// Chief's install when the view is drawn.
     pub image: String,
+    /// What lies below the horizon.
+    pub ground: GroundKind,
+    /// Ground colour of [`GroundKind::Color`].
+    #[serde(default = "default_ground")]
+    pub ground_color: [u8; 3],
+    /// Distance haze.
+    pub fog: Fog,
 }
 
 impl Default for Backdrop {
@@ -85,6 +160,9 @@ impl Default for Backdrop {
             kind: BackdropKind::Default,
             color: default_sky(),
             image: String::new(),
+            ground: GroundKind::Default,
+            ground_color: default_ground(),
+            fog: Fog::default(),
         }
     }
 }
@@ -97,6 +175,9 @@ pub enum FloorsDisplayed {
     All,
     /// The camera's floor and the ones below it.
     ThisAndBelow,
+    /// The floors `from` to `to`, both included (0 is the lowest floor): the
+    /// per-floor pick of the Camera Specification.
+    Picked { from: u8, to: u8 },
 }
 
 impl FloorsDisplayed {
@@ -106,6 +187,27 @@ impl FloorsDisplayed {
         match self {
             FloorsDisplayed::All => "All floors",
             FloorsDisplayed::ThisAndBelow => "This floor and below",
+            FloorsDisplayed::Picked { .. } => "Pick floors",
+        }
+    }
+
+    /// Is this a per-floor pick?
+    pub fn is_picked(self) -> bool {
+        matches!(self, FloorsDisplayed::Picked { .. })
+    }
+
+    /// The first and last floor shown for a camera on `camera_floor` in a
+    /// plan of `floors` floors; `None` shows everything. A pick is brought
+    /// into range and put in order.
+    pub fn range(self, camera_floor: usize, floors: usize) -> Option<(usize, usize)> {
+        let last = floors.saturating_sub(1);
+        match self {
+            FloorsDisplayed::All => None,
+            FloorsDisplayed::ThisAndBelow => Some((0, camera_floor.min(last))),
+            FloorsDisplayed::Picked { from, to } => {
+                let (a, b) = (usize::from(from).min(last), usize::from(to).min(last));
+                Some((a.min(b), a.max(b)))
+            }
         }
     }
 }
@@ -119,6 +221,32 @@ pub struct CameraLabel {
     pub text: String,
     pub show_in_plan: bool,
     pub show_in_view: bool,
+}
+
+/// A named choice of which lights shine (Chief's light sets in Adjust
+/// Lights). The plan's lights and the electrical fixtures are listed apart
+/// (their ids come from different counters); anything not listed is off while
+/// the set is in use.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LightSet {
+    pub name: String,
+    /// Ids of the plan's lights ([`crate::Project::lights`]) that shine.
+    pub on: Vec<crate::Id>,
+    /// Ids of the electrical light fixtures (devices) that shine.
+    pub fixtures: Vec<crate::Id>,
+}
+
+impl LightSet {
+    /// Does the plan light `id` shine in this set?
+    pub fn shines(&self, id: crate::Id) -> bool {
+        self.on.contains(&id)
+    }
+
+    /// Does the electrical light fixture `id` shine in this set?
+    pub fn shines_fixture(&self, id: crate::Id) -> bool {
+        self.fixtures.contains(&id)
+    }
 }
 
 /// A saved orbit pose: the eye and the point it looks at, scene space
@@ -166,6 +294,50 @@ pub struct CameraView {
     pub pose: Option<ViewPose>,
     /// How a walkthrough camera is recorded.
     pub walk: WalkRecord,
+    /// The light set this view uses in place of the plan's active one.
+    pub light_set: Option<String>,
+    /// A saved orthographic view (an elevation or the plan overhead).
+    pub ortho: Option<OrthoView>,
+}
+
+/// Which orthographic view a saved camera restores.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OrthoKind {
+    ElevationFront,
+    ElevationBack,
+    ElevationLeft,
+    ElevationRight,
+    PlanOverhead,
+}
+
+impl OrthoKind {
+    pub const ALL: [OrthoKind; 5] = [
+        OrthoKind::ElevationFront,
+        OrthoKind::ElevationBack,
+        OrthoKind::ElevationLeft,
+        OrthoKind::ElevationRight,
+        OrthoKind::PlanOverhead,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            OrthoKind::ElevationFront => "Front Elevation",
+            OrthoKind::ElevationBack => "Back Elevation",
+            OrthoKind::ElevationLeft => "Left Elevation",
+            OrthoKind::ElevationRight => "Right Elevation",
+            OrthoKind::PlanOverhead => "Plan Overhead",
+        }
+    }
+}
+
+/// A saved orthographic view: the direction, the point it is centred on
+/// (scene space) and how much it shows.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct OrthoView {
+    pub kind: OrthoKind,
+    pub target: [f64; 3],
+    /// Half the visible height, inches.
+    pub half_height: f64,
 }
 
 impl Default for CameraView {
@@ -184,6 +356,8 @@ impl Default for CameraView {
             sun_intensity: None,
             pose: None,
             walk: WalkRecord::default(),
+            light_set: None,
+            ortho: None,
         }
     }
 }
@@ -231,6 +405,48 @@ fn default_samples() -> u32 {
     8
 }
 
+/// What Record Walkthrough writes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum RecordFormat {
+    /// One Motion-JPEG `.avi` movie.
+    #[default]
+    Video,
+    /// A numbered PNG sequence and the `make_video.sh` script.
+    Frames,
+    /// Both of them.
+    Both,
+}
+
+impl RecordFormat {
+    pub const ALL: [RecordFormat; 3] = [
+        RecordFormat::Video,
+        RecordFormat::Frames,
+        RecordFormat::Both,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            RecordFormat::Video => "Video (AVI, Motion-JPEG)",
+            RecordFormat::Frames => "PNG sequence",
+            RecordFormat::Both => "Video and PNG sequence",
+        }
+    }
+
+    /// Does this format write the movie?
+    pub fn video(self) -> bool {
+        matches!(self, RecordFormat::Video | RecordFormat::Both)
+    }
+
+    /// Does this format write the PNG frames?
+    pub fn frames(self) -> bool {
+        matches!(self, RecordFormat::Frames | RecordFormat::Both)
+    }
+}
+
+fn default_jpeg_quality() -> u8 {
+    85
+}
+
 /// How Record Walkthrough renders the frames of a walkthrough camera.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -242,6 +458,11 @@ pub struct WalkRecord {
     pub height: u32,
     /// Path-tracer samples per pixel.
     pub samples: u32,
+    /// A movie, a PNG sequence or both.
+    pub format: RecordFormat,
+    /// JPEG quality of the movie's frames, 1..=100.
+    #[serde(default = "default_jpeg_quality")]
+    pub quality: u8,
 }
 
 impl Default for WalkRecord {
@@ -251,6 +472,8 @@ impl Default for WalkRecord {
             width: default_width(),
             height: default_height(),
             samples: default_samples(),
+            format: RecordFormat::Video,
+            quality: default_jpeg_quality(),
         }
     }
 }
@@ -270,6 +493,8 @@ impl WalkRecord {
             width: self.width.clamp(64, 4096),
             height: self.height.clamp(48, 4096),
             samples: self.samples.clamp(1, 256),
+            format: self.format,
+            quality: self.quality.clamp(1, 100),
         }
     }
 }
@@ -278,7 +503,7 @@ impl WalkRecord {
 pub const MAX_TILT_DEG: f64 = 85.0;
 
 /// Interior lights and the sun for the whole plan (3D > Lighting).
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Lighting {
     /// Where the sun is from north, degrees clockwise.
@@ -295,6 +520,11 @@ pub struct Lighting {
     pub interior_lights: bool,
     /// The sun is set by the date: month, day, solar hours and latitude.
     pub from_date: Option<SunDate>,
+    /// The named light sets of Adjust Lights.
+    pub sets: Vec<LightSet>,
+    /// The set in use for the whole plan; `None` leaves every light to its
+    /// own on/off switch.
+    pub active_set: Option<String>,
 }
 
 /// Month, day, solar time and latitude the sun position came from.
@@ -315,11 +545,98 @@ impl Default for Lighting {
             ambient: default_ambient(),
             interior_lights: true,
             from_date: None,
+            sets: Vec::new(),
+            active_set: None,
         }
     }
 }
 
 impl Lighting {
+    /// The light set called `name` (case-insensitive).
+    pub fn set(&self, name: &str) -> Option<&LightSet> {
+        self.sets
+            .iter()
+            .find(|s| s.name.eq_ignore_ascii_case(name.trim()))
+    }
+
+    /// The set a view uses: its own choice, else the plan's active set. A
+    /// choice that names no set (deleted since) falls back to the plan's.
+    pub fn set_for(&self, view_choice: Option<&str>) -> Option<&LightSet> {
+        view_choice
+            .and_then(|n| self.set(n))
+            .or_else(|| self.active_set.as_deref().and_then(|n| self.set(n)))
+    }
+
+    /// Adds a set `name` listing the lights `on`; `false` (nothing added) when
+    /// the name is empty or taken. An existing set of the name is replaced
+    /// only by [`Lighting::update_set`].
+    pub fn add_set(&mut self, name: &str, on: Vec<crate::Id>, fixtures: Vec<crate::Id>) -> bool {
+        let name = name.trim();
+        if name.is_empty() || self.set(name).is_some() {
+            return false;
+        }
+        self.sets.push(LightSet {
+            name: name.to_string(),
+            on,
+            fixtures,
+        });
+        true
+    }
+
+    /// Replaces the lights of set `name`; `false` if there is no such set.
+    pub fn update_set(&mut self, name: &str, on: Vec<crate::Id>, fixtures: Vec<crate::Id>) -> bool {
+        match self
+            .sets
+            .iter_mut()
+            .find(|s| s.name.eq_ignore_ascii_case(name.trim()))
+        {
+            Some(s) => {
+                s.on = on;
+                s.fixtures = fixtures;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Renames a set; `false` if the new name is empty or taken by another
+    /// set, or there is no set `from`. The active set follows the rename.
+    pub fn rename_set(&mut self, from: &str, to: &str) -> bool {
+        let to = to.trim();
+        if to.is_empty() {
+            return false;
+        }
+        if self
+            .set(to)
+            .is_some_and(|s| !s.name.eq_ignore_ascii_case(from.trim()))
+        {
+            return false;
+        }
+        let Some(s) = self
+            .sets
+            .iter_mut()
+            .find(|s| s.name.eq_ignore_ascii_case(from.trim()))
+        else {
+            return false;
+        };
+        let old = std::mem::replace(&mut s.name, to.to_string());
+        if self.active_set.as_deref() == Some(old.as_str()) {
+            self.active_set = Some(to.to_string());
+        }
+        true
+    }
+
+    /// Deletes a set (and stops using it when it was the active one).
+    pub fn remove_set(&mut self, name: &str) -> bool {
+        let n = self.sets.len();
+        self.sets
+            .retain(|s| !s.name.eq_ignore_ascii_case(name.trim()));
+        if self.set_for(None).is_none() {
+            self.active_set = None;
+        }
+        self.sets.len() != n
+    }
+
     /// The unit direction toward the sun in scene space (X east, Y up, Z
     /// south: plan +Y is north). Azimuth is measured clockwise from north.
     pub fn to_sun(&self) -> [f64; 3] {
@@ -371,9 +688,15 @@ mod tests {
             width: 10,
             height: 99_999,
             samples: 0,
+            quality: 0,
+            ..WalkRecord::default()
         }
         .clamped();
         assert_eq!((w.fps, w.width, w.height, w.samples), (60.0, 64, 4096, 1));
+        assert_eq!(w.quality, 1);
+        assert_eq!(WalkRecord::default().format, RecordFormat::Video);
+        assert!(RecordFormat::Both.video() && RecordFormat::Both.frames());
+        assert!(!RecordFormat::Video.frames() && !RecordFormat::Frames.video());
         let nan = WalkRecord {
             fps: f64::NAN,
             ..WalkRecord::default()
@@ -414,5 +737,107 @@ mod tests {
         assert!((e[0] - 1.0).abs() < 1e-9);
         l.sun_altitude_deg = 90.0;
         assert!((l.to_sun()[1] - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn light_sets_are_named_unique_and_follow_a_rename() {
+        let mut l = Lighting::default();
+        assert!(l.add_set("Evening", vec![3, 4], vec![8]));
+        assert!(
+            !l.add_set("evening", vec![], vec![]),
+            "names are unique, any case"
+        );
+        assert!(!l.add_set("  ", vec![], vec![]));
+        assert!(l.add_set("Movie", vec![], vec![]));
+        assert!(l.set("EVENING").unwrap().shines(4));
+        assert!(!l.set("Evening").unwrap().shines(5));
+        let evening = l.set("Evening").unwrap();
+        assert!(
+            evening.shines_fixture(8) && !evening.shines_fixture(3),
+            "lights and fixtures are apart"
+        );
+        l.active_set = Some("Evening".into());
+        assert_eq!(l.set_for(None).unwrap().name, "Evening");
+        // A camera's own choice wins over the plan's.
+        assert_eq!(l.set_for(Some("Movie")).unwrap().name, "Movie");
+        assert_eq!(
+            l.set_for(Some("Gone")).unwrap().name,
+            "Evening",
+            "a deleted choice falls back to the plan's set"
+        );
+        assert!(l.rename_set("Evening", "Dinner"));
+        assert_eq!(l.active_set.as_deref(), Some("Dinner"));
+        assert!(!l.rename_set("Dinner", "Movie"), "taken");
+        assert!(l.update_set("dinner", vec![9], vec![]));
+        assert!(l.set("Dinner").unwrap().shines(9));
+        assert!(l.remove_set("Dinner"));
+        assert_eq!(l.active_set, None, "the active set was deleted");
+        assert!(!l.remove_set("Dinner"));
+    }
+
+    #[test]
+    fn lighting_with_sets_round_trips_and_old_files_still_load() {
+        let mut l = Lighting::default();
+        l.add_set("Night", vec![1, 2, 3], vec![5]);
+        l.active_set = Some("Night".into());
+        let back: Lighting = serde_json::from_str(&serde_json::to_string(&l).unwrap()).unwrap();
+        assert_eq!(back, l);
+        let old: Lighting = serde_json::from_str(r#"{"ambient":0.2}"#).unwrap();
+        assert!(old.sets.is_empty() && old.active_set.is_none());
+    }
+
+    #[test]
+    fn fog_density_follows_the_distance_and_the_switch() {
+        let mut f = Fog::default();
+        assert_eq!(f.density_per_inch(), 0.0);
+        f.on = true;
+        f.distance_ft = 100.0;
+        assert!((f.density_per_inch() - 1.0 / 1200.0).abs() < 1e-9);
+        f.distance_ft = 1.0;
+        assert!(
+            (f.density_per_inch() - 1.0 / 120.0).abs() < 1e-9,
+            "clamped to 10 ft"
+        );
+        f.distance_ft = f64::NAN;
+        assert_eq!(f.density_per_inch(), 0.0);
+    }
+
+    #[test]
+    fn ground_fog_floors_and_ortho_view_round_trip() {
+        let mut v = CameraView::default();
+        v.backdrop.ground = GroundKind::Color;
+        v.backdrop.ground_color = [10, 20, 30];
+        v.backdrop.fog = Fog {
+            on: true,
+            distance_ft: 250.0,
+            color: Some([200, 210, 220]),
+        };
+        v.floors = FloorsDisplayed::Picked { from: 1, to: 2 };
+        v.light_set = Some("Night".into());
+        v.ortho = Some(OrthoView {
+            kind: OrthoKind::ElevationLeft,
+            target: [1.0, 2.0, 3.0],
+            half_height: 480.0,
+        });
+        let back: CameraView = serde_json::from_str(&serde_json::to_string(&v).unwrap()).unwrap();
+        assert_eq!(back, v);
+        // A file from before the ground and fog options opens unchanged.
+        let old: Backdrop = serde_json::from_str(r#"{"kind":"Color","color":[1,2,3]}"#).unwrap();
+        assert_eq!(old.ground, GroundKind::Default);
+        assert!(!old.fog.on);
+    }
+
+    #[test]
+    fn picked_floors_come_back_in_order_and_in_range() {
+        assert_eq!(FloorsDisplayed::All.range(1, 3), None);
+        assert_eq!(FloorsDisplayed::ThisAndBelow.range(1, 3), Some((0, 1)));
+        assert_eq!(FloorsDisplayed::ThisAndBelow.range(9, 3), Some((0, 2)));
+        let pick = FloorsDisplayed::Picked { from: 2, to: 1 };
+        assert_eq!(pick.range(0, 3), Some((1, 2)));
+        assert_eq!(
+            FloorsDisplayed::Picked { from: 0, to: 9 }.range(0, 2),
+            Some((0, 1))
+        );
+        assert!(pick.is_picked() && !FloorsDisplayed::All.is_picked());
     }
 }

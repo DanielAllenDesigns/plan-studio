@@ -8,8 +8,8 @@
 //! `RoomName`, the other extras are kept for the session.
 
 use super::{
-    dis_check, on, pv_text, row, section, Fields, Outcome, SpecDialog, SpecPages, Tab,
-    PV_ACCENT, PV_FAINT, PV_INK, PV_WALL,
+    dis_check, on, pv_text, row, section, Fields, Outcome, SpecDialog, SpecPages, Tab, PV_ACCENT,
+    PV_FAINT, PV_INK, PV_WALL,
 };
 use crate::editor::rooms_edit::{FillPattern, RoomExtras};
 use eframe::egui::{self, Align2, Color32, Painter, Pos2, Rect, Shape, Stroke, Ui};
@@ -323,7 +323,13 @@ impl RoomForm {
         }
         if let Some(min) = crate::editor::code::active().ceiling_min_for(&self.name.room_type) {
             let mut h = self.name.ceiling_height.unwrap_or(ceil_default);
-            if super::code_notice::code_notice(ui, "IRC R305.1 ceiling height", &mut h, min, super::code_notice::LimitKind::Min) {
+            if super::code_notice::code_notice(
+                ui,
+                "IRC R305.1 ceiling height",
+                &mut h,
+                min,
+                super::code_notice::LimitKind::Min,
+            ) {
                 self.name.ceiling_height = Some(h);
             }
         }
@@ -495,8 +501,15 @@ impl RoomForm {
                         }
                     });
             };
-            row(ui, "Joist Size", |ui| combo(ui, "deck_joist", &mut fr.joist_size, &sizes));
-            f.length_row(ui, "Joist Spacing (on Center)", "deck_js", &mut fr.joist_spacing);
+            row(ui, "Joist Size", |ui| {
+                combo(ui, "deck_joist", &mut fr.joist_size, &sizes)
+            });
+            f.length_row(
+                ui,
+                "Joist Spacing (on Center)",
+                "deck_js",
+                &mut fr.joist_spacing,
+            );
             let mut auto = fr.joist_angle.is_none();
             ui.horizontal(|ui| {
                 if ui
@@ -506,7 +519,11 @@ impl RoomForm {
                 {
                     fr.joist_angle = None;
                 }
-                if ui.radio_value(&mut auto, false, "Joist Direction").changed() && !auto {
+                if ui
+                    .radio_value(&mut auto, false, "Joist Direction")
+                    .changed()
+                    && !auto
+                {
                     fr.joist_angle = Some(90.0);
                 }
             });
@@ -524,14 +541,34 @@ impl RoomForm {
             row(ui, "Beam Plies", |ui| {
                 ui.add(egui::DragValue::new(&mut fr.beam_plies).range(1..=4));
             });
-            f.length_row(ui, "Beam Set Back from the Rim", "deck_bsb", &mut fr.beam_setback);
+            f.length_row(
+                ui,
+                "Beam Set Back from the Rim",
+                "deck_bsb",
+                &mut fr.beam_setback,
+            );
             row(ui, "Post Size", |ui| {
-                combo(ui, "deck_post", &mut fr.post_size, &["4x4", "4x6", "6x6", "8x8"])
+                combo(
+                    ui,
+                    "deck_post",
+                    &mut fr.post_size,
+                    &["4x4", "4x6", "6x6", "8x8"],
+                )
             });
             f.length_row(ui, "Greatest Post Spacing", "deck_ps", &mut fr.post_spacing);
             f.length_row(ui, "Footing Size", "deck_fs", &mut fr.footing_size);
-            f.length_row(ui, "Footing Thickness", "deck_ft", &mut fr.footing_thickness);
-            f.length_row(ui, "Deck Height Above Grade", "deck_hg", &mut fr.height_above_grade);
+            f.length_row(
+                ui,
+                "Footing Thickness",
+                "deck_ft",
+                &mut fr.footing_thickness,
+            );
+            f.length_row(
+                ui,
+                "Deck Height Above Grade",
+                "deck_hg",
+                &mut fr.height_above_grade,
+            );
             ui.checkbox(&mut fr.ledger, "Ledger Where the Deck Meets the House");
             ui.checkbox(&mut fr.rim_joists, "Rim Joists");
         });
@@ -548,8 +585,7 @@ impl RoomForm {
         ui.add_enabled_ui(spec.stairs.to_grade, |ui| {
             row(ui, "Leaves Edge", |ui| {
                 ui.add(
-                    egui::DragValue::new(&mut spec.stairs.edge)
-                        .range(0..=edges.saturating_sub(1)),
+                    egui::DragValue::new(&mut spec.stairs.edge).range(0..=edges.saturating_sub(1)),
                 );
                 ui.weak(format!("of {edges}, counted from the first corner"));
             });
@@ -1298,9 +1334,17 @@ mod tests {
         let spec = d.room_name().deck.clone().unwrap();
         assert!(spec.planking.enabled && spec.framing.enabled);
         // A second pass over the type keeps what the user set.
-        d.room_name_mut().deck.as_mut().unwrap().planking.board_width = 3.5;
+        d.room_name_mut()
+            .deck
+            .as_mut()
+            .unwrap()
+            .planking
+            .board_width = 3.5;
         d.set_room_type("Deck");
-        assert_eq!(d.room_name().deck.as_ref().unwrap().planking.board_width, 3.5);
+        assert_eq!(
+            d.room_name().deck.as_ref().unwrap().planking.board_width,
+            3.5
+        );
         // Another type drops the specification.
         d.set_room_type("Bedroom");
         assert!(d.room_name().deck.is_none());

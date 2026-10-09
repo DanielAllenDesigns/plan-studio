@@ -61,7 +61,12 @@ pub(crate) struct Guideline {
     pub requirement: &'static str,
 }
 
-const fn g(id: &'static str, area: Area, severity: Severity, requirement: &'static str) -> Guideline {
+const fn g(
+    id: &'static str,
+    area: Area,
+    severity: Severity,
+    requirement: &'static str,
+) -> Guideline {
     Guideline {
         id,
         area,
@@ -145,16 +150,56 @@ pub(crate) static GUIDELINES: &[Guideline] = &[
 /// Guidelines that need information the plan does not hold, listed in the
 /// report as "not checked".
 pub(crate) static NOT_CHECKABLE: &[(Area, &str, &str)] = &[
-    (K, "Work triangle traffic", "No major traffic through the work triangle (the plan has no traffic paths)"),
-    (K, "Storage", "Shelf and drawer storage totals by cabinet type (cabinet contents are not modelled)"),
-    (K, "Countertop heights", "Counter heights suit the cooks (the cooks are not in the plan)"),
-    (K, "Cooking exhaust volume", "Hood exhaust of 150 cfm or more, ducted outdoors (the plan holds no airflow)"),
-    (K, "Fire extinguisher and smoke alarm", "A fire extinguisher in the kitchen and a smoke alarm near it"),
-    (K, "Lighting", "Task and general lighting (illumination levels are not computed)"),
-    (B, "Toilet compartment", "A toilet compartment of 36\" x 66\" or more when it is enclosed"),
-    (B, "Tub and shower surfaces", "Slip-resistant floors, seat and wall surfaces (finishes are not tested)"),
-    (B, "Lighting", "Lighting at the mirror and in the shower (illumination is not computed)"),
-    (B, "Shower and tub valves", "Temperature control (anti-scald) valves (valves are not modelled)"),
+    (
+        K,
+        "Work triangle traffic",
+        "No major traffic through the work triangle (the plan has no traffic paths)",
+    ),
+    (
+        K,
+        "Storage",
+        "Shelf and drawer storage totals by cabinet type (cabinet contents are not modelled)",
+    ),
+    (
+        K,
+        "Countertop heights",
+        "Counter heights suit the cooks (the cooks are not in the plan)",
+    ),
+    (
+        K,
+        "Cooking exhaust volume",
+        "Hood exhaust of 150 cfm or more, ducted outdoors (the plan holds no airflow)",
+    ),
+    (
+        K,
+        "Fire extinguisher and smoke alarm",
+        "A fire extinguisher in the kitchen and a smoke alarm near it",
+    ),
+    (
+        K,
+        "Lighting",
+        "Task and general lighting (illumination levels are not computed)",
+    ),
+    (
+        B,
+        "Toilet compartment",
+        "A toilet compartment of 36\" x 66\" or more when it is enclosed",
+    ),
+    (
+        B,
+        "Tub and shower surfaces",
+        "Slip-resistant floors, seat and wall surfaces (finishes are not tested)",
+    ),
+    (
+        B,
+        "Lighting",
+        "Lighting at the mirror and in the shower (illumination is not computed)",
+    ),
+    (
+        B,
+        "Shower and tub valves",
+        "Temperature control (anti-scald) valves (valves are not modelled)",
+    ),
 ];
 
 /// The settings-list entries of the "NKBA" group.
@@ -224,7 +269,8 @@ impl Kind {
 fn classify(text: &str) -> Option<Kind> {
     let t = text.to_lowercase();
     let has = |ks: &[&str]| ks.iter().any(|k| t.contains(k));
-    if has(&["hot_tub", "hot tub", "wine", "plants"]) || (has(&["lighting"]) && !has(&["exhaust"])) {
+    if has(&["hot_tub", "hot tub", "wine", "plants"]) || (has(&["lighting"]) && !has(&["exhaust"]))
+    {
         return None;
     }
     Some(if has(&["hood"]) {
@@ -247,7 +293,13 @@ fn classify(text: &str) -> Option<Kind> {
         Kind::Trash
     } else if has(&["toilet", "water_closet", "water closet"]) {
         Kind::Toilet
-    } else if has(&["shower_valve", "shower valve", "shower_control", "shower control", "shower_trim"]) {
+    } else if has(&[
+        "shower_valve",
+        "shower valve",
+        "shower_control",
+        "shower control",
+        "shower_trim",
+    ]) {
         Kind::Valve
     } else if has(&["shower"]) {
         Kind::Shower
@@ -330,7 +382,11 @@ fn cab_from_json(v: &Value) -> Option<Cab> {
     let vv = u.perp();
     let top = v.get("countertop").filter(|c| c.is_object());
     let over = |k: &str| top.and_then(|c| num(c, k)).unwrap_or(0.0);
-    let (front, sides, back) = (over("overhang_front"), over("overhang_sides"), over("overhang_back"));
+    let (front, sides, back) = (
+        over("overhang_front"),
+        over("overhang_sides"),
+        over("overhang_back"),
+    );
     let corner = top
         .and_then(|c| c.get("corner"))
         .and_then(Value::as_str)
@@ -371,7 +427,11 @@ fn cab_from_json(v: &Value) -> Option<Cab> {
     };
     if let Some(list) = v.get("cutouts").and_then(Value::as_array) {
         for c in list {
-            let kind = c.get("kind").and_then(Value::as_str).unwrap_or("").to_string();
+            let kind = c
+                .get("kind")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
             let Some(pts) = c
                 .get("outline")
                 .and_then(|o| serde_json::from_value::<Vec<Point>>(o.clone()).ok())
@@ -441,7 +501,12 @@ struct Env<'a> {
 
 impl<'a> Env<'a> {
     fn new(ctx: &'a Ctx<'a>) -> Self {
-        let cabs: Vec<Cab> = ctx.floor.cabinets.iter().filter_map(cab_from_json).collect();
+        let cabs: Vec<Cab> = ctx
+            .floor
+            .cabinets
+            .iter()
+            .filter_map(cab_from_json)
+            .collect();
         let mut items = Vec::new();
         for s in ctx
             .floor
@@ -476,7 +541,10 @@ impl<'a> Env<'a> {
                 elevation: s.elevation,
                 top: s.elevation + s.height,
                 obstacle: s.elevation < 12.0
-                    && !matches!(kind, Kind::Hood | Kind::Fan | Kind::Mirror | Kind::Grab | Kind::Valve),
+                    && !matches!(
+                        kind,
+                        Kind::Hood | Kind::Fan | Kind::Mirror | Kind::Grab | Kind::Valve
+                    ),
                 cabinet: None,
             });
         }
@@ -520,10 +588,9 @@ impl<'a> Env<'a> {
                 .and_then(classify)
                 .or_else(|| classify(&c.label).filter(|k| *k == Kind::Trash));
             if let Some(kind) = named {
-                if items
-                    .iter()
-                    .any(|i| i.kind == kind && i.center.dist(c.local(c.width / 2.0, c.depth / 2.0)) < 18.0)
-                {
+                if items.iter().any(|i| {
+                    i.kind == kind && i.center.dist(c.local(c.width / 2.0, c.depth / 2.0)) < 18.0
+                }) {
                     continue;
                 }
                 items.push(Item {
@@ -582,7 +649,14 @@ impl<'a> Env<'a> {
     /// Distance along the ray to the nearest thing that stands in the way
     /// (not the item `skip_item` or the cabinet `skip_cab`, doorways are
     /// open), up to `max`.
-    fn ray(&self, from: Point, dir: Point, max: f64, skip_item: Option<usize>, skip_cab: Option<Id>) -> Option<f64> {
+    fn ray(
+        &self,
+        from: Point,
+        dir: Point,
+        max: f64,
+        skip_item: Option<usize>,
+        skip_cab: Option<Id>,
+    ) -> Option<f64> {
         let end = from + dir * max;
         let hit = |poly: &[Point]| {
             (0..poly.len())
@@ -594,7 +668,11 @@ impl<'a> Env<'a> {
         };
         let mut best: Option<f64> = None;
         let mut note = |d: f64| best = Some(best.map_or(d, |b| b.min(d)));
-        for c in self.cabs.iter().filter(|c| c.blocks() && Some(c.id) != skip_cab) {
+        for c in self
+            .cabs
+            .iter()
+            .filter(|c| c.blocks() && Some(c.id) != skip_cab)
+        {
             if let Some(d) = hit(&c.poly) {
                 note(d);
             }
@@ -635,7 +713,8 @@ impl<'a> Env<'a> {
             .into_iter()
             .filter_map(|f| {
                 let from = it.front + it.u * (it.width * f) + it.v * 0.05;
-                self.ray(from, it.v, max, Some(k), it.cabinet).map(|d| d + 0.05)
+                self.ray(from, it.v, max, Some(k), it.cabinet)
+                    .map(|d| d + 0.05)
             })
             .min_by(f64::total_cmp)
     }
@@ -644,11 +723,9 @@ impl<'a> Env<'a> {
     /// appliance standing in the run)?
     fn counter_at(&self, p: Point) -> bool {
         // A dishwasher stands under the counter, so its width counts.
-        if self
-            .items
-            .iter()
-            .any(|i| i.kind == Kind::Dishwasher && i.cabinet.is_none() && point_in_polygon(p, &i.poly))
-        {
+        if self.items.iter().any(|i| {
+            i.kind == Kind::Dishwasher && i.cabinet.is_none() && point_in_polygon(p, &i.poly)
+        }) {
             return true;
         }
         let on_top = self
@@ -664,11 +741,10 @@ impl<'a> Env<'a> {
             .flat_map(|c| c.cutouts.iter())
             .any(|(_, _, o)| point_in_polygon(p, o));
         // A range or refrigerator interrupts the counter.
-        let appliance = self.items.iter().any(|i| {
-            i.cabinet.is_none()
-                && i.obstacle
-                && point_in_polygon(p, &i.poly)
-        });
+        let appliance = self
+            .items
+            .iter()
+            .any(|i| i.cabinet.is_none() && i.obstacle && point_in_polygon(p, &i.poly));
         !cut && !appliance
     }
 
@@ -719,15 +795,19 @@ impl<'a> Env<'a> {
     /// A wall within `d` of `p`?
     fn wall_near(&self, p: Point, d: f64) -> bool {
         self.ctx.floor.walls.iter().any(|w| {
-            !w.flags.invisible
-                && dist_to_segment(p, w.start, w.end) - w.thickness * 0.5 <= d
+            !w.flags.invisible && dist_to_segment(p, w.start, w.end) - w.thickness * 0.5 <= d
         })
     }
 
     fn receptacles(&self) -> Vec<&Dev> {
         self.devs
             .iter()
-            .filter(|d| matches!(d.kind.as_str(), "Outlet110" | "Outlet110Quad" | "Gfci" | "OutletFloor"))
+            .filter(|d| {
+                matches!(
+                    d.kind.as_str(),
+                    "Outlet110" | "Outlet110Quad" | "Gfci" | "OutletFloor"
+                )
+            })
             .collect()
     }
 }
@@ -749,7 +829,9 @@ fn poly_dist(a: &[Point], b: &[Point]) -> f64 {
     }
     let one = |p: &[Point], q: &[Point]| {
         p.iter()
-            .flat_map(|&pt| (0..q.len()).map(move |k| dist_to_segment(pt, q[k], q[(k + 1) % q.len()])))
+            .flat_map(|&pt| {
+                (0..q.len()).map(move |k| dist_to_segment(pt, q[k], q[(k + 1) % q.len()]))
+            })
             .fold(f64::MAX, f64::min)
     };
     one(a, b).min(one(b, a))
@@ -1036,7 +1118,10 @@ fn two_cook_aisle(env: &Env, i: usize, name: &str, ev: &mut Eval) {
     }
     let mut worst: Option<(f64, usize)> = None;
     for (k, it) in env.items.iter().enumerate() {
-        let work = matches!(it.kind, Kind::Sink | Kind::Cooktop | Kind::Range | Kind::Fridge | Kind::Dishwasher);
+        let work = matches!(
+            it.kind,
+            Kind::Sink | Kind::Cooktop | Kind::Range | Kind::Fridge | Kind::Dishwasher
+        );
         if !work || !env.in_room(i, it.center) {
             continue;
         }
@@ -1137,7 +1222,6 @@ fn seating(env: &Env, i: usize, name: &str, ev: &mut Eval) {
 }
 
 fn landing_finding(
-    env: &Env,
     it: &Item,
     rule: &'static str,
     name: &str,
@@ -1146,7 +1230,6 @@ fn landing_finding(
     right: f64,
     need: (f64, f64),
 ) -> Finding {
-    let _ = env;
     finding(
         rule,
         Severity::Warning,
@@ -1171,19 +1254,26 @@ fn landings(env: &Env, i: usize, name: &str, ev: &mut Eval) {
     for it in &sinks {
         let (l, r) = (env.landing(it, -1.0, 60.0), env.landing(it, 1.0, 60.0));
         let is_primary = it.width * it.depth >= primary - EPS;
-        let need = if is_primary { (24.0, 18.0) } else { (18.0, 3.0) };
+        let need = if is_primary {
+            (24.0, 18.0)
+        } else {
+            (18.0, 3.0)
+        };
         ev.tested(i, K_SINK);
         let (hi, lo) = (l.max(r), l.min(r));
         if hi < need.0 - EPS || lo < need.1 - EPS {
             let what = if is_primary { "sink" } else { "second sink" };
-            ev.fail(i, landing_finding(env, it, K_SINK, name, what, l, r, need));
+            ev.fail(i, landing_finding(it, K_SINK, name, what, l, r, need));
         }
     }
     for it in env.room_items(i, Kind::is_cook) {
         let (l, r) = (env.landing(it, -1.0, 40.0), env.landing(it, 1.0, 40.0));
         ev.tested(i, K_COOKTOP);
         if l.max(r) < 15.0 - EPS || l.min(r) < 12.0 - EPS {
-            ev.fail(i, landing_finding(env, it, K_COOKTOP, name, it.kind.name(), l, r, (15.0, 12.0)));
+            ev.fail(
+                i,
+                landing_finding(it, K_COOKTOP, name, it.kind.name(), l, r, (15.0, 12.0)),
+            );
         }
     }
     for (kind, rule) in [
@@ -1236,7 +1326,9 @@ fn dishwashers(env: &Env, i: usize, name: &str, ev: &mut Eval) {
         }
         if let Some(d) = env.clear_front(k, 21.0) {
             if d < 21.0 - EPS {
-                why.push(format!("{d:.0}\" of standing space in front (21\" is needed)"));
+                why.push(format!(
+                    "{d:.0}\" of standing space in front (21\" is needed)"
+                ));
             }
         }
         if !why.is_empty() {
@@ -1264,12 +1356,22 @@ fn cooking_surface(env: &Env, i: usize, name: &str, ev: &mut Eval) {
             .cabs
             .iter()
             .filter(|c| c.wall_unit() && polygons_overlap(&c.poly, &it.poly))
-            .map(|c| (c.elevation - it.top, "wall cabinet".to_string(), Target::Cabinet(c.id)))
+            .map(|c| {
+                (
+                    c.elevation - it.top,
+                    "wall cabinet".to_string(),
+                    Target::Cabinet(c.id),
+                )
+            })
             .collect();
         above.extend(
             env.items
                 .iter()
-                .filter(|m| m.kind == Kind::Microwave && m.elevation > 30.0 && polygons_overlap(&m.poly, &it.poly))
+                .filter(|m| {
+                    m.kind == Kind::Microwave
+                        && m.elevation > 30.0
+                        && polygons_overlap(&m.poly, &it.poly)
+                })
                 .map(|m| (m.elevation - it.top, "microwave".to_string(), m.target)),
         );
         for (gap, what, target) in above {
@@ -1329,9 +1431,12 @@ fn cooking_surface(env: &Env, i: usize, name: &str, ev: &mut Eval) {
         // Ventilation.
         ev.tested(i, K_VENT);
         let vent = env.items.iter().find(|h| {
-            (h.kind == Kind::Hood && (poly_dist(&h.poly, &it.poly) <= 12.0 || h.center.dist(it.center) <= 36.0))
+            (h.kind == Kind::Hood
+                && (poly_dist(&h.poly, &it.poly) <= 12.0 || h.center.dist(it.center) <= 36.0))
                 || (h.kind == Kind::Fan && h.center.dist(it.center) <= 60.0)
-                || (h.kind == Kind::Microwave && h.elevation > 30.0 && polygons_overlap(&h.poly, &it.poly))
+                || (h.kind == Kind::Microwave
+                    && h.elevation > 30.0
+                    && polygons_overlap(&h.poly, &it.poly))
         });
         match vent {
             None => ev.fail(
@@ -1427,7 +1532,11 @@ fn counters(env: &Env, i: usize, name: &str, ev: &mut Eval) {
     // Island and peninsula corners.
     let sharp: Vec<&&Cab> = tops
         .iter()
-        .filter(|c| c.corner == "None" && c.width >= 12.0 && !env.wall_near(c.local(c.width / 2.0, c.depth / 2.0), c.depth / 2.0 + 6.0))
+        .filter(|c| {
+            c.corner == "None"
+                && c.width >= 12.0
+                && !env.wall_near(c.local(c.width / 2.0, c.depth / 2.0), c.depth / 2.0 + 6.0)
+        })
         .collect();
     let islands = tops
         .iter()
@@ -1642,14 +1751,13 @@ fn showers(env: &Env, i: usize, name: &str, ev: &mut Eval) {
             );
         }
         // Controls: a valve symbol is measured, otherwise a reminder.
-        let valve = env
-            .items
-            .iter()
-            .find(|v| v.kind == Kind::Valve && v.center.dist(it.center) <= it.width.max(it.depth) + 36.0);
+        let valve = env.items.iter().find(|v| {
+            v.kind == Kind::Valve && v.center.dist(it.center) <= it.width.max(it.depth) + 36.0
+        });
         match valve {
             Some(v) => {
                 ev.tested(i, B_CONTROLS);
-                
+
                 let h = (v.elevation + v.top) / 2.0;
                 if !(38.0 - EPS..=48.0 + EPS).contains(&h) {
                     ev.fail(
@@ -1754,7 +1862,9 @@ fn lavatories(env: &Env, i: usize, name: &str, ev: &mut Eval) {
         for (_, t) in sinks.iter().skip(a + 1) {
             let d = s.center.dist(t.center);
             if d < 30.0 - EPS {
-                why.push(format!("two basins are {d:.0}\" apart centre to centre (30\" is needed)"));
+                why.push(format!(
+                    "two basins are {d:.0}\" apart centre to centre (30\" is needed)"
+                ));
                 at = at.or(Some(s.target));
             }
         }
@@ -1762,9 +1872,13 @@ fn lavatories(env: &Env, i: usize, name: &str, ev: &mut Eval) {
     for (k, s) in &sinks {
         for (word, dir) in [("left", s.u * -1.0), ("right", s.u)] {
             let from = s.center + s.v * 0.05;
-            let hit = env.ray(from, dir, 15.0, Some(*k), s.cabinet).filter(|d| *d < 15.0 - EPS);
+            let hit = env
+                .ray(from, dir, 15.0, Some(*k), s.cabinet)
+                .filter(|d| *d < 15.0 - EPS);
             if let Some(d) = hit {
-                why.push(format!("a basin is {d:.0}\" from the {word} obstruction (15\" is needed)"));
+                why.push(format!(
+                    "a basin is {d:.0}\" from the {word} obstruction (15\" is needed)"
+                ));
                 at = at.or(Some(s.target));
             }
         }
@@ -1784,7 +1898,11 @@ fn lavatories(env: &Env, i: usize, name: &str, ev: &mut Eval) {
         );
     }
     ev.tested(i, B_MIRROR);
-    if !env.items.iter().any(|m| m.kind == Kind::Mirror && env.in_room(i, m.center)) {
+    if !env
+        .items
+        .iter()
+        .any(|m| m.kind == Kind::Mirror && env.in_room(i, m.center))
+    {
         ev.fail(
             i,
             finding(
@@ -1802,7 +1920,11 @@ fn lavatories(env: &Env, i: usize, name: &str, ev: &mut Eval) {
 /// An exhaust fan, or a window of 3 sq ft or more.
 fn ventilation(env: &Env, i: usize, name: &str, ev: &mut Eval) {
     ev.tested(i, B_VENT);
-    if env.items.iter().any(|f| f.kind == Kind::Fan && env.in_room(i, f.center)) {
+    if env
+        .items
+        .iter()
+        .any(|f| f.kind == Kind::Fan && env.in_room(i, f.center))
+    {
         return;
     }
     let windows: Vec<f64> = env
@@ -1844,7 +1966,10 @@ fn bath_power(env: &Env, i: usize, name: &str, ev: &mut Eval) {
         ev.tested(i, B_RECEPT);
         // The basin's edge to the receptacle on the wall; the wall's own
         // thickness is left out of the 36".
-        if !recs.iter().any(|d| point_poly_dist(d.at, &s.poly) <= 36.0 + 3.0) {
+        if !recs
+            .iter()
+            .any(|d| point_poly_dist(d.at, &s.poly) <= 36.0 + 3.0)
+        {
             ev.fail(
                 i,
                 finding(
@@ -1996,10 +2121,18 @@ impl NkbaReport {
         let mut last = "";
         for r in &self.rows {
             if r.room != last {
-                md.push_str(&format!("\n## {} ({})\n\n| Guideline | Result | Detail |\n|---|---|---|\n", r.room, r.area));
+                md.push_str(&format!(
+                    "\n## {} ({})\n\n| Guideline | Result | Detail |\n|---|---|---|\n",
+                    r.room, r.area
+                ));
                 last = &r.room;
             }
-            md.push_str(&format!("| {} | {} | {} |\n", r.guideline, r.status.text(), r.detail));
+            md.push_str(&format!(
+                "| {} | {} | {} |\n",
+                r.guideline,
+                r.status.text(),
+                r.detail
+            ));
         }
         md
     }
@@ -2019,7 +2152,8 @@ pub fn nkba_report(
 ) -> NkbaReport {
     let settings = CheckSettings::load(project);
     let opts: &CheckOptions = &settings.options;
-    let ctx = Ctx::new(&project.floors[floor], rooms, room_types, stairs, opts).with_project(project);
+    let ctx =
+        Ctx::new(&project.floors[floor], rooms, room_types, stairs, opts).with_project(project);
     let ev = evaluate(&ctx);
     let mut rows = Vec::new();
     for i in 0..rooms.len() {
@@ -2042,7 +2176,11 @@ pub fn nkba_report(
             } else if !failed.is_empty() {
                 (
                     NkbaStatus::NotMet,
-                    failed.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(" "),
+                    failed
+                        .iter()
+                        .map(|s| s.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" "),
                 )
             } else if ev.checked.contains(&(i, gl.id)) {
                 (NkbaStatus::Met, String::new())

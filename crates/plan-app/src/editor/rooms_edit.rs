@@ -1742,7 +1742,12 @@ pub fn delete_foundation(cx: &mut EditorContext) -> bool {
 /// Rebuild Walls/Floors/Ceilings (R-33): restack the floors and redo the
 /// derived data.
 pub fn rebuild_all(cx: &mut EditorContext) {
-    cx.project.restack_floors();
+    // One undo step when the restack changes the plan, none when it does not
+    // (QA-25).
+    cx.undo_group(|cx| {
+        cx.begin_change("Rebuild All");
+        cx.project.restack_floors();
+    });
     cx.mark_dirty();
     cx.refresh();
     cx.status = "Rebuilt walls, floors and ceilings".into();

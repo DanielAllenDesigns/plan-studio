@@ -18,11 +18,12 @@
 // until it does, nothing calls these items.
 #![allow(dead_code)]
 
+use super::code_notice::{code_notice, LimitKind};
 use super::{
     on, pv_text, row, section, Fields, Outcome, SpecDialog, SpecPages, Tab, ERROR_RED, PV_ACCENT,
     PV_FAINT, PV_INK,
 };
-use super::code_notice::{code_notice, LimitKind};
+
 use crate::editor::code;
 use crate::editor::stairs_view::{self as view, first_flight_treads, StairObj};
 use crate::editor::Camera;
@@ -185,7 +186,13 @@ impl StairForm {
         section(ui, "Landing");
         self.fields
             .length_row(ui, "Width", "width", &mut self.draft.stair.params.width);
-        code_notice(ui, "IRC R311.7.6 landing width", &mut self.draft.stair.params.width, code::active().stair_width_min, LimitKind::Min);
+        code_notice(
+            ui,
+            "IRC R311.7.6 landing width",
+            &mut self.draft.stair.params.width,
+            code::active().stair_width_min,
+            LimitKind::Min,
+        );
         if self.draft.is_polygon_landing() {
             ui.weak("Drawn as a polygon: the outline follows the corners you clicked.");
         } else {
@@ -220,7 +227,13 @@ impl StairForm {
         section(ui, "General");
         self.fields
             .length_row(ui, "Width", "width", &mut self.draft.stair.params.width);
-        code_notice(ui, "IRC R311.7.1 stair width", &mut self.draft.stair.params.width, code::active().stair_width_min, LimitKind::Min);
+        code_notice(
+            ui,
+            "IRC R311.7.1 stair width",
+            &mut self.draft.stair.params.width,
+            code::active().stair_width_min,
+            LimitKind::Min,
+        );
         let ramp = self.draft.is_ramp();
         if !ramp {
             self.fields.length_row(
@@ -229,14 +242,26 @@ impl StairForm {
                 "tread",
                 &mut self.draft.stair.params.tread_depth,
             );
-            code_notice(ui, "IRC R311.7.5.2 tread depth", &mut self.draft.stair.params.tread_depth, code::active().stair_tread_min, LimitKind::Min);
+            code_notice(
+                ui,
+                "IRC R311.7.5.2 tread depth",
+                &mut self.draft.stair.params.tread_depth,
+                code::active().stair_tread_min,
+                LimitKind::Min,
+            );
             self.fields.length_row(
                 ui,
                 "Riser Height",
                 "riser",
                 &mut self.draft.stair.params.riser_height_target,
             );
-            code_notice(ui, "IRC R311.7.5.1 riser height", &mut self.draft.stair.params.riser_height_target, code::active().stair_riser_max, LimitKind::Max);
+            code_notice(
+                ui,
+                "IRC R311.7.5.1 riser height",
+                &mut self.draft.stair.params.riser_height_target,
+                code::active().stair_riser_max,
+                LimitKind::Max,
+            );
             let sol = solve(&self.draft.stair.params);
             let (mut risers, mut treads) = (sol.risers, sol.treads);
             row(ui, "Number of Risers", |ui| {
@@ -293,7 +318,13 @@ impl StairForm {
             "headroom",
             &mut self.draft.stair.params.headroom_min,
         );
-        code_notice(ui, "IRC R311.7.2 headroom", &mut self.draft.stair.params.headroom_min, code::active().stair_headroom_min, LimitKind::Min);
+        code_notice(
+            ui,
+            "IRC R311.7.2 headroom",
+            &mut self.draft.stair.params.headroom_min,
+            code::active().stair_headroom_min,
+            LimitKind::Min,
+        );
 
         section(ui, "Shape");
         row(ui, "Stair Shape", |ui| {
@@ -587,7 +618,13 @@ impl StairForm {
             RailStyle::Balusters { spacing, size } => {
                 self.fields
                     .length_row(ui, "Clear Spacing", "baluster_spacing", spacing);
-                code_notice(ui, "IRC R312.1.3 baluster opening (sphere)", spacing, code::active().guard_sphere, LimitKind::Max);
+                code_notice(
+                    ui,
+                    "IRC R312.1.3 baluster opening (sphere)",
+                    spacing,
+                    code::active().guard_sphere,
+                    LimitKind::Max,
+                );
                 self.fields
                     .length_row(ui, "Baluster Size", "baluster_size", size);
             }
@@ -626,8 +663,20 @@ impl StairForm {
         section(ui, "Rails");
         self.fields
             .length_row(ui, "Guard Height", "guard", &mut r.height);
-        code_notice(ui, "IRC R311.7.8.1 handrail height", &mut r.height, code::active().stair_guard_height, LimitKind::Min);
-        code_notice(ui, "IRC R311.7.8.1 handrail height", &mut r.height, code::active().handrail_max, LimitKind::Max);
+        code_notice(
+            ui,
+            "IRC R311.7.8.1 handrail height",
+            &mut r.height,
+            code::active().stair_guard_height,
+            LimitKind::Min,
+        );
+        code_notice(
+            ui,
+            "IRC R311.7.8.1 handrail height",
+            &mut r.height,
+            code::active().handrail_max,
+            LimitKind::Max,
+        );
         self.fields
             .length_row(ui, "Top Rail Width", "top_rail_w", &mut r.top_rail.0);
         self.fields
@@ -915,6 +964,7 @@ fn plan_preview(p: &Painter, area: Rect, o: &StairObj) {
         center: Point::new((lo.x + hi.x) * 0.5, (lo.y + hi.y) * 0.5),
         px_per_in: s.max(0.01),
         rect: area,
+        rotation: 0.0,
     };
     view::draw_strokes(p, &cam, &view::symbol_strokes(o), PV_INK, 1.0, false);
 }

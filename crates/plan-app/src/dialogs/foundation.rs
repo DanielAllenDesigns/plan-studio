@@ -178,10 +178,23 @@ pub fn build_options(ui: &mut Ui, spec: &mut FoundationSpec, fields: &mut Fields
             });
             if spec.footing {
                 fields.length_row(ui, "Footing Width", "footing_w", &mut spec.footing_width);
-                let (min_w, min_t) = crate::editor::code::footing_limits(spec.stem_height.max(spec.min_stem_height));
-                super::code_notice::code_notice(ui, "IRC R403.1.1 footing width (Table R403.1(1))", &mut spec.footing_width, min_w, super::code_notice::LimitKind::Min);
+                let (min_w, min_t) =
+                    crate::editor::code::footing_limits(spec.stem_height.max(spec.min_stem_height));
+                super::code_notice::code_notice(
+                    ui,
+                    "IRC R403.1.1 footing width (Table R403.1(1))",
+                    &mut spec.footing_width,
+                    min_w,
+                    super::code_notice::LimitKind::Min,
+                );
                 fields.length_row(ui, "Footing Depth", "footing_d", &mut spec.footing_depth);
-                super::code_notice::code_notice(ui, "IRC R403.1.4 / R403.1.1 footing thickness to the frost depth", &mut spec.footing_depth, min_t, super::code_notice::LimitKind::Min);
+                super::code_notice::code_notice(
+                    ui,
+                    "IRC R403.1.4 / R403.1.1 footing thickness to the frost depth",
+                    &mut spec.footing_depth,
+                    min_t,
+                    super::code_notice::LimitKind::Min,
+                );
             }
             section(ui, "Room");
             for (value, label) in [
@@ -257,7 +270,13 @@ fn footing_rows(fields: &mut Fields, ui: &mut Ui, footing: &mut Option<Footing>,
         };
         fields.length_row(ui, width, "footing_width", &mut f.width);
         fields.length_row(ui, "Footing depth", "footing_depth", &mut f.depth);
-        super::code_notice::code_notice(ui, "IRC R403.1.1 footing thickness", &mut f.depth, crate::editor::code::active().footing_min_thickness, super::code_notice::LimitKind::Min);
+        super::code_notice::code_notice(
+            ui,
+            "IRC R403.1.1 footing thickness",
+            &mut f.depth,
+            crate::editor::code::active().footing_min_thickness,
+            super::code_notice::LimitKind::Min,
+        );
     }
 }
 

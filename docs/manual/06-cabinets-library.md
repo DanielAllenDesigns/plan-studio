@@ -269,13 +269,24 @@ window has ten tabs; OK saves them to the plan's defaults and Cancel drops the e
 Open it with the Library Browser button on the view bar or `Cmd+L`. It is a dock
 (chapter 1.5) with:
 
+- A **header** with a **Library** menu (New Folder, Add Selection to Library, Convert to Symbol, Replace From
+  Library with a "Replace keeps size" switch, Import Library, Export Library, Import 3D Model, Rebuild Thumbnails,
+  Empty Trash) and a **Preferences...** link that opens the Library page of Preferences.
 - A **search field** with a clear button. Search is case-insensitive; every word must
-  match. Ranking, best first: name (whole word, prefix, substring), then tags, then category.
-- A **category tree** with item counts. Click a category to filter. Below the built-in tree sit
+  match the name or a keyword. Ranking, best first: name (whole word, prefix, substring), then tags, then category.
+  With "Search Chief catalogs" on, the keywords stored in the `.calib` catalogs are searched too.
+- A **Type** filter (a drop-down of check boxes): Cabinets, Doors, Windows, Fixtures, Furniture, Plants, Materials,
+  Backdrops, Moldings, Images, Electrical, Hardware. Tick several to see their union; "All" (nothing ticked) keeps
+  everything. An item's type comes from what it is (a swatch is a Material, a picture an Image, a saved cabinet a
+  Cabinet) and from the words in its category, name and keywords; an object that fits none of the twelve is hidden
+  while a type is ticked. The filter applies to the built-in and User items and to Chief rows.
+- A **category tree** with folder icons and item counts. Click a category to filter. Below the built-in tree sit
   the **Chief Architect catalogs** (6.6): the "Use Chief Architect catalogs" check box, a
-  "Catalog folders..." button and four collapsed nodes.
+  "Catalog folders..." button and four collapsed folders (Chief Architect Core Catalogs, Bonus Catalogs,
+  Manufacturer Catalogs, User Catalog), and last the **Trash** (6.4a).
 - A **result list** of up to 200 rows, each with a small drawing of the item's 2D symbol, its
-  name and its size (for example `30 x 28 in`).
+  name and its size (for example `30 x 28 in`). The **List / Grid / Names** switch picks rows, a thumbnail grid or
+  just a file icon and the name per line.
 - The line "Active item: ..." shows what a click in the plan will place.
 - A **Filters** button (type, catalog, style or manufacturer word, size range, favorites only), a **Sort** menu
   (relevance, name, type, size, recently used) and a **List / Grid** toggle.
@@ -283,12 +294,20 @@ Open it with the Library Browser button on the view bar or `Cmd+L`. It is a dock
   preview pane; an item joins the recent list when you pick or place it. Both lists are kept in
   `~/.plan-studio/user-library-meta.json`.
 - A **User** node in the tree: your own catalog (6.4a), with folders, favorites and recents.
-- A **Preview and Object Information** pane for the clicked item: a 2D/3D toggle (the 3D view is a software-shaded
-  picture of the item's model, or a box of its size; drag it or use the arrow buttons to rotate) and the item's
-  type, category, size, placement, layer, keywords and triangle count.
-- A right-click menu on a result: Add or Remove Favorite, Open Object, and Add to User Library for built-in items;
-  user items also get Rename, Duplicate, Move To and Delete. Chief rows have Open Object (6.6) and a dimmed
-  Add to User Library: Chief content is licensed, read in place and never copied.
+- A **Preview and Object Information** pane for the clicked item with a **2D / 3D / Render** toggle. Render (the
+  default) is a path-traced picture of the item's 3D shape (its model, or its plan outline raised to its height),
+  made with `plan-render` at a low sample count and denoised, on a background thread ("Rendering..." until it
+  lands). The picture is kept in `~/.plan-studio/thumbs/<hash>.png`; the hash covers the item, its model and the
+  renderer version, so an edited item renders again and a known one appears at once in later sessions. Library >
+  Rebuild Thumbnails deletes the folder's pictures. 3D is the software-shaded view you can turn (drag it or use the
+  arrow buttons). Below: type, category, size, placement, layer, keywords and triangle count. The **Open** button
+  opens the Library Object Specification (6.5).
+- A right-click menu on a result: Add or Remove Favorite, **Open Object**, **Replace Selected With This**, Add to
+  Library for built-in items; user items also get Object Information, Rename, Duplicate, Move To, New Folder and
+  Delete (to the Trash). Chief rows have Open Object (6.6) and no Add to Library: Chief content is licensed, read in
+  place and never copied.
+- **Drag a row onto the plan** to place it where you let go (the same placement as a click, one undo step); drag a
+  user item onto a User folder to move it instead. Letting go over a panel places nothing.
 
 ### 6.4a The User catalog
 
@@ -296,12 +315,27 @@ Your own items live in `~/.plan-studio/user-library.json`; their 3D models are `
 `~/.plan-studio/user-models/`.
 
 - **Folders.** Right-click User or any folder: New Folder, Rename Folder, Move Folder To, Delete Folder (the items
-  inside go with it, after a confirmation). Drag a user item onto a folder to move it, or use Move To.
+  inside go to the Trash, after a confirmation). The User node's menu also has Export Library and Import Library.
+  Drag a user item onto a folder to move it, or use Move To.
+- **Trash.** Delete (on an item, or on a folder's items) moves them to the **Trash** node at the bottom of the tree
+  instead of erasing them; it is kept in `~/.plan-studio/user-library-trash.json`, and a trashed item keeps its model
+  file. In the Trash, **Restore** puts an item back in the folder it came from (under a new id if another item took
+  its id), **Delete Permanently** and **Empty Trash** erase for good after a confirmation.
 - **Add to Library.** Select a symbol, cabinet, CAD line, arc, circle or polyline, or text, then Library > Add
   Selection to Library. Symbols keep their size, flip and 3D model; a cabinet is kept whole (placing it makes a
   cabinet again); CAD pieces become one block and text becomes a text item. Library > Add Active Material to Library
-  saves the Material Painter's material as a 12 in swatch. The Symbol Specification has Add to Library and
+  saves the Material Painter's material as a 12 in swatch. The Library Object Specification has Add to Library and
   Convert to Symbol (save, then use the saved item).
+- **Convert to Symbol.** Select 3D solids (3D Solid flyout: boxes, polyline solids, cylinders, cones, spheres,
+  pyramids) and choose Library > Convert to Symbol (or the Edit toolbar button). The solids' meshes become the 3D model
+  of one new User Catalog symbol in `User > 3D Models` ("Solid Symbol n"), its plan drawing is the model seen from
+  above, its size the solids' bounding box and its elevation the lowest solid's. The solids are replaced by a
+  placed copy of the symbol, all as one undo step ("Convert to Symbol"). A selection of flat faces is refused.
+- **Replace From Library.** Pick an item in the Library Browser, select the plan objects to replace and choose
+  Library > Replace From Library (the Edit toolbar button, or **Replace Selected With This** in a row's menu).
+  Every selected symbol takes the item and keeps its position, angle, reflect, label, layer and elevation; the size
+  stays too unless "Replace keeps size" is off, when the item's own size is used. One undo step for the whole
+  selection. A single selected cabinet or electrical device is swapped as in 6.5.
 - **Object Information.** Open Object on a user item (or Edit in the preview pane): name, keywords (comma
   separated; the search finds them), category folder, type, style, manufacturer, width, depth, height, elevation,
   placement, whether it turns to face a wall, default layer, the 2D symbol (keep, draw from the 3D model, plain
@@ -311,11 +345,14 @@ Your own items live in `~/.plan-studio/user-library.json`; their 3D models are `
   defaults to meters), the up axis (Y or Z), the folder and the placement. The plan symbol is drawn from the model
   seen from above. OBJ colors come from a `.mtl` beside the file; glTF reads scenes, node transforms, triangle
   meshes and base colors, not textures, sparse accessors or Draco compression.
-- **Export Library / Import Library.** Library > Export Library (Plan Studio only) writes a `.calibz` zip of the catalog JSON, the
-  folders, favorites and recents, and the `.psm` models. It is Plan Studio's own format: the zip is stored without compression and
-  Chief Architect cannot open it (its README says so). Library > Import Library reads such a file back (items with the same id
-  are replaced); a zip made by another tool works only if its entries are stored, not deflated. Chief `.calib` files are read in place
-  instead (6.6, chapter 12.7).
+- **Export Library / Import Library.** Library > Export Library (Plan Studio JSON) writes one `plan-studio-library.json`
+  with your User Catalog items only, the folders and favorites, and the 3D models (`.psm`, base 64). It is Plan
+  Studio's own format and Chief Architect cannot open it; Plan Studio never writes a `.calib` or `.calibz` (a name
+  with those extensions is refused). Library > Import Library reads that JSON back (items with the same id are
+  replaced; the older stored-zip export still imports). Pointed at a Chief `.calib` or `.calibz`, Import Library
+  adds it to the browser **read-only and in place**: the file is not copied or converted, only its path is kept (the
+  `library_imports` list in `~/.plan-studio/settings.json`), and the catalog appears under the User Catalog node
+  after a rescan (6.6, chapter 12.7). Remove it by deleting the path from that list.
 - **Placement.** Items snap by their placement: wall-mounted items turn to the nearest wall; a free-standing item
   can be set to turn to walls too (a bookcase); ceiling items hang at the ceiling height. Placed copies go on the
   item's layer (cabinets on the cabinet layers, electrical and lighting on Electrical, text on Text, else
@@ -350,18 +387,32 @@ Clicking a result makes it the active item and switches to the Library tool.
 | Near a wall | A wall-mounted item rotates to face away from the nearest wall and snaps flush within the auto-rotate distance (6"). |
 | Click an existing symbol | Selects it. Handles: Move, Rotate, Resize (width on both sides, depth at the front). |
 | Double-click or `Enter` | Opens the Symbol Specification. |
-| Edit toolbar | Open Object, Delete Objects, Copy, Paste in Place and **Replace From Library**: pick an item in the Library Browser first, then press the button to swap the selected symbol for it ("Pick an item in the Library Browser, then choose Replace From Library" if none is active). A selected cabinet is replaced by a saved cabinet item (it keeps its sink and cooktop cutouts, appliance, moldings and label); a selected electrical device becomes the active library symbol. |
+| Drop from the Library Browser | Drag a row onto the plan: the item is placed where you let go, with the same rules as a click. |
+| Edit toolbar | Open Object, Delete Objects, Copy, Paste in Place and **Replace From Library**: pick an item in the Library Browser first, then press the button to swap every selected symbol for it, in one undo step ("Pick an item in the Library Browser, then choose Replace From Library" if none is active; 6.4a). A selected cabinet is replaced by a saved cabinet item (it keeps its sink and cooktop cutouts, appliance, moldings and label); a selected electrical device becomes the active library symbol. |
 
-### Dialog: Symbol Specification
+### Dialog: Library Object Specification
+
+Double-click a placed symbol (or `Enter`) for the Library Object Specification of that copy. In the Library Browser,
+**Open Object** (a row's menu, or the **Open** button of the preview pane) opens the same dialog for the library
+item itself: it then edits the item's defaults on a stand-in copy, and OK saves them into a User Catalog item
+(size, elevation, layer, label, schedule, options and Reflect; the drawing is stretched to a new width and depth,
+and later copies start from these values). Built-in and Chief objects open read-only: OK is dimmed and the General
+tab offers Add to Library, which saves an editable copy.
 
 | Tab | Fields |
 |---|---|
-| General | Symbol (Name, Category, Placement), Size (Width, Depth, Height), Position (Elevation from floor, Position X and Y at the back center, Angle) |
-| Options | Flip |
+| General | Symbol (Name, Source catalog, Category, Placement; Replace From Library, Add to Library, Convert to Symbol), Size (Width, Depth, Height, **Keep aspect**, Reset to Library Size), Position (Elevation from floor, Position X and Y at the back center, Angle; for Open Object, Defaults: Elevation and **Rotation (3D model)** instead), **Reflect** (mirror left to right) |
+| Options | Reflect, and the library-specific choices of the object's type: Doors have **Door style** and **Hardware**, Cabinets **Cabinet door** (the Cabinet Doors styles of the library) and **Hardware**, Windows **Hardware**; each is a drop-down of the library's matching objects and Default. The choice is stored with the object (`PlacedSymbol::options`); the 3D view does not use it yet |
 | 3D | (disabled) |
+| Materials | The material the symbol is painted with |
 | Layer | The layer |
 | Label | Label text |
-| Components, Object Information | (disabled) |
+| Components | (disabled) |
+| Object Information | Name, Type, Browser type, Category, Source, Size, Placement, Default layer, Elevation, Manufacturer, Style, whether it has a 3D model, and its keywords |
+| Schedule | **Include in schedules**, the **Schedule** it is filed under (by library category, Fixture, Furniture, Plant or Appliance), Mark, Manufacturer, Model and Note (`PlacedSymbol::schedule`; the schedule builder still groups by library category) |
+
+**Keep aspect** scales the other two sizes with the one you type into. In the Edit toolbar, **Convert to Symbol**
+appears when 3D solids are selected (6.4a).
 
 ## 6.6 Chief catalogs
 
@@ -389,7 +440,7 @@ decodes); the Library Browser side lives in `shell/library_browser/chief_ui.rs` 
 
 ### The four nodes
 
-Under the check box are four collapsed nodes, in Chief's order: **Chief Architect Core Catalogs**, **Bonus
+Under the check box are four collapsed folders (with folder icons), in Chief's order: **Chief Architect Core Catalogs**, **Bonus
 Catalogs**, **Manufacturer Catalogs** and **User Catalog**, each with the number of installed catalogs in
 brackets. Catalogs that are listed in Chief's registry but not installed, and deleted entries, are left out;
 the status line under the nodes reads "n Chief catalogs found" (with "(m not installed)" when some are missing).
@@ -425,8 +476,14 @@ the status line under the nodes reads "n Chief catalogs found" (with "(m not ins
   available (the folder moved, or the check box is off) the symbol is not drawn in 3D. Built-in symbols show as boxes in 3D too.
 
 What is not decoded yet (partial or missing meshes, placeholder plan symbols, zero elevation) is listed in
-chapter 12.7. Library > Import Library (.calib, .calibz)... in the menu is still dimmed (planned), as are Add to
-User Library and the other Library menu items.
+chapter 12.7. Library > Import Library takes a `.calib` or `.calibz` too: the file is added to this list as a
+read-only catalog under the User Catalog node, read in place (6.4a).
+
+The Chief importer (opening a Chief `.plan` file) links each library object of a Chief plan to a catalog item: first
+in the installed Chief catalogs, by the item's catalog GUID and then by name, and when they hold nothing, in Plan
+Studio's own library: a built-in or User Catalog item with the same name (case and punctuation ignored, the
+plan's category tags breaking ties, User items first), or one carrying the tag `guid:<catalog GUID>`. What nothing
+matches stays a labelled box named `chief-plan.<name>`.
 
 ## 6.7 Images, billboards and distributed objects
 
@@ -490,7 +547,8 @@ shows the usual symbol. This is Chief's way of making a library object read as a
 
 - Built-in symbols are 2D drawings with a box in 3D. Chief catalog objects show their decoded 3D meshes, but a
   fraction of them decode only partially and fall back to a box (6.6).
-- Chief catalogs are read, never written: Chief objects cannot be added to the User catalog, and Import Library reads only Plan Studio's own export, not `.calib` files (6.4a).
+- Chief catalogs are read, never written: Chief objects cannot be added to the User catalog. Import Library reads a Chief `.calib` or `.calibz` in place instead of copying it into a Chief-style library, and Export Library writes Plan Studio's JSON, never a `.calib` (6.4a). Chief's Trash catalog (`Trash.calib`) is not shown; the Trash node is Plan Studio's own.
+- The Library Object Specification's 3D and Components tabs are disabled; Options choices (door style, cabinet door, hardware) and Schedule settings are stored but not yet used by the 3D view or the schedule builder. A drop from the browser uses the camera without a rotated plan view, and Chief rows cannot be dragged onto the plan (click them).
 - Imported and saved 3D models show in the preview pane; the 3D view of the plan draws them once `user::placed_meshes` is hooked into `view3d_panel.rs` (open).
 - Search filters have no "objects already in the plan" mode.
 - A custom face on the Sides and Back needs a rectangular cabinet. Of a library door or drawer style (a "Cabinet Doors" object) only the look

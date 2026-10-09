@@ -1111,21 +1111,14 @@ impl DetailsLayer {
         floor
             .details
             .as_ref()
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .map(crate::foreign::read_layer)
             .unwrap_or_default()
     }
 
     /// Stores the layer on `floor`; an empty layer clears the slot.
     pub fn store(&self, floor: &mut Floor) {
-        floor.details = if self.is_empty() {
-            None
-        } else {
-            match serde_json::to_value(self) {
-                Ok(v) => Some(v),
-                // Plain data always serializes; keep the old slot on the impossible error.
-                Err(_) => floor.details.take(),
-            }
-        };
+        // Records this build cannot read stay in the slot (QA-28).
+        floor.details = crate::foreign::layer_slot(self, self.is_empty(), floor.details.as_ref());
     }
 
     // ----- lookup -----

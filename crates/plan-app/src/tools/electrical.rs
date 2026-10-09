@@ -330,6 +330,24 @@ pub fn room_function(name: &str, room_type: &str) -> RoomFunction {
     }
 }
 
+/// The footprints of the floor's counter-carrying cabinets (base, corner and
+/// blind base, fillers, anything with a countertop): where kitchen counter
+/// outlets belong.
+pub fn counter_runs(floor: &plan_core::Floor) -> Vec<Vec<plan_core::Point>> {
+    use plan_cabinets::CabinetKind as K;
+    crate::editor::placed::load_cabinets(floor)
+        .iter()
+        .filter(|c| {
+            c.countertop.is_some()
+                || matches!(
+                    c.kind,
+                    K::Base | K::CornerBase | K::BlindBase | K::BaseFiller
+                )
+        })
+        .map(plan_cabinets::Cabinet::footprint)
+        .collect()
+}
+
 /// Auto Place Outlets for every room of the current floor (CB-64). Returns the
 /// number of outlets added; outlets already in place are not duplicated.
 pub fn auto_place_floor_outlets(cx: &mut EditorContext) -> usize {
@@ -349,6 +367,8 @@ pub fn auto_place_floor_outlets(cx: &mut EditorContext) -> usize {
     let mut opts = AutoOutletOptions::with_defaults(&ElectricalDefaults::load(&cx.project));
     // Spacing from the plan's code minimums (NEC 210.52).
     crate::editor::code::outlet_options(&crate::editor::code::code_minimums(cx), &mut opts);
+    // Counter outlets follow the base cabinets standing against the walls.
+    opts.counter_runs = counter_runs(cx.floor());
     let mut placed = auto_place_outlets(cx.floor(), &rooms, &types, &opts);
     if opts.exterior_wp {
         // NEC 210.52(E): weatherproof GFCI receptacles outside, front and back.

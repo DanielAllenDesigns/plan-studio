@@ -200,7 +200,31 @@ fn tools_rows() -> Vec<(&'static str, Action)> {
             Action::Custom(plan_check::APPLY_DEFAULTS),
         ),
         ("Door/Window Check", Action::DoorWindowCheck),
+        (
+            "Kitchen and Bath Report",
+            Action::Custom(plan_check::NKBA_REPORT),
+        ),
         ("Plan Footprint", Action::PlanFootprint),
+        (
+            "Header/Beam\u{2026}",
+            Action::Custom(crate::dialogs::calculators::HEADER),
+        ),
+        (
+            "Joist Span\u{2026}",
+            Action::Custom(crate::dialogs::calculators::JOIST),
+        ),
+        (
+            "Rafter Span\u{2026}",
+            Action::Custom(crate::dialogs::calculators::RAFTER),
+        ),
+        (
+            "Stair\u{2026}",
+            Action::Custom(crate::dialogs::calculators::STAIR),
+        ),
+        (
+            "Deck Beam/Joist\u{2026}",
+            Action::Custom(crate::dialogs::calculators::DECK),
+        ),
         (
             "Customize Toolbars\u{2026}",
             Action::Custom(app_info::CUSTOMIZE_TOOLBARS),
@@ -224,6 +248,18 @@ fn tools_rows() -> Vec<(&'static str, Action)> {
             Action::Framing(crate::toolbar::FramingCommand::Takeoff),
         ),
         ("Materials List\u{2026}", Action::MaterialsList),
+        (
+            "Object Painter Modes\u{2026}",
+            Action::Custom(crate::tools::painters::MODES),
+        ),
+        (
+            "Spell Check\u{2026}",
+            Action::Custom(crate::dialogs::spell_check::OPEN),
+        ),
+        (
+            "Property Manager\u{2026}",
+            Action::Custom(crate::dialogs::property_manager::OPEN),
+        ),
         ("Project Information\u{2026}", Action::ProjectInfo),
         (
             "Color Chooser\u{2026}",
@@ -233,9 +269,13 @@ fn tools_rows() -> Vec<(&'static str, Action)> {
     ]
 }
 
-/// "Create Construction Set..." opens a native save dialog, so the headless
-/// run leaves it out.
-const NEEDS_NATIVE_DIALOG: &[&str] = &["Create Construction Set\u{2026}"];
+/// These rows open a native file dialog, so the headless run leaves them out.
+const NEEDS_NATIVE_DIALOG: &[&str] = &[
+    "Kitchen and Bath Report to Excel\u{2026}",
+    "Create Construction Set\u{2026}",
+    "Export Property Data (XLSX)\u{2026}",
+    "Import Property Data (XLSX)\u{2026}",
+];
 
 #[test]
 fn every_tools_menu_row_is_tested_and_runs() {

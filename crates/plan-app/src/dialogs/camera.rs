@@ -362,6 +362,9 @@ pub struct CameraDialog {
     sun_input: SunInput,
     /// The plan's lighting, the values the overrides start from.
     plan_lighting: plan_core::camera_view::Lighting,
+    /// The names of the plan's floors, lowest first (the Floors Displayed
+    /// pick).
+    floor_names: Vec<String>,
     /// "Export DXF" was clicked; the host takes it with
     /// [`CameraDialog::take_export_request`] (the dialog has no project).
     export_requested: bool,
@@ -384,6 +387,7 @@ impl CameraDialog {
             section_len,
             sun_input: SunInput::default(),
             plan_lighting: plan_core::camera_view::Lighting::default(),
+            floor_names: Vec::new(),
             export_requested: false,
             extras,
             floor_name: floor_name.to_string(),
@@ -401,6 +405,12 @@ impl CameraDialog {
     /// overrides start from.
     pub fn with_plan_lighting(mut self, l: plan_core::camera_view::Lighting) -> Self {
         self.plan_lighting = l;
+        self
+    }
+
+    /// The names of the plan's floors, so Floors Displayed can pick some.
+    pub fn with_floor_names(mut self, names: Vec<String>) -> Self {
+        self.floor_names = names;
         self
     }
 
@@ -648,17 +658,65 @@ impl CameraDialog {
                 if self.draft.kind == CameraKind::FloorCamera {
                     ui.label("This floor, clipped at its ceiling");
                 } else {
-                    egui::ComboBox::from_id_salt("camera_floors")
-                        .selected_text(self.draft.view.floors.label())
-                        .show_ui(ui, |ui| {
-                            for fl in plan_core::camera_view::FloorsDisplayed::ALL {
-                                ui.selectable_value(&mut self.draft.view.floors, fl, fl.label());
-                            }
-                        });
+                    self.floors_combo(ui);
                 }
             });
+            if self.draft.kind != CameraKind::FloorCamera {
+                self.floors_range(ui);
+            }
         }
         self.display_options(ui);
+    }
+
+    /// The Floors Displayed choice: all floors, this floor and below, or the
+    /// floors between two the user picks.
+    fn floors_combo(&mut self, ui: &mut egui::Ui) {
+        use plan_core::camera_view::FloorsDisplayed as F;
+        let floors = &mut self.draft.view.floors;
+        egui::ComboBox::from_id_salt("camera_floors")
+            .selected_text(floors.label())
+            .show_ui(ui, |ui| {
+                for fl in F::ALL {
+                    ui.selectable_value(floors, fl, fl.label());
+                }
+                if ui
+                    .selectable_label(floors.is_picked(), "Pick floors")
+                    .clicked()
+                    && !floors.is_picked()
+                {
+                    let top = self.floor_names.len().saturating_sub(1).min(255) as u8;
+                    let here = self.draft.floor.min(usize::from(top)) as u8;
+                    *floors = F::Picked { from: 0, to: here };
+                }
+            });
+    }
+
+    /// The From and To floors of a per-floor pick.
+    fn floors_range(&mut self, ui: &mut egui::Ui) {
+        use plan_core::camera_view::FloorsDisplayed as F;
+        if let F::Picked { from, to } = &mut self.draft.view.floors {
+            let names = &self.floor_names;
+            let name = |i: u8| {
+                names
+                    .get(usize::from(i))
+                    .cloned()
+                    .unwrap_or_else(|| format!("Floor {}", u32::from(i) + 1))
+            };
+            for (label, v) in [("From floor", &mut *from), ("To floor", &mut *to)] {
+                row(ui, label, |ui| {
+                    egui::ComboBox::from_id_salt(("camera_floor_pick", label))
+                        .selected_text(name(*v))
+                        .show_ui(ui, |ui| {
+                            for i in 0..names.len().max(1).min(255) {
+                                ui.selectable_value(v, i as u8, name(i as u8));
+                            }
+                        })
+                });
+            }
+            if *from > *to {
+                std::mem::swap(from, to);
+            }
+        }
     }
 
     fn clipping(&mut self, ui: &mut egui::Ui) {
@@ -758,6 +816,50 @@ impl CameraDialog {
                 ui.weak("Shown behind the model by the techniques that draw a sky.");
             }
         }
+        self.ground_and_fog(ui);
+    }
+
+    /// What lies below the horizon, and the distance haze.
+    fn ground_and_fog(&mut self, ui: &mut egui::Ui) {
+        use plan_core::camera_view::{GroundKind, FOG_FEET};
+        let b = &mut self.draft.view.backdrop;
+        section(ui, "Ground");
+        row(ui, "Below the horizon", |ui| {
+            egui::ComboBox::from_id_salt("camera_ground_kind")
+                .selected_text(b.ground.label())
+                .show_ui(ui, |ui| {
+                    for k in GroundKind::ALL {
+                        ui.selectable_value(&mut b.ground, k, k.label());
+                    }
+                });
+        });
+        if b.ground == GroundKind::Color {
+            row(ui, "Ground color", |ui| {
+                ui.color_edit_button_srgb(&mut b.ground_color)
+            });
+        }
+        section(ui, "Fog");
+        ui.checkbox(&mut b.fog.on, "Fog");
+        if b.fog.on {
+            row(ui, "Fog distance", |ui| {
+                ui.add(
+                    egui::DragValue::new(&mut b.fog.distance_ft)
+                        .range(FOG_FEET.0..=FOG_FEET.1)
+                        .speed(5.0)
+                        .suffix(" ft"),
+                )
+            });
+            let mut own = b.fog.color.is_some();
+            if ui.checkbox(&mut own, "Own fog color").changed() {
+                b.fog.color = own.then_some([200, 208, 216]);
+            }
+            if let Some(c) = &mut b.fog.color {
+                row(ui, "Fog color", |ui| ui.color_edit_button_srgb(c));
+            } else {
+                ui.weak("The fog takes the horizon color of the sky.");
+            }
+            ui.weak("About 63 percent of the color is fog at the fog distance.");
+        }
     }
 
     /// The Rendering tab: technique, Preview or Final View, shadows and the
@@ -811,6 +913,30 @@ impl CameraDialog {
         }
         if !own {
             ui.weak("The sun and lights come from 3D > Lighting.");
+        }
+        if !self.plan_lighting.sets.is_empty() {
+            row(ui, "Light set", |ui| {
+                let current = self
+                    .draft
+                    .view
+                    .light_set
+                    .clone()
+                    .unwrap_or_else(|| "The plan's".to_string());
+                egui::ComboBox::from_id_salt("camera_light_set")
+                    .selected_text(current)
+                    .show_ui(ui, |ui| {
+                        let none = self.draft.view.light_set.is_none();
+                        if ui.selectable_label(none, "The plan's").clicked() {
+                            self.draft.view.light_set = None;
+                        }
+                        for set in &self.plan_lighting.sets {
+                            let on = self.draft.view.light_set.as_deref() == Some(&set.name);
+                            if ui.selectable_label(on, &set.name).clicked() {
+                                self.draft.view.light_set = Some(set.name.clone());
+                            }
+                        }
+                    })
+            });
         }
         if is_elevation_camera(&self.draft) {
             self.elevation_rendering(ui);
@@ -1161,15 +1287,42 @@ pub fn electrical_lights(project: &Project) -> Vec<PlanLight> {
 /// Every light that can shine: the plan's own lights plus, when the plan
 /// asks for it, the electrical fixtures. 3D > Lighting can switch every
 /// interior light off.
+#[cfg(test)]
 pub fn all_lights(project: &Project) -> Vec<PlanLight> {
+    lights_with_kind(project)
+        .into_iter()
+        .map(|(l, _)| l)
+        .collect()
+}
+
+/// [`all_lights`] with a flag for the electrical fixtures (their ids come
+/// from another counter than the plan lights').
+fn lights_with_kind(project: &Project) -> Vec<(PlanLight, bool)> {
     if !project.lighting.interior_lights {
         return Vec::new();
     }
-    let mut v = project.lights();
+    let mut v: Vec<(PlanLight, bool)> = project.lights().into_iter().map(|l| (l, false)).collect();
     if project.light_settings().use_electrical {
-        v.extend(electrical_lights(project));
+        v.extend(electrical_lights(project).into_iter().map(|l| (l, true)));
     }
     v
+}
+
+/// The lights that shine under the light set a view uses: `view_choice` is a
+/// camera's own set, else the plan's active one. With no set in use every
+/// light follows its own on/off switch; with one, exactly the lights in the
+/// set shine.
+pub fn shining_lights(project: &Project, view_choice: Option<&str>) -> Vec<PlanLight> {
+    let set = project.lighting.set_for(view_choice);
+    lights_with_kind(project)
+        .into_iter()
+        .filter(|(l, fixture)| match set {
+            Some(s) if *fixture => s.shines_fixture(l.id),
+            Some(s) => s.shines(l.id),
+            None => l.enabled,
+        })
+        .map(|(l, _)| l)
+        .collect()
 }
 
 /// One light as the path tracer's point light (scene space: X, up, -plan Y).
@@ -1189,11 +1342,16 @@ pub fn render_light(project: &Project, l: &PlanLight) -> PointLight {
     }
 }
 
-/// The renderer's light list: every enabled light of [`all_lights`].
+/// The renderer's light list: every enabled light of [`all_lights`], under
+/// the plan's active light set if there is one.
 pub fn render_lights(project: &Project) -> Vec<PointLight> {
-    all_lights(project)
+    render_lights_in(project, None)
+}
+
+/// [`render_lights`] for a view that picks its own light set.
+pub fn render_lights_in(project: &Project, view_choice: Option<&str>) -> Vec<PointLight> {
+    shining_lights(project, view_choice)
         .iter()
-        .filter(|l| l.enabled)
         .map(|l| render_light(project, l))
         .collect()
 }
@@ -1209,6 +1367,13 @@ pub struct AdjustLightsDialog {
     defaults: LightDefaults,
     /// Light to highlight (the one that was double-clicked).
     pub focus: Option<Id>,
+    /// The light sets, edited as a draft; the set in use is an index so a
+    /// rename keeps it.
+    sets: Vec<plan_core::camera_view::LightSet>,
+    active_set: Option<usize>,
+    /// The set whose lights are listed for editing.
+    editing: Option<usize>,
+    new_set: String,
 }
 
 impl AdjustLightsDialog {
@@ -1221,12 +1386,89 @@ impl AdjustLightsDialog {
             electrical: electrical_lights(project),
             defaults: light_defaults(),
             focus: None,
+            sets: project.lighting.sets.clone(),
+            active_set: project
+                .lighting
+                .active_set
+                .as_deref()
+                .and_then(|n| project.lighting.sets.iter().position(|s| s.name == n)),
+            editing: None,
+            new_set: String::new(),
         }
+    }
+
+    /// The light sets of the draft.
+    #[cfg(test)]
+    pub fn sets(&self) -> &[plan_core::camera_view::LightSet] {
+        &self.sets
+    }
+
+    /// The ids of the plan lights and of the fixtures that are on right now:
+    /// those of the set in use, else the ones whose switch is on.
+    fn lights_on_now(&self) -> (Vec<Id>, Vec<Id>) {
+        match self.active_set.and_then(|i| self.sets.get(i)) {
+            Some(s) => (s.on.clone(), s.fixtures.clone()),
+            None => (
+                self.draft
+                    .iter()
+                    .filter(|l| l.enabled)
+                    .map(|l| l.id)
+                    .collect(),
+                if self.use_electrical {
+                    self.electrical.iter().map(|l| l.id).collect()
+                } else {
+                    Vec::new()
+                },
+            ),
+        }
+    }
+
+    /// Adds a set called `name` holding the lights that are on now; `false`
+    /// when the name is empty or taken.
+    pub fn add_set(&mut self, name: &str) -> bool {
+        let name = name.trim();
+        if name.is_empty() || self.sets.iter().any(|s| s.name.eq_ignore_ascii_case(name)) {
+            return false;
+        }
+        let (on, fixtures) = self.lights_on_now();
+        self.sets.push(plan_core::camera_view::LightSet {
+            name: name.to_string(),
+            on,
+            fixtures,
+        });
+        true
+    }
+
+    /// Uses set `i` for the whole plan (`None` leaves every light to its own
+    /// switch).
+    #[cfg(test)]
+    pub fn use_set(&mut self, i: Option<usize>) {
+        self.active_set = i.filter(|i| *i < self.sets.len());
+    }
+
+    /// Deletes set `i`; the set in use and the one being edited follow.
+    pub fn delete_set(&mut self, i: usize) {
+        if i >= self.sets.len() {
+            return;
+        }
+        self.sets.remove(i);
+        let shift = |v: Option<usize>| match v {
+            Some(k) if k == i => None,
+            Some(k) if k > i => Some(k - 1),
+            other => other,
+        };
+        self.active_set = shift(self.active_set);
+        self.editing = shift(self.editing);
     }
 
     #[cfg(test)]
     pub fn lights_mut(&mut self) -> &mut Vec<PlanLight> {
         &mut self.draft
+    }
+
+    #[cfg(test)]
+    pub fn sets_mut(&mut self) -> &mut Vec<plan_core::camera_view::LightSet> {
+        &mut self.sets
     }
 
     #[cfg(test)]
@@ -1254,6 +1496,48 @@ impl AdjustLightsDialog {
             use_electrical: self.use_electrical,
         });
         set_light_defaults(self.defaults);
+        self.apply_sets(project);
+    }
+
+    /// Writes the light sets: a deleted light leaves every set, empty names
+    /// are dropped and a repeated name gets a number.
+    fn apply_sets(&self, project: &mut Project) {
+        let alive: Vec<Id> = self.draft.iter().map(|l| l.id).collect();
+        let fixtures: Vec<Id> = self.electrical.iter().map(|l| l.id).collect();
+        let mut out: Vec<plan_core::camera_view::LightSet> = Vec::new();
+        let mut active = None;
+        for (i, s) in self.sets.iter().enumerate() {
+            let base = s.name.trim();
+            if base.is_empty() {
+                continue;
+            }
+            let mut name = base.to_string();
+            let mut n = 2;
+            while out.iter().any(|o| o.name.eq_ignore_ascii_case(&name)) {
+                name = format!("{base} {n}");
+                n += 1;
+            }
+            if self.active_set == Some(i) {
+                active = Some(name.clone());
+            }
+            out.push(plan_core::camera_view::LightSet {
+                name,
+                on: s
+                    .on
+                    .iter()
+                    .copied()
+                    .filter(|id| alive.contains(id))
+                    .collect(),
+                fixtures: s
+                    .fixtures
+                    .iter()
+                    .copied()
+                    .filter(|id| fixtures.contains(id))
+                    .collect(),
+            });
+        }
+        project.lighting.sets = out;
+        project.lighting.active_set = active;
     }
 
     pub fn show(&mut self, ctx: &egui::Context) -> Outcome {
@@ -1278,6 +1562,14 @@ impl AdjustLightsDialog {
             });
         if !open {
             outcome = Outcome::Cancel;
+        }
+        // Enter is OK and Escape is Cancel unless a field is being edited.
+        if outcome == Outcome::Open && ctx.memory(|m| m.focused()).is_none() {
+            if ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
+                outcome = Outcome::Ok;
+            } else if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                outcome = Outcome::Cancel;
+            }
         }
         outcome
     }
@@ -1330,6 +1622,7 @@ impl AdjustLightsDialog {
                 self.electrical.len()
             ),
         );
+        self.light_sets(ui);
         section(ui, "New lights");
         let d = &mut self.defaults;
         let mut fixed = d.height.is_some();
@@ -1355,6 +1648,111 @@ impl AdjustLightsDialog {
     }
 }
 
+impl AdjustLightsDialog {
+    /// The Light Sets section: which set is in use, the sets and the lights
+    /// each one turns on.
+    fn light_sets(&mut self, ui: &mut egui::Ui) {
+        section(ui, "Light sets");
+        row(ui, "In use", |ui| {
+            let current = self
+                .active_set
+                .and_then(|i| self.sets.get(i))
+                .map_or("Each light's own switch".to_string(), |s| s.name.clone());
+            egui::ComboBox::from_id_salt("light_set_in_use")
+                .selected_text(current)
+                .show_ui(ui, |ui| {
+                    if ui
+                        .selectable_label(self.active_set.is_none(), "Each light's own switch")
+                        .clicked()
+                    {
+                        self.active_set = None;
+                    }
+                    for (i, s) in self.sets.iter().enumerate() {
+                        if ui
+                            .selectable_label(self.active_set == Some(i), &s.name)
+                            .clicked()
+                        {
+                            self.active_set = Some(i);
+                        }
+                    }
+                });
+        });
+        let mut delete = None;
+        for i in 0..self.sets.len() {
+            ui.horizontal(|ui| {
+                ui.add(egui::TextEdit::singleline(&mut self.sets[i].name).desired_width(140.0));
+                let open = self.editing == Some(i);
+                if ui.selectable_label(open, "Lights\u{2026}").clicked() {
+                    self.editing = if open { None } else { Some(i) };
+                }
+                if ui.small_button("\u{2715}").clicked() {
+                    delete = Some(i);
+                }
+            });
+            if self.editing == Some(i) {
+                self.set_members(ui, i);
+            }
+        }
+        if let Some(i) = delete {
+            self.delete_set(i);
+        }
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.new_set)
+                    .hint_text("name of a new set")
+                    .desired_width(140.0),
+            );
+            let name = self.new_set.trim().to_string();
+            let free =
+                !name.is_empty() && !self.sets.iter().any(|s| s.name.eq_ignore_ascii_case(&name));
+            if ui
+                .add_enabled(free, egui::Button::new("Add Set"))
+                .on_hover_text("Makes a set of the lights that are on now")
+                .clicked()
+                && self.add_set(&name)
+            {
+                self.new_set.clear();
+            }
+        });
+    }
+
+    /// The check list of the lights in set `i`.
+    fn set_members(&mut self, ui: &mut egui::Ui, i: usize) {
+        let lights: Vec<(Id, String)> = self.draft.iter().map(|l| (l.id, l.name.clone())).collect();
+        let fixtures: Vec<(Id, String)> = self
+            .electrical
+            .iter()
+            .map(|l| (l.id, format!("{} (electrical)", l.name)))
+            .collect();
+        let set = &mut self.sets[i];
+        ui.indent(("light_set_members", i), |ui| {
+            if lights.is_empty() && fixtures.is_empty() {
+                ui.weak("There are no lights in the plan yet.");
+            }
+            for (id, name) in &lights {
+                let mut on = set.on.contains(id);
+                if ui.checkbox(&mut on, name).changed() {
+                    if on {
+                        set.on.push(*id);
+                    } else {
+                        set.on.retain(|x| x != id);
+                    }
+                }
+            }
+            for (id, name) in &fixtures {
+                let mut on = set.fixtures.contains(id);
+                if ui.checkbox(&mut on, name).changed() {
+                    if on {
+                        set.fixtures.push(*id);
+                    } else {
+                        set.fixtures.retain(|x| x != id);
+                    }
+                }
+            }
+        });
+    }
+}
+
 // ----- 3D > Lighting -----
 
 /// The Lighting dialog (C-62, C-63, C-64): the sun (angle, height, strength,
@@ -1372,7 +1770,7 @@ pub struct LightingDialog {
 impl LightingDialog {
     pub fn new(project: &Project) -> Self {
         Self {
-            draft: project.lighting,
+            draft: project.lighting.clone(),
             lights: project.lights(),
             electrical: electrical_lights(project).len(),
             date: project
@@ -1420,7 +1818,13 @@ impl LightingDialog {
     /// Writes the draft into `project`: the lighting and each light's power
     /// and on/off switch.
     pub fn apply(&self, project: &mut Project) {
-        project.lighting = self.draft;
+        // The sets themselves are edited in Adjust Lights; here only the one
+        // in use is picked.
+        let sets = std::mem::take(&mut project.lighting.sets);
+        project.lighting = self.draft.clone();
+        project.lighting.sets = sets;
+        let in_use = project.lighting.active_set.take();
+        project.lighting.active_set = in_use.filter(|n| project.lighting.set(n).is_some());
         for l in &self.lights {
             let (enabled, intensity) = (l.enabled, l.intensity);
             project.update_light(l.id, |x| {
@@ -1516,6 +1920,36 @@ impl LightingDialog {
             &mut self.draft.interior_lights,
             "Interior lights are on (the plan's lights and the electrical fixtures)",
         );
+        if !self.draft.sets.is_empty() {
+            row(ui, "Light set", |ui| {
+                let current = self
+                    .draft
+                    .active_set
+                    .clone()
+                    .unwrap_or_else(|| "Each light's own switch".to_string());
+                egui::ComboBox::from_id_salt("lighting_light_set")
+                    .selected_text(current)
+                    .show_ui(ui, |ui| {
+                        if ui
+                            .selectable_label(
+                                self.draft.active_set.is_none(),
+                                "Each light's own switch",
+                            )
+                            .clicked()
+                        {
+                            self.draft.active_set = None;
+                        }
+                        let names: Vec<String> =
+                            self.draft.sets.iter().map(|s| s.name.clone()).collect();
+                        for n in names {
+                            let on = self.draft.active_set.as_deref() == Some(n.as_str());
+                            if ui.selectable_label(on, &n).clicked() {
+                                self.draft.active_set = Some(n);
+                            }
+                        }
+                    })
+            });
+        }
         ui.add_enabled_ui(self.draft.interior_lights, |ui| {
             if self.lights.is_empty() {
                 ui.weak("No lights in the plan yet. Use 3D > Lighting > Add Lights.");
@@ -1567,8 +2001,8 @@ pub enum RecordOutcome {
     Record,
 }
 
-/// The Record Walkthrough dialog: frame rate, picture size, quality and the
-/// folder the numbered PNG frames are written to.
+/// The Record Walkthrough dialog: frame rate, picture size, samples, the
+/// format (an AVI movie, a PNG sequence or both) and the folder they go to.
 pub struct RecordDialog {
     pub camera: Id,
     pub settings: plan_core::camera_view::WalkRecord,
@@ -1642,10 +2076,29 @@ impl RecordDialog {
                 row(ui, "Samples per pixel", |ui| {
                     ui.add(egui::DragValue::new(&mut w.samples).range(1..=256))
                 });
+                section(ui, "Output");
+                row(ui, "Save as", |ui| {
+                    egui::ComboBox::from_id_salt("record_format")
+                        .selected_text(w.format.label())
+                        .show_ui(ui, |ui| {
+                            for f in plan_core::camera_view::RecordFormat::ALL {
+                                ui.selectable_value(&mut w.format, f, f.label());
+                            }
+                        })
+                });
+                if w.format.video() {
+                    row(ui, "Video quality", |ui| {
+                        ui.add(egui::Slider::new(&mut w.quality, 30..=100))
+                    });
+                }
                 section(ui, "Folder");
                 ui.add(
                     egui::TextEdit::singleline(&mut self.folder)
-                        .hint_text("folder for frame_0001.png, frame_0002.png ...")
+                        .hint_text(if w.format.video() {
+                            "folder for the .avi movie"
+                        } else {
+                            "folder for frame_0001.png, frame_0002.png ..."
+                        })
                         .desired_width(320.0),
                 );
                 if ui.button("Choose Folder\u{2026}").clicked() {
@@ -1657,9 +2110,15 @@ impl RecordDialog {
                     }
                 }
                 ui.weak(format!(
-                    "{} frames at {:.0} fps, written as a numbered PNG sequence.",
+                    "{} frames at {:.0} fps, written as {}.",
                     self.frame_count(),
-                    self.clamped().fps
+                    self.clamped().fps,
+                    match self.clamped().format {
+                        plan_core::camera_view::RecordFormat::Video => "one Motion-JPEG .avi movie",
+                        plan_core::camera_view::RecordFormat::Frames => "a numbered PNG sequence",
+                        plan_core::camera_view::RecordFormat::Both =>
+                            "a movie and a numbered PNG sequence",
+                    }
                 ));
                 ui.separator();
                 ui.horizontal(|ui| {
@@ -3359,8 +3818,8 @@ mod tests {
             sun_intensity: 1.5,
             ..plan_core::camera_view::Lighting::default()
         };
-        let d =
-            CameraDialog::new(&cam, "1st Floor", CameraExtras::default()).with_plan_lighting(plan);
+        let d = CameraDialog::new(&cam, "1st Floor", CameraExtras::default())
+            .with_plan_lighting(plan.clone());
         assert_eq!(d.plan_lighting, plan);
         assert_eq!(
             (d.draft().view.ambient, d.draft().view.sun_intensity),
@@ -3472,6 +3931,140 @@ mod tests {
         assert_eq!(d.draft().path_nodes[1].tilt_deg, 10.0);
         assert_eq!(d.draft().view.walk.fps, 24.0);
         assert!((d.draft().walk_duration_s() - (200.0 / 36.0 + 2.0)).abs() < 1e-9);
+        assert!(d.error().is_none());
+    }
+
+    #[test]
+    fn a_light_set_lists_plan_lights_and_fixtures_apart() {
+        let mut p = Project::new("Lights");
+        let a = p
+            .add_light(0, PlanLight::new(Point::new(10.0, 10.0), 84.0))
+            .unwrap();
+        // The id names a fixture, so the plan light with that id stays off.
+        p.lighting.add_set("Fixtures only", vec![], vec![a]);
+        assert!(shining_lights(&p, Some("Fixtures only")).is_empty());
+        p.lighting.add_set("Plain", vec![a], vec![]);
+        assert_eq!(shining_lights(&p, Some("Plain")).len(), 1);
+        // Without a set each light follows its own switch; a set overrides it.
+        p.update_light(a, |l| l.enabled = false);
+        assert!(shining_lights(&p, None).is_empty());
+        assert_eq!(shining_lights(&p, Some("Plain")).len(), 1);
+        // The plan's active set applies to every view that names none.
+        p.lighting.active_set = Some("Plain".into());
+        assert_eq!(render_lights(&p).len(), 1);
+        assert!(render_lights_in(&p, Some("Fixtures only")).is_empty());
+        // A camera whose set was deleted uses the plan's.
+        assert_eq!(shining_lights(&p, Some("Gone")).len(), 1);
+        // Interior lights off silences everything.
+        p.lighting.interior_lights = false;
+        assert!(shining_lights(&p, Some("Plain")).is_empty());
+    }
+
+    #[test]
+    fn adjust_lights_makes_renames_uses_and_deletes_sets_as_a_draft() {
+        let mut p = Project::new("Sets");
+        let a = p
+            .add_light(0, PlanLight::new(Point::new(10.0, 10.0), 84.0))
+            .unwrap();
+        let b = p
+            .add_light(0, PlanLight::new(Point::new(50.0, 50.0), 84.0))
+            .unwrap();
+        p.update_light(b, |l| l.enabled = false);
+        let mut d = AdjustLightsDialog::new(&p);
+        // A new set starts from what is on now: only the light a.
+        assert!(d.add_set("Day"));
+        assert_eq!(d.sets()[0].on, vec![a]);
+        assert!(!d.add_set("DAY") && !d.add_set(" "));
+        d.sets_mut()[0].on.push(b);
+        assert!(d.add_set("Night"));
+        // The set in use is what is on now for the next set.
+        d.use_set(Some(0));
+        assert!(d.add_set("Copy of day"));
+        assert_eq!(d.sets()[2].on.len(), 2);
+        // Deleting the set in use clears it; the others keep their place.
+        d.delete_set(0);
+        assert_eq!(
+            d.sets().iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+            ["Night", "Copy of day"]
+        );
+        d.use_set(Some(1));
+        d.sets_mut()[1].name = "  Dinner ".into();
+        d.apply(&mut p);
+        assert_eq!(
+            p.lighting.active_set.as_deref(),
+            Some("Dinner"),
+            "a rename follows the set in use"
+        );
+        assert_eq!(p.lighting.sets.len(), 2);
+        // A repeated or empty name is made unique or dropped on OK.
+        let mut d = AdjustLightsDialog::new(&p);
+        d.sets_mut()[0].name = "dinner".into();
+        d.sets_mut()[1].name = String::new();
+        d.apply(&mut p);
+        assert_eq!(p.lighting.sets.len(), 1);
+        assert_eq!(p.lighting.sets[0].name, "dinner");
+        assert_eq!(
+            p.lighting.active_set, None,
+            "the set in use was the nameless one"
+        );
+    }
+
+    #[test]
+    fn the_lighting_dialog_picks_the_set_in_use_but_keeps_the_sets() {
+        let mut p = Project::new("Sets");
+        p.lighting.add_set("A", vec![], vec![]);
+        p.lighting.add_set("B", vec![], vec![]);
+        let mut d = LightingDialog::new(&p);
+        d.draft_mut().active_set = Some("B".into());
+        d.draft_mut().sets.clear(); // the draft's copy of the sets is not stored
+        d.apply(&mut p);
+        assert_eq!(p.lighting.sets.len(), 2);
+        assert_eq!(p.lighting.active_set.as_deref(), Some("B"));
+        let mut d = LightingDialog::new(&p);
+        d.draft_mut().active_set = Some("Gone".into());
+        d.apply(&mut p);
+        assert_eq!(p.lighting.active_set, None);
+    }
+
+    #[test]
+    fn the_record_dialog_offers_the_format_and_defaults_to_a_movie() {
+        let cam =
+            CameraObject::walkthrough(vec![Point::ZERO, Point::new(120.0, 0.0)], 66.0, "Walk", 0);
+        let mut d = RecordDialog::new(&cam, "/tmp/x".into());
+        assert_eq!(
+            d.settings.format,
+            plan_core::camera_view::RecordFormat::Video
+        );
+        d.settings.format = plan_core::camera_view::RecordFormat::Both;
+        d.settings.quality = 200;
+        let w = d.clamped();
+        assert_eq!(
+            (w.format, w.quality),
+            (plan_core::camera_view::RecordFormat::Both, 100)
+        );
+        let ctx = egui::Context::default();
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            assert_eq!(d.show(ctx), RecordOutcome::Open);
+        });
+    }
+
+    #[test]
+    fn the_backdrop_and_camera_tabs_draw_ground_fog_and_the_floor_pick() {
+        let mut cam = CameraObject::new(CameraKind::FullCamera, Point::ZERO, 0.0, "C", 1);
+        cam.view.backdrop.fog.on = true;
+        cam.view.backdrop.ground = plan_core::camera_view::GroundKind::Color;
+        cam.view.floors = plan_core::camera_view::FloorsDisplayed::Picked { from: 0, to: 1 };
+        let mut lighting = plan_core::camera_view::Lighting::default();
+        lighting.add_set("Night", vec![], vec![]);
+        let mut d = CameraDialog::new(&cam, "2nd Floor", CameraExtras::default())
+            .with_plan_lighting(lighting)
+            .with_floor_names(vec!["1st Floor".into(), "2nd Floor".into()]);
+        draw_tabs(&mut d);
+        assert_eq!(
+            d.draft().view.floors,
+            plan_core::camera_view::FloorsDisplayed::Picked { from: 0, to: 1 }
+        );
+        assert!(d.draft().view.backdrop.fog.on);
         assert!(d.error().is_none());
     }
 }

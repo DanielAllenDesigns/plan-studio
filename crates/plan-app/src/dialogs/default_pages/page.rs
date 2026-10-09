@@ -98,7 +98,13 @@ impl Field {
     }
 
     /// A whole number in `min..=max` followed by `unit`.
-    pub fn int(key: &str, label: &str, default: i64, range: (i64, i64), unit: &'static str) -> Self {
+    pub fn int(
+        key: &str,
+        label: &str,
+        default: i64,
+        range: (i64, i64),
+        unit: &'static str,
+    ) -> Self {
         Self::new(
             key,
             label,
@@ -134,7 +140,12 @@ impl Field {
 
     /// A colour as `#RRGGBB`.
     pub fn color(key: &str, label: &str, default: &str) -> Self {
-        Self::new(key, label, Kind::Color, PageValue::Text(default.to_string()))
+        Self::new(
+            key,
+            label,
+            Kind::Color,
+            PageValue::Text(default.to_string()),
+        )
     }
 
     /// Edits a typed slot of the plan defaults instead of the stored value.
@@ -167,9 +178,7 @@ impl Field {
         match &self.kind {
             Kind::Color => {
                 let t = v.text();
-                t.len() == 7
-                    && t.starts_with('#')
-                    && t[1..].chars().all(|c| c.is_ascii_hexdigit())
+                t.len() == 7 && t.starts_with('#') && t[1..].chars().all(|c| c.is_ascii_hexdigit())
             }
             Kind::Length | Kind::Degrees | Kind::Number(_) => v.num().is_finite(),
             _ => true,
@@ -249,7 +258,12 @@ impl Lists {
     pub fn of(d: &PlanDefaults) -> Self {
         Lists {
             wall_types: d.wall_types.iter().map(|t| t.name.clone()).collect(),
-            text_styles: d.text_styles.names().iter().map(|n| n.to_string()).collect(),
+            text_styles: d
+                .text_styles
+                .names()
+                .iter()
+                .map(|n| n.to_string())
+                .collect(),
             dimension_sets: d.dimension_sets.iter().map(|s| s.name.clone()).collect(),
             room_types: d.rooms.room_types.iter().map(|t| t.name.clone()).collect(),
         }
@@ -276,10 +290,7 @@ pub struct GenericPage {
 
 impl GenericPage {
     pub fn new(spec: PageSpec, d: &PlanDefaults) -> Self {
-        let draft = spec
-            .fields()
-            .map(|f| (f.key.clone(), f.read(d)))
-            .collect();
+        let draft = spec.fields().map(|f| (f.key.clone(), f.read(d))).collect();
         GenericPage {
             spec,
             draft,
@@ -370,6 +381,9 @@ impl GenericPage {
                         if !spec.note.is_empty() {
                             ui.weak(&spec.note);
                         }
+                        if spec.has_stored() {
+                            ui.weak("* Stored with the defaults; the tools do not read these yet.");
+                        }
                         for s in &spec.sections {
                             if !s.title.is_empty() {
                                 section(ui, &s.title);
@@ -418,16 +432,22 @@ impl GenericPage {
             return;
         };
         let before = value.clone();
+        // A field without a typed slot is kept with the defaults only.
+        let label = if f.bind.is_none() {
+            format!("{} *", f.label)
+        } else {
+            f.label.clone()
+        };
         match &f.kind {
             Kind::Flag => {
                 let mut b = value.flag();
-                if ui.checkbox(&mut b, &f.label).changed() {
+                if ui.checkbox(&mut b, &label).changed() {
                     value = PageValue::Bool(b);
                 }
             }
             Kind::Int(lo, hi, unit) => {
                 let mut n = value.int().clamp(*lo, *hi);
-                row(ui, &f.label, |ui| {
+                row(ui, &label, |ui| {
                     ui.add(egui::DragValue::new(&mut n).range(*lo..=*hi));
                     if !unit.is_empty() {
                         ui.label(*unit);
@@ -437,8 +457,13 @@ impl GenericPage {
             }
             Kind::Choice(names) => {
                 let mut cur = value.text();
-                row(ui, &f.label, |ui| {
-                    combo(ui, &f.key, &mut cur, names.iter().map(|n| n.to_string()).collect());
+                row(ui, &label, |ui| {
+                    combo(
+                        ui,
+                        &f.key,
+                        &mut cur,
+                        names.iter().map(|n| n.to_string()).collect(),
+                    );
                 });
                 value = PageValue::Text(cur);
             }
@@ -448,13 +473,13 @@ impl GenericPage {
                 if !cur.is_empty() && !names.contains(&cur) {
                     names.insert(0, cur.clone());
                 }
-                row(ui, &f.label, |ui| combo(ui, &f.key, &mut cur, names));
+                row(ui, &label, |ui| combo(ui, &f.key, &mut cur, names));
                 value = PageValue::Text(cur);
             }
             Kind::Color => {
                 let text = value.text();
                 let mut rgb = parse_color(&text).unwrap_or([0, 0, 0]);
-                row(ui, &f.label, |ui| {
+                row(ui, &label, |ui| {
                     ui.color_edit_button_srgb(&mut rgb);
                 });
                 if parse_color(&text) != Some(rgb) {
@@ -472,8 +497,14 @@ impl GenericPage {
                     Kind::Number(u) => *u,
                     _ => "",
                 };
-                let resp = row(ui, &f.label, |ui| {
-                    let mut edit = egui::TextEdit::singleline(&mut text).desired_width(if matches!(f.kind, Kind::Text) { 200.0 } else { 100.0 });
+                let resp = row(ui, &label, |ui| {
+                    let mut edit = egui::TextEdit::singleline(&mut text).desired_width(
+                        if matches!(f.kind, Kind::Text) {
+                            200.0
+                        } else {
+                            100.0
+                        },
+                    );
                     if invalid {
                         edit = edit.text_color(ERROR_RED);
                     }
@@ -633,8 +664,14 @@ mod tests {
         assert_eq!(d.page_num("t.len", 0.0), 30.0);
         assert_eq!(d.page_text("t.pick", ""), "B");
         assert_eq!(d.grid.spacing, 24.0);
-        assert!(d.page_value("t.grid").is_none(), "a bound field is not stored");
-        assert!(d.page_value("t.flag").is_none(), "an unchanged field is not stored");
+        assert!(
+            d.page_value("t.grid").is_none(),
+            "a bound field is not stored"
+        );
+        assert!(
+            d.page_value("t.flag").is_none(),
+            "an unchanged field is not stored"
+        );
         // Back to the built-in value: the entry disappears.
         let mut page = GenericPage::new(spec(), &d);
         page.set("t.len", PageValue::Num(12.0));

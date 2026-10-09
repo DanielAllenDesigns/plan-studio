@@ -40,6 +40,10 @@ pub enum HandleKind {
     /// The middle of edge `n` of a roof plane: moves the edge square to
     /// itself (RF-38).
     EdgeMove(usize),
+    /// An edit handle of a callout, marker or note (`plan_core::callout::handle`
+    /// ids): Concentric Resize, Rotate, Extend, Add Text Line with Arrow,
+    /// Add Callout Arrow and an arrow's Rotate handle.
+    Annot(u8),
 }
 
 /// The roof plane handle a [`HandleKind`] of a `RoofPlane` target stands for;
@@ -52,6 +56,20 @@ pub fn roof_plane_handle(kind: HandleKind) -> Option<roof_view::PlaneHandle> {
         HandleKind::EdgeMove(i) => Some(PlaneHandle::Edge(i)),
         HandleKind::Pitch => Some(PlaneHandle::Pitch),
         HandleKind::Rotate => Some(PlaneHandle::Rotate),
+        _ => None,
+    }
+}
+
+/// The camera wedge handle a [`HandleKind`] of a `Camera` target stands for:
+/// `Reshape(2)` and `Reshape(3)` are the far corners of the view cone (angle
+/// of view), `Reshape(4)` the tilt diamond (C-25). The Select tool turns these
+/// into `camera::apply_wedge` calls.
+pub fn camera_wedge_handle(kind: HandleKind) -> Option<camera_tool::WedgeHandle> {
+    use camera_tool::WedgeHandle;
+    match kind {
+        HandleKind::Reshape(2) => Some(WedgeHandle::FovLeft),
+        HandleKind::Reshape(3) => Some(WedgeHandle::FovRight),
+        HandleKind::Reshape(4) => Some(WedgeHandle::Tilt),
         _ => None,
     }
 }
@@ -69,6 +87,12 @@ pub struct Handle {
 /// of pixels off the object). Stairs, cabinets, symbols, devices, roof planes
 /// and cameras delegate to the module that owns them.
 pub fn handles_for(cx: &EditorContext, scale: f64) -> Vec<Handle> {
+    // A callout, marker or note is a group of CAD objects: the whole group
+    // selected has the annotation's handles.
+    let annot = crate::tools::text::annot_handles(cx, scale);
+    if !annot.is_empty() {
+        return annot;
+    }
     let floor = cx.floor();
     let Some(target) = cx.selection.single() else {
         return Vec::new();
@@ -275,6 +299,18 @@ pub fn handles_for(cx: &EditorContext, scale: f64) -> Vec<Handle> {
                         };
                         h(kind, pos, cursor)
                     })
+                    .chain(camera_tool::wedge_handles_of(c).into_iter().map(|(w, pos)| {
+                        use camera_tool::WedgeHandle;
+                        match w {
+                            WedgeHandle::FovLeft => {
+                                h(HandleKind::Reshape(2), pos, CursorIcon::Crosshair)
+                            }
+                            WedgeHandle::FovRight => {
+                                h(HandleKind::Reshape(3), pos, CursorIcon::Crosshair)
+                            }
+                            WedgeHandle::Tilt => h(HandleKind::Reshape(4), pos, CursorIcon::Grab),
+                        }
+                    }))
                     .collect()
             })
             .unwrap_or_default(),
@@ -496,6 +532,57 @@ pub fn draw(handles: &[Handle], painter: &egui::Painter, cam: &Camera, pal: &Pal
                 let r = Rect::from_center_size(c, Vec2::new(10.0, 5.0));
                 painter.add(Shape::rect_filled(r, 1.0, pal.background));
                 painter.rect_stroke(r, 1.0, stroke, egui::StrokeKind::Inside);
+            }
+            HandleKind::Annot(id) => {
+                use plan_core::callout::handle as ah;
+                match id {
+                    ah::RESIZE => {
+                        painter.circle_filled(c, 4.0, pal.background);
+                        painter.circle_stroke(c, 4.0, stroke);
+                    }
+                    ah::EXTEND => {
+                        let r = Rect::from_center_size(c, Vec2::splat(9.0));
+                        painter.add(Shape::rect_filled(r, 0.0, pal.background));
+                        painter.rect_stroke(r, 0.0, stroke, egui::StrokeKind::Inside);
+                    }
+                    ah::ROTATE => {
+                        let r = 7.0;
+                        painter.add(Shape::convex_polygon(
+                            vec![
+                                c + Vec2::new(0.0, -r),
+                                c + Vec2::new(r, r * 0.8),
+                                c + Vec2::new(-r, r * 0.8),
+                            ],
+                            pal.background,
+                            stroke,
+                        ));
+                    }
+                    ah::ADD_LINE | ah::ADD_ARROW => {
+                        let r = 6.0;
+                        painter.add(Shape::convex_polygon(
+                            vec![
+                                c + Vec2::new(0.0, -r),
+                                c + Vec2::new(r, 0.0),
+                                c + Vec2::new(0.0, r),
+                                c + Vec2::new(-r, 0.0),
+                            ],
+                            pal.background,
+                            stroke,
+                        ));
+                    }
+                    _ => {
+                        let r = 4.5;
+                        painter.add(Shape::convex_polygon(
+                            vec![
+                                c + Vec2::new(0.0, -r),
+                                c + Vec2::new(r, r * 0.8),
+                                c + Vec2::new(-r, r * 0.8),
+                            ],
+                            pal.background,
+                            stroke,
+                        ));
+                    }
+                }
             }
             HandleKind::Move | HandleKind::PerpendicularMove => {
                 let r = 6.0;

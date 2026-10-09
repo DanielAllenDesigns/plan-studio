@@ -57,6 +57,10 @@ impl Layer {
 pub const DOOR_LABEL_LAYER: &str = "Doors, Labels";
 /// The layer cabinet labels are drawn on.
 pub const CABINET_LABEL_LAYER: &str = "Cabinets, Labels";
+/// The layer the dashed arcs between switches and the lights or outlets they
+/// control are drawn on (Chief keeps the connections apart from the devices
+/// on "Electrical").
+pub const ELECTRICAL_CONNECTION_LAYER: &str = "Electrical Connection";
 /// System layer of window labels (DW-63).
 pub const WINDOW_LABEL_LAYER: &str = "Windows, Labels";
 
@@ -281,6 +285,23 @@ impl LayerSet {
             .or_else(|| self.layers.iter().position(|l| l.name == "Cabinets, Base"));
         let color = at.map_or([0, 0, 0], |i| self.layers[i].color);
         let layer = Layer::new(CABINET_LABEL_LAYER, color, 18);
+        match at {
+            Some(i) => self.layers.insert(i + 1, layer),
+            None => self.layers.push(layer),
+        }
+        true
+    }
+
+    /// Adds the "Electrical Connection" layer after "Electrical" (or at the
+    /// end) when the plan lacks it; the connection arcs are drawn on it.
+    /// Returns whether a layer was added.
+    pub fn ensure_electrical_connection_layer(&mut self) -> bool {
+        if self.get(ELECTRICAL_CONNECTION_LAYER).is_some() {
+            return false;
+        }
+        let at = self.layers.iter().position(|l| l.name == "Electrical");
+        let color = at.map_or([200, 120, 0], |i| self.layers[i].color);
+        let layer = Layer::new(ELECTRICAL_CONNECTION_LAYER, color, 13);
         match at {
             Some(i) => self.layers.insert(i + 1, layer),
             None => self.layers.push(layer),

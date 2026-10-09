@@ -763,3 +763,51 @@ fn stage3_roof_plane_has_its_eave_first_and_edge_flags() {
         (2, 1, 1)
     );
 }
+
+#[test]
+fn stage3_square_box_in_a_wall_corner_imports_as_a_corner_cabinet() {
+    use super::cabinets::tests::cabinet_obj;
+    let mut body = types_body();
+    let ext = |x: f64, y: f64, dx: f64, dy: f64, len: f64| {
+        wall_obj(line_obj(x, y, dx, dy, len), Some(581), Some(121.125), &[])
+    };
+    let kids = vec![
+        ext(0.0, 0.0, 1.0, 0.0, 400.0),
+        ext(400.0, 0.0, 0.0, 1.0, 300.0),
+        ext(400.0, 300.0, -1.0, 0.0, 400.0),
+        ext(0.0, 300.0, 0.0, -1.0, 300.0),
+        // A square 36" base box with its back-left corner at the room corner,
+        // and a plain 24" base along the same wall.
+        cabinet_obj(
+            0x300,
+            [18.0, 0.0, 0.0, 1.0, 36.0, 36.0, 36.0, 36.0],
+            2,
+            &["Lincoln Door"],
+            false,
+        ),
+        cabinet_obj(
+            0x300,
+            [100.0, 0.0, 0.0, 1.0, 24.0, 36.0, 36.0, 36.0],
+            2,
+            &["Lincoln Door"],
+            false,
+        ),
+    ];
+    body.extend(floor_obj(0.0, 121.125, &kids));
+    let bytes = build_template(&body, &[]);
+    let r = import_bytes(&bytes, "Corner.plan", &ImportOptions::default()).unwrap();
+    let f = &r.project.floors[0];
+    assert_eq!(f.cabinets.len(), 2);
+    let kinds: Vec<_> = f
+        .cabinets
+        .iter()
+        .map(|c| c["kind"].as_str().unwrap().to_string())
+        .collect();
+    assert!(kinds.contains(&"CornerBase".to_string()), "{kinds:?}");
+    assert!(kinds.contains(&"Base".to_string()), "{kinds:?}");
+    assert_eq!(r.report.counts["cabinet_corners"], 1);
+    // The project, with its corner entry, survives a save and reload.
+    let json = serde_json::to_string(&r.project).unwrap();
+    let back: plan_core::Project = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.floors[0].cabinets, f.cabinets);
+}

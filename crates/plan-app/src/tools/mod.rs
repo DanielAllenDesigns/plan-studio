@@ -15,6 +15,7 @@ use plan_core::WallKind;
 
 pub mod cabinet;
 pub mod cad;
+pub mod cad_ops;
 pub mod camera;
 pub mod details;
 pub mod dimension;
@@ -25,6 +26,7 @@ pub mod framing;
 pub mod images;
 pub mod library;
 pub mod materials;
+pub mod materials_list_polyline;
 pub mod opening;
 pub mod painters;
 pub mod pan;
@@ -112,6 +114,8 @@ pub enum ToolId {
     Painter,
     /// One of the four painter tools.
     PainterVariant(painters::PainterMode),
+    /// Tools > Materials List > Materials List Polyline.
+    MaterialsPolyline,
 }
 
 impl ToolId {
@@ -352,6 +356,7 @@ pub fn registry() -> Vec<Box<dyn Tool>> {
         Box::new(underlay::UnderlayTool::default()),
         Box::new(fireplace::FireplaceTool::default()),
         Box::new(painters::PaintersTool::default()),
+        Box::new(materials_list_polyline::MaterialsListPolylineTool::default()),
     ]
 }
 
@@ -465,6 +470,7 @@ mod tests {
             ToolId::Underlay,
             ToolId::Fireplace,
             ToolId::Painter,
+            ToolId::MaterialsPolyline,
         ] {
             assert_eq!(ids.iter().filter(|i| i.same_tool(id)).count(), 1, "{id:?}");
         }

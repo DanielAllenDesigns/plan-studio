@@ -6,7 +6,7 @@
 //!   Every edit goes through `begin_change` on `project.layers` so it is
 //!   undoable, and marks the plan dirty so hidden layers vanish at once.
 //! * **Project Browser**: Plan > Floors / Cameras / Saved Views, and Layout.
-//! * **Library Browser**: see [`super::library_browser`].
+//! * **Library Browser**: see [`super::library_panel`] and [`super::library_browser`].
 //!
 //! The panels never switch floors or tools themselves (the app owns the tool
 //! set); they queue [`DockRequest`]s that `main.rs` applies.
@@ -20,7 +20,7 @@
 //! ([`toggle_focus_region`]) jumps in and out of the dock.
 
 use super::hotkeys::HotkeyState;
-use super::library_browser::{self, LibraryBrowserState};
+use super::library_browser::LibraryBrowserState;
 use crate::dialogs::hotkeys::HotkeyDialog;
 use crate::dialogs::layer_display::LayerDisplayDialog;
 use crate::dialogs::Outcome;
@@ -30,7 +30,7 @@ use crate::toolbar::{Action, Dock};
 use crate::tools::ToolId;
 use eframe::egui::{self, Key, Modifiers, Sense, Stroke, Vec2};
 use plan_core::layer_sets::LayerEdit;
-use plan_core::{DimensionKind, Layer, OpeningKind, Project};
+use plan_core::{DimensionKind, Layer, Project};
 use std::collections::HashMap;
 
 /// Something a dock panel needs the application to do.
@@ -93,17 +93,9 @@ pub fn show(ui: &mut egui::Ui, dock: Dock, cx: &mut EditorContext, st: &mut Dock
     match dock {
         Dock::LayerDisplay => layer_panel(ui, cx, &mut st.layers, 0.55),
         Dock::Project => project_browser(ui, cx, &mut st.requests),
-        Dock::Library => {
-            // The dock lists library objects, or (filtered to Materials) the
-            // material library.
-            if crate::tools::materials::browser::filter_switch(ui) {
-                crate::tools::materials::browser::panel(ui, cx);
-            } else if let Some(ev) = library_browser::show(ui, &mut st.library) {
-                if let Some(tool) = library_browser::apply_event(ev, &mut st.library, cx) {
-                    st.requests.push(DockRequest::SetTool(tool));
-                }
-            }
-        }
+        // The dock body (library objects, or the material library) lives in
+        // `library_panel`.
+        Dock::Library => super::library_panel::show(ui, &mut st.library, cx, &mut st.requests),
     }
 }
 
@@ -381,6 +373,8 @@ pub fn show_dialogs(
     }
     crate::dialogs::layer_sets::show_all(ctx, cx);
     crate::dialogs::plan_views::show_all(ctx, cx);
+    crate::dialogs::calculators::show_all(ctx, cx);
+    crate::dialogs::library_object::show_all(ctx, cx);
 }
 
 // ----- layers -----
@@ -394,10 +388,7 @@ pub fn layer_usage(project: &Project) -> HashMap<String, usize> {
             add(&w.layer);
         }
         for o in &f.openings {
-            add(match o.kind {
-                OpeningKind::Door => "Doors",
-                OpeningKind::Window => "Windows",
-            });
+            add(o.layer_name());
         }
         for d in &f.dimensions {
             add(match d.kind {
@@ -539,17 +530,20 @@ pub enum BrowserNode {
     Cameras,
     Schedules,
     CadDetails,
+    /// The plan's saved Materials Lists and Reports.
+    MaterialsLists,
     Layout,
 }
 
 impl BrowserNode {
     /// The order the browser lists them in.
-    pub const ALL: [BrowserNode; 6] = [
+    pub const ALL: [BrowserNode; 7] = [
         BrowserNode::Floors,
         BrowserNode::PlanViews,
         BrowserNode::Cameras,
         BrowserNode::Schedules,
         BrowserNode::CadDetails,
+        BrowserNode::MaterialsLists,
         BrowserNode::Layout,
     ];
 
@@ -560,6 +554,7 @@ impl BrowserNode {
             BrowserNode::Cameras => "Cameras",
             BrowserNode::Schedules => "Schedules",
             BrowserNode::CadDetails => "CAD Details",
+            BrowserNode::MaterialsLists => "Materials Lists",
             BrowserNode::Layout => "Layout",
         }
     }
@@ -571,6 +566,7 @@ impl BrowserNode {
             BrowserNode::Cameras => "pb_cameras",
             BrowserNode::Schedules => "pb_schedules",
             BrowserNode::CadDetails => "pb_cad_details",
+            BrowserNode::MaterialsLists => "pb_materials_lists",
             BrowserNode::Layout => "pb_layout_pages",
         }
     }
@@ -593,6 +589,8 @@ pub enum BrowserItem {
     },
     /// A CAD detail (a floor marked as a detail): opens in a tab of its own.
     DetailFloor(usize),
+    /// A saved Materials List or Report, by name.
+    MaterialsList(String),
     /// Index into the layout's pages.
     Page(usize),
 }
@@ -682,6 +680,22 @@ pub fn browser_nodes(cx: &EditorContext) -> Vec<(BrowserNode, Vec<BrowserEntry>)
                     .collect(),
                 BrowserNode::Schedules => schedules.clone(),
                 BrowserNode::CadDetails => details.clone(),
+                BrowserNode::MaterialsLists => p
+                    .materials
+                    .lists
+                    .iter()
+                    .map(|l| {
+                        let kind = if l.spec.kind == plan_core::materials_data::ListKind::Report {
+                            "Report"
+                        } else {
+                            "Live"
+                        };
+                        entry(
+                            BrowserItem::MaterialsList(l.spec.name.clone()),
+                            format!("{} ({kind})", l.spec.name),
+                        )
+                    })
+                    .collect(),
                 BrowserNode::Layout => super::layout_window::page_list(p)
                     .into_iter()
                     .map(|(i, label, _)| entry(BrowserItem::Page(i), label))
@@ -841,9 +855,24 @@ fn layout_pages(ui: &mut egui::Ui, cx: &EditorContext, requests: &mut Vec<DockRe
             run(requests, C::GoToPage(i));
         }
     }
+    // The plan's other layout files, parked until opened (File > New Layout
+    // makes one; clicking a name opens it and parks the open one).
+    let parked = layout_window::parked_layouts(&cx.project);
+    if !parked.is_empty() {
+        ui.separator();
+        ui.label("Other layout files");
+        for (i, name) in parked {
+            if ui.selectable_label(false, name).clicked() {
+                run(requests, C::SwitchLayout(i));
+            }
+        }
+    }
     ui.horizontal_wrapped(|ui| {
         if ui.button("Open Layout").clicked() {
             run(requests, C::ShowLayout);
+        }
+        if ui.button("New Layout File\u{2026}").clicked() {
+            run(requests, C::NewLayoutFile);
         }
         if ui.button("Add Page").clicked() {
             run(requests, C::InsertPageAfter);
@@ -1119,6 +1148,45 @@ fn camera_rows(
     }
 }
 
+/// The saved Materials Lists and Reports: click to open one (a live list is
+/// calculated again from the plan), right-click for Copy, Delete and the
+/// Management dialog.
+fn materials_list_rows(ui: &mut egui::Ui, cx: &mut EditorContext, rows: &[BrowserEntry]) {
+    use crate::dialogs::materials_list as ml;
+    if rows.is_empty() {
+        ui.weak("None");
+    }
+    for e in rows {
+        let BrowserItem::MaterialsList(name) = &e.item else {
+            continue;
+        };
+        let r = ui
+            .selectable_label(false, &e.label)
+            .on_hover_text("Open the Materials List");
+        if r.clicked() {
+            ml::open_from_browser(cx, name);
+        }
+        r.context_menu(|ui| {
+            if ui.button("Open").clicked() {
+                ml::open_from_browser(cx, name);
+                ui.close_menu();
+            }
+            if ui.button("Copy").clicked() {
+                ml::copy_saved(cx, name, &format!("{name} copy"));
+                ui.close_menu();
+            }
+            if ui.button("Delete").clicked() {
+                ml::delete_saved(cx, name);
+                ui.close_menu();
+            }
+            if ui.button("Rename\u{2026}").clicked() {
+                ml::run_command(cx, ml::cmd::MANAGE);
+                ui.close_menu();
+            }
+        });
+    }
+}
+
 fn project_browser(ui: &mut egui::Ui, cx: &mut EditorContext, requests: &mut Vec<DockRequest>) {
     let nodes = browser_nodes(cx);
     egui::ScrollArea::vertical()
@@ -1243,6 +1311,11 @@ fn project_browser(ui: &mut egui::Ui, cx: &mut EditorContext, requests: &mut Vec
                                             }
                                         }
                                     }
+                                });
+                            }
+                            BrowserNode::MaterialsLists => {
+                                tree_node(ui, node.salt(), node.title(), false, |ui| {
+                                    materials_list_rows(ui, cx, rows);
                                 });
                             }
                             BrowserNode::Layout => {}

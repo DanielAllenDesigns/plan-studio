@@ -248,6 +248,13 @@ pub struct RenderPrefs {
     pub preview_quality: PreviewQuality,
     pub shadows: bool,
     pub ambient_occlusion: bool,
+    /// Draw the normal, roughness, metallic, ambient-occlusion and opacity
+    /// maps of material packages (Lightbeans); off paints the albedo only.
+    pub pbr_maps: bool,
+    /// Largest side of a material-package map kept for the 3D view, pixels.
+    pub max_texture_side: u32,
+    /// Offer new material-package zips found in ~/Downloads.
+    pub watch_downloads: bool,
 }
 
 impl Default for RenderPrefs {
@@ -256,6 +263,9 @@ impl Default for RenderPrefs {
             preview_quality: PreviewQuality::Medium,
             shadows: true,
             ambient_occlusion: true,
+            pbr_maps: true,
+            max_texture_side: 2048,
+            watch_downloads: false,
         }
     }
 }

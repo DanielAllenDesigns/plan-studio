@@ -397,7 +397,11 @@ impl PropTable {
             .enumerate()
             .any(|(j, d)| j != i && d.kind == kind && d.name.eq_ignore_ascii_case(&def.name))
         {
-            return Err(format!("\"{}\" is already a {} property", def.name, kind.name()));
+            return Err(format!(
+                "\"{}\" is already a {} property",
+                def.name,
+                kind.name()
+            ));
         }
         let old = std::mem::replace(&mut self.defs[i], def.clone());
         let mut dropped = 0;
@@ -627,9 +631,7 @@ mod tests {
         let mut p = Project::new("props");
         p.props.add_def(rating()).unwrap();
         let def = p.props.defs[0].clone();
-        p.props
-            .set_text(&PropKey::door(9), &def, "45 min")
-            .unwrap();
+        p.props.set_text(&PropKey::door(9), &def, "45 min").unwrap();
         let q = Project::from_json(&p.to_json().unwrap()).unwrap();
         assert_eq!(q.props, p.props);
         let old = r#"{"name":"old","floors":[{"name":"1st Floor","elevation":0.0,

@@ -30,19 +30,25 @@
 //! * [`extras`]: typed room/opening/wall/section extras and the roof, electrical,
 //!   framing and terrain slots.
 
+pub mod arch_block;
 pub mod cad;
+pub mod callout;
 pub mod camera;
 pub mod camera_view;
+pub mod clip;
 pub mod defaults;
 pub mod details;
 pub mod deck;
 pub mod dim_assoc;
 pub mod dimension;
+pub mod distribution;
+pub mod drawing_group;
 pub mod export;
 pub mod extras;
 pub mod fireplace;
 pub mod find_text;
 pub mod floors;
+pub mod foreign;
 pub mod foundation;
 pub mod geometry;
 pub mod groups;
@@ -52,13 +58,17 @@ pub mod io;
 pub mod joins;
 pub mod layer_sets;
 pub mod layers;
+pub mod material_region;
+pub mod materials_data;
 pub mod model;
+pub mod note;
 pub mod object_materials;
 pub mod opening_symbol;
 pub mod openings;
 pub mod props;
 pub mod rooms;
 pub mod schedules;
+pub mod solids;
 pub mod split_level;
 pub mod symbols;
 pub mod text_box;
@@ -101,7 +111,7 @@ pub use openings::{
     OpeningStyle, OpeningVariantDefaults, SizeFormat, SizeStyle,
 };
 pub use rooms::{detect_rooms, detect_rooms_inner, Room};
-pub use symbols::PlacedSymbol;
+pub use symbols::{PlacedSymbol, SymbolSchedule};
 pub use text_styles::{TextStyle, TextStyles};
 pub use walls::{
     FenceStyle, PonyWall, ResizeAbout, Side, WallClass, WallConnection, WallCurve, WallFlags,

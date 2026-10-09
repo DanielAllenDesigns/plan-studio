@@ -334,6 +334,209 @@ pub fn import_library(bytes: &[u8]) -> Result<LibraryArchive, ArchiveError> {
     })
 }
 
+// ----- the JSON file -----
+
+/// Extension (without the dot) of the JSON export.
+pub const JSON_EXTENSION: &str = "json";
+
+#[derive(Serialize, Deserialize)]
+struct JsonModel {
+    path: String,
+    /// The `.psm` bytes, base 64.
+    data: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct JsonManifest {
+    format: String,
+    version: u32,
+    catalog: Catalog,
+    #[serde(default)]
+    meta: UserMeta,
+    #[serde(default)]
+    models: Vec<JsonModel>,
+}
+
+const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+/// Base-64 text of `bytes` (standard alphabet, padded).
+pub fn base64_encode(bytes: &[u8]) -> String {
+    let mut s = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for c in bytes.chunks(3) {
+        let n = u32::from(c[0]) << 16
+            | u32::from(*c.get(1).unwrap_or(&0)) << 8
+            | u32::from(*c.get(2).unwrap_or(&0));
+        s.push(B64[(n >> 18) as usize & 63] as char);
+        s.push(B64[(n >> 12) as usize & 63] as char);
+        s.push(if c.len() > 1 {
+            B64[(n >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        s.push(if c.len() > 2 {
+            B64[n as usize & 63] as char
+        } else {
+            '='
+        });
+    }
+    s
+}
+
+/// The bytes of base-64 `text`; `None` for a character outside the alphabet
+/// or a bad length. Whitespace is skipped.
+pub fn base64_decode(text: &str) -> Option<Vec<u8>> {
+    let mut vals = Vec::with_capacity(text.len());
+    let mut pad = 0;
+    for ch in text.bytes() {
+        match ch {
+            b' ' | b'\n' | b'\r' | b'\t' => {}
+            b'=' => pad += 1,
+            _ if pad > 0 => return None,
+            _ => vals.push(B64.iter().position(|&b| b == ch)? as u32),
+        }
+    }
+    if (vals.len() + pad) % 4 != 0 || pad > 2 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(vals.len() * 3 / 4);
+    for q in vals.chunks(4) {
+        let n = q.iter().fold(0u32, |a, v| a << 6 | v) << (6 * (4 - q.len()));
+        out.push((n >> 16) as u8);
+        if q.len() > 2 {
+            out.push((n >> 8) as u8);
+        }
+        if q.len() > 3 {
+            out.push(n as u8);
+        }
+    }
+    Some(out)
+}
+
+/// Writes `items`, `meta` and the model files as one JSON text, the format
+/// Library > Export Library saves. Chief Architect cannot read it (and it is
+/// never a `.calib`).
+pub fn export_json(
+    items: &[CatalogItem],
+    meta: &UserMeta,
+    model_bytes: &dyn Fn(&str) -> Option<Vec<u8>>,
+) -> Result<String, ArchiveError> {
+    let mut catalog = Catalog::new(crate::user::USER_CATALOG_NAME);
+    catalog.items = items.to_vec();
+    let mut models: Vec<JsonModel> = Vec::new();
+    for it in items {
+        let Some(path) = it.model3d.as_deref() else {
+            continue;
+        };
+        if models.iter().any(|m| m.path == path) {
+            continue;
+        }
+        if !safe_model_path(path) {
+            return err(format!("\"{}\" has an unsafe model path: {path}", it.name));
+        }
+        match model_bytes(path) {
+            Some(b) => models.push(JsonModel {
+                path: path.to_string(),
+                data: base64_encode(&b),
+            }),
+            None => return err(format!("The model file of \"{}\" is missing", it.name)),
+        }
+    }
+    let m = JsonManifest {
+        format: FORMAT.into(),
+        version: 1,
+        catalog,
+        meta: UserMeta {
+            recent: Vec::new(),
+            ..meta.clone()
+        },
+        models,
+    };
+    serde_json::to_string_pretty(&m).map_err(|e| ArchiveError(e.to_string()))
+}
+
+/// Reads a JSON written by [`export_json`].
+pub fn import_json(text: &str) -> Result<LibraryArchive, ArchiveError> {
+    let m: JsonManifest = serde_json::from_str(text)
+        .map_err(|e| ArchiveError(format!("Damaged library file: {e}")))?;
+    if m.format != FORMAT {
+        return err("This is not a Plan Studio library export");
+    }
+    if m.version > 1 {
+        return err("This export was made by a newer Plan Studio");
+    }
+    let mut models = Vec::new();
+    for jm in &m.models {
+        if !safe_model_path(&jm.path) {
+            return err(format!("Unsafe model path: {}", jm.path));
+        }
+        let b = base64_decode(&jm.data)
+            .ok_or_else(|| ArchiveError(format!("Damaged model data for {}", jm.path)))?;
+        models.push((jm.path.clone(), b));
+    }
+    for it in &m.catalog.items {
+        if let Some(path) = &it.model3d {
+            if !safe_model_path(path) {
+                return err(format!("\"{}\" has an unsafe model path", it.name));
+            }
+            if !models.iter().any(|(p, _)| p == path) {
+                return err(format!("The model file of \"{}\" is missing", it.name));
+            }
+        }
+    }
+    Ok(LibraryArchive {
+        items: m.catalog.items,
+        meta: m.meta,
+        models,
+    })
+}
+
+/// What a library file is, by its first bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Container {
+    /// Plan Studio's JSON export ([`export_json`]).
+    Json,
+    /// A zip: Plan Studio's older export ([`export_library`]) or a Chief
+    /// `.calibz` (look inside to tell, see [`is_plan_studio_zip`]).
+    Zip,
+    /// A SQLite database: a Chief `.calib` catalog.
+    ChiefCatalog,
+    Unknown,
+}
+
+/// Sniffs `head` (the first bytes of a file).
+pub fn sniff(head: &[u8]) -> Container {
+    if head.starts_with(b"SQLite format 3\0") {
+        Container::ChiefCatalog
+    } else if head.starts_with(b"PK\x03\x04") || head.starts_with(b"PK\x05\x06") {
+        Container::Zip
+    } else if head.iter().find(|b| !b.is_ascii_whitespace()) == Some(&b'{') {
+        Container::Json
+    } else {
+        Container::Unknown
+    }
+}
+
+/// True when the zip `bytes` holds a Plan Studio export manifest (a Chief
+/// `.calibz` does not).
+pub fn is_plan_studio_zip(bytes: &[u8]) -> bool {
+    read_zip(bytes).is_ok_and(|e| e.iter().any(|(n, _)| n == MANIFEST))
+}
+
+/// Reads a Plan Studio export in either file format (JSON, or the older
+/// zip). A Chief catalog is refused with a message: Chief catalogs are read
+/// in place, never imported.
+pub fn import_any(bytes: &[u8]) -> Result<LibraryArchive, ArchiveError> {
+    match sniff(bytes) {
+        Container::Json => import_json(&String::from_utf8_lossy(bytes)),
+        Container::Zip => import_library(bytes),
+        Container::ChiefCatalog => err(
+            "This is a Chief Architect catalog. Plan Studio opens it read-only in the Library \
+             Browser instead of importing it",
+        ),
+        Container::Unknown => err("This is not a Plan Studio library file"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -437,5 +640,100 @@ mod tests {
         assert!(safe_model_path("user-models/a.psm"));
         assert!(!safe_model_path("user-models/"));
         assert!(!safe_model_path("/abs/a.psm"));
+    }
+
+    #[test]
+    fn base64_round_trips_every_length() {
+        for n in 0..12usize {
+            let data: Vec<u8> = (0..n as u8).map(|i| i.wrapping_mul(37)).collect();
+            let t = base64_encode(&data);
+            assert_eq!(t.len() % 4, 0);
+            assert_eq!(base64_decode(&t).unwrap(), data, "len {n}");
+        }
+        assert_eq!(base64_encode(b"Man"), "TWFu");
+        assert_eq!(base64_decode("TWE=").unwrap(), b"Ma");
+        assert!(base64_decode("TW*u").is_none());
+        assert!(base64_decode("TWF").is_none());
+        assert!(base64_decode("T=Fu").is_none());
+    }
+
+    #[test]
+    fn a_json_export_reimports_identical_and_is_plain_json() {
+        let (items, model) = sample_items();
+        let bytes = model.to_bytes();
+        let meta = UserMeta {
+            folders: vec![vec!["User".into(), "Mine".into()]],
+            favorites: vec!["user.plain.1".into()],
+            recent: vec!["user.plain.1".into()],
+        };
+        let text = export_json(&items, &meta, &|p| {
+            (p == "user-models/user.model.1.psm").then(|| bytes.clone())
+        })
+        .unwrap();
+        // Plain JSON, not a Chief catalog and not a zip.
+        assert_eq!(sniff(text.as_bytes()), Container::Json);
+        assert!(serde_json::from_str::<serde_json::Value>(&text).is_ok());
+        let a = import_any(text.as_bytes()).unwrap();
+        assert_eq!(a.items, items);
+        assert_eq!(
+            a.models,
+            vec![("user-models/user.model.1.psm".to_string(), bytes)]
+        );
+        assert_eq!(a.meta.folders, meta.folders);
+        assert_eq!(a.meta.favorites, meta.favorites);
+        assert!(a.meta.recent.is_empty(), "recents are not exported");
+    }
+
+    #[test]
+    fn json_problems_are_reported() {
+        let (items, _) = sample_items();
+        // A missing model file stops the export.
+        assert!(export_json(&items, &UserMeta::default(), &|_| None)
+            .unwrap_err()
+            .0
+            .contains("missing"));
+        assert!(import_json("{ nope").is_err());
+        assert!(
+            import_json(r#"{"format":"other","version":1,"catalog":{"name":"x","items":[]}}"#)
+                .unwrap_err()
+                .0
+                .contains("not a Plan Studio")
+        );
+        assert!(import_json(
+            r#"{"format":"plan-studio-library","version":9,"catalog":{"name":"x","items":[]}}"#
+        )
+        .unwrap_err()
+        .0
+        .contains("newer"));
+        // An item naming a model the file does not carry.
+        let text = export_json(&items[1..], &UserMeta::default(), &|_| None).unwrap();
+        let broken = text.replace(
+            "\"id\": \"user.plain.1\"",
+            "\"model3d\": \"user-models/x.psm\", \"id\": \"user.plain.1\"",
+        );
+        assert!(import_json(&broken).unwrap_err().0.contains("missing"));
+    }
+
+    #[test]
+    fn sniffing_tells_the_containers_apart() {
+        assert_eq!(sniff(b"SQLite format 3\0\x10\0"), Container::ChiefCatalog);
+        assert_eq!(sniff(b"PK\x03\x04rest"), Container::Zip);
+        assert_eq!(sniff(b"  \n{\"a\":1}"), Container::Json);
+        assert_eq!(sniff(b"hello"), Container::Unknown);
+        assert!(import_any(b"SQLite format 3\0abc")
+            .unwrap_err()
+            .0
+            .contains("read-only"));
+        assert!(import_any(b"hello").is_err());
+        // The older zip export still imports through import_any.
+        let (items, model) = sample_items();
+        let bytes = model.to_bytes();
+        let zip = export_library(&items, &UserMeta::default(), &|_| Some(bytes.clone())).unwrap();
+        assert!(is_plan_studio_zip(&zip));
+        assert_eq!(import_any(&zip).unwrap().items, items);
+        assert!(!is_plan_studio_zip(&write_zip(&[(
+            "a.jpg".into(),
+            vec![1]
+        )])));
     }
 }

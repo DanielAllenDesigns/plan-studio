@@ -336,8 +336,14 @@ fn a_window_shape_changes_the_3d_glazing_and_the_plan_head_marks() {
 fn treatments_are_built_in_3d_and_left_out_of_the_plan() {
     let mut sim = house();
     let id = place(&mut sim, ToolId::Window, 300.0);
+    // OK on the dialog stores its frame width too, so compare from there.
+    spec(&mut sim, id, &["Treatments"], |_| {});
     let before_plan = symbol(&sim, id);
     let before = scene_meshes(&sim, id).len();
+    let tris_before: usize = scene_meshes(&sim, id)
+        .iter()
+        .map(Mesh::triangle_count)
+        .sum();
     spec(&mut sim, id, &["Treatments"], |d| {
         let t = &mut d.draft_mut().extras.spec.treatments;
         t.curtain = CurtainStyle::Panels;
@@ -347,7 +353,10 @@ fn treatments_are_built_in_3d_and_left_out_of_the_plan() {
         t.millwork_above = MillworkStyle::Header;
     });
     let meshes = scene_meshes(&sim, id);
-    assert!(meshes.len() >= before + 3);
+    // The curtains and the blind are colored meshes of their own; the
+    // millwork joins the plain trim.
+    assert!(meshes.len() >= before + 2);
+    assert!(meshes.iter().map(Mesh::triangle_count).sum::<usize>() > tris_before + 50);
     assert!(meshes.iter().any(|m| m.color == Some([150, 20, 20])));
     assert!(meshes.iter().any(|m| m.color == Some([20, 150, 20])));
     // The plan omits them.
@@ -418,9 +427,15 @@ fn the_casing_tab_chooses_how_curved_wall_casing_is_laid() {
 fn a_size_without_the_frame_is_cut_wider_in_the_plan_and_in_3d() {
     let mut sim = house();
     let id = place(&mut sim, ToolId::Window, 300.0);
-    spec(&mut sim, id, &["Frame"], |d| {
-        d.draft_mut().extras.frame_width = Some(2.0);
-    });
+    // A 2" frame (the Frame tab's width) before the tab is touched.
+    let fl = sim.app.cx.floor;
+    sim.app.cx.project.floors[fl]
+        .openings
+        .iter_mut()
+        .find(|o| o.id == id)
+        .unwrap()
+        .extras
+        .frame_width = Some(2.0);
     let x_range = |sim: &Sim| {
         let ms = scene_meshes(sim, id);
         ms.iter()
@@ -429,15 +444,19 @@ fn a_size_without_the_frame_is_cut_wider_in_the_plan_and_in_3d() {
             .fold((f32::MAX, f32::MIN), |(lo, hi), x| (lo.min(x), hi.max(x)))
     };
     let (a0, a1) = x_range(&sim);
-    sim.undo();
     spec(&mut sim, id, &["Frame"], |d| {
-        d.draft_mut().extras.frame_width = Some(2.0);
         d.draft_mut().extras.spec.size_includes_frame = false;
     });
     let (b0, b1) = x_range(&sim);
-    assert!(b0 < a0 - 1.5 && b1 > a1 + 1.5, "{a0}..{a1} -> {b0}..{b1}");
+    assert!(
+        (a0 - b0 - 2.0).abs() < 0.01 && (b1 - a1 - 2.0).abs() < 0.01,
+        "{a0}..{a1} -> {b0}..{b1}"
+    );
     let o = opening(&sim, id);
+    assert_eq!(o.kind, OpeningKind::Window);
     let cleared = symbol(&sim, id).span;
     assert!((cleared.0 - (o.start_offset() - 2.0)).abs() < 1e-6);
-    assert_eq!(OpeningKind::Window, o.kind);
+    // Undo puts the wall hole back.
+    assert_eq!(sim.undo().as_deref(), Some("Opening Specification"));
+    assert_eq!(x_range(&sim), (a0, a1));
 }

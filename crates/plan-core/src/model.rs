@@ -54,7 +54,9 @@ pub struct Wall {
     pub start: Point,
     /// Centerline end, inches.
     pub end: Point,
+    #[serde(deserialize_with = "crate::foreign::thickness_or_default")]
     pub thickness: f64,
+    #[serde(deserialize_with = "crate::foreign::height_or_default")]
     pub height: f64,
     pub kind: WallKind,
     /// Layer name; see [`LayerSet`]. Defaults to "Walls, Normal".
@@ -313,7 +315,9 @@ impl Default for RoomName {
 pub struct Floor {
     pub name: String,
     /// Finished-floor elevation relative to the first floor, inches.
+    #[serde(deserialize_with = "crate::foreign::finite_or_zero")]
     pub elevation: f64,
+    #[serde(deserialize_with = "crate::foreign::height_or_default")]
     pub ceiling_height: f64,
     pub walls: Vec<Wall>,
     pub openings: Vec<Opening>,
@@ -381,6 +385,23 @@ pub struct Floor {
     /// [`crate::fireplace`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fireplaces: Vec<crate::fireplace::Fireplace>,
+    /// Objects with a drawing group of their own (Edit > Drawing Group); the
+    /// rest draw in the group of their kind. See [`crate::drawing_group`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub drawing_groups: Vec<crate::drawing_group::GroupEntry>,
+    /// Callouts, markers and notes: their records; the CAD objects they draw
+    /// as are in [`Floor::cad`] (see [`crate::callout`]).
+    #[serde(default, skip_serializing_if = "crate::callout::Annots::is_empty")]
+    pub annots: crate::callout::Annots,
+    /// Architectural blocks (see [`crate::arch_block`]).
+    #[serde(default, skip_serializing_if = "crate::arch_block::BlockLayer::is_empty")]
+    pub blocks: crate::arch_block::BlockLayer,
+    /// Extra 3D solid spec fields and compound solids (see [`crate::solids`]).
+    #[serde(default, skip_serializing_if = "crate::solids::SolidLayer::is_empty")]
+    pub solid_layer: crate::solids::SolidLayer,
+    /// Layer tables of material regions (see [`crate::material_region`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub region_layers: Vec<crate::material_region::RegionStructure>,
 }
 
 impl Floor {
@@ -411,6 +432,11 @@ impl Floor {
             detail: None,
             settings: crate::floors::FloorSettings::default(),
             fireplaces: Vec::new(),
+            drawing_groups: Vec::new(),
+            annots: crate::callout::Annots::default(),
+            blocks: crate::arch_block::BlockLayer::default(),
+            solid_layer: crate::solids::SolidLayer::default(),
+            region_layers: Vec::new(),
         }
     }
     pub fn wall(&self, id: Id) -> Option<&Wall> {
@@ -426,9 +452,16 @@ impl Floor {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Project {
+    #[serde(default = "default_project_name")]
     pub name: String,
+    #[serde(default = "default_floors")]
     pub floors: Vec<Floor>,
+    #[serde(default = "default_next_id")]
     next_id: Id,
+    /// Keys of the loaded file that this build has no field for; written back
+    /// at the same place on save (QA-20). See [`crate::foreign`].
+    #[serde(skip)]
+    foreign: crate::foreign::Foreign,
     #[serde(default = "LayerSet::default_floor_plan")]
     pub layers: LayerSet,
     /// Camera objects shown in the plan (C-4..C-30).
@@ -480,6 +513,10 @@ pub struct Project {
     /// The plan's note types (Note Type Management).
     #[serde(default)]
     pub note_types: crate::text_styles::NoteTypes,
+    /// Saved Defaults of callouts, markers and notes (Default Settings > Text,
+    /// Callouts and Markers); see [`crate::callout::AnnotDefaults`].
+    #[serde(default)]
+    pub annot_defaults: crate::callout::AnnotDefaults,
     /// Material overrides of single objects (Material Painter, Adjust
     /// Materials); see [`crate::object_materials`].
     #[serde(default)]
@@ -501,6 +538,30 @@ pub struct Project {
     /// see [`crate::props`].
     #[serde(default, skip_serializing_if = "crate::props::PropTable::is_empty")]
     pub props: crate::props::PropTable,
+    /// The drawing group of each kind of object (Default Settings >
+    /// Drawing Groups); see [`crate::drawing_group`].
+    #[serde(
+        default,
+        skip_serializing_if = "crate::drawing_group::DrawingGroupTable::is_default"
+    )]
+    pub drawing_group_defaults: crate::drawing_group::DrawingGroupTable,
+    /// Materials List data: object information and component changes, the
+    /// saved lists and the Materials List Polylines; see
+    /// [`crate::materials_data`].
+    #[serde(default, skip_serializing_if = "crate::materials_data::MaterialsData::is_empty")]
+    pub materials: crate::materials_data::MaterialsData,
+}
+
+fn default_project_name() -> String {
+    "Untitled Plan".to_string()
+}
+
+fn default_floors() -> Vec<Floor> {
+    vec![Floor::new("1st Floor", 0.0)]
+}
+
+fn default_next_id() -> Id {
+    1
 }
 
 /// Minimum clear distance between an opening jamb and a wall end or another opening.
@@ -510,8 +571,9 @@ impl Project {
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
-            floors: vec![Floor::new("1st Floor", 0.0)],
+            floors: default_floors(),
             next_id: 1,
+            foreign: crate::foreign::Foreign::default(),
             layers: LayerSet::default_floor_plan(),
             cameras: Vec::new(),
             wall_types: Vec::new(),
@@ -528,11 +590,14 @@ impl Project {
             layout_files: Vec::new(),
             text_macros: crate::text_styles::TextMacros::default(),
             note_types: crate::text_styles::NoteTypes::default(),
+            annot_defaults: crate::callout::AnnotDefaults::default(),
             object_materials: Vec::new(),
             material_defaults: Vec::new(),
             opening_display: crate::openings::OpeningView3d::default(),
             electrical_defaults: None,
             props: crate::props::PropTable::default(),
+            drawing_group_defaults: crate::drawing_group::DrawingGroupTable::default(),
+            materials: crate::materials_data::MaterialsData::default(),
         }
     }
 
@@ -540,6 +605,12 @@ impl Project {
         let id = self.next_id;
         self.next_id += 1;
         id
+    }
+
+    /// The next id [`Project::alloc_id`] will hand out (undo gives it back
+    /// with the rest of the plan).
+    pub fn next_id(&self) -> Id {
+        self.next_id
     }
 
     pub fn add_wall(
@@ -691,12 +762,114 @@ impl Project {
         Some(id)
     }
 
+    /// The plan as pretty JSON. Keys a newer build wrote are written back
+    /// (QA-20); a NaN or infinity is written as 0 because `null` would make
+    /// the file unreadable (QA-23, see [`Project::sanitize`]).
     pub fn to_json(&self) -> serde_json::Result<String> {
-        serde_json::to_string_pretty(self)
+        if self.foreign.is_empty() {
+            return crate::foreign::to_pretty_finite(self);
+        }
+        let (mut v, _) = crate::foreign::to_value_finite(self)?;
+        self.foreign.apply(&mut v);
+        serde_json::to_string_pretty(&v)
     }
 
+    /// Reads a plan. A file without `name`, `floors` or `next_id` (even `{}`)
+    /// loads with the defaults (QA-21), `next_id` is raised above every id in
+    /// the file (QA-22) and the keys this build has no field for are kept for
+    /// the next save (QA-20).
     pub fn from_json(s: &str) -> serde_json::Result<Self> {
-        serde_json::from_str(s)
+        let mut p: Project = serde_json::from_str(s)?;
+        if p.floors.is_empty() {
+            p.floors = default_floors();
+        }
+        if let (Ok(loaded), Ok((typed, _))) = (
+            serde_json::from_str::<serde_json::Value>(s),
+            crate::foreign::to_value_finite(&p),
+        ) {
+            p.foreign = crate::foreign::Foreign::capture(&loaded, &typed);
+            let used = crate::foreign::max_id(&loaded).max(crate::foreign::max_id(&typed));
+            p.next_id = p.next_id.max(used + 1);
+        }
+        Ok(p)
+    }
+
+    /// Number of foreign keys (from a newer build) kept for the next save.
+    pub fn foreign_key_count(&self) -> usize {
+        self.foreign.len()
+    }
+
+    /// Problems with the plan's ids: a `next_id` that is not above every id,
+    /// and ids used twice within one list. Empty when the ids are sound.
+    pub fn validate_ids(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        let used = self.highest_id();
+        if self.next_id <= used {
+            out.push(format!(
+                "next_id {} is not above the highest id in use ({used})",
+                self.next_id
+            ));
+        }
+        fn dupes(out: &mut Vec<String>, what: &str, floor: &str, ids: impl Iterator<Item = Id>) {
+            let mut seen = std::collections::BTreeSet::new();
+            for id in ids {
+                if !seen.insert(id) {
+                    out.push(format!("{what} id {id} is used twice on {floor}"));
+                }
+            }
+        }
+        for f in &self.floors {
+            dupes(&mut out, "wall", &f.name, f.walls.iter().map(|w| w.id));
+            dupes(&mut out, "opening", &f.name, f.openings.iter().map(|o| o.id));
+            dupes(&mut out, "dimension", &f.name, f.dimensions.iter().map(|d| d.id));
+            dupes(&mut out, "CAD object", &f.name, f.cad.iter().map(|c| c.id));
+        }
+        out
+    }
+
+    /// The highest `id` in any slot of the plan (typed or opaque).
+    pub fn highest_id(&self) -> Id {
+        crate::foreign::to_value_finite(self)
+            .map(|(v, _)| crate::foreign::max_id(&v))
+            .unwrap_or(0)
+    }
+
+    /// Raises `next_id` above every id in the plan. Returns true when it had
+    /// to (a stale counter would hand out ids already in use, QA-22).
+    pub fn repair_ids(&mut self) -> bool {
+        if self.floors.is_empty() {
+            self.floors = default_floors();
+        }
+        let want = self.highest_id() + 1;
+        if self.next_id < want {
+            self.next_id = want;
+            return true;
+        }
+        false
+    }
+
+    /// How many numbers in the plan are NaN or infinite.
+    pub fn non_finite_count(&self) -> usize {
+        crate::foreign::count_non_finite(self)
+    }
+
+    /// Replaces every NaN or infinity in the plan with 0 and returns how many
+    /// there were (QA-23). A save writes them as 0 anyway; this makes the
+    /// plan in memory match what is written. Callers say so in the status bar.
+    pub fn sanitize(&mut self) -> usize {
+        let Ok((v, n)) = crate::foreign::to_value_finite(self) else {
+            return 0;
+        };
+        if n == 0 {
+            return 0;
+        }
+        if let Ok(clean) = serde_json::from_value::<Project>(v) {
+            let (foreign, next_id) = (self.foreign.clone(), self.next_id);
+            *self = clean;
+            self.foreign = foreign;
+            self.next_id = self.next_id.max(next_id);
+        }
+        n
     }
 }
 

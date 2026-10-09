@@ -433,11 +433,7 @@ fn list_formula(choices: &[String]) -> Option<String> {
 }
 
 fn push_edit_cell(xml: &mut String, col: usize, row: usize, text: &str, c: &EditColumn) {
-    let style = if c.editable {
-        STYLE_EDIT
-    } else {
-        STYLE_LOCKED
-    };
+    let style = if c.editable { STYLE_EDIT } else { STYLE_LOCKED };
     let r = cell_ref(col, row);
     if text.is_empty() {
         xml.push_str(&format!("<c r=\"{r}\" s=\"{style}\"/>"));
@@ -461,15 +457,20 @@ fn edit_sheet_xml(sheet: &EditSheet) -> String {
         .len()
         .max(sheet.rows.iter().map(Vec::len).max().unwrap_or(0));
     let width = |col: usize| -> f64 {
-        let longest = std::iter::once(sheet.columns.get(col).map_or(0, |c| c.header.chars().count()))
-            .chain(
-                sheet
-                    .rows
-                    .iter()
-                    .map(|r| r.get(col).map_or(0, |c| c.chars().count())),
-            )
-            .max()
-            .unwrap_or(0);
+        let longest = std::iter::once(
+            sheet
+                .columns
+                .get(col)
+                .map_or(0, |c| c.header.chars().count()),
+        )
+        .chain(
+            sheet
+                .rows
+                .iter()
+                .map(|r| r.get(col).map_or(0, |c| c.chars().count())),
+        )
+        .max()
+        .unwrap_or(0);
         (longest as f64 + 2.0).clamp(8.0, 60.0)
     };
     let mut xml = String::from(
@@ -495,13 +496,25 @@ fn edit_sheet_xml(sheet: &EditSheet) -> String {
     }
     xml.push_str("<sheetData>\n<row r=\"1\">");
     for (c, col) in sheet.columns.iter().enumerate() {
-        push_cell(&mut xml, c, 0, &Cell::Text(col.header.clone()), STYLE_HEADER);
+        push_cell(
+            &mut xml,
+            c,
+            0,
+            &Cell::Text(col.header.clone()),
+            STYLE_HEADER,
+        );
     }
     xml.push_str("</row>\n");
     for (r, row) in sheet.rows.iter().enumerate() {
         xml.push_str(&format!("<row r=\"{}\">", r + 2));
         for (c, col) in sheet.columns.iter().enumerate() {
-            push_edit_cell(&mut xml, c, r + 1, row.get(c).map_or("", String::as_str), col);
+            push_edit_cell(
+                &mut xml,
+                c,
+                r + 1,
+                row.get(c).map_or("", String::as_str),
+                col,
+            );
         }
         xml.push_str("</row>\n");
     }
@@ -743,5 +756,93 @@ mod tests {
         // No schedules still gives a readable workbook.
         let empty = schedules_to_xlsx(&[]);
         assert!(part(&empty, "xl/workbook.xml").contains("Sheet1"));
+    }
+
+    #[test]
+    fn an_edit_workbook_hides_locks_tints_and_validates() {
+        let col = |h: &str, editable: bool| EditColumn {
+            header: h.into(),
+            editable,
+            ..EditColumn::default()
+        };
+        let mut id = col("PlanStudio ID", false);
+        id.hidden = true;
+        let mut pick = col("Rating", true);
+        pick.choices = vec!["A".into(), "B & C".into()];
+        let mut commas = col("Tag", true);
+        commas.choices = vec!["x,y".into(), "z".into()];
+        let mut qty = col("Qty", true);
+        qty.data = ColumnData::Number;
+        let sheet = EditSheet {
+            title: "Doors".into(),
+            protect: true,
+            columns: vec![id, pick, commas, qty, col("Size", false)],
+            rows: vec![
+                vec![
+                    "door:1".into(),
+                    "A".into(),
+                    "".into(),
+                    "2".into(),
+                    "36".into(),
+                ],
+                vec![
+                    "door:2".into(),
+                    "".into(),
+                    "x".into(),
+                    "007".into(),
+                    "".into(),
+                ],
+            ],
+            ..EditSheet::default()
+        };
+        let meta = EditSheet {
+            title: "doors".into(),
+            hidden: true,
+            ..EditSheet::default()
+        };
+        let zip = to_xlsx_edit(&[sheet, meta]);
+        let x = part(&zip, "xl/worksheets/sheet1.xml");
+        // The id column is hidden; the others are not.
+        assert!(
+            x.contains("<col min=\"1\" max=\"1\" width=\"15\" customWidth=\"1\" hidden=\"1\"/>"),
+            "{x}"
+        );
+        assert!(!x.contains("<col min=\"2\" max=\"2\" width=\"8\" customWidth=\"1\" hidden"));
+        // Editable cells are style 3 (unlocked), the rest style 4; empty
+        // cells keep their style so the whole column is tinted.
+        assert!(x.contains("<c r=\"B2\" s=\"3\" t=\"inlineStr\">"), "{x}");
+        assert!(x.contains("<c r=\"C2\" s=\"3\"/>"), "{x}");
+        assert!(x.contains("<c r=\"A2\" s=\"4\" t=\"inlineStr\">"), "{x}");
+        // Numbers: a Number column stores numbers; a locked plain number too;
+        // leading zeros stay text.
+        assert!(x.contains("<c r=\"D2\" s=\"3\"><v>2</v></c>"), "{x}");
+        assert!(x.contains("<c r=\"E2\" s=\"4\"><v>36</v></c>"), "{x}");
+        assert!(x.contains("<c r=\"D3\" s=\"3\" t=\"inlineStr\">"), "{x}");
+        // Protection follows the data, then the one usable drop-down.
+        let prot = x.find("<sheetProtection").unwrap();
+        assert!(x.find("</sheetData>").unwrap() < prot);
+        let dv = x.find("<dataValidations count=\"1\">").unwrap();
+        assert!(prot < dv);
+        assert!(
+            x.contains("sqref=\"B2:B3\"><formula1>\"A,B &amp; C\"</formula1>"),
+            "{x}"
+        );
+        assert!(
+            !x.contains("sqref=\"C2"),
+            "a choice with a comma gets no drop-down"
+        );
+        // The hidden tab, and a name that clashes with another is made unique.
+        let wb = part(&zip, "xl/workbook.xml");
+        assert!(
+            wb.contains("name=\"doors 2\"") && wb.contains("state=\"hidden\""),
+            "{wb}"
+        );
+        assert!(!wb.contains("name=\"Doors\" sheetId=\"1\" state"));
+        let styles = part(&zip, "xl/styles.xml");
+        assert!(styles.contains("cellXfs count=\"5\"") && styles.contains("locked=\"0\""));
+        // The old writers are untouched by the new styles.
+        assert!(part(&table().to_xlsx(), "xl/styles.xml").contains("cellXfs count=\"5\""));
+        // No sheets: still a workbook.
+        assert!(part(&to_xlsx_edit(&[]), "xl/workbook.xml").contains("Sheet1"));
     }
 }

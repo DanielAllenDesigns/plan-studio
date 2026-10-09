@@ -74,7 +74,7 @@ Select a dimension by clicking its line, extension or text. Its handles:
   wall moves perpendicular, or lengthens if the dimension runs along it; openings
   slide). A locked layer refuses the change.
 - Double-click opens the Dimension Specification (5.7).
-- **Add Extension Line** and **Delete Extension Line** (Round 14) edit an existing string: click a dimension line where a new measured point goes (or on a hidden extension line to bring it back); click an extension line to delete it, which merges the strings on both sides into one or hides an end's line. Both tools are built and reachable through the option strip of the Dimension tools; the Dimension flyout has no button for them yet (planned). Copying a dimension keeps its ties to the walls and openings it measures.
+- **Add Extension Line** and **Delete Extension Line** (Round 14) edit an existing string: click a dimension line where a new measured point goes (or on a hidden extension line to bring it back); click an extension line to delete it, which merges the strings on both sides into one or hides an end's line. Both tools are on the Dimension flyout (after Tape Measure) and in the CAD menu, and reachable through the option strip of the Dimension tools; they have no hotkey in Daniel's file. Copying a dimension keeps its ties to the walls and openings it measures.
 - The **Edit toolbar** of a selected dimension offers four commands, each one undo step (a locked layer refuses them):
   - **Reverse Dimension** swaps the two measured points (with their ties and extension-line switches), which puts the dimension line on the other side of what it measures, the same distance away.
   - **Convert to Manual Dimension** turns an automatic dimension (any string of Auto Exterior, Interior, Elevation, Story Pole or NKBA) into an ordinary manual one that a later Auto run no longer replaces. Enabled only when a selected dimension is automatic.
@@ -125,7 +125,7 @@ Text height defaults to the template's 6" plan height. A text style can instead 
 (Default Settings > Text Styles, 5.9): its text keeps its size on paper (a 1/8" label stays 1/8" at 1/4", 1/8" or 1/2" scale)
 because its plan height is recomputed from the sheet's scale; a new text on such a layer is placed at the style's own height, and the
 Text Specification says how big it is on paper. A **Character Height** style keeps the plan height you give it.
-Edit > Find/Replace Text finds a string in the text objects of the floor (or every floor) and replaces it, Replace All as one undo step. **Replace Fonts** (Default Settings > Text > Text Styles, 5.9) swaps one font family for another in every style at once; the Edit > Replace Fonts... menu line itself stays dimmed.
+Edit > Find/Replace Text finds a string in the text objects of the floor (or every floor) and replaces it, Replace All as one undo step. **Replace Fonts** (Edit > Replace Fonts..., or Default Settings > Text > Text Styles, 5.9) swaps one font family for another in every style at once; the Edit menu line opens the Text Styles window at its Replace Fonts section.
 
 ### Rich text
 
@@ -242,6 +242,21 @@ The **CAD edit tools** are in the CAD menu (CAD > Edit CAD, CAD > Patterns) as t
 CAD Detail From View makes a normal floor, which takes part in the 3D stack; Chief's detail windows and CAD Detail Management do not exist here. With a drawn CAD object selected the Edit toolbar has a button for each of these tools (Fillet, Chamfer, Offset, Trim, Extend, Break, Reverse Direction, Make Parallel, Make Perpendicular and the three converts): the button switches to that CAD tool mode with the selection kept, and the converts act on the selection at once. Separately, Edit > **Make Parallel** and **Make Perpendicular** (and the Edit toolbar's buttons for a selection of walls and CAD lines) work from a selection: with the selection made, click the wall or line to match and each selected one keeps its start and length and swings its far end to be parallel or perpendicular to it (chapter 2.5).
 
 The Edit menu's selection commands (Cut, Copy, Paste, Duplicate, Select All, Select Same Type, Group, Transform/Replicate, Reflect About Object, Point to Point Move, Align/Distribute, Move to Front / Back, Lock, Send to Layer) all work on CAD objects, text and dimensions as well as on walls (chapter 2.5). **Move to Front / Back** is for CAD objects and text: CAD objects are drawn in list order, so it moves the selection to the end (top) or the start (bottom) of the list. **Edit > Edit Behaviors > Resize, Concentric, Fillet, Alternate and Replicate** change what dragging a CAD selection does (chapter 2.5).
+
+### Polylines, boundaries, copies and drawing groups
+
+These commands are in the **Edit CAD** menu, the **Edit** menu and as Edit toolbar buttons for the selection (Select Objects). Each is one undo step.
+
+| Command | What it does |
+|---|---|
+| Polyline Union / Subtract / Intersect | Select two or more closed polylines or circles. Union joins them into one outline, Intersect keeps what they all cover, Subtract keeps the first one you selected and cuts the others out of it. Arcs stay arcs: the result is a polyline whose curved edges are real arcs, and a circle that comes out whole is a circle again. A hole becomes a polyline of its own, grouped with its outline. Shapes that do not overlap are left alone and the status bar says so. |
+| Trim to Boundary / Extend to Boundary | Click the boundary (a line, arc, circle, polyline or a wall), then click objects: Trim removes the clicked part up to the boundary (a circle crossed twice becomes the arc left), Extend grows the end nearer your click until it meets the boundary. Keep clicking; Esc ends. Trim Line and Extend Line (Edit CAD) also work on arcs, circles and open polylines. |
+| Insert Point | Click an edge of a polyline to add a vertex there; on an arc edge the arc splits into two arcs of the same circle. Esc ends. |
+| Multiple Copy (Edit > Multiple Copy, Edit toolbar) | Copies of the selection, walls included. Number of copies, the offset between copies (X and Y, or distance and angle; or the offset to the last copy) and a turn per copy. **Drag in Plan** does it with two clicks: the point to copy from, then where the last copy goes; a tick marks every copy. |
+| Edit > Drawing Group | A drawing group number on every object sets the order the plan draws in, lowest first. **Bring to Front** and **Send to Back** put the selection above or below everything else, **Set Drawing Group** types a number. **Default Settings > Drawing Groups** sets the number of each kind of object. CAD objects and text follow their numbers in the plan, the Layout window and the PDF; CAD below the Walls number draws under the walls. |
+| CAD > Plan Footprint | A closed polyline around the outer faces of the exterior walls, with its area under it. |
+
+**File > Export > DXF** first asks what the file should hold: the unit (inches, feet, millimeters, centimeters, meters), layer names (the plan's or the AIA standard, with your own map `plan layer = file layer`), the weight of each layer, text as text or as lines, this floor / all floors / a pick of floors, and 2D or 3D (floors at their elevation plus the model).
 
 ## 5.5 Layers and layer display
 
@@ -398,3 +413,15 @@ defaults** (what plans start from).
   all this off or on (chapter 1.9a).
 - The styles are stored with the plan, and a layer's Text Style property refers to one by name. The Text
   Specification's Appearance tab holds the text box settings (5.8).
+
+## 5.10 Layer and Object Painters
+
+- **Tools > Layer Painter > Layer Eyedropper** loads the layer of the object you click and hands over to **Layer Painter**, which moves each clicked wall, CAD object, text and symbol to that layer (doors, windows, cabinets and the other kinds live on the layer of their kind). The bar at the top of the drawing area also lists every layer. **Scope** is Component (the clicked object, even in a group) or Object (its group). Every click is one undo step; a locked layer refuses. Esc ends the painter.
+- **Tools > Object Painter > Object Eyedropper** loads every specification field of the clicked object except where it is and how big it is, and hands over to **Object Painter**, which writes them onto each object of the same kind you click: walls (type, thickness, height, layer, options), doors and windows (style, casing, lites, tempered, egress), dimensions, CAD and text (layer, color, weight, dash, fill, arrows, text style, text height), symbols, cabinets (door and drawer style, overlay, materials, moldings) and rooms (type, finishes, fill, label). Words, marks and labels are never copied, and a door never takes a window's. **Object Painter Modes** sets the scope: Component, Object (the group), Room, Floor or Plan; **Apply to all of type** off makes Room, Floor and Plan reach only objects like the one clicked (same wall type, symbol, cabinet kind), on reaches every object of the kind. **Match Properties** on the Edit toolbar loads the selected object into the Object Painter.
+- Chief's own wording and layout of these bars are not confirmed (verify in Chief).
+
+## 5.11 Spell check
+
+- **Tools > Spell Check** (also the Check Spelling button on the File toolbar) walks the plan's text objects (with their rich text), dimension text, door and window labels, symbol labels, room names and the layout's text boxes, captions, notes, leaders and page titles. At each unknown word the **Spelling** dialog shows the word in its sentence, a **Change to** field, suggestions (listed words within two edits), and **Ignore**, **Ignore All**, **Change**, **Change All** and **Add**. Each Change is one undo step.
+- The word list is the operating system's (`/usr/share/dict/words` on macOS and Linux); nothing is bundled. Windows has none, so only the built-in design vocabulary and your own dictionary count (the dialog says so). **Add** appends to `~/.plan-studio/dictionary.txt`, one word per line, which you can edit by hand. Words with digits, short acronyms in capitals, internal capitals, addresses and rich text tags are not checked.
+- The Text Specification underlines misspelled words in red as you type and has a **Check Spelling** button that runs the same dialog over that text.

@@ -142,6 +142,13 @@ fn handrail_is_required_from_four_risers() {
         }),
         "IRC R311.7.8 handrails"
     ));
+    // A Handrail side is one, and it is not a guard (no guard-height finding).
+    let gripped = check(StairParams {
+        left_side: SideKind::Handrail,
+        ..tall.clone()
+    });
+    assert!(!has(&gripped, "IRC R311.7.8 handrails"));
+    assert!(!has(&gripped, "IRC R312.1.2 guard height"));
     // Three risers need none.
     let short = StairParams {
         total_rise: 22.0,

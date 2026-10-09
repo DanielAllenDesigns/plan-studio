@@ -72,6 +72,9 @@ pub struct SurfaceTexture {
     pub rgba: Arc<Vec<u8>>,
     /// Inches `[across, down]` covered by one repeat of the bitmap.
     pub scale_in: [f32; 2],
+    /// The normal / roughness / metallic / occlusion maps of a material
+    /// package (Lightbeans); `None` for every other material.
+    pub pbr: Option<Arc<plan_materials::pbr::PbrSet>>,
 }
 
 impl SurfaceTexture {
@@ -134,6 +137,28 @@ vec2 planar_uv(vec3 pos, vec3 normal, int proj, vec2 inv_scale) {{
         ab = vec2(dot(pos, t), -dot(pos, b));
     }}
     return ab * inv_scale;
+}}
+"#
+    )
+}
+
+/// GLSL for the tangent frame of the planar mapping: a line-for-line copy of
+/// [`plan_materials::pbr::tangent_frame`]. `right` is the direction `u` grows
+/// in, `up` the direction the image rises in; `right x up = normal`.
+pub fn glsl_tangent_frame() -> String {
+    format!(
+        r#"
+void tangent_frame(vec3 normal, int proj, out vec3 right, out vec3 up) {{
+    float nl = length(normal);
+    vec3 n = nl > 1e-12 ? normal / nl : vec3(0.0, 1.0, 0.0);
+    float hl = length(n.xz);
+    if (proj == 1 || hl < {FLAT_EPSILON:?}) {{
+        right = vec3(1.0, 0.0, 0.0);
+        up = vec3(0.0, 0.0, -1.0);
+    }} else {{
+        up = vec3(-n.x * n.y / hl, hl, -n.z * n.y / hl);
+        right = cross(up, n);
+    }}
 }}
 "#
     )

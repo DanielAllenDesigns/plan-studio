@@ -96,8 +96,8 @@ Create Orthographic View (Front, Back, Left, Right Elevation; Plan Overhead; Cro
 Section/Elevation; Back-Clipped Cross Section), Create Perspective View (Full Camera, Perspective
 Full Overview `Shift+K`, Perspective Floor Overview, Doll House View, **Glass House View**, **Floor Camera**, Ray Trace...), **Create Auto
 Elevations** (Auto Elevations, Auto Back-Clipped Elevations, Wall Elevation Camera), **Walkthroughs**
-(Create Walkthrough Path, **Walkthrough Path from CAD Polyline**, Play Walkthrough, Record Walkthrough...), Rendering Techniques, Rebuild 3D,
-**Save Camera**, **View Quality** (Preview, Final View), Export > glTF..., **Materials..., Material Painter, Adjust Materials... and Material Builder...** (10.8), **Lighting**
+(Create Walkthrough Path, **Walkthrough Path from CAD Polyline**, Play Walkthrough, Record Walkthrough...), Rendering Techniques, Rebuild 3D, **Refresh**, **Undo Zoom**,
+**Save Camera**, **View Quality** (Preview, Final View, **Path-traced Final View**), Export > glTF... and **360 Panorama...**, **Materials..., Material Painter, Adjust Materials... and Material Builder...** (10.8), **Lighting**
 (**Lighting...**, Add Lights, Adjust Lights), **Delete Surface**, and **3D View Defaults... `Cmd+1`**. Chief's camera-movement submenus, isometric views and camera view options are not in the menu (`DECISIONS.md`
 item 19); Create Orthographic View covers the view directions.
 
@@ -142,9 +142,9 @@ symbol with a viewing cone. Select it with the Camera tool (or Select Objects).
 
 | Tab | Fields |
 |---|---|
-| Camera | Name; Camera Type (read-only); Floor; Camera Position (or Cut Line and Center for a section); View Direction; Section Length (sections) or Height Above Floor, Angle of View and **Tilt** (Full and Floor Cameras; positive looks up, 85 degrees either way); **Clipping**: Back Clip Distance, Far Clip Distance (Limit view distance); **Floors Displayed**: all floors or this floor and below (a Floor Camera always shows its own floor clipped at its ceiling); **Display**: Show camera in plan, Locked camera. A walkthrough instead shows **Walking speed**, the **Path nodes** table (10.12) and its Record Walkthrough rate |
-| Backdrop | **Default sky**, **Sky color**, or **Image**: a picture from Chief's Backdrops folder (`~/Documents/Chief Architect Premier X18 Data/Backdrops`, read when the view is drawn, never copied) or any JPEG/PNG path |
-| Rendering | **Technique** (all nine, saved with the camera), **View quality** (Preview or Final View), **Cast shadows**, and **Override the plan's lighting for this camera** (Ambient light and Sun intensity; otherwise 3D > Lighting rules). Elevation and cross-section cameras (and wall elevations) add an **Elevation rendering** section (10.7). |
+| Camera | Name; Camera Type (read-only); Floor; Camera Position (or Cut Line and Center for a section); View Direction; Section Length (sections) or Height Above Floor, Angle of View and **Tilt** (Full and Floor Cameras; positive looks up, 85 degrees either way); **Clipping**: Back Clip Distance, Far Clip Distance (Limit view distance); **Floors Displayed**: all floors, this floor and below, or **Pick floors** (a From and a To floor; a Floor Camera always shows its own floor clipped at its ceiling); **Display**: Show camera in plan, Locked camera. A walkthrough instead shows **Walking speed**, the **Path nodes** table (10.12) and its Record Walkthrough rate |
+| Backdrop | **Default sky**, **Sky color**, or **Image**: a picture from Chief's Backdrops folder (`~/Documents/Chief Architect Premier X18 Data/Backdrops`, read when the view is drawn, never copied) or any JPEG/PNG path; **Ground** (default fade, a flat **Ground color**, or no ground so the sky carries on); **Fog** (a distance in feet and an own color or the sky's horizon color) |
+| Rendering | **Technique** (all nine, saved with the camera), **View quality** (Preview or Final View), **Cast shadows**, **Override the plan's lighting for this camera** (Ambient light and Sun intensity; otherwise 3D > Lighting rules) and, when the plan has light sets, the **Light set** this camera uses instead of the plan's. Elevation and cross-section cameras (and wall elevations) add an **Elevation rendering** section (10.7). |
 | Label | Label text (empty uses the camera's name), **Show the label beside the camera in the plan**, **Show the label over the 3D view** |
 
 The angle of view is limited to 5 to 170 degrees. Everything on the tabs is saved with the camera (`CameraObject.view`), so a saved camera reopens with its technique, tilt, backdrop and quality. OK is one undo step.
@@ -161,7 +161,7 @@ The angle of view is limited to 5 to 170 degrees. Everything on the tabs is save
 - a **Perspective Overview** or **Doll House** view keeps its eye and target (`CameraView.pose`) so Restore brings back the exact orbit, and is not drawn in the plan (**Show camera in plan** off); a Glass House overview is saved as a Glass House camera;
 - the rendering technique, Preview or Final View and, for a Floor Overview, "this floor and below" are saved with it.
 
-The orthographic views (elevations, Plan Overhead) cannot be saved ("Save Camera works from the perspective views"). **Restore**: double-click the camera in the Project Browser, or right-click > Restore (open 3D view). **Delete**: right-click > Delete (or select it and press `Delete`); both are one undo step.
+An **orthographic view** (an elevation or the Plan Overhead) is saved as an Orthographic camera that keeps its direction, centre and zoom (`CameraView.ortho`) and is not drawn in the plan. **Restore**: double-click the camera in the Project Browser, or right-click > Restore (open 3D view). **Delete**: right-click > Delete (or select it and press `Delete`); both are one undo step.
 
 ### Dialog: 3D View Defaults (`Cmd+1`)
 
@@ -185,6 +185,8 @@ Row 1 Rendering Techniques flyout, 3D > Rendering Techniques. Nine techniques ar
 | Duotone | Two-tone approximation on a warm background. |
 
 Switching technique never changes the model, only how the view is shown. Only Standard and Physically Based show textures; the other techniques keep their flat looks.
+
+The path tracer has no shader for these looks, so **recorded walkthroughs, 360 panoramas and the path-traced Final View** (10.14) draw with its Clay (Vector View, Line Drawing, Clay) or Physically Based shading and then run the picture through a post-process: a Sobel edge detector on lightness plus flat shading tiers. **Vector View** becomes three grey tiers with black outlines, **Technical Illustration** keeps the material color in four flat tiers with bold dark outlines, **Line Drawing** is black lines on white and **Watercolor** blurs the color, adds paper grain and bleeds the edges brown. Glass House and Duotone have no such form there and draw as Physically Based.
 
 ### 10.4a Shadows, ambient occlusion and quality in the live view
 
@@ -417,9 +419,9 @@ a flat face, and the floor, ceiling, grass, mulch, water, asphalt and gravel mat
 
 - Textures (10.8a) come from 16 scene materials, Chief's own files when your install has them and generated ones otherwise, with no bump maps; there are still no exact colors: a painted object shows the closest of the viewport's 23 fixed scene materials (10.8, `DECISIONS.md` item 17). Pictures are flat in the ray tracer.
 - Many Chief techniques are approximations of the real look.
-- Cameras carry shadows, lock, tilt, backdrop, quality and a lighting override (10.3), but no Lighting set, fog or ground options, and Floors Displayed offers all floors or this floor and below (not a pick of floors). Elevation hatch is fixed at a 1/4" scale. The angle-of-view and tilt handles of a camera work in the Camera tool, not yet under Select Objects; the tilt handle is a Plan Studio design (the plan has no tilt gesture of its own; verify in Chief).
+- Cameras carry shadows, lock, tilt, backdrop (with ground and fog), quality, a lighting override and a light set (10.3, 10.14), and Floors Displayed can pick a range of floors. Light sets store which lights are on, not their intensities (verify in Chief). Fog is not applied to the post-pass outlines of Technical Illustration and Watercolor. Elevation hatch is fixed at a 1/4" scale. The angle-of-view and tilt handles of a camera work in the Camera tool, not yet under Select Objects; the tilt handle is a Plan Studio design (the plan has no tilt gesture of its own; verify in Chief).
 - Electrical devices and Build Framing's wall, floor and roof members are in the live 3D view, but not in the vector elevations and sections (except the wall framing of the Framing Overview, chapter 11.11). 3D objects cannot be dragged, Alt-click does not set the orbit center, and there is no hover highlight (see Selecting in 3D under 10.2).
-- Walkthrough recording uses the path tracer at low quality by default (640 x 480, 8 samples per pixel, denoised, 12 frames a second; the dialog changes all three) and writes a PNG sequence, not a video file (10.12).
+- Walkthrough recording uses the path tracer at low quality by default (640 x 480, 8 samples per pixel, denoised, 12 frames a second; the dialog changes all three) and writes a Motion-JPEG `.avi`, a PNG sequence or both (10.12).
 - Per-light color temperature and the other lighting tools of Chief are not built; lights are simple point lights (10.13). The live view's shadows are one sun shadow map with PCF; there are no shadows from point lights.
 
 ## 10.11 Auto Elevations and Wall Elevation cameras
@@ -447,11 +449,11 @@ A **walkthrough** is a camera object that moves along a path you draw in the pla
   time in seconds. Each node is a **key frame**: the camera tilts between the node values and stands still for a node's *hold* seconds before it sets off (holds are added to the time).
 - **Play Walkthrough** (Walkthrough flyout, 3D > Walkthroughs) opens the 3D view from the first node and plays the path at its speed. The bar shows **Play Walkthrough** (it becomes **Pause**), **Stop**,
   **|<** and **>|** (jump to the previous or next key frame), a time slider in seconds you can scrub with "frame n of m" beside it, the **Speed** in inches per second (editing it changes the camera, with merged undo) and **Record Walkthrough...**. "No walkthrough yet: draw one with Create Walkthrough Path" if there is none.
-- **Record Walkthrough...** opens a dialog: **Frames per second** (1 to 60, 12 by default), **Picture size** (640 x 480, 960 x 720, 1280 x 720, 1920 x 1080), **Samples per pixel**, and the **Folder** (typed, or Choose Folder...). It shows how many frames the walk comes to. Record saves the settings on the camera (one undo step) and renders the walk as numbered PNG frames, `frame_0001.png`, `frame_0002.png` ..., with a `make_video.sh` script that runs `ffmpeg` to assemble `walkthrough.mp4` (ffmpeg is not needed to record). A
+- **Record Walkthrough...** opens a dialog: **Frames per second** (1 to 60, 12 by default), **Picture size** (640 x 480, 960 x 720, 1280 x 720, 1920 x 1080), **Samples per pixel**, and the **Folder** (typed, or Choose Folder...). It shows how many frames the walk comes to. **Save as** picks a **Video** (one Motion-JPEG `.avi` named for the camera, with a **Video quality** slider), a **PNG sequence** or **both**. Record saves the settings on the camera (one undo step) and renders the walk: the movie plays in QuickTime, VLC and most editors (ffmpeg is not needed); the PNG sequence is numbered frames, `frame_0001.png`, `frame_0002.png` ..., with a `make_video.sh` script that runs `ffmpeg` to assemble `walkthrough.mp4`. A
   Record Walkthrough window shows "n / total frames" with a Cancel button, and the status bar reports "Recorded n frames to <folder>". The recording runs on a background thread.
 
 **Quality is low by default.** Recording uses the path tracer (`plan-render`), not the live viewport (the viewport has no offscreen target): 12 frames a second at 640 x 480, 8 samples per pixel, denoised, with the current Sun Angle sun and the plan's lights (10.13); the dialog raises any of them. Frames are spread evenly in time, so key-frame holds and tilts show; `make_video.sh` uses the chosen rate.
-A walk of a minute at the defaults is about 720 frames. Expect soft, noisy stills; raise the quality by rendering stills with Ray Trace (10.6) from Full Camera views instead. The output is an image sequence, not a video file.
+A walk of a minute at the defaults is about 720 frames. Expect soft, noisy stills; raise the quality by rendering stills with Ray Trace (10.6) from Full Camera views instead.
 
 ## 10.13 Lights and the Sun Angle
 
@@ -477,5 +479,18 @@ OK stores the changes as one undo step.
 
 The live view's key light follows the Sun direction and its strength the Sun intensity; a camera can override Ambient light and Sun intensity on its Rendering tab. The Sun Angle toggle (10.5) still overrides the direction while it is on.
 
-Lights are used by the **ray tracer** (Ray Trace... and the recorded walkthroughs), alongside the sun, and by the **live OpenGL view**, which lights each pixel from the nearest 8 point lights (the plan's lights and the electrical fixtures, 10.4a) without shadows from them. Chief's Lighting submenu, color temperature and
-light sets are not built. The Sun Angle (10.5) is the sun for the ray tracer, the viewport's key light and the shadows of vector elevations.
+Lights are used by the **ray tracer** (Ray Trace... and the recorded walkthroughs), alongside the sun, and by the **live OpenGL view**, which lights each pixel from the nearest 8 point lights (the plan's lights and the electrical fixtures, 10.4a) without shadows from them. Chief's Lighting submenu and color temperature are not built; **light sets** are in 10.14. The Sun Angle (10.5) is the sun for the ray tracer, the viewport's key light and the shadows of vector elevations.
+
+## 10.14 Panoramas, light sets, Final View and Undo Zoom
+
+**Export 360 Panorama.** Open a Full Camera (or Floor Camera) view and choose 3D > Export > **360 Panorama...** The dialog asks for the **Width** (1024, 2048, 4096 or 8192 pixels; the picture is twice as wide as high and is kept inside 24 megapixels), the **Samples per pixel** and a **File**. Export renders the whole view around the camera's eye with the path tracer (progress window with **Stop and save**) and writes a PNG and, beside it with the same name, an `.html` page. The page holds the picture and a small WebGL viewer (no libraries, no server): open it in any browser, drag to look around, scroll or pinch to zoom. The picture's centre looks along the camera's heading; the left and right edges meet behind it. An overview has no eye to look from, so the command says to open a Full Camera first.
+
+**Light sets.** In **Adjust Lights** the *Light sets* section lists the plan's sets. **Add Set** names a new one made of the lights that are on now; **Lights...** beside a set lists every plan light and electrical fixture with a check box (what the set turns on); the **In use** box picks the set the whole plan uses, and 3D > Lighting has the same choice. With a set in use only its lights shine, whatever their own switch says. A camera can use its own set (Camera Specification > Rendering > Light set), which the live view, the Final View, ray traces and recordings of that camera follow. Deleting a light removes it from every set. Sets are saved with the plan (`Project.lighting`); OK is one undo step.
+
+**Ground and fog** are on the Backdrop tab (10.3). Fog fades surfaces toward a color with distance (about 63 percent of the color at the fog distance); the ground options change what is below the horizon in the techniques that draw a sky.
+
+**Path-traced Final View.** With *Shading > Path-traced Final View* (or 3D > View Quality) ticked and Final View quality, the 3D view waits until the camera has been still for half a second, then ray traces it in passes and paints each pass over the live picture (a bar shows "Final View n / 64 samples" with **Stop**). Stop keeps the picture. Moving the camera, selecting an object, editing the plan, an orthographic view or Preview quality go back to the live view. The sun and lights are the plan's (3D > Lighting, light sets) and the camera's technique look (10.4) is applied.
+
+**Undo Zoom.** 3D > Undo Zoom steps back to the camera before the last zoom, pan, orbit or move (50 steps). Opening another view clears the steps; "Nothing to undo in the 3D view" says there are none. View > Undo Zoom still undoes the plan's zoom.
+
+**Refresh** redraws the 3D view and a vector elevation from the plan; **Rebuild 3D** throws the scene away and builds it again.

@@ -49,6 +49,39 @@ pub struct PlacedSymbol {
     /// the 3D view only.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub solid: bool,
+    /// How the object appears in the schedules (Library Object
+    /// Specification > Schedule); `None` follows its library category.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule: Option<SymbolSchedule>,
+    /// Library-specific choices of the Options tab (`door_style`,
+    /// `cabinet_door`, `hardware`: the library object's name). Empty by
+    /// default.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub options: std::collections::BTreeMap<String, String>,
+}
+
+/// The Schedule tab of a placed library object.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SymbolSchedule {
+    /// Leave the object out of every schedule.
+    pub exclude: bool,
+    /// The schedule it belongs to (`Fixture`, `Furniture`, `Plant`,
+    /// `Appliance`); empty follows the library category.
+    pub category: String,
+    /// The Mark column.
+    pub mark: String,
+    pub manufacturer: String,
+    pub model: String,
+    pub note: String,
+}
+
+impl SymbolSchedule {
+    /// True when nothing differs from the defaults (the object then needs no
+    /// record).
+    pub fn is_default(&self) -> bool {
+        *self == SymbolSchedule::default()
+    }
 }
 
 impl PlacedSymbol {
@@ -76,6 +109,8 @@ impl PlacedSymbol {
             distribution: None,
             owner: None,
             solid: false,
+            schedule: None,
+            options: std::collections::BTreeMap::new(),
         }
     }
 
@@ -292,5 +327,27 @@ mod tests {
         w.flags.invisible = true;
         let mut s = PlacedSymbol::new("b", Point::new(50.0, 3.0), 24.0, 24.0, 34.0);
         assert!(!s.auto_rotate_to_wall(&[w]));
+    }
+
+    #[test]
+    fn schedule_and_options_round_trip_and_older_plans_still_load() {
+        let mut s = PlacedSymbol::new("a", Point::new(1.0, 2.0), 24.0, 24.0, 34.0);
+        // Nothing set: the two slots are not written at all.
+        let plain = serde_json::to_string(&s).unwrap();
+        assert!(!plain.contains("schedule") && !plain.contains("options"));
+        s.schedule = Some(SymbolSchedule {
+            exclude: false,
+            category: "Appliance".into(),
+            mark: "A1".into(),
+            ..SymbolSchedule::default()
+        });
+        s.options.insert("hardware".into(), "Matte Black".into());
+        let back: PlacedSymbol = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back, s);
+        assert!(!back.schedule.as_ref().unwrap().is_default());
+        assert!(SymbolSchedule::default().is_default());
+        // A symbol saved before these slots existed loads with them empty.
+        let back: PlacedSymbol = serde_json::from_str(&plain).unwrap();
+        assert!(back.schedule.is_none() && back.options.is_empty());
     }
 }

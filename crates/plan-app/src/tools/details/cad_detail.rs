@@ -28,7 +28,7 @@
 //! Auto Detail.
 
 use crate::dialogs::camera as cam;
-use crate::editor::{details_view as dv, framing_view, plan_tabs, EditorContext, ObjectRef};
+use crate::editor::{framing_view, plan_tabs, EditorContext, ObjectRef};
 use plan_core::cad::{insulation_items, CadItem};
 use plan_core::defaults::{PlanDefaults, WallLayer};
 use plan_core::details::{
@@ -321,14 +321,17 @@ fn assembly(
             ));
         }
         if opts.hatch && !l.is_main {
-            let (pattern, _) = dv::material_look(&l.material);
-            if pattern != plan_materials::Pattern::None {
-                for (a, b) in dv::strokes_in(&pattern, &rect_poly(*lo, y0, *hi, y1), paper) {
-                    built
-                        .items
-                        .push((DETAIL_HATCH_LAYER.to_string(), CadItem::Line { a, b }));
-                    built.hatch_lines += 1;
-                }
+            // The material's Pattern tab (scale, angle), the user's copy first.
+            for (a, b) in crate::tools::materials::hatch_strokes(
+                project,
+                &l.material,
+                &rect_poly(*lo, y0, *hi, y1),
+                paper,
+            ) {
+                built
+                    .items
+                    .push((DETAIL_HATCH_LAYER.to_string(), CadItem::Line { a, b }));
+                built.hatch_lines += 1;
             }
         }
     }

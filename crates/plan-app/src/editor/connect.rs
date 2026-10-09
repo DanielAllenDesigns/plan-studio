@@ -532,6 +532,8 @@ pub fn auto_connect_project(
             break;
         }
     }
+    // The invisible walls between platforms follow the walls (W-63).
+    project.sync_platform_walls();
     total
 }
 

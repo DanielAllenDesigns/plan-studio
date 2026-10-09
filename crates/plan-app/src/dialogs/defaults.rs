@@ -30,7 +30,7 @@ pub enum DefaultsEntry {
 /// A leaf of the tree: a dialog `main` opens for the entry, or a page this
 /// module draws itself.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Leaf {
+pub(crate) enum Leaf {
     Entry(DefaultsEntry),
     /// Roofs > Roof Defaults (RF-14, RF-15, RF-28, RF-31).
     RoofDefaults,
@@ -49,8 +49,6 @@ enum Leaf {
 }
 
 use crate::toolbar::Action;
-
-const NO_LEAVES: &[(&str, Leaf)] = &[];
 
 /// The cabinet kinds: tab indexes of the Cabinet Defaults dialog.
 const CABINET_LEAVES: &[(&str, Leaf)] = &[
@@ -89,11 +87,6 @@ const TREE: &[(&str, &[(&str, Leaf)])] = &[
             ("Lines", Leaf::Page("cad.lines")),
             ("Polylines", Leaf::Page("cad.polylines")),
             ("Splines", Leaf::Page("cad.splines")),
-            ("Points", Leaf::Page("cad.points")),
-            ("Markers", Leaf::Page("cad.markers")),
-            ("Callouts", Leaf::Page("cad.callouts")),
-            ("Leaders", Leaf::Page("cad.leaders")),
-            ("Insert Point", Leaf::Page("cad.insert_point")),
         ],
     ),
     (
@@ -111,19 +104,20 @@ const TREE: &[(&str, &[(&str, Leaf)])] = &[
         ],
     ),
     ("Corner Trim", &[("Corner Trim", Leaf::Page("corner_trim"))]),
-    ("Default Sets", &[("Default Sets", Leaf::Page("default_sets"))]),
+    (
+        "Default Sets",
+        &[("Default Sets", Leaf::Page("default_sets"))],
+    ),
     (
         "Dimension",
         &[
             ("Dimensions", Leaf::Entry(DefaultsEntry::Dimensions)),
-            ("Auto Exterior", Leaf::Page("dimension.auto_exterior")),
-            ("Auto Interior", Leaf::Page("dimension.auto_interior")),
-            ("NKBA", Leaf::Page("dimension.nkba")),
-            ("Baseline", Leaf::Page("dimension.baseline")),
-            ("Story Pole", Leaf::Page("dimension.story_pole")),
-            ("Angular", Leaf::Page("dimension.angular")),
-            ("Point to Point", Leaf::Page("dimension.point_to_point")),
-            ("Temporary", Leaf::Page("dimension.temporary")),
+            ("General", Leaf::Page("dimension.general")),
+            ("Setup Temporary", Leaf::Page("dimension.setup_temporary")),
+            (
+                "Auto Story Pole Dimensions",
+                Leaf::Page("dimension.auto_story_pole"),
+            ),
         ],
     ),
     (
@@ -253,7 +247,7 @@ const TREE: &[(&str, &[(&str, Leaf)])] = &[
 
 /// The groups and leaves of the tree, for the tests and the parity checks.
 #[cfg(test)]
-fn all_leaves() -> Vec<(&'static str, &'static str, Leaf)> {
+pub(crate) fn all_leaves() -> Vec<(&'static str, &'static str, Leaf)> {
     TREE.iter()
         .flat_map(|(g, ls)| ls.iter().map(move |(n, l)| (*g, *n, *l)))
         .collect()
@@ -312,7 +306,7 @@ fn describe(leaf: Leaf) -> &'static str {
 }
 
 /// What editing a leaf does: the entries go to `main`, the pages open here.
-fn edit_outcome(leaf: Leaf) -> DefaultsOutcome {
+pub(crate) fn edit_outcome(leaf: Leaf) -> DefaultsOutcome {
     match leaf {
         Leaf::Entry(e) => DefaultsOutcome::Edit(e),
         Leaf::RoofDefaults => {
@@ -945,6 +939,18 @@ fn show_framing_defaults(ctx: &egui::Context, cx: &mut EditorContext) {
             cx.status = "Saved the framing defaults".into();
         }
     }
+}
+
+/// Is the Cabinet Defaults window open or asked for?
+#[cfg(test)]
+pub(crate) fn cabinet_defaults_open() -> bool {
+    OPEN_CABINETS.with(|c| c.get().is_some()) || CABINET_PAGE.with(|p| p.borrow().is_some())
+}
+
+/// Is the Framing Defaults window open or asked for?
+#[cfg(test)]
+pub(crate) fn framing_defaults_open() -> bool {
+    OPEN_FRAMING.with(|c| c.get().is_some()) || FRAMING_PAGE.with(|p| p.borrow().is_some())
 }
 
 #[cfg(test)]

@@ -829,7 +829,7 @@ pub fn mode() -> Option<Mode> {
 }
 
 pub fn mode_active() -> bool {
-    MODE.with(|m| m.borrow().is_some())
+    MODE.with(|m| m.borrow().is_some()) || crate::tools::cad_ops::active()
 }
 
 /// Starts `mode`, replacing any other, with its hint in the status bar.
@@ -853,7 +853,7 @@ pub fn begin_mode(cx: &mut EditorContext, mode: Mode) {
 
 /// Ends the mode without doing anything. Returns whether there was one.
 pub fn cancel_mode(cx: &mut EditorContext) -> bool {
-    let had = MODE.with(|m| m.borrow_mut().take()).is_some();
+    let had = MODE.with(|m| m.borrow_mut().take()).is_some() | crate::tools::cad_ops::cancel(cx);
     if had {
         cx.status.clear();
     }
@@ -862,6 +862,7 @@ pub fn cancel_mode(cx: &mut EditorContext) -> bool {
 
 /// The pointer moved: a hanging paste follows it.
 pub fn mode_pointer_move(p: &PointerEvent) {
+    crate::tools::cad_ops::pointer_move(p);
     MODE.with(|m| {
         if let Some(Mode::Paste { at, .. }) = m.borrow_mut().as_mut() {
             *at = Some(p.snapped);
@@ -907,6 +908,9 @@ fn reference_line(cx: &EditorContext, at: Point) -> Option<(Point, Point)> {
 
 /// A click while a mode is active. `None`: no mode, the tool handles it.
 pub fn mode_pointer_down(cx: &mut EditorContext, p: &PointerEvent) -> Option<ToolResult> {
+    if let Some(res) = crate::tools::cad_ops::pointer_down(cx, p) {
+        return Some(res);
+    }
     let mode = mode()?;
     let end = |cx: &mut EditorContext| {
         MODE.with(|m| *m.borrow_mut() = None);
@@ -1049,6 +1053,7 @@ pub fn mode_escape(cx: &mut EditorContext) -> bool {
 /// Draws what the mode shows: the pasted objects' outline at the pointer, or
 /// the rubber band of a Point to Point Move.
 pub fn draw_mode_overlay(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
+    crate::tools::cad_ops::draw_overlay(cx, painter, cam);
     let Some(mode) = mode() else {
         return;
     };

@@ -11,7 +11,7 @@
 //! `rules_mep.rs`; the rafter and header spans are not checked against the
 //! printed tables and may be longer than they are. They are a design aid, not
 //! a structural design: the printed table of the adopted code decides
-//! (decision 331).
+//! (decision NK1).
 //!
 //! Southern Pine is not built in, because its design values depend on the
 //! width of the member and on the edition of the NDS Supplement; pick
@@ -300,11 +300,7 @@ fn adjust(mat: Material, nominal: u32, cr: f64, wet: bool) -> Adjusted {
         e *= 0.9 * 0.95;
         fv *= 0.97 * 0.8;
     }
-    Adjusted {
-        fb: fb * cr,
-        e,
-        fv,
-    }
+    Adjusted { fb: fb * cr, e, fv }
 }
 
 /// Pounds per inch of span for `psf` over a tributary width of `trib` inches.
@@ -566,10 +562,7 @@ fn header_loads(i: &HeaderInput) -> Loads {
         (dead + roof_live_w, cd_roof),
         (dead + roof_live_w + floor_live_w, cd_roof),
     ];
-    let strength = cases
-        .iter()
-        .map(|(w, cd)| w / cd)
-        .fold(0.0_f64, f64::max);
+    let strength = cases.iter().map(|(w, cd)| w / cd).fold(0.0_f64, f64::max);
     Loads {
         strength,
         live: roof_live_w + floor_live_w,
@@ -1201,7 +1194,12 @@ mod tests {
 
     #[test]
     fn headers_grow_with_the_opening() {
-        let rec = |span: f64| header_recommend(&HeaderInput { span, ..HeaderInput::default() });
+        let rec = |span: f64| {
+            header_recommend(&HeaderInput {
+                span,
+                ..HeaderInput::default()
+            })
+        };
         let narrow = rec(36.0).unwrap();
         let wide = rec(72.0).unwrap();
         assert!(narrow.depth <= wide.depth);
@@ -1231,20 +1229,24 @@ mod tests {
             span: rec.span.inches,
             ..i
         };
-        assert!(header_options(&edge)
-            .iter()
-            .find(|o| o.label == rec.label)
-            .unwrap()
-            .passes);
+        assert!(
+            header_options(&edge)
+                .iter()
+                .find(|o| o.label == rec.label)
+                .unwrap()
+                .passes
+        );
         let over = HeaderInput {
             span: rec.span.inches + 1.0,
             ..i
         };
-        assert!(!header_options(&over)
-            .iter()
-            .find(|o| o.label == rec.label)
-            .unwrap()
-            .passes);
+        assert!(
+            !header_options(&over)
+                .iter()
+                .find(|o| o.label == rec.label)
+                .unwrap()
+                .passes
+        );
     }
 
     #[test]
@@ -1258,12 +1260,27 @@ mod tests {
                 .inches
         };
         let base = HeaderInput::default();
-        assert!(section(HeaderInput { ground_snow: 70.0, ..base }) < section(base));
         assert!(
-            section(HeaderInput { building_width_ft: 36.0, ..base })
-                < section(HeaderInput { building_width_ft: 20.0, ..base })
+            section(HeaderInput {
+                ground_snow: 70.0,
+                ..base
+            }) < section(base)
         );
-        assert!(section(HeaderInput { floors_above: 1, ..base }) < section(base));
+        assert!(
+            section(HeaderInput {
+                building_width_ft: 36.0,
+                ..base
+            }) < section(HeaderInput {
+                building_width_ft: 20.0,
+                ..base
+            })
+        );
+        assert!(
+            section(HeaderInput {
+                floors_above: 1,
+                ..base
+            }) < section(base)
+        );
     }
 
     #[test]
@@ -1350,19 +1367,28 @@ mod tests {
         })
         .unwrap();
         assert!(!shallow.passes());
-        assert!(shallow.notes.iter().any(|n| !n.ok && n.text.contains("Tread")));
+        assert!(shallow
+            .notes
+            .iter()
+            .any(|n| !n.ok && n.text.contains("Tread")));
         let tall = stair_layout(&StairInput {
             total_rise: 160.0,
             ..StairInput::default()
         })
         .unwrap();
-        assert!(tall.notes.iter().any(|n| !n.ok && n.text.contains("R311.7.3")));
+        assert!(tall
+            .notes
+            .iter()
+            .any(|n| !n.ok && n.text.contains("R311.7.3")));
         let at = stair_layout(&StairInput {
             total_rise: 151.0,
             ..StairInput::default()
         })
         .unwrap();
-        assert!(at.notes.iter().all(|n| !n.text.contains("R311.7.3") || n.ok));
+        assert!(at
+            .notes
+            .iter()
+            .all(|n| !n.text.contains("R311.7.3") || n.ok));
         assert!(stair_layout(&StairInput {
             total_rise: 0.0,
             ..StairInput::default()
@@ -1388,11 +1414,7 @@ mod tests {
         let floor = joist(8, 16.0);
         assert!(deck_joist_span(&d).inches < floor);
         let two = deck_beam_span(&d).inches;
-        let three = deck_beam_span(&DeckInput {
-            beam_plies: 3,
-            ..d
-        })
-        .inches;
+        let three = deck_beam_span(&DeckInput { beam_plies: 3, ..d }).inches;
         assert!(three > two);
         let deeper = deck_beam_span(&DeckInput {
             beam_nominal: 12,
@@ -1464,7 +1486,10 @@ mod tests {
         };
         assert_eq!(s.text(), "12'-9\"");
         assert_eq!(Governs::Shear.name(), "shear");
-        assert_eq!(Material::Lumber(Species::HemFir, Grade::No1).name(), "Hem-fir No. 1");
+        assert_eq!(
+            Material::Lumber(Species::HemFir, Grade::No1).name(),
+            "Hem-fir No. 1"
+        );
         let _ = DF2;
     }
 }

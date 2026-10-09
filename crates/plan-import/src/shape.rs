@@ -156,16 +156,27 @@ mod tests {
     #[test]
     fn right_and_left_swap_width_and_depth() {
         let e = size_of(&faced(&slab(), Facing::Right)).unwrap();
-        assert!((e[0] - 1.0).abs() < 1e-5 && (e[2] - 4.0).abs() < 1e-5, "{e:?}");
+        assert!(
+            (e[0] - 1.0).abs() < 1e-5 && (e[2] - 4.0).abs() < 1e-5,
+            "{e:?}"
+        );
     }
 
     #[test]
     fn resize_per_axis_or_proportionally() {
         let m = slab();
         let free = size_of(&resized(&m, Some(8.0), None, Some(3.0), false)).unwrap();
-        assert!((free[0] - 8.0).abs() < 1e-5 && (free[1] - 2.0).abs() < 1e-5 && (free[2] - 3.0).abs() < 1e-5);
+        assert!(
+            (free[0] - 8.0).abs() < 1e-5
+                && (free[1] - 2.0).abs() < 1e-5
+                && (free[2] - 3.0).abs() < 1e-5
+        );
         let keep = size_of(&resized(&m, None, Some(6.0), None, true)).unwrap();
-        assert!((keep[0] - 12.0).abs() < 1e-5 && (keep[1] - 6.0).abs() < 1e-5 && (keep[2] - 3.0).abs() < 1e-5);
+        assert!(
+            (keep[0] - 12.0).abs() < 1e-5
+                && (keep[1] - 6.0).abs() < 1e-5
+                && (keep[2] - 3.0).abs() < 1e-5
+        );
         // Nothing asked, nothing changed; a zero side is ignored.
         assert_eq!(resized(&m, None, None, None, true), m);
         assert_eq!(resized(&m, Some(0.0), None, None, false), m);

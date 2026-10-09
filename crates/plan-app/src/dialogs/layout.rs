@@ -85,11 +85,12 @@ fn scale_combo(ui: &mut Ui, salt: &str, current: &mut Scale) {
         });
 }
 
-/// `(sheet number, title)` of every page, for the page drop-downs.
+/// `(page number, "label  title")` of every page, for the page drop-downs.
 pub type PageList = Vec<(u32, String)>;
 
 fn page_label(p: &(u32, String)) -> String {
-    format!("A-{}  {}", p.0, p.1)
+    // The text already holds the page's label and title (`A0.2  Plans`).
+    p.1.clone()
 }
 
 // ---------------------------------------------------------------- send --
@@ -1106,153 +1107,65 @@ impl PageSetupDialog {
     }
 }
 
-// ------------------------------------------------- page specification --
+// --------------------------------------------- general layout defaults --
 
-/// The Page Specification answers (L-7): one page's own settings.
+/// The General Layout Defaults answers (L-230): file-specific, like Chief's.
 #[derive(Clone, Debug, PartialEq)]
-pub struct PageSpec {
-    /// Sheet number: the page is `A-{number}`.
-    pub number: u32,
-    pub title: String,
-    /// A Page Template page is not printed; its content repeats on the
-    /// others.
-    pub template_page: bool,
-    /// The page's own sheet; `None` follows the layout.
-    pub sheet: Option<SheetChoice>,
-    /// The page's own sheet turned upright.
-    pub portrait: bool,
-    /// The page prints without the border and title block.
-    pub no_title_block: bool,
+pub struct LayoutDefaults {
+    /// Use Snap Grid: drags on the page snap to the Grid Snap Unit.
+    pub snap_grid: bool,
+    /// Grid Snap Unit, paper inches. An arrow key nudges by one unit
+    /// (Shift: four).
+    pub snap_unit_in: f64,
 }
 
-impl PageSpec {
-    /// The settings of `page` in `layout`.
-    pub fn of(page: &plan_layout::LayoutPage, layout: &plan_layout::Layout) -> Self {
-        let (sheet, portrait) = match page.size_override_in {
-            None => (None, false),
-            Some((w, h)) => {
-                let portrait = h > w;
-                let (long, short) = (w.max(h), w.min(h));
-                let known = layout.size_choices().into_iter().find(|c| {
-                    let (cl, cs) = c.inches();
-                    (cl - long).abs() < 1e-6 && (cs - short).abs() < 1e-6
-                });
-                let choice = known.unwrap_or_else(|| {
-                    SheetChoice::Custom(CustomSheetSize::new("This page", long, short))
-                });
-                (Some(choice), portrait)
-            }
-        };
+impl LayoutDefaults {
+    /// The defaults of `layout`.
+    pub fn of(layout: &plan_layout::Layout) -> Self {
         Self {
-            number: page.number,
-            title: page.title.clone(),
-            template_page: page.template_page,
-            sheet,
-            portrait,
-            no_title_block: page.no_title_block,
+            snap_grid: layout.snap_grid,
+            snap_unit_in: layout.snap_unit_in,
         }
     }
 }
 
-/// Page Specification: title, sheet number, the Page Template flag, the
-/// page's own sheet size and whether it carries the title block.
-pub struct PageSpecDialog {
-    spec: PageSpec,
-    /// Sheet numbers of the other pages.
-    taken: Vec<u32>,
-    choices: Vec<SheetChoice>,
-    layout_sheet: String,
+/// General Layout Defaults: Use Snap Grid and the Grid Snap Unit.
+pub struct LayoutDefaultsDialog {
+    defaults: LayoutDefaults,
 }
 
-impl PageSpecDialog {
-    /// `taken` are the other pages' numbers, `choices` the sizes on offer
-    /// and `layout_sheet` the name of the layout's own sheet.
-    pub fn new(
-        spec: PageSpec,
-        taken: Vec<u32>,
-        mut choices: Vec<SheetChoice>,
-        layout_sheet: &str,
-    ) -> Self {
-        if let Some(c) = &spec.sheet {
-            if !choices.contains(c) {
-                choices.insert(0, c.clone());
-            }
-        }
-        Self {
-            spec,
-            taken,
-            choices,
-            layout_sheet: layout_sheet.to_string(),
-        }
+impl LayoutDefaultsDialog {
+    pub fn new(defaults: LayoutDefaults) -> Self {
+        Self { defaults }
     }
 
-    pub fn spec(&self) -> &PageSpec {
-        &self.spec
+    pub fn defaults(&self) -> &LayoutDefaults {
+        &self.defaults
     }
 
     fn error(&self) -> Option<&'static str> {
-        if self.taken.contains(&self.spec.number) {
-            Some("Another page already has that sheet number")
-        } else if self.spec.title.trim().is_empty() {
-            Some("Give the page a title")
-        } else {
-            None
-        }
+        let u = self.defaults.snap_unit_in;
+        (!(plan_layout::MIN_SNAP_UNIT_IN..=plan_layout::MAX_SNAP_UNIT_IN).contains(&u))
+            .then_some("The Grid Snap Unit must be between 1/64 and 12 inches")
     }
 
     pub fn show(&mut self, ctx: &egui::Context) -> Outcome {
         let error = self.error();
-        let Self {
-            spec,
-            choices,
-            layout_sheet,
-            ..
-        } = self;
-        frame(ctx, "Page Specification", 400.0, error, |ui| {
-            section(ui, "Page");
-            row(ui, "Title", |ui| {
-                ui.add(egui::TextEdit::singleline(&mut spec.title).desired_width(240.0));
-            });
-            row(ui, "Sheet number", |ui| {
-                ui.label("A-");
-                ui.add(egui::DragValue::new(&mut spec.number).range(0..=999));
-            });
-            ui.checkbox(
-                &mut spec.template_page,
-                "Page Template (not printed; its content repeats on every page)",
-            );
-            ui.checkbox(
-                &mut spec.no_title_block,
-                "No border or title block on this page",
-            );
-            section(ui, "Sheet");
-            row(ui, "Sheet size", |ui| {
-                let shown = match &spec.sheet {
-                    None => format!("Same as the layout ({layout_sheet})"),
-                    Some(c) => c.label(),
-                };
-                egui::ComboBox::from_id_salt("page_spec_sheet")
-                    .selected_text(shown)
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(
-                            &mut spec.sheet,
-                            None,
-                            format!("Same as the layout ({layout_sheet})"),
-                        );
-                        for c in choices.iter() {
-                            ui.selectable_value(&mut spec.sheet, Some(c.clone()), c.label());
-                        }
-                    });
-            });
-            ui.add_enabled_ui(spec.sheet.is_some(), |ui| {
-                row(ui, "Orientation", |ui| {
-                    ui.radio_value(&mut spec.portrait, false, "Landscape");
-                    ui.radio_value(&mut spec.portrait, true, "Portrait");
+        let d = &mut self.defaults;
+        frame(ctx, "General Layout Defaults", 380.0, error, |ui| {
+            section(ui, "Snaps");
+            ui.checkbox(&mut d.snap_grid, "Use Snap Grid");
+            ui.add_enabled_ui(d.snap_grid, |ui| {
+                row(ui, "Grid Snap Unit", |ui| {
+                    ui.add(
+                        egui::DragValue::new(&mut d.snap_unit_in)
+                            .speed(0.01)
+                            .max_decimals(4)
+                            .suffix("\""),
+                    );
                 });
             });
-            ui.weak(
-                "A page with its own sheet prints at that size; its boxes pack into that sheet.",
-            );
+            ui.weak("The arrow keys nudge the selection by one Grid Snap Unit (Shift: four).");
         })
     }
 }
@@ -1397,12 +1310,14 @@ impl SheetSizesDialog {
 
 // ------------------------------------------------------------- copy box --
 
-/// Copy Box to Page: which page receives copies of the selected boxes.
+/// Copy Box to Page: which page receives copies of the selected boxes (or,
+/// from [`drawings`](Self::drawings), of the page's border and drawings).
 pub struct CopyBoxDialog {
     pages: PageList,
     /// Sheet number of the receiving page.
     to: u32,
     count: usize,
+    drawings: bool,
 }
 
 impl CopyBoxDialog {
@@ -1414,7 +1329,20 @@ impl CopyBoxDialog {
             .map(|p| p.0)
             .find(|n| *n > current)
             .unwrap_or(current);
-        Self { pages, to, count }
+        Self {
+            pages,
+            to,
+            count,
+            drawings: false,
+        }
+    }
+
+    /// Copy Drawings to Page: `count` drawings of the page `current`.
+    pub fn drawings(pages: PageList, current: u32, count: usize) -> Self {
+        Self {
+            drawings: true,
+            ..Self::new(pages, current, count)
+        }
     }
 
     /// Sheet number of the receiving page.
@@ -1423,12 +1351,22 @@ impl CopyBoxDialog {
     }
 
     pub fn show(&mut self, ctx: &egui::Context) -> Outcome {
-        let Self { pages, to, count } = self;
-        frame(ctx, "Copy Layout Box to Page", 360.0, None, |ui| {
-            ui.label(if *count == 1 {
-                "Copy the selected box to:".to_string()
-            } else {
-                format!("Copy the {count} selected boxes to:")
+        let Self {
+            pages,
+            to,
+            count,
+            drawings,
+        } = self;
+        let title = if *drawings {
+            "Copy Drawings to Page"
+        } else {
+            "Copy Layout Box to Page"
+        };
+        frame(ctx, title, 360.0, None, |ui| {
+            ui.label(match (*drawings, *count) {
+                (true, n) => format!("Copy the border and the {n} drawing(s) of this page to:"),
+                (false, 1) => "Copy the selected box to:".to_string(),
+                (false, n) => format!("Copy the {n} selected boxes to:"),
             });
             row(ui, "Page", |ui| {
                 let shown = pages
@@ -1443,9 +1381,11 @@ impl CopyBoxDialog {
                         }
                     });
             });
-            ui.weak(
-                "The copies keep their place on the new page; on the same page they land offset.",
-            );
+            ui.weak(if *drawings {
+                "The copies keep their place; the page keeps what it has."
+            } else {
+                "The copies keep their place on the new page; on the same page they land offset."
+            });
         })
     }
 }
@@ -1497,50 +1437,6 @@ impl NameDialog {
             row(ui, prompt, |ui| {
                 ui.add(egui::TextEdit::singleline(name).desired_width(220.0));
             });
-        })
-    }
-}
-
-// ---------------------------------------------------------- page table --
-
-/// One row of the Layout Page Table.
-#[derive(Clone, Debug, PartialEq)]
-pub struct PageRow {
-    pub number: u32,
-    pub title: String,
-    pub template_page: bool,
-}
-
-/// Layout Page Table: titles and the template flag of every page.
-pub struct PageTableDialog {
-    rows: Vec<PageRow>,
-}
-
-impl PageTableDialog {
-    pub fn new(rows: Vec<PageRow>) -> Self {
-        Self { rows }
-    }
-
-    pub fn rows(&self) -> &[PageRow] {
-        &self.rows
-    }
-
-    pub fn show(&mut self, ctx: &egui::Context) -> Outcome {
-        let rows = &mut self.rows;
-        frame(ctx, "Layout Page Table", 440.0, None, |ui| {
-            egui::Grid::new("page_table").striped(true).show(ui, |ui| {
-                ui.strong("Sheet");
-                ui.strong("Title");
-                ui.strong("Page Template");
-                ui.end_row();
-                for r in rows.iter_mut() {
-                    ui.label(format!("A-{}", r.number));
-                    ui.add(egui::TextEdit::singleline(&mut r.title).desired_width(240.0));
-                    ui.checkbox(&mut r.template_page, "");
-                    ui.end_row();
-                }
-            });
-            ui.weak("A template page is not printed; its boxes repeat on every page.");
         })
     }
 }
@@ -1913,13 +1809,14 @@ mod tests {
     }
 
     #[test]
-    fn page_spec_reads_a_pages_own_sheet_and_validates() {
+    fn page_sheet_reads_a_pages_own_sheet() {
+        use super::super::page_info::PageSheet;
         let mut l = plan_layout::Layout::new("t", SheetSize::ArchC);
         l.add_page(1, "Plan").size_override_in = Some((36.0, 24.0));
         l.add_page(2, "Detail").size_override_in = Some((24.0, 36.0));
         l.add_page(3, "Odd").size_override_in = Some((30.0, 20.0));
         l.add_page(4, "Plain");
-        let spec = |i: usize| PageSpec::of(&l.pages[i], &l);
+        let spec = |i: usize| PageSheet::of(&l.pages[i], &l);
         assert_eq!(spec(0).sheet, Some(SheetChoice::Standard(SheetSize::ArchD)));
         assert!(!spec(0).portrait);
         assert!(spec(1).portrait, "taller than wide is portrait");
@@ -1929,22 +1826,22 @@ mod tests {
             other => panic!("{other:?}"),
         }
         assert_eq!(spec(3).sheet, None);
-        let mut d = PageSpecDialog::new(spec(3), vec![1, 2, 3], l.size_choices(), "ARCH C");
+    }
+
+    #[test]
+    fn layout_defaults_validate_the_grid_snap_unit() {
+        let mut l = plan_layout::Layout::new("t", SheetSize::ArchC);
+        let mut d = LayoutDefaultsDialog::new(LayoutDefaults::of(&l));
         assert!(d.error().is_none());
-        d.spec.number = 2;
-        assert_eq!(
-            d.error(),
-            Some("Another page already has that sheet number")
-        );
-        d.spec.number = 9;
-        d.spec.title = "  ".into();
+        assert_eq!(d.defaults().snap_unit_in, 1.0 / 16.0);
+        d.defaults.snap_unit_in = 0.0;
         assert!(d.error().is_some());
-        // A size the list does not offer is added so the combo can show it.
-        let odd = PageSpecDialog::new(spec(2), vec![], l.size_choices(), "ARCH C");
-        assert!(odd
-            .choices
-            .iter()
-            .any(|c| matches!(c, SheetChoice::Custom(_))));
+        d.defaults.snap_unit_in = 0.25;
+        d.defaults.snap_grid = false;
+        assert!(d.error().is_none());
+        l.snap_unit_in = d.defaults().snap_unit_in;
+        l.snap_grid = d.defaults().snap_grid;
+        assert_eq!(LayoutDefaults::of(&l), *d.defaults());
     }
 
     #[test]
@@ -2061,34 +1958,17 @@ mod tests {
         dialogs.push(Box::new(move |c| {
             ps.show(c);
         }));
-        let mut pt = PageTableDialog::new(vec![PageRow {
-            number: 1,
-            title: "T".into(),
-            template_page: false,
-        }]);
-        dialogs.push(Box::new(move |c| {
-            pt.show(c);
-        }));
         let mut pr = PrintDialog::for_layout(2, (36.0, 24.0), "Layout")
             .with_custom_papers(vec![("Poster (30 x 40)".into(), (40.0, 30.0))]);
         dialogs.push(Box::new(move |c| {
             pr.show(c);
         }));
-        let mut spec = PageSpecDialog::new(
-            PageSpec {
-                number: 1,
-                title: "Plan".into(),
-                template_page: false,
-                sheet: Some(SheetChoice::Standard(SheetSize::ArchD)),
-                portrait: false,
-                no_title_block: false,
-            },
-            vec![2],
-            vec![SheetChoice::Standard(SheetSize::ArchC)],
-            "ARCH C",
-        );
+        let mut defaults = LayoutDefaultsDialog::new(LayoutDefaults {
+            snap_grid: true,
+            snap_unit_in: 0.0625,
+        });
         dialogs.push(Box::new(move |c| {
-            spec.show(c);
+            defaults.show(c);
         }));
         let mut sizes = SheetSizesDialog::new(
             SheetSizes {

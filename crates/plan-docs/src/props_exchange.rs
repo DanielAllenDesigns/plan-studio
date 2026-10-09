@@ -63,11 +63,16 @@ const ROOM_MATCH: f64 = 6.0;
 pub enum FieldType {
     Text,
     /// A decimal number in `min..=max`.
-    Number { min: f64, max: f64 },
+    Number {
+        min: f64,
+        max: f64,
+    },
     /// A whole number, or blank for none.
     Count,
     /// A length (`3'-6"`); blank clears the override when `blank_ok`.
-    Length { blank_ok: bool },
+    Length {
+        blank_ok: bool,
+    },
 }
 
 /// The built-in fields of a schedule of `kind` that import writes back.
@@ -79,7 +84,10 @@ pub fn builtin_field(kind: ScheduleKind, field: &str) -> Option<FieldType> {
     match (kind, field) {
         (K::Door | K::Window, "mark" | "manufacturer" | "model" | "supplier" | "comment") => text,
         (K::Door | K::Window, "description" | "object_id") => text,
-        (K::Door | K::Window, "u_factor") => Some(FieldType::Number { min: 0.0, max: 10.0 }),
+        (K::Door | K::Window, "u_factor") => Some(FieldType::Number {
+            min: 0.0,
+            max: 10.0,
+        }),
         (K::Door | K::Window, "shgc") => Some(FieldType::Number { min: 0.0, max: 1.0 }),
         (K::Room | K::RoomFinish, "name" | "floor_finish" | "ceiling_finish") => text,
         (K::Room | K::RoomFinish, "ceiling_height") => Some(FieldType::Length { blank_ok: true }),
@@ -99,7 +107,11 @@ fn check_builtin(ty: FieldType, text: &str) -> Result<(), String> {
         FieldType::Text => Ok(()),
         FieldType::Number { min, max } => match t.parse::<f64>() {
             Ok(v) if v.is_finite() && v >= min && v <= max => Ok(()),
-            Ok(_) => Err(format!("\"{t}\" is outside {}..{}", fmt_number(min), fmt_number(max))),
+            Ok(_) => Err(format!(
+                "\"{t}\" is outside {}..{}",
+                fmt_number(min),
+                fmt_number(max)
+            )),
             Err(_) => Err(format!("\"{t}\" is not a number")),
         },
         FieldType::Count => {
@@ -343,14 +355,7 @@ pub fn export_workbook(
             "baseline",
         ]));
         let (_, cols, entries) = &built[i];
-        meta.push(row(&[
-            "column",
-            &names[i],
-            "1",
-            ID_HEADER,
-            ID_FIELD,
-            "no",
-        ]));
+        meta.push(row(&["column", &names[i], "1", ID_HEADER, ID_FIELD, "no"]));
         for (j, c) in cols.iter().enumerate() {
             meta.push(row(&[
                 "column",
@@ -644,7 +649,9 @@ impl Index {
         let p = Point::new(x.parse().ok()?, y.parse().ok()?);
         self.entries
             .iter()
-            .filter(|e| e.floor == floor && matches!(e.kind, ScheduleKind::Room | ScheduleKind::RoomFinish))
+            .filter(|e| {
+                e.floor == floor && matches!(e.kind, ScheduleKind::Room | ScheduleKind::RoomFinish)
+            })
             .map(|e| (e.position.dist(p), e))
             .filter(|(d, _)| *d <= ROOM_MATCH)
             .min_by(|a, b| a.0.total_cmp(&b.0))
@@ -713,7 +720,12 @@ pub fn plan_import(
     if plan.rows_read == 0 && plan.changes.is_empty() {
         return Err(plan.notes.first().map_or_else(
             || "Nothing to import: the workbook has no rows.".to_string(),
-            |n| format!("{}. Export a schedule with Export for Editing first.", n.text),
+            |n| {
+                format!(
+                    "{}. Export a schedule with Export for Editing first.",
+                    n.text
+                )
+            },
         ));
     }
     Ok(plan)
@@ -733,7 +745,12 @@ fn read_sheet(
     };
     // The id column: by the column map, else by its heading.
     let id_col = meta
-        .and_then(|m| m.columns.iter().find(|(_, f)| f == ID_FIELD).map(|(i, _)| *i))
+        .and_then(|m| {
+            m.columns
+                .iter()
+                .find(|(_, f)| f == ID_FIELD)
+                .map(|(i, _)| *i)
+        })
         .or_else(|| {
             header
                 .iter()
@@ -744,7 +761,10 @@ fn read_sheet(
             kind: NoteKind::Unknown,
             sheet: sheet.name.clone(),
             row: 1,
-            text: format!("Sheet \"{}\" has no PlanStudio ID column and was skipped", sheet.name),
+            text: format!(
+                "Sheet \"{}\" has no PlanStudio ID column and was skipped",
+                sheet.name
+            ),
         });
         return;
     };
@@ -755,7 +775,9 @@ fn read_sheet(
             .get(m.home_floor)
             .and_then(|f| ScheduleLayer::load(f).find(m.schedule_id).cloned())
     });
-    let sheet_kind = meta.and_then(|m| m.kind).or_else(|| def.as_ref().map(|d| d.kind));
+    let sheet_kind = meta
+        .and_then(|m| m.kind)
+        .or_else(|| def.as_ref().map(|d| d.kind));
     let mut indexes: HashMap<ScheduleKind, Index> = HashMap::new();
     // The sheet's own schedule definition numbers the marks.
     let ensure_index = |indexes: &mut HashMap<ScheduleKind, Index>, kind: ScheduleKind| {
@@ -798,7 +820,11 @@ fn read_sheet(
                 // No id: match by mark and kind when the mark column is known.
                 let mark_col = meta
                     .and_then(|m| m.columns.iter().find(|(_, f)| f == "mark").map(|(i, _)| *i))
-                    .or_else(|| header.iter().position(|h| field_for_header(project, *k, h).as_deref() == Some("mark")));
+                    .or_else(|| {
+                        header.iter().position(|h| {
+                            field_for_header(project, *k, h).as_deref() == Some("mark")
+                        })
+                    });
                 mark_col
                     .and_then(|c| cells.get(c))
                     .and_then(|m| idx.find_by_mark(m))
@@ -817,7 +843,11 @@ fn read_sheet(
                 format!("Row {at}: the object {id} is no longer in the plan; skipped")
             };
             plan.notes.push(Note {
-                kind: if id.is_empty() { NoteKind::NoId } else { NoteKind::ObjectDeleted },
+                kind: if id.is_empty() {
+                    NoteKind::NoId
+                } else {
+                    NoteKind::ObjectDeleted
+                },
                 sheet: sheet.name.clone(),
                 row: at,
                 text,
@@ -829,7 +859,10 @@ fn read_sheet(
                 kind: NoteKind::NoId,
                 sheet: sheet.name.clone(),
                 row: at,
-                text: format!("Row {at}: {} has no single object to edit; skipped", describe(&entry, project)),
+                text: format!(
+                    "Row {at}: {} has no single object to edit; skipped",
+                    describe(&entry, project)
+                ),
             });
             continue;
         };
@@ -853,15 +886,16 @@ fn read_sheet(
         };
         if meta.is_none() && ri == 1 {
             for (i, h) in header.iter().enumerate() {
-                if i != id_col
-                    && !h.trim().is_empty()
-                    && !columns.iter().any(|(c, _)| *c == i)
-                {
+                if i != id_col && !h.trim().is_empty() && !columns.iter().any(|(c, _)| *c == i) {
                     plan.notes.push(Note {
                         kind: NoteKind::Unknown,
                         sheet: sheet.name.clone(),
                         row: 1,
-                        text: format!("Column \"{}\" is not a field of {} schedules; ignored", h.trim(), kind.name()),
+                        text: format!(
+                            "Column \"{}\" is not a field of {} schedules; ignored",
+                            h.trim(),
+                            kind.name()
+                        ),
                     });
                 }
             }
@@ -872,7 +906,9 @@ fn read_sheet(
                 continue;
             }
             let Some(new) = cells.get(col) else { continue };
-            let title = header.get(col).map_or(field.clone(), |h| h.trim().to_string());
+            let title = header
+                .get(col)
+                .map_or(field.clone(), |h| h.trim().to_string());
             let old = entry.cell(&field).to_string();
             // What the cell said when it was exported; absent means blank.
             let base: Option<&str> = has_base.then(|| {
@@ -882,42 +918,45 @@ fn read_sheet(
                     .map_or("", String::as_str)
             });
             // Compares two texts of this field the way its type does.
-            let (same, check, prop): FieldCheck =
-                if let Some(name) = field.strip_prefix(COLUMN_PREFIX) {
-                    let Some(pk) = prop_kind_of(kind) else { continue };
-                    let Some(def) = project.props.def(pk, name) else {
-                        if ri == 1 {
-                            plan.notes.push(Note {
-                                kind: NoteKind::Unknown,
-                                sheet: sheet.name.clone(),
-                                row: 1,
-                                text: format!(
-                                    "The property \"{name}\" no longer exists; its column is ignored"
-                                ),
-                            });
-                        }
-                        continue;
-                    };
-                    let d = def.clone();
-                    (
-                        Box::new(move |a, b| same_prop(&d, a, b)),
-                        def.parse(new).err(),
-                        Some((pk, def.name.clone())),
-                    )
-                } else if let Some(ty) = builtin_field(kind, &field) {
-                    (
-                        Box::new(move |a, b| same_builtin(ty, a, b)),
-                        check_builtin(ty, new).err(),
-                        None,
-                    )
-                } else {
-                    // A computed column: an edit is ignored, with a note.
-                    let edited = match base {
-                        Some(b) => !loose_same(b, new),
-                        None => !loose_same(&old, new),
-                    };
-                    if edited {
+            let (same, check, prop): FieldCheck = if let Some(name) =
+                field.strip_prefix(COLUMN_PREFIX)
+            {
+                let Some(pk) = prop_kind_of(kind) else {
+                    continue;
+                };
+                let Some(def) = project.props.def(pk, name) else {
+                    if ri == 1 {
                         plan.notes.push(Note {
+                            kind: NoteKind::Unknown,
+                            sheet: sheet.name.clone(),
+                            row: 1,
+                            text: format!(
+                                "The property \"{name}\" no longer exists; its column is ignored"
+                            ),
+                        });
+                    }
+                    continue;
+                };
+                let d = def.clone();
+                (
+                    Box::new(move |a, b| same_prop(&d, a, b)),
+                    def.parse(new).err(),
+                    Some((pk, def.name.clone())),
+                )
+            } else if let Some(ty) = builtin_field(kind, &field) {
+                (
+                    Box::new(move |a, b| same_builtin(ty, a, b)),
+                    check_builtin(ty, new).err(),
+                    None,
+                )
+            } else {
+                // A computed column: an edit is ignored, with a note.
+                let edited = match base {
+                    Some(b) => !loose_same(b, new),
+                    None => !loose_same(&old, new),
+                };
+                if edited {
+                    plan.notes.push(Note {
                             kind: NoteKind::Computed,
                             sheet: sheet.name.clone(),
                             row: at,
@@ -926,9 +965,9 @@ fn read_sheet(
                                 new.trim()
                             ),
                         });
-                    }
-                    continue;
-                };
+                }
+                continue;
+            };
             // Only a cell the user changed in Excel is an edit (the plan may
             // have moved on since the export), and only if the plan does not
             // already say the same.
@@ -940,9 +979,9 @@ fn read_sheet(
             if same(&old, new) {
                 continue;
             }
-            let conflict = base
-                .filter(|b| !same(b, &old))
-                .map(|b| format!("also changed in Plan Studio since the export (was \"{b}\", now \"{old}\")"));
+            let conflict = base.filter(|b| !same(b, &old)).map(|b| {
+                format!("also changed in Plan Studio since the export (was \"{b}\", now \"{old}\")")
+            });
             plan.changes.push(Change {
                 sheet: sheet.name.clone(),
                 row: at,
@@ -1162,7 +1201,9 @@ fn alive(project: &Project, t: &Target, active: ActiveRooms) -> bool {
                     &detected
                 }
             };
-            rooms.iter().any(|r| r.centroid.dist(t.position) <= ROOM_MATCH)
+            rooms
+                .iter()
+                .any(|r| r.centroid.dist(t.position) <= ROOM_MATCH)
         }
         K::Framing => t.id != 0,
         K::Note | K::General => false,
@@ -1172,7 +1213,11 @@ fn alive(project: &Project, t: &Target, active: ActiveRooms) -> bool {
 /// Applies `changes` to `project`. The caller opens one undo step first. A
 /// change with a `problem`, or whose object has gone, is reported in
 /// `failed` and left out.
-pub fn apply_changes(project: &mut Project, changes: &[&Change], active: ActiveRooms) -> ApplyReport {
+pub fn apply_changes(
+    project: &mut Project,
+    changes: &[&Change],
+    active: ActiveRooms,
+) -> ApplyReport {
     let mut report = ApplyReport::default();
     for c in changes {
         if let Some(p) = &c.problem {
@@ -1249,7 +1294,8 @@ mod tests {
     fn rich() -> Project {
         let mut p = house();
         let second_door = p.floors[0].walls[2].id;
-        p.add_opening(0, second_door, 100.0, OpeningKind::Door).unwrap();
+        p.add_opening(0, second_door, 100.0, OpeningKind::Door)
+            .unwrap();
         let mut cab = Cabinet::base(24.0);
         cab.id = p.alloc_id();
         cab.position = Point::new(20.0, 20.0);
@@ -1271,7 +1317,13 @@ mod tests {
         d.id = 1;
         layer.add(d);
         p.floors[0].electrical = Some(serde_json::to_value(&layer).unwrap());
-        let mut s = PlacedSymbol::new("core.plumbing.toilet_elongated", Point::new(60.0, 100.0), 20.0, 30.0, 30.0);
+        let mut s = PlacedSymbol::new(
+            "core.plumbing.toilet_elongated",
+            Point::new(60.0, 100.0),
+            20.0,
+            30.0,
+            30.0,
+        );
         s.label = String::new();
         p.add_symbol(0, s);
         p.props.add_def(fire_rating()).unwrap();
@@ -1301,7 +1353,10 @@ mod tests {
         let defs: Vec<Schedule> = kinds.iter().map(|k| schedule(*k)).collect();
         let list: Vec<ExportSchedule> = defs
             .iter()
-            .map(|d| ExportSchedule { def: d, home_floor: 0 })
+            .map(|d| ExportSchedule {
+                def: d,
+                home_floor: 0,
+            })
             .collect();
         read_xlsx(&export_workbook(p, &list, None, &opts())).unwrap()
     }
@@ -1337,11 +1392,18 @@ mod tests {
         assert!(sheet1.contains("hidden=\"1\""), "{sheet1}");
         assert!(sheet1.contains("<sheetProtection sheet=\"1\""), "{sheet1}");
         assert!(sheet1.contains("<dataValidation type=\"list\""), "{sheet1}");
-        assert!(sheet1.contains("&quot;None,20 min,45 min&quot;") || sheet1.contains("\"None,20 min,45 min\""), "{sheet1}");
+        assert!(
+            sheet1.contains("&quot;None,20 min,45 min&quot;")
+                || sheet1.contains("\"None,20 min,45 min\""),
+            "{sheet1}"
+        );
         // Editable cells are unlocked (style 3), computed ones locked (style 4).
         assert!(sheet1.contains("s=\"3\"") && sheet1.contains("s=\"4\""));
         let wb = String::from_utf8(parts["xl/workbook.xml"].clone()).unwrap();
-        assert!(wb.contains("name=\"_meta\"") && wb.contains("state=\"hidden\""), "{wb}");
+        assert!(
+            wb.contains("name=\"_meta\"") && wb.contains("state=\"hidden\""),
+            "{wb}"
+        );
         let styles = String::from_utf8(parts["xl/styles.xml"].clone()).unwrap();
         assert!(styles.contains("<protection locked=\"0\"/>"));
 
@@ -1351,13 +1413,22 @@ mod tests {
         // Two doors, each with its stable id; the Fire Rating column is last.
         let id_cells: Vec<&str> = sheets[0].rows[1..].iter().map(|r| r[0].as_str()).collect();
         assert_eq!(id_cells.len(), 2);
-        assert!(id_cells.iter().all(|c| c.starts_with("door:")), "{id_cells:?}");
+        assert!(
+            id_cells.iter().all(|c| c.starts_with("door:")),
+            "{id_cells:?}"
+        );
         let fr = col(&sheets[0], "Fire Rating");
         assert_eq!(sheets[0].rows[1][fr], "None", "the default shows");
         let meta = sheets.iter().find(|s| s.name == META_SHEET).unwrap();
         assert!(meta.hidden);
         let text = format!("{:?}", meta.rows);
-        for want in ["/plans/house.plan", "2026-10-08 09:00", "Door", "prop:Fire Rating", "manufacturer"] {
+        for want in [
+            "/plans/house.plan",
+            "2026-10-08 09:00",
+            "Door",
+            "prop:Fire Rating",
+            "manufacturer",
+        ] {
             assert!(text.contains(want), "{want} in {text}");
         }
     }
@@ -1397,22 +1468,51 @@ mod tests {
     #[test]
     fn edits_in_excel_become_changes_and_apply() {
         let mut p = rich();
-        let mut sheets = export_read(&p, &[ScheduleKind::Door, ScheduleKind::Cabinet, ScheduleKind::Electrical, ScheduleKind::Fixture]);
-        set(&mut sheets, "Door Schedule", 1, "Manufacturer", "Therma-Tru");
+        let mut sheets = export_read(
+            &p,
+            &[
+                ScheduleKind::Door,
+                ScheduleKind::Cabinet,
+                ScheduleKind::Electrical,
+                ScheduleKind::Fixture,
+            ],
+        );
+        set(
+            &mut sheets,
+            "Door Schedule",
+            1,
+            "Manufacturer",
+            "Therma-Tru",
+        );
         set(&mut sheets, "Door Schedule", 1, "Mark", "D-101");
         set(&mut sheets, "Door Schedule", 2, "Fire Rating", "45 min");
         set(&mut sheets, "Door Schedule", 2, "SHGC", "0.45");
         set(&mut sheets, "Cabinet Schedule", 1, "Label", "Sink Base");
-        set(&mut sheets, "Electrical Schedule", 1, "Label", "Range outlet");
+        set(
+            &mut sheets,
+            "Electrical Schedule",
+            1,
+            "Label",
+            "Range outlet",
+        );
         set(&mut sheets, "Electrical Schedule", 1, "Circuit", "7");
-        set(&mut sheets, "Electrical Schedule", 1, "Mount Height", "3'-0\"");
+        set(
+            &mut sheets,
+            "Electrical Schedule",
+            1,
+            "Mount Height",
+            "3'-0\"",
+        );
         set(&mut sheets, "Fixture Schedule", 1, "Name", "Master WC");
         let plan = plan_import(&p, &sheets, None).unwrap();
         assert_eq!(plan.changes.len(), 9, "{:#?}", plan.changes);
         assert!(plan.notes.is_empty(), "{:#?}", plan.notes);
         let first = &plan.changes[0];
         assert_eq!(first.object, "Door D01");
-        assert_eq!((first.field.as_str(), first.old.as_str(), first.new.as_str()), ("mark", "D01", "D-101"));
+        assert_eq!(
+            (first.field.as_str(), first.old.as_str(), first.new.as_str()),
+            ("mark", "D01", "D-101")
+        );
         let report = apply_all(&mut p, &plan);
         assert_eq!(report.applied, 9, "{:?}", report.failed);
 
@@ -1421,7 +1521,10 @@ mod tests {
             .iter()
             .filter(|o| o.kind == OpeningKind::Door)
             .collect();
-        let d1 = doors.iter().find(|o| o.schedule_number.as_deref() == Some("D-101")).unwrap();
+        let d1 = doors
+            .iter()
+            .find(|o| o.schedule_number.as_deref() == Some("D-101"))
+            .unwrap();
         assert_eq!(d1.extras.spec.schedule.manufacturer, "Therma-Tru");
         let d2 = doors.iter().find(|o| o.id != d1.id).unwrap();
         assert!((d2.extras.spec.energy.shgc - 0.45).abs() < 1e-9);
@@ -1430,14 +1533,31 @@ mod tests {
         assert_eq!(p.props.text(&PropKey::door(d1.id), &def), "None");
         assert_eq!(p.floors[0].cabinets[0]["label"], "Sink Base");
         let dev = &p.floors[0].electrical.as_ref().unwrap()["devices"][0];
-        assert_eq!((dev["label"].as_str(), dev["circuit"].as_u64(), dev["height"].as_f64()), (Some("Range outlet"), Some(7), Some(36.0)));
+        assert_eq!(
+            (
+                dev["label"].as_str(),
+                dev["circuit"].as_u64(),
+                dev["height"].as_f64()
+            ),
+            (Some("Range outlet"), Some(7), Some(36.0))
+        );
         assert_eq!(p.floors[0].symbols[0].label, "Master WC");
 
         // The edits show in the schedules, and exporting again changes nothing.
-        let again = export_read(&p, &[ScheduleKind::Door, ScheduleKind::Cabinet, ScheduleKind::Electrical, ScheduleKind::Fixture]);
+        let again = export_read(
+            &p,
+            &[
+                ScheduleKind::Door,
+                ScheduleKind::Cabinet,
+                ScheduleKind::Electrical,
+                ScheduleKind::Fixture,
+            ],
+        );
         assert!(plan_import(&p, &again, None).unwrap().changes.is_empty());
         let door = &again[0];
-        assert!(door.rows[1..].iter().any(|r| r[col(door, "Mark")] == "D-101"));
+        assert!(door.rows[1..]
+            .iter()
+            .any(|r| r[col(door, "Mark")] == "D-101"));
     }
 
     #[test]
@@ -1487,22 +1607,42 @@ mod tests {
         set(&mut sheets, "Door Schedule", 2, "Reveal", "0'-1 1/2\"");
         set(&mut sheets, "Door Schedule", 2, "Keyed", "TRUE");
         let plan = plan_import(&p, &sheets, None).unwrap();
-        let bad: Vec<&Change> = plan.changes.iter().filter(|c| c.problem.is_some()).collect();
+        let bad: Vec<&Change> = plan
+            .changes
+            .iter()
+            .filter(|c| c.problem.is_some())
+            .collect();
         assert_eq!(bad.len(), 6, "{bad:#?}");
-        assert!(bad.iter().any(|c| c.field == "shgc" && c.problem.as_ref().unwrap().contains("outside")));
-        assert!(bad.iter().any(|c| c.field == "prop:Fire Rating" && c.problem.as_ref().unwrap().contains("not one of")));
+        assert!(bad
+            .iter()
+            .any(|c| c.field == "shgc" && c.problem.as_ref().unwrap().contains("outside")));
+        assert!(bad
+            .iter()
+            .any(|c| c.field == "prop:Fire Rating"
+                && c.problem.as_ref().unwrap().contains("not one of")));
         assert_eq!(plan.applicable(), 3);
         let before = p.clone();
         let report = apply_all(&mut p, &plan);
         assert_eq!(report.applied, 3);
         assert_eq!(report.failed.len(), 6);
         // The invalid cells changed nothing on door 1; door 2 took its three.
-        let d1 = before.floors[0].openings.iter().find(|o| o.kind == OpeningKind::Door).unwrap().id;
+        let d1 = before.floors[0]
+            .openings
+            .iter()
+            .find(|o| o.kind == OpeningKind::Door)
+            .unwrap()
+            .id;
         assert_eq!(p.props.values.get(PropKey::door(d1).as_str()), None);
         let weight = p.props.def(PropKind::Door, "Weight").unwrap().clone();
         let reveal = p.props.def(PropKind::Door, "Reveal").unwrap().clone();
         let keyed = p.props.def(PropKind::Door, "Keyed").unwrap().clone();
-        let d2 = p.floors[0].openings.iter().filter(|o| o.kind == OpeningKind::Door).map(|o| o.id).find(|i| *i != d1).unwrap();
+        let d2 = p.floors[0]
+            .openings
+            .iter()
+            .filter(|o| o.kind == OpeningKind::Door)
+            .map(|o| o.id)
+            .find(|i| *i != d1)
+            .unwrap();
         let k2 = PropKey::door(d2);
         assert_eq!(p.props.text(&k2, &weight), "45.5");
         assert_eq!(p.props.text(&k2, &reveal), "0'-1 1/2\"");
@@ -1521,7 +1661,11 @@ mod tests {
         let plan = plan_import(&p, &sheets, None).unwrap();
         assert_eq!(plan.changes.len(), 1);
         assert_eq!(plan.changes[0].new, "Kept Co");
-        let note = plan.notes.iter().find(|n| n.kind == NoteKind::ObjectDeleted).unwrap();
+        let note = plan
+            .notes
+            .iter()
+            .find(|n| n.kind == NoteKind::ObjectDeleted)
+            .unwrap();
         assert!(note.text.contains(&gone), "{note:?}");
         assert_eq!(note.row, 2);
         // An object deleted between the review and the apply is reported too.
@@ -1537,15 +1681,27 @@ mod tests {
     fn plan_changes_since_the_export_are_not_edits_and_double_edits_are_flagged() {
         let mut p = rich();
         let mut sheets = export_read(&p, &[ScheduleKind::Door]);
-        let id1: Id = sheets[0].rows[1][0].strip_prefix("door:").unwrap().parse().unwrap();
+        let id1: Id = sheets[0].rows[1][0]
+            .strip_prefix("door:")
+            .unwrap()
+            .parse()
+            .unwrap();
         let set_mfr = |p: &mut Project, v: &str| {
-            let o = p.floors[0].openings.iter_mut().find(|o| o.id == id1).unwrap();
+            let o = p.floors[0]
+                .openings
+                .iter_mut()
+                .find(|o| o.id == id1)
+                .unwrap();
             o.extras.spec.schedule.manufacturer = v.to_string();
         };
         // The plan moves on (a manufacturer typed, a door renumbered by hand);
         // the workbook is untouched, so there is nothing to import.
         set_mfr(&mut p, "Plan Co");
-        let other = p.floors[0].openings.iter_mut().find(|o| o.id != id1 && o.kind == OpeningKind::Door).unwrap();
+        let other = p.floors[0]
+            .openings
+            .iter_mut()
+            .find(|o| o.id != id1 && o.kind == OpeningKind::Door)
+            .unwrap();
         other.schedule_number = Some("X9".into());
         let plan = plan_import(&p, &sheets, None).unwrap();
         assert!(plan.changes.is_empty(), "{:#?}", plan.changes);
@@ -1562,7 +1718,9 @@ mod tests {
         assert!(plan_import(&p, &sheets, None).unwrap().changes.is_empty());
         // An unflagged edit has no conflict.
         set(&mut sheets, "Door Schedule", 2, "Model", "M-1");
-        assert!(plan_import(&p, &sheets, None).unwrap().changes[0].conflict.is_none());
+        assert!(plan_import(&p, &sheets, None).unwrap().changes[0]
+            .conflict
+            .is_none());
     }
 
     #[test]
@@ -1573,7 +1731,11 @@ mod tests {
         set(&mut sheets, "Wall Schedule", 1, "Length", "99'-0\"");
         let plan = plan_import(&p, &sheets, None).unwrap();
         assert!(plan.changes.is_empty());
-        let computed: Vec<&Note> = plan.notes.iter().filter(|n| n.kind == NoteKind::Computed).collect();
+        let computed: Vec<&Note> = plan
+            .notes
+            .iter()
+            .filter(|n| n.kind == NoteKind::Computed)
+            .collect();
         assert_eq!(computed.len(), 2, "{:#?}", plan.notes);
         assert!(computed[0].text.contains("Width") && computed[0].text.contains("computed"));
     }
@@ -1594,15 +1756,29 @@ mod tests {
         assert_eq!(plan.notes.len(), 1);
         assert_eq!(plan.notes[0].kind, NoteKind::NoId);
         assert!(plan_import(&p, &[], None).is_err());
-        let blank = vec![ReadSheet { name: "S".into(), hidden: false, rows: vec![vec!["Mark".into()], vec!["x".into()]] }];
-        assert!(plan_import(&p, &blank, None).unwrap_err().contains("no PlanStudio ID column"));
+        let blank = vec![ReadSheet {
+            name: "S".into(),
+            hidden: false,
+            rows: vec![vec!["Mark".into()], vec!["x".into()]],
+        }];
+        assert!(plan_import(&p, &blank, None)
+            .unwrap_err()
+            .contains("no PlanStudio ID column"));
     }
 
     #[test]
     fn csv_round_trips_without_meta_by_heading() {
         let mut p = rich();
         let def = schedule(ScheduleKind::Door);
-        let csv = export_csv(&p, &ExportSchedule { def: &def, home_floor: 0 }, None, true);
+        let csv = export_csv(
+            &p,
+            &ExportSchedule {
+                def: &def,
+                home_floor: 0,
+            },
+            None,
+            true,
+        );
         assert!(csv.starts_with("PlanStudio ID,Mark,"), "{csv}");
         let mut rows = read_csv(&csv);
         let mfr = rows[0].iter().position(|h| h == "Manufacturer").unwrap();
@@ -1613,21 +1789,38 @@ mod tests {
         for r in rows.iter_mut().skip(1) {
             r.push("?".into());
         }
-        let sheets = vec![ReadSheet { name: "CSV".into(), hidden: false, rows }];
+        let sheets = vec![ReadSheet {
+            name: "CSV".into(),
+            hidden: false,
+            rows,
+        }];
         let plan = plan_import(&p, &sheets, None).unwrap();
         assert_eq!(plan.changes.len(), 2, "{:#?}", plan.changes);
-        assert!(plan.notes.iter().any(|n| n.kind == NoteKind::Unknown && n.text.contains("Mystery")));
+        assert!(plan
+            .notes
+            .iter()
+            .any(|n| n.kind == NoteKind::Unknown && n.text.contains("Mystery")));
         let report = apply_all(&mut p, &plan);
         assert_eq!(report.applied, 2);
-        assert!(p.floors[0].openings.iter().any(|o| o.extras.spec.schedule.manufacturer == "CSV Doors"));
+        assert!(p.floors[0]
+            .openings
+            .iter()
+            .any(|o| o.extras.spec.schedule.manufacturer == "CSV Doors"));
     }
 
     #[test]
     fn custom_properties_are_schedule_columns() {
         let mut p = rich();
         let def = p.props.def(PropKind::Door, "Fire Rating").unwrap().clone();
-        let door = p.floors[0].openings.iter().find(|o| o.kind == OpeningKind::Door).unwrap().id;
-        p.props.set_text(&PropKey::door(door), &def, "45 min").unwrap();
+        let door = p.floors[0]
+            .openings
+            .iter()
+            .find(|o| o.kind == OpeningKind::Door)
+            .unwrap()
+            .id;
+        p.props
+            .set_text(&PropKey::door(door), &def, "45 min")
+            .unwrap();
         // A schedule with no such column still shows it (show in schedule).
         let mut s = Schedule::new(ScheduleKind::Door, Point::ZERO);
         s.id = 1;
@@ -1637,21 +1830,37 @@ mod tests {
         assert!(t.rows.iter().any(|r| r.last().unwrap() == "None"));
         // Not flagged: hidden until the schedule has the column.
         p.props.defs[0].show_in_schedule = false;
-        assert!(!schedule_kinds::table(&p, &s, 0, None).columns.contains(&"Fire Rating".to_string()));
-        s.columns.push(plan_core::schedules::ColumnSpec::new("prop:Fire Rating", "Rating", true));
+        assert!(!schedule_kinds::table(&p, &s, 0, None)
+            .columns
+            .contains(&"Fire Rating".to_string()));
+        s.columns.push(plan_core::schedules::ColumnSpec::new(
+            "prop:Fire Rating",
+            "Rating",
+            true,
+        ));
         let t = schedule_kinds::table(&p, &s, 0, None);
         assert_eq!(t.columns.last().unwrap(), "Rating");
         // Sorting and filtering see it; a column of a deleted property goes.
         s.sort.field = "prop:Fire Rating".into();
         s.sort.descending = true;
-        assert_eq!(schedule_kinds::table(&p, &s, 0, None).rows[0].last().unwrap(), "None");
+        assert_eq!(
+            schedule_kinds::table(&p, &s, 0, None).rows[0]
+                .last()
+                .unwrap(),
+            "None"
+        );
         p.props.remove_def(PropKind::Door, "Fire Rating");
-        assert!(!schedule_kinds::table(&p, &s, 0, None).columns.contains(&"Rating".to_string()));
+        assert!(!schedule_kinds::table(&p, &s, 0, None)
+            .columns
+            .contains(&"Rating".to_string()));
         // The column survives a reload of the layer.
         let mut layer = ScheduleLayer::default();
         layer.add(s);
         layer.store(&mut p.floors[0]);
-        assert!(ScheduleLayer::load(&p.floors[0]).schedules[0].columns.iter().any(|c| c.field == "prop:Fire Rating"));
+        assert!(ScheduleLayer::load(&p.floors[0]).schedules[0]
+            .columns
+            .iter()
+            .any(|c| c.field == "prop:Fire Rating"));
     }
 
     #[test]
@@ -1668,10 +1877,26 @@ mod tests {
 
     #[test]
     fn same_text_comparisons_follow_the_field_type() {
-        assert!(same_builtin(FieldType::Number { min: 0.0, max: 1.0 }, "0.30", "0.3"));
-        assert!(!same_builtin(FieldType::Number { min: 0.0, max: 1.0 }, "0.30", "0.31"));
-        assert!(same_builtin(FieldType::Length { blank_ok: false }, "9'-1 1/8\"", "109.125"));
-        assert!(!same_builtin(FieldType::Length { blank_ok: false }, "9'-1 1/8\"", "9'-2\""));
+        assert!(same_builtin(
+            FieldType::Number { min: 0.0, max: 1.0 },
+            "0.30",
+            "0.3"
+        ));
+        assert!(!same_builtin(
+            FieldType::Number { min: 0.0, max: 1.0 },
+            "0.30",
+            "0.31"
+        ));
+        assert!(same_builtin(
+            FieldType::Length { blank_ok: false },
+            "9'-1 1/8\"",
+            "109.125"
+        ));
+        assert!(!same_builtin(
+            FieldType::Length { blank_ok: false },
+            "9'-1 1/8\"",
+            "9'-2\""
+        ));
         assert!(same_builtin(FieldType::Count, "3", "3.0"));
         assert!(!same_builtin(FieldType::Text, "a", "A"));
         assert!(check_builtin(FieldType::Count, "-1").is_err());

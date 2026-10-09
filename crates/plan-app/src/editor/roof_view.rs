@@ -588,6 +588,10 @@ pub struct RoofPlaneRecord {
     /// This plane's own structure (Structure > Define); `None` follows Roof
     /// Defaults.
     pub structure: Option<RoofStructure>,
+    /// The per-edge record of a plane imported from a Chief plan (`role`,
+    /// `joined`, `overhangs` per outline edge), kept as read so editing the
+    /// plane does not lose it.
+    pub chief_edges: Option<Value>,
 }
 
 impl RoofPlaneRecord {
@@ -609,6 +613,7 @@ impl RoofPlaneRecord {
             source: None,
             edge: EdgeOverride::default(),
             structure: None,
+            chief_edges: None,
         }
     }
 
@@ -763,6 +768,9 @@ impl RoofPlaneRecord {
                 m.insert("structure".into(), e);
             }
         }
+        if let (Value::Object(m), Some(edges)) = (&mut v, &self.chief_edges) {
+            m.insert("chief_edges".into(), edges.clone());
+        }
         v
     }
 
@@ -798,6 +806,7 @@ impl RoofPlaneRecord {
         r.gutters = field!(v, "gutters", bool).unwrap_or(false);
         r.eave = field!(v, "eave", plan_3d::EaveOverrides).unwrap_or_default();
         r.structure = field!(v, "structure", RoofStructure);
+        r.chief_edges = v.get("chief_edges").filter(|e| e.is_array()).cloned();
         Some(r)
     }
 
@@ -893,6 +902,9 @@ pub struct RoofSettings {
     pub raise_off_plate: f64,
     pub build_ceiling_planes: bool,
     pub build_framing: bool,
+    /// One-shot for the Build Roof dialog's "Build attic floor" check box
+    /// (R-68): OK also calls `Project::build_attic_floor`. Never stored.
+    pub build_attic_floor: bool,
     pub material: String,
     /// [`wall_signature`] at the last build (Auto Rebuild compares it).
     pub signature: u64,
@@ -916,6 +928,7 @@ impl RoofSettings {
             raise_off_plate: 0.0,
             build_ceiling_planes: false,
             build_framing: false,
+            build_attic_floor: false,
             material: ROOF_MATERIALS[0].to_string(),
             signature: 0,
             edge_specs: Vec::new(),
@@ -934,6 +947,7 @@ impl RoofSettings {
             raise_off_plate: 0.0,
             build_ceiling_planes: false,
             build_framing: false,
+            build_attic_floor: false,
             material: ROOF_MATERIALS[0].to_string(),
             signature: 0,
             edge_specs: Vec::new(),
@@ -972,6 +986,7 @@ impl RoofSettings {
             raise_off_plate: field!(v, "raise_off_plate", f64).unwrap_or(0.0),
             build_ceiling_planes: field!(v, "build_ceiling_planes", bool).unwrap_or(false),
             build_framing: field!(v, "build_framing", bool).unwrap_or(false),
+            build_attic_floor: false,
             material: field!(v, "material", String).unwrap_or_else(|| defaults.material.clone()),
             signature: field!(v, "signature", u64).unwrap_or(0),
             edge_specs: field!(v, "edge_specs", Vec<Value>)
@@ -5905,6 +5920,25 @@ mod tests {
         );
         let again = load(&p.floors[0]);
         assert_eq!(again.plane(id).unwrap().pitch, 6.0);
+    }
+
+    #[test]
+    fn an_imported_planes_chief_edges_survive_storing_and_editing() {
+        let mut p = rect_project(480.0, 288.0);
+        rebuild(&mut p, 0, style_settings(), false).unwrap();
+        let mut set = load(&p.floors[0]);
+        let edges = json!([{"role": "eave", "joined": false, "overhangs": true}]);
+        set.planes[0].chief_edges = Some(edges.clone());
+        let id = set.planes[0].id;
+        store(&mut p, 0, &mut set);
+        let mut again = load(&p.floors[0]);
+        assert_eq!(again.plane(id).unwrap().chief_edges, Some(edges.clone()));
+        // Editing the plane (its label) writes the record back with them.
+        again.plane_mut(id).unwrap().label = "Garage".into();
+        store(&mut p, 0, &mut again);
+        let third = load(&p.floors[0]);
+        assert_eq!(third.plane(id).unwrap().chief_edges, Some(edges));
+        assert_eq!(third.plane(id).unwrap().label, "Garage");
     }
 
     #[test]

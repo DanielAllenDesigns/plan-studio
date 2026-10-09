@@ -141,7 +141,9 @@ fn default_label(source: &BoxSource, project: &Project) -> Option<String> {
         | BoxSource::Image { .. }
         | BoxSource::ImageData { .. }
         | BoxSource::Text { .. }
-        | BoxSource::Materials { .. } => None,
+        | BoxSource::Materials { .. }
+        | BoxSource::PageTable
+        | BoxSource::RevisionTable => None,
         BoxSource::SheetIndex => Some("SHEET INDEX".to_string()),
         BoxSource::Perspective { camera_id } => Some(
             project

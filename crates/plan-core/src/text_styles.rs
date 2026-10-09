@@ -359,6 +359,15 @@ pub struct RichRun {
     /// Multiplies the text height; 1.0 is the base size.
     pub scale: f64,
     pub color: Option<[u8; 3]>,
+    /// A font family for this run (Edit Bar); `None` is the text style's.
+    pub font: Option<String>,
+    /// Struck through (Edit Bar).
+    pub strike: bool,
+    /// Shown in capitals without retyping (Edit Bar Uppercase).
+    pub upper: bool,
+    /// The address a hyperlink run opens (Insert Hyperlink); the run is
+    /// underlined and blue like the manual says.
+    pub link: Option<String>,
 }
 
 impl Default for RichRun {
@@ -370,6 +379,10 @@ impl Default for RichRun {
             underline: false,
             scale: 1.0,
             color: None,
+            font: None,
+            strike: false,
+            upper: false,
+            link: None,
         }
     }
 }
@@ -416,6 +429,10 @@ impl RichRun {
             && self.underline == o.underline
             && (self.scale - o.scale).abs() < 1e-9
             && self.color == o.color
+            && self.font == o.font
+            && self.strike == o.strike
+            && self.upper == o.upper
+            && self.link == o.link
     }
 }
 
@@ -448,6 +465,14 @@ pub fn runs_to_markup(runs: &[RichRun]) -> String {
     let mut out = String::new();
     for r in runs {
         let mut close: Vec<&str> = Vec::new();
+        if let Some(url) = &r.link {
+            out.push_str(&format!("<link={}>", url.replace('>', "%3E")));
+            close.push("</link>");
+        }
+        if let Some(font) = &r.font {
+            out.push_str(&format!("<font={}>", font.replace('>', "")));
+            close.push("</font>");
+        }
         if let Some([cr, cg, cb]) = r.color {
             out.push_str(&format!("<color=#{cr:02X}{cg:02X}{cb:02X}>"));
             close.push("</color>");
@@ -460,6 +485,8 @@ pub fn runs_to_markup(runs: &[RichRun]) -> String {
             (r.bold, "<b>", "</b>"),
             (r.italic, "<i>", "</i>"),
             (r.underline, "<u>", "</u>"),
+            (r.strike, "<s>", "</s>"),
+            (r.upper, "<upper>", "</upper>"),
         ] {
             if on {
                 out.push_str(open);
@@ -484,6 +511,10 @@ pub fn runs_from_markup(s: &str) -> Vec<RichRun> {
         underline: bool,
         scale: f64,
         color: Option<[u8; 3]>,
+        font: Option<String>,
+        strike: bool,
+        upper: bool,
+        link: Option<String>,
     }
     let mut cur = Fmt {
         bold: false,
@@ -491,6 +522,10 @@ pub fn runs_from_markup(s: &str) -> Vec<RichRun> {
         underline: false,
         scale: 1.0,
         color: None,
+        font: None,
+        strike: false,
+        upper: false,
+        link: None,
     };
     let mut stack: Vec<(String, Fmt)> = Vec::new();
     let mut runs: Vec<RichRun> = Vec::new();
@@ -504,6 +539,10 @@ pub fn runs_from_markup(s: &str) -> Vec<RichRun> {
                 underline: cur.underline,
                 scale: cur.scale,
                 color: cur.color,
+                font: cur.font.clone(),
+                strike: cur.strike,
+                upper: cur.upper,
+                link: cur.link.clone(),
             });
         }
     };
@@ -535,9 +574,11 @@ pub fn runs_from_markup(s: &str) -> Vec<RichRun> {
                     None => (tag.clone(), None),
                 };
                 let opened = match (name.as_str(), arg.as_deref()) {
-                    ("b", None) | ("i", None) | ("u", None) => true,
+                    ("b", None) | ("i", None) | ("u", None) | ("s", None) | ("upper", None) => true,
                     ("size", Some(a)) => a.parse::<f64>().is_ok(),
                     ("color", Some(a)) => parse_hex_color(a).is_some(),
+                    ("font", Some(a)) => !a.trim().is_empty(),
+                    ("link", Some(_)) => true,
                     _ => false,
                 };
                 if opened {
@@ -547,9 +588,13 @@ pub fn runs_from_markup(s: &str) -> Vec<RichRun> {
                         "b" => cur.bold = true,
                         "i" => cur.italic = true,
                         "u" => cur.underline = true,
+                        "s" => cur.strike = true,
+                        "upper" => cur.upper = true,
                         "size" => {
                             cur.scale = arg.as_deref().and_then(|a| a.parse().ok()).unwrap_or(1.0)
                         }
+                        "font" => cur.font = arg.as_deref().map(|a| a.trim().to_string()),
+                        "link" => cur.link = arg.as_deref().map(|a| a.replace("%3E", ">")),
                         _ => cur.color = arg.as_deref().and_then(parse_hex_color),
                     }
                     i += end + 1;
@@ -563,7 +608,10 @@ pub fn runs_from_markup(s: &str) -> Vec<RichRun> {
                         i += end + 1;
                         continue;
                     }
-                    if matches!(close, "b" | "i" | "u" | "size" | "color") {
+                    if matches!(
+                        close,
+                        "b" | "i" | "u" | "s" | "upper" | "size" | "color" | "font" | "link"
+                    ) {
                         i += end + 1;
                         continue;
                     }
@@ -1033,6 +1081,7 @@ mod tests {
                 underline: true,
                 scale: 1.5,
                 color: Some([255, 0, 16]),
+                ..RichRun::default()
             },
             RichRun::sized(" <big> ", 2.0),
             RichRun::italic("end"),
@@ -1191,4 +1240,29 @@ mod tests {
         assert!(p.text_macros().macros.is_empty());
         assert!(p.text_macros.macros.is_empty());
     }
+
+    #[test]
+    fn edit_bar_formats_round_trip_through_markup_and_layout() {
+        let runs = vec![
+            RichRun {
+                font: Some("Avenir".into()),
+                strike: true,
+                upper: true,
+                link: Some("https://example.com/a?b=1".into()),
+                underline: true,
+                color: Some([0, 0, 238]),
+                ..RichRun::plain("site")
+            },
+            RichRun::plain(" and more"),
+        ];
+        let markup = runs_to_markup(&runs);
+        assert!(markup.contains("<font=Avenir>") && markup.contains("<s>"));
+        assert!(markup.contains("<link=https://example.com/a?b=1>"));
+        assert_eq!(runs_from_markup(&markup), runs);
+        // Uppercase shows in capitals in the laid out box; the words stay.
+        let lay = crate::text_box::layout_runs(&runs, 6.0, &crate::text_box::TextBox::default());
+        assert_eq!(lay.lines[0].plain(), "SITE and more");
+        assert_eq!(runs_plain(&runs), "site and more");
+    }
+
 }

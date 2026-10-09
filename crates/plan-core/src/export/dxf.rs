@@ -93,6 +93,17 @@ impl Dxf {
         self.entity("SEQEND", layer);
     }
 
+    /// A filled quadrilateral (SOLID) in AutoCAD colour `color`; `q` runs
+    /// round the outline, which SOLID wants in the order 1, 2, 4, 3.
+    fn solid(&mut self, layer: &str, q: [Point; 4], color: i32) {
+        self.entity("SOLID", layer);
+        self.pair(62, color);
+        self.point(10, q[0]);
+        self.point(11, q[1]);
+        self.point(12, q[3]);
+        self.point(13, q[2]);
+    }
+
     /// TEXT centered on `at` (horizontal center, vertical middle).
     fn text_centered(&mut self, layer: &str, at: Point, height: f64, rot_deg: f64, text: &str) {
         self.entity("TEXT", layer);
@@ -115,7 +126,7 @@ impl Dxf {
     }
 }
 
-fn fmt_num(v: f64) -> String {
+pub(super) fn fmt_num(v: f64) -> String {
     let s = format!("{v:.4}");
     if s == "-0.0000" {
         "0.0000".to_string()
@@ -171,8 +182,62 @@ fn readable_angle_deg(v: Point) -> f64 {
     a
 }
 
-fn write_cad(d: &mut Dxf, c: &CadObject, text_height: impl Fn(&CadObject, f64) -> f64) {
+/// Width of a text in plan inches at `height`, estimated (DXF carries no
+/// font metrics): the average glyph is 0.55 of the height wide.
+fn estimated_width(text: &str, height: f64) -> f64 {
+    text.chars().count() as f64 * height * 0.55
+}
+
+/// A text with a box (TXT-1, TXT-16) as the entities that make it up: the
+/// background (SOLID), the frame (closed POLYLINE) and one TEXT per line
+/// run, wrapped and aligned as the plan shows them, with the glyph widths
+/// estimated. `None` when the text has no box.
+fn write_text_box(
+    d: &mut Dxf,
+    c: &CadObject,
+    attrs: &crate::cad::CadAttrs,
+    height: f64,
+) -> Option<()> {
+    let CadItem::Text {
+        pos, text, angle, ..
+    } = &c.item
+    else {
+        return None;
+    };
+    let item = CadItem::Text {
+        pos: *pos,
+        text: text.clone(),
+        height,
+        angle: *angle,
+    };
+    let pb = crate::text_box::placed(&item, attrs)?;
+    let draw = pb.draw_plan(&|r, h| estimated_width(&r.text, h));
     let layer = c.layer.as_str();
+    if let Some((quad, rgb)) = draw.fill {
+        d.solid(layer, quad, aci_color(rgb));
+    }
+    if let Some(quad) = draw.border {
+        d.polyline(layer, &quad, true);
+    }
+    for r in &draw.runs {
+        d.text_left(layer, r.at, r.height, pb.angle.to_degrees(), &r.run.text);
+    }
+    Some(())
+}
+
+fn write_cad(
+    d: &mut Dxf,
+    c: &CadObject,
+    attrs: Option<&crate::cad::CadAttrs>,
+    text_height: impl Fn(&CadObject, f64) -> f64,
+) {
+    let layer = c.layer.as_str();
+    if let (CadItem::Text { height, .. }, Some(a)) = (&c.item, attrs) {
+        if a.text_box.needs_layout() && write_text_box(d, c, a, text_height(c, *height)).is_some()
+        {
+            return;
+        }
+    }
     match &c.item {
         CadItem::Line { a, b } => d.line(layer, *a, *b),
         CadItem::Arc {
@@ -512,7 +577,7 @@ fn write_dxf_with(
         )
     };
     for c in &fl.cad {
-        write_cad(&mut d, c, text_height);
+        write_cad(&mut d, c, attrs.get(&c.id), text_height);
     }
 
     // Extra polylines (roof planes, manual framing)
@@ -815,5 +880,42 @@ mod tests {
         let s = write_dxf(&p, 0, &rooms);
         assert_eq!(s.matches("Pantry").count(), 1, "one label for the pantry");
         assert_eq!(s.matches("Great Room").count(), 1);
+    }
+
+    #[test]
+    fn a_boxed_text_is_wrapped_framed_and_filled() {
+        use crate::cad::CadAttrs;
+        let mut p = Project::new("boxed");
+        let id = p.add_cad(
+            0,
+            "Text",
+            CadItem::Text {
+                pos: Point::new(10.0, 10.0),
+                text: "Verify the fascia depth and the drip edge at site".into(),
+                height: 3.0,
+                angle: 0.0,
+            },
+        );
+        let plain = write_dxf(&p, 0, &[]);
+        assert_eq!(texts(&plain).len(), 1, "one TEXT for a plain text");
+        assert!(!plain.contains("SOLID"));
+        let mut a = CadAttrs::new(id);
+        a.text_box.width = 40.0;
+        a.text_box.border = true;
+        a.text_box.background = Some([255, 255, 0]);
+        p.floors[0].cad_attrs.push(a);
+        let boxed = write_dxf(&p, 0, &[]);
+        let lines = texts(&boxed);
+        assert!(lines.len() >= 2, "wrapped into several TEXTs: {lines:?}");
+        assert!(lines.iter().all(|(_, h)| (*h - 3.0).abs() < 1e-6));
+        let joined = lines
+            .iter()
+            .map(|(t, _)| t.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(joined.contains("fascia") && joined.contains("drip edge"));
+        // The frame is a closed POLYLINE and the background a SOLID.
+        assert_eq!(boxed.lines().filter(|l| *l == "POLYLINE").count(), 1);
+        assert_eq!(boxed.lines().filter(|l| *l == "SOLID").count(), 1);
     }
 }

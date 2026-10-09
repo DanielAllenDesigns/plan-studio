@@ -32,7 +32,7 @@
 
 use super::{draw_shell, Sim};
 use crate::editor::actions::EditActionKind;
-use crate::editor::{selection, site_view, EditorRequest, ObjectRef};
+use crate::editor::{roof_view, selection, site_view, EditorRequest, ObjectRef};
 use crate::shell::hotkeys::collect_commands;
 use crate::toolbar::Action;
 use crate::tools::cad::CadMode;
@@ -47,6 +47,7 @@ use crate::tools::text::TextMode;
 use crate::tools::{registry, KeyEvent, ToolId};
 use eframe::egui::{self, Key};
 use plan_cabinets::CabinetKind;
+use plan_core::geometry::Point;
 use plan_core::WallKind;
 use std::collections::BTreeMap;
 
@@ -154,6 +155,18 @@ enum G {
     DragClick((f64, f64), (f64, f64), (f64, f64)),
     /// Click, then OK in the dialog the click opened.
     ClickOk(f64, f64),
+    /// Click, type "Den", Tab (Rich Text finishes with Tab).
+    RichText(f64, f64),
+    /// Click a point offset from the centroid of the south roof plane.
+    PlaneClick(f64, f64),
+    /// Drag between two points offset from that centroid.
+    PlaneDrag((f64, f64), (f64, f64)),
+    /// Click on the south roof plane, then OK in the dialog.
+    PlaneClickOk,
+    /// Click inside the first dormer.
+    OnDormer,
+    /// Click the start of the south plane's eave.
+    EaveCorner,
 }
 
 const TWO: &[(f64, f64)] = &[(100.0, 100.0), (300.0, 100.0)];
@@ -178,6 +191,10 @@ enum Fx {
     Library,
     /// The shell with a custom countertop.
     Countertop,
+    /// The shell with two collinear partitions (End to End).
+    Split,
+    /// The shell with a run of base cabinets along the north wall.
+    Cabinets,
 }
 
 fn fixture(f: Fx) -> Sim {
@@ -200,12 +217,24 @@ fn fixture(f: Fx) -> Sim {
     }
     if f == Fx::Dormered {
         sim.tool(ToolId::RoofVariant(RoofMode::Dormer));
-        sim.click(120.0, 50.0);
-        sim.ok();
+        perform(&mut sim, G::PlaneClickOk);
     }
     if f == Fx::Countertop {
         sim.tool(ToolId::CabinetVariant(CabinetKind::CustomCountertop));
         sim.drag((100.0, 100.0), (300.0, 200.0));
+    }
+    if f == Fx::Split {
+        sim.tool(ToolId::Wall {
+            kind: WallKind::Interior,
+        });
+        sim.drag((240.0, 0.0), (240.0, 150.0));
+        sim.drag((240.0, 150.0), (240.0, H + 1.0));
+    }
+    if f == Fx::Cabinets {
+        sim.tool(ToolId::CabinetVariant(CabinetKind::Base));
+        for x in [60.0, 120.0, 180.0] {
+            sim.click(x, 20.0);
+        }
     }
     if f == Fx::Library {
         let id = crate::tools::library::library_catalog()
@@ -257,7 +286,54 @@ fn perform(sim: &mut Sim, g: G) {
             sim.click(x, y);
             sim.ok();
         }
+        G::RichText(x, y) => {
+            sim.click(x, y);
+            sim.key(KeyEvent::text("Den"));
+            sim.key(KeyEvent::key(Key::Tab));
+        }
+        G::PlaneClick(dx, dy) => {
+            let c = south_plane(sim).centroid();
+            sim.click(c.x + dx, c.y + dy);
+        }
+        G::PlaneDrag(a, b) => {
+            let c = south_plane(sim).centroid();
+            sim.drag((c.x + a.0, c.y + a.1), (c.x + b.0, c.y + b.1));
+        }
+        G::PlaneClickOk => {
+            let c = south_plane(sim).centroid();
+            sim.click(c.x, c.y);
+            sim.ok();
+            sim.dialog_frame(false);
+        }
+        G::OnDormer => {
+            let at = dormer_point(sim);
+            sim.click(at.x, at.y);
+        }
+        G::EaveCorner => {
+            let a = south_plane(sim).baseline.0;
+            sim.click(a.x, a.y);
+        }
     }
+}
+
+/// The roof plane that faces south: its baseline is the lowest horizontal one.
+fn south_plane(sim: &Sim) -> roof_view::RoofPlaneRecord {
+    roof_view::load(sim.app.cx.floor())
+        .planes
+        .into_iter()
+        .filter(|p| (p.baseline.0.y - p.baseline.1.y).abs() < 1e-6)
+        .min_by(|a, b| a.baseline.0.y.total_cmp(&b.baseline.0.y))
+        .expect("the fixture has a south roof plane")
+}
+
+/// A point inside the first dormer of the floor.
+fn dormer_point(sim: &Sim) -> Point {
+    let set = roof_view::load(sim.app.cx.floor());
+    let d = &set.dormers[0];
+    let main = set.plane(d.main).expect("the dormer's plane");
+    let (a, b) = main.baseline;
+    a + (b - a).normalized() * d.spec.position_along_eave
+        + main.up_slope() * d.spec.setback_from_eave
 }
 
 fn gesture_text(g: G) -> String {
@@ -275,6 +351,12 @@ fn gesture_text(g: G) -> String {
         G::Text(..) => "click, type, Enter".into(),
         G::DragClick(..) => "drag the baseline, click the side".into(),
         G::ClickOk(x, y) => format!("click ({x:.0}, {y:.0}), OK"),
+        G::RichText(..) => "click, type, Tab".into(),
+        G::PlaneClick(..) => "click on the south roof plane".into(),
+        G::PlaneDrag(..) => "drag on the south roof plane".into(),
+        G::PlaneClickOk => "click on the south roof plane, OK".into(),
+        G::OnDormer => "click on the dormer".into(),
+        G::EaveCorner => "click the eave corner".into(),
     }
 }
 
@@ -289,11 +371,14 @@ enum Role {
     /// A mode, a modifier, a command or a dialog opener: no object of its own
     /// (the reason is printed).
     NoObject(&'static str),
+    /// Changes an existing object (a roof hole, a counter hole, a return):
+    /// one undo step, and undo and redo restore the plan.
+    Modifies(Fx, G),
     /// Should make an object but no headless gesture does it yet.
     Unknown(&'static str),
 }
 
-use Role::{Creates, NoObject};
+use Role::{Creates, Modifies, NoObject};
 
 fn role(id: ToolId) -> Role {
     use crate::editor::stairs_view::StairKind as Sk;
@@ -301,11 +386,14 @@ fn role(id: ToolId) -> Role {
         ToolId::Select => NoObject("mode: picks and edits"),
         ToolId::Pan => NoObject("mode: pans the view"),
         ToolId::Underlay => NoObject("mode: moves and calibrates a plan underlay"),
-        ToolId::Fireplace | ToolId::FireplaceVariant(_) => NoObject(
-            "places a fireplace symbol whose Fireplace Specification the tool hosts (s44)",
-        ),
-        ToolId::Painter | ToolId::PainterVariant(_) => NoObject(
-            "mode: paints a layer or one object's attributes onto others (s45)",
+        ToolId::Fireplace | ToolId::FireplaceVariant(_) => {
+            NoObject("places a fireplace symbol whose Fireplace Specification the tool hosts (s44)")
+        }
+        ToolId::Painter | ToolId::PainterVariant(_) => {
+            NoObject("mode: paints a layer or one object's attributes onto others (s45)")
+        }
+        ToolId::MaterialsPolyline => NoObject(
+            "draws a Materials List Polyline whose own specification the Materials List hosts (s58)",
         ),
         ToolId::Library => Creates(Fx::Library, IN_ROOM),
         ToolId::Images => NoObject("base id: the Images flyout entries are the tools"),
@@ -329,22 +417,26 @@ fn role(id: ToolId) -> Role {
             | DimMode::AutoInterior
             | DimMode::AutoElevation
             | DimMode::AutoStoryPole => Creates(Fx::Shell, IN_ROOM),
-            DimMode::EndToEnd => Role::Unknown("End to End: click two wall ends"),
+            DimMode::EndToEnd => Creates(
+                Fx::Split,
+                G::Clicks(&[(240.0, 75.0), (240.0, 255.0), (200.0, 200.0)], End::None),
+            ),
             DimMode::TapeMeasure => NoObject("measures only"),
-            DimMode::AutoNkba => Role::Unknown("Auto NKBA needs cabinets"),
+            DimMode::AutoNkba => Creates(Fx::Cabinets, IN_ROOM),
             DimMode::ExtensionAdd | DimMode::ExtensionDelete => {
                 NoObject("modifier: edits a dimension's extension lines")
             }
         },
         ToolId::Text => Creates(Fx::Shell, G::Text(100.0, 200.0)),
         ToolId::TextVariant(m) => match m {
-            TextMode::Text | TextMode::Note | TextMode::RichText => {
-                Creates(Fx::Shell, G::Text(100.0, 200.0))
-            }
+            TextMode::Text => Creates(Fx::Shell, G::Text(100.0, 200.0)),
+            // Round 15: a click opens the Note Specification; OK places it.
+            TextMode::Note => Creates(Fx::Shell, G::ClickOk(100.0, 200.0)),
+            TextMode::RichText => Creates(Fx::Shell, G::RichText(100.0, 200.0)),
             TextMode::LeaderLine => Creates(Fx::Shell, G::Clicks(TWO, End::Enter)),
             TextMode::ArrowLine => Creates(Fx::Shell, G::Clicks(TWO, End::EnterEnter)),
-            TextMode::Marker => Creates(Fx::Shell, IN_ROOM),
-            TextMode::Callout => Role::Unknown("Callout: click the target, the position, type"),
+            TextMode::Marker => Creates(Fx::Shell, G::ClickOk(240.0, 180.0)),
+            TextMode::Callout => Creates(Fx::Shell, G::ClickOk(100.0, 200.0)),
             TextMode::NoteTypes | TextMode::Macros | TextMode::TextStyles => {
                 NoObject("opens a management dialog")
             }
@@ -403,7 +495,7 @@ fn role(id: ToolId) -> Role {
             CabinetKind::CustomCountertop | CabinetKind::SoffitPolygon => Creates(Fx::Shell, DRAG),
             CabinetKind::CustomBacksplash => Creates(Fx::Shell, G::Clicks(TWO, End::Enter)),
             CabinetKind::CounterHole => {
-                Creates(Fx::Countertop, G::Drag((150.0, 130.0), (220.0, 170.0)))
+                Modifies(Fx::Countertop, G::Drag((150.0, 130.0), (220.0, 170.0)))
             }
             _ => Creates(Fx::Shell, IN_ROOM),
         },
@@ -417,13 +509,11 @@ fn role(id: ToolId) -> Role {
             RoofMode::Plane | RoofMode::Ceiling => Creates(Fx::Shell, PLANE),
             RoofMode::Build => Creates(Fx::Shell, G::ClickOk(240.0, 180.0)),
             RoofMode::GableLine => Creates(Fx::Roofed, ON_WALL),
-            RoofMode::Hole => Creates(Fx::Roofed, G::Drag((150.0, 50.0), (250.0, 100.0))),
-            RoofMode::Skylight => Creates(Fx::Roofed, G::Click(200.0, 60.0)),
-            RoofMode::Dormer | RoofMode::FloatingDormer => {
-                Creates(Fx::Roofed, G::ClickOk(120.0, 50.0))
-            }
-            RoofMode::Explode => Creates(Fx::Dormered, G::Click(120.0, 50.0)),
-            RoofMode::Return => Creates(Fx::Roofed, G::Click(2.0, 2.0)),
+            RoofMode::Hole => Modifies(Fx::Roofed, G::PlaneDrag((-80.0, -20.0), (-40.0, 20.0))),
+            RoofMode::Skylight => Modifies(Fx::Roofed, G::PlaneDrag((40.0, -24.0), (88.0, 24.0))),
+            RoofMode::Dormer | RoofMode::FloatingDormer => Creates(Fx::Roofed, G::PlaneClickOk),
+            RoofMode::Explode => Modifies(Fx::Dormered, G::OnDormer),
+            RoofMode::Return => Modifies(Fx::Roofed, G::EaveCorner),
             RoofMode::Edit | RoofMode::EditAll => NoObject("modifier: edits roof planes"),
             RoofMode::Join => NoObject("modifier: joins two roof planes"),
         },
@@ -512,9 +602,7 @@ fn role(id: ToolId) -> Role {
         ToolId::FramingVariant(v) => {
             use crate::tools::framing::FramingVariant as Fv;
             match v {
-                Fv::Post | Fv::PostWithFooting | Fv::ReferenceMarker => {
-                    Creates(Fx::Shell, IN_ROOM)
-                }
+                Fv::Post | Fv::PostWithFooting | Fv::ReferenceMarker => Creates(Fx::Shell, IN_ROOM),
                 Fv::TrussBase => Creates(Fx::Shell, G::Clicks(THREE, End::Enter)),
                 _ => Creates(Fx::Shell, DRAG),
             }
@@ -822,6 +910,22 @@ const PATTERN_TABS: &[&str] = &[
     "Schedule",
 ];
 const MINIMUM_TABS: &[&str] = &["General", "Layer"];
+const CALLOUT_TABS: &[&str] = &[
+    "Callout",
+    "Attributes",
+    "Line Style",
+    "Section Arrow",
+    "Main Text Style",
+    "Link",
+];
+const MARKER_TABS: &[&str] = &["Marker", "Line Style", "Text Style"];
+const NOTE_TABS: &[&str] = &[
+    "Note",
+    "Line Style",
+    "Text Style",
+    "Object Information",
+    "Schedule",
+];
 
 fn want_for(o: ObjectRef, id: ToolId) -> Want {
     let w = |title: Option<&'static str>, tabs, source| Want {
@@ -859,6 +963,22 @@ fn want_for(o: ObjectRef, id: ToolId) -> Want {
         ObjectRef::Terrain => w(Some("Terrain Specification"), PATTERN_TABS, PATTERN),
         ObjectRef::Camera(_) => w(Some("Camera Specification"), PATTERN_TABS, PATTERN),
         ObjectRef::Text(_) => w(None, PATTERN_TABS, PATTERN),
+        // Callouts, markers and notes (manual pp. 552, 556, 561).
+        ObjectRef::Cad(_) if matches!(id, ToolId::TextVariant(TextMode::Callout)) => w(
+            Some("Callout Specification"),
+            CALLOUT_TABS,
+            "manual p. 552: Callout, Attributes, Line Style, Section Arrow, Main Text Style, Link",
+        ),
+        ObjectRef::Cad(_) if matches!(id, ToolId::TextVariant(TextMode::Marker)) => w(
+            Some("Marker Specification"),
+            MARKER_TABS,
+            "manual p. 556: Marker, Line Style, Text Style",
+        ),
+        ObjectRef::Cad(_) if matches!(id, ToolId::TextVariant(TextMode::Note)) => w(
+            Some("Note Specification"),
+            NOTE_TABS,
+            "manual p. 561: Note, Line Style, Text Style, Object Information, Schedule",
+        ),
         _ => w(None, MINIMUM_TABS, MINIMUM),
     }
 }
@@ -937,17 +1057,26 @@ fn main_object(made: &[ObjectRef]) -> ObjectRef {
         .unwrap_or(made[0])
 }
 
-/// Types into the first field of the open dialog and presses OK; returns
-/// whether the plan changed.
-fn type_and_ok(sim: &mut Sim) -> bool {
+/// Tabs to the `tabs`-th focusable widget of the open dialog, types a digit
+/// and presses OK; returns whether the plan changed. The caller reopens the
+/// dialog between attempts.
+fn type_and_ok(sim: &mut Sim, tabs: usize) -> bool {
     let before = project_text(sim);
     dialog_texts(sim, Vec::new());
     dialog_texts(sim, Vec::new());
+    for _ in 0..tabs {
+        dialog_texts(sim, vec![key_event(Key::Tab)]);
+    }
     dialog_texts(sim, vec![egui::Event::Text("7".into())]);
     dialog_texts(sim, vec![key_event(Key::Enter)]);
     dialog_texts(sim, Vec::new());
     project_text(sim) != before
 }
+
+/// How many Tab presses to try before giving up on the keyboard path.
+const TAB_TRIES: &[usize] = &[
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 18, 20, 22, 24, 28, 32,
+];
 
 /// Edits one field through the dialog's draft where the dialog offers test
 /// access (walls, openings, dimensions, text, CAD) and presses OK; returns
@@ -980,6 +1109,11 @@ fn edit_draft(sim: &mut Sim, o: ObjectRef) -> bool {
                 text.push('x');
             }
         }
+        ObjectRef::Cad(_) if sim.app.spec.annot_dialog_mut().is_some() => {
+            if let Some(d) = sim.app.spec.annot_dialog_mut() {
+                d.edit_label(|l| l.push('x'));
+            }
+        }
         ObjectRef::Cad(_) => {
             let Some(d) = sim.app.spec.cad_draft_mut() else {
                 return false;
@@ -1007,6 +1141,42 @@ fn run_case(id: ToolId) -> Report {
         Creates(fx, g) => (fx, g),
         NoObject(why) => {
             r.role = format!("no object: {why}");
+            return r;
+        }
+        Modifies(fx, g) => {
+            r.role = "modifies".into();
+            r.gesture = format!("{} on {fx:?}", gesture_text(g));
+            let mut sim = fixture(fx);
+            sim.tool(id);
+            r.name = sim.app.tools.active().name().to_string();
+            let before = project_text(&sim);
+            let steps0 = undo_steps(&sim);
+            perform(&mut sim, g);
+            r.undo_steps = undo_steps(&sim) - steps0;
+            let after = project_text(&sim);
+            if after == before {
+                r.problems.push(format!(
+                    "the gesture changed nothing ({})",
+                    sim.app.cx.status
+                ));
+                return r;
+            }
+            if r.undo_steps != 1 {
+                r.problems
+                    .push(format!("{} undo steps for one gesture", r.undo_steps));
+            }
+            for _ in 0..r.undo_steps {
+                sim.undo();
+            }
+            if project_text(&sim) != before {
+                r.problems.push("undo does not restore the plan".into());
+            }
+            for _ in 0..r.undo_steps {
+                sim.redo();
+            }
+            if project_text(&sim) != after {
+                r.problems.push("redo does not restore the change".into());
+            }
             return r;
         }
         Role::Unknown(why) => {
@@ -1067,7 +1237,9 @@ fn run_case(id: ToolId) -> Report {
         ObjectRef::Camera(cid) => {
             if !crate::shell::view3d_panel::Outbox::global()
                 .take()
-                .contains(&crate::shell::view3d_panel::ViewRequest::OpenCameraSpec(cid))
+                .contains(&crate::shell::view3d_panel::ViewRequest::OpenCameraSpec(
+                    cid,
+                ))
             {
                 r.problems
                     .push("Open Object posts no Camera Specification request".into());
@@ -1100,7 +1272,8 @@ fn run_case(id: ToolId) -> Report {
     }
     if let Some(t) = want.title {
         if t != dlg.title {
-            r.notes.push(format!("title '{}' (Chief: '{t}')", dlg.title));
+            r.notes
+                .push(format!("title '{}' (Chief: '{t}')", dlg.title));
         }
     }
     r.missing = want
@@ -1127,17 +1300,41 @@ fn run_case(id: ToolId) -> Report {
 
     // ----- edit one field and undo it -----
     let before_edit = project_text(&sim);
-    let steps_edit0 = undo_steps(&sim);
-    let mut changed = type_and_ok(&mut sim);
-    r.edit_path = if changed {
-        "typed into the first field".into()
-    } else {
-        String::new()
-    };
+    let mut steps_edit0 = undo_steps(&sim);
+    let mut changed = false;
+    if matches!(o, ObjectRef::Camera(_)) {
+        // The Camera Specification is hosted by the 3D panel, which the
+        // headless application does not run (the dialog is drawn above).
+        r.edit_path = "hosted by the 3D panel (not exercised)".into();
+        sim.app.dialog = None;
+        sim.app.spec = Default::default();
+        return finish_delete(sim, o, r);
+    }
+    for (n, tabs) in TAB_TRIES.iter().enumerate() {
+        if n > 0 {
+            sim.app.dialog = None;
+            sim.app.spec = Default::default();
+            open_object(&mut sim, o);
+        }
+        steps_edit0 = undo_steps(&sim);
+        if type_and_ok(&mut sim, *tabs) {
+            changed = true;
+            r.edit_path = if *tabs == 0 {
+                "typed into the first field".into()
+            } else {
+                format!("Tab x{tabs}, typed")
+            };
+            break;
+        }
+    }
     if !changed {
-        // The first field did not take the typed digit: edit the draft.
+        // The keyboard did not change anything: edit the draft where the
+        // dialog offers test access.
+        sim.app.dialog = None;
+        sim.app.spec = Default::default();
         open_object(&mut sim, o);
         dialog_texts(&mut sim, Vec::new());
+        steps_edit0 = undo_steps(&sim);
         if edit_draft(&mut sim, o) {
             changed = project_text(&sim) != before_edit;
             r.edit_path = "draft field".into();
@@ -1167,7 +1364,12 @@ fn run_case(id: ToolId) -> Report {
     // Close anything still open.
     sim.app.dialog = None;
     sim.app.spec = Default::default();
+    finish_delete(sim, o, r)
+}
 
+/// Delete Objects from the Edit toolbar: gone in one undo step, and undo
+/// brings it back.
+fn finish_delete(mut sim: Sim, o: ObjectRef, mut r: Report) -> Report {
     // ----- delete -----
     if matches!(o, ObjectRef::Terrain) {
         return r;
@@ -1227,7 +1429,15 @@ fn is_known(id: &str) -> Option<&'static str> {
 
 fn sweep() -> Vec<Report> {
     let mut out = Vec::new();
+    // `S35_ONLY=Cabinet` runs just the tool ids whose name contains the text.
+    let only = std::env::var("S35_ONLY").ok();
     for id in all_tool_ids() {
+        if only
+            .as_deref()
+            .is_some_and(|f| !format!("{id:?}").contains(f))
+        {
+            continue;
+        }
         let rep = match in_thread(move || run_case(id)) {
             Ok(r) => r,
             Err(e) => Report {
@@ -1252,21 +1462,27 @@ fn markdown(reports: &[Report]) -> String {
     s.push_str("# Tool and dialog sweep\n\n");
     s.push_str("Generated by `crates/plan-app/src/scenarios/s35_tool_dialog_sweep.rs` (run the test with `S35_WRITE_DOC=1` to rewrite this file). Every tool id the toolbars, flyouts and menus can pick is activated and given its canonical headless gesture; the object it makes is selected, Open Object runs from the Edit toolbar, the dialog's title and tab list are read off the frame it paints and compared with Chief's names, one field is typed into the first field and OK pressed, and Delete Objects removes the object. Undo is checked at every step.\n\n");
     let creators: Vec<&Report> = reports.iter().filter(|r| r.role == "creates").collect();
+    let modifiers = reports.iter().filter(|r| r.role == "modifies").count();
     let no_obj: Vec<&Report> = reports
         .iter()
         .filter(|r| r.role.starts_with("no object"))
         .collect();
     let bad: Vec<&Report> = reports.iter().filter(|r| !r.problems.is_empty()).collect();
     s.push_str(&format!(
-        "## Headline\n\n* {} tool ids swept: {} create an object, {} make no object of their own (modes, modifiers, commands), {} have defects listed below.\n",
+        "## Headline\n\n* {} tool ids swept: {} create an object, {} change an existing object in one undo step (roof holes, counter holes, returns, explode), {} make no object of their own (modes, commands, dialog openers), {} have defects listed below.\n",
         reports.len(),
         creators.len(),
+        modifiers,
         no_obj.len(),
         bad.len()
     ));
     let no_dialog = creators
         .iter()
-        .filter(|r| r.problems.iter().any(|p| p.contains("no specification dialog")))
+        .filter(|r| {
+            r.problems
+                .iter()
+                .any(|p| p.contains("no specification dialog"))
+        })
         .count();
     s.push_str(&format!(
         "* Tools that create an object whose Open Object opens no dialog: {no_dialog}.\n"
@@ -1351,7 +1567,7 @@ fn markdown(reports: &[Report]) -> String {
             md_escape(&r.role),
             md_escape(&r.gesture),
             md_escape(&made),
-            if r.role == "creates" {
+            if r.role == "creates" || r.role == "modifies" {
                 r.undo_steps.to_string()
             } else {
                 "-".into()
@@ -1380,7 +1596,9 @@ fn every_creating_tool_makes_an_object_with_a_chief_dialog_that_edits_and_delete
         std::fs::write(path, &md).expect("write docs/tool-dialog-sweep.md");
     }
     let creators = reports.iter().filter(|r| r.role == "creates").count();
-    assert!(creators >= 150, "only {creators} creating tools");
+    if std::env::var("S35_ONLY").is_err() {
+        assert!(creators >= 150, "only {creators} creating tools");
+    }
     let new_defects: Vec<String> = reports
         .iter()
         .filter(|r| !r.problems.is_empty() && is_known(&r.id).is_none())
@@ -1573,7 +1791,11 @@ fn every_toolbar_and_menu_command_is_live_and_names_a_tool_that_activates() {
         .filter(|c| !c.is_live())
         .map(|c| format!("{} / {}", c.group, c.name))
         .collect();
-    eprintln!("{} commands, {} not live: {dead:?}", commands.len(), dead.len());
+    eprintln!(
+        "{} commands, {} not live: {dead:?}",
+        commands.len(),
+        dead.len()
+    );
     assert!(dead.is_empty(), "commands that are still stubs: {dead:?}");
     // Every command that picks a tool leaves exactly that tool active.
     let mut wrong: Vec<String> = Vec::new();
@@ -1592,7 +1814,10 @@ fn every_toolbar_and_menu_command_is_live_and_names_a_tool_that_activates() {
             }
         }
     }
-    assert!(wrong.is_empty(), "commands that do not activate their tool: {wrong:?}");
+    assert!(
+        wrong.is_empty(),
+        "commands that do not activate their tool: {wrong:?}"
+    );
 }
 
 /// The Edit menu's dimmed rows: the existing source check in `menus.rs`
@@ -1610,6 +1835,9 @@ fn the_dimmed_rows_of_the_edit_menu_are_the_known_ones() {
         "Start Dictation",
         "Emoji & Symbols",
     ];
-    let new: Vec<&String> = rows.iter().filter(|r| !known.contains(&r.as_str())).collect();
+    let new: Vec<&String> = rows
+        .iter()
+        .filter(|r| !known.contains(&r.as_str()))
+        .collect();
     assert!(new.is_empty(), "new dimmed rows in the Edit menu: {new:?}");
 }

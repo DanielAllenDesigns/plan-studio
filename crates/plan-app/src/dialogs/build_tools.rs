@@ -488,10 +488,17 @@ fn placed_window(
     open
 }
 
-/// The Materials List window: categories, waste, stock lengths, prices and
-/// the Master List (see `dialogs::materials`).
-fn materials_window(ctx: &egui::Context, cx: &mut EditorContext) -> bool {
-    super::materials::show(ctx, cx)
+/// The Materials List window: live lists and Reports with Chief's 21 columns,
+/// the Master List, saved lists and the dialogs that go with them (see
+/// `dialogs::materials_list`).
+fn materials_window(ctx: &egui::Context, cx: &mut EditorContext, cam: &mut Camera) -> bool {
+    super::materials_list::show(ctx, cx, cam)
+}
+
+/// Puts the Materials List window up (the Tools > Materials List commands
+/// and the Project Browser).
+pub fn open_materials_window() {
+    with_windows(|w| w.materials = true);
 }
 
 // ----- Create Construction Set -----
@@ -535,6 +542,8 @@ struct Windows {
     room: Option<RoomDialog>,
     /// The Properties tab of the Room Specification.
     room_props: Option<super::property_manager::SharedSession>,
+    /// The Components and Object Information tabs of the Room Specification.
+    room_info: Option<super::object_info::SharedInfo>,
     floor: Option<FloorDialog>,
     space: Option<SpaceWindow>,
     check: Option<CheckWindow>,
@@ -630,9 +639,15 @@ pub fn dispatch(cx: &mut EditorContext, action: Action) {
             with_windows(|w| w.check = Some(window));
         }
         Action::PlanFootprint => {
-            rooms_edit::add_plan_footprint(cx);
+            // The outer wall faces (L-38); the rooms' footprint when there
+            // are no walls to trace.
+            if crate::tools::cad_ops::plan_footprint(cx).is_none() {
+                rooms_edit::add_plan_footprint(cx);
+            }
         }
-        Action::MaterialsList => with_windows(|w| w.materials = true),
+        Action::MaterialsList => {
+            super::materials_list::run_command(cx, super::materials_list::cmd::OPEN);
+        }
         Action::DoorSchedule => open_schedule(SchedKind::Door),
         Action::WindowSchedule => open_schedule(SchedKind::Window),
         Action::RoomSchedule => open_schedule(SchedKind::Room),
@@ -751,7 +766,10 @@ fn schedule_spec_dialog(
     if !layers.contains(&def.layer) {
         layers.push(def.layer.clone());
     }
-    Some(ScheduleSpecDialog::new(floor, def, styles, layers).with_props(cx.project.props.defs.clone()))
+    Some(
+        ScheduleSpecDialog::new(floor, def, styles, layers)
+            .with_props(cx.project.props.defs.clone()),
+    )
 }
 
 /// Draws every open window of this module and applies what the user accepted.
@@ -796,10 +814,16 @@ impl Windows {
                     cx,
                     crate::editor::ObjectRef::Room(idx),
                 );
+                self.room_info = super::object_info::InfoSession::for_object(
+                    cx,
+                    crate::editor::ObjectRef::Room(idx),
+                );
             }
         }
         if let Some(mut d) = self.room.take() {
-            let shown = super::property_manager::with_current(self.room_props.as_ref(), || d.show(ctx));
+            let shown = super::object_info::with_current(self.room_info.as_ref(), || {
+                super::property_manager::with_current(self.room_props.as_ref(), || d.show(ctx))
+            });
             match shown {
                 Outcome::Open => self.room = Some(d),
                 outcome => {
@@ -807,8 +831,10 @@ impl Windows {
                         let depth = super::property_manager::before_apply(cx);
                         rooms_edit::apply_room_spec(cx, d.room_index(), d.room_name(), d.extras());
                         super::property_manager::after_apply(cx, self.room_props.as_ref(), depth);
+                        super::object_info::after_apply(cx, self.room_info.as_ref(), depth);
                     }
                     self.room_props = None;
+                    self.room_info = None;
                     // The Enter that closed the dialog also reached the Select
                     // tool, which asked for it again.
                     let _ = rooms_edit::take_room_dialog_request(cx);
@@ -836,7 +862,7 @@ impl Windows {
             }
         }
         if self.materials {
-            self.materials = materials_window(ctx, cx);
+            self.materials = materials_window(ctx, cx, cam);
         }
         let kinds = std::mem::take(&mut self.schedules);
         self.schedules = kinds

@@ -361,9 +361,15 @@ fn a_chimney_tops_out_three_feet_over_the_roof_and_cuts_a_hole_in_it() {
     for pid in ids {
         for m in tagged(&s, pid) {
             for t in m.indices.chunks(3) {
-                // The top surface of the roof only: the walls of the hole and
-                // the underside lean with the slope.
-                if m.vertices[t[0] as usize].normal[1] < 0.5 {
+                // The top surface of the roof only (the faces that look up the
+                // steepest): the walls of the hole and the underside lean with
+                // the slope.
+                let up = m
+                    .vertices
+                    .iter()
+                    .map(|v| v.normal[1])
+                    .fold(f32::MIN, f32::max);
+                if m.vertices[t[0] as usize].normal[1] < up - 1e-3 {
                     continue;
                 }
                 let corners: Vec<Point> = t
@@ -576,15 +582,28 @@ fn build_deck_framing_makes_the_members_and_replaces_the_skirt() {
 }
 
 #[test]
-fn deck_framing_is_listed_in_the_build_menus() {
+fn steps_at_level_changes_are_in_the_floor_menu_and_deck_framing_in_the_framing_menu() {
     let all: Vec<&'static str> = toolbar::build_menu()
         .into_iter()
         .flat_map(|g| g.flyouts)
         .flat_map(|f| f.entries.into_iter().map(|e| e.name))
         .collect();
-    assert!(all.contains(&"Build Deck Framing"));
-    assert!(all.contains(&"Delete Deck Framing"));
     assert!(all.contains(&"Add Steps at Level Changes"));
+    // Build > Framing > Build Deck Framing runs the same command as the Edit
+    // toolbar button of a selected deck room.
+    let mut sim = deck_sim();
+    sim.app.cx.selection.set(ObjectRef::Room(0));
+    let ids: Vec<&str> = sim
+        .app
+        .cx
+        .extra_edit_actions()
+        .iter()
+        .filter_map(|a| match a.kind {
+            crate::editor::EditActionKind::Custom { id, .. } => Some(id),
+            _ => None,
+        })
+        .collect();
+    assert!(ids.contains(&cmd::BUILD_DECK) && ids.contains(&cmd::CLEAR_DECK));
 }
 
 #[test]

@@ -649,6 +649,14 @@ fn piers_pads_and_slab_footings_are_checked_too() {
     assert_eq!(at.len(), 2, "{at:?}");
     assert!(at.contains(&100.0) && at.contains(&200.0));
     assert_eq!(count(&f, size), 1, "only the 4\" pad is thin");
+    // Each footing finding points at its slab, pad or pier.
+    let thin = f.iter().find(|x| x.rule == size).unwrap();
+    assert_eq!(thin.object, Some(crate::Target::Foundation(3)));
+    let shallow_pier = f
+        .iter()
+        .find(|x| x.rule == depth && x.location.unwrap().x == 100.0)
+        .unwrap();
+    assert_eq!(shallow_pier.object, Some(crate::Target::Foundation(2)));
 }
 
 // ----- settings -----

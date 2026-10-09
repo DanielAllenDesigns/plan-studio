@@ -506,14 +506,16 @@ mod tests {
         };
         // Shift pressed on a selected object would toggle it: hold it after.
         let down = PointerEvent::at(cx, from).with_down(true);
-        tool.pointer_down(cx, down);
+        let r0 = tool.pointer_down(cx, down);
+        eprintln!("DBG down consumed={:?} sel={:?} changing={:?}", r0.consumed, cx.selection.items, 0);
         for t in [0.25, 0.5, 1.0] {
             let p = PointerEvent::at(cx, Point::lerp(from, to, t))
                 .with_modifiers(m)
                 .with_down(true);
             tool.pointer_move(cx, p);
         }
-        tool.pointer_up(cx, PointerEvent::at(cx, to).with_modifiers(m));
+        let r = tool.pointer_up(cx, PointerEvent::at(cx, to).with_modifiers(m));
+        eprintln!("DBG up commit={:?} b={:?}", r.commit, cx.status);
     }
 
     #[test]
@@ -594,6 +596,7 @@ mod tests {
         assert_eq!(bounds(&cx, id).0, Point::new(140.0, 100.0));
         cx.defaults.editing.behavior.alternate_lock_axis = false;
         cx.undo();
+        eprintln!("DBG sel={:?} b={:?}", cx.selection.items, bounds(&cx, id).0);
         drag(
             &mut cx,
             Point::new(150.0, 100.0),

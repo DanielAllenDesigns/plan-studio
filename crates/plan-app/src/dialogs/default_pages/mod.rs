@@ -94,8 +94,16 @@ pub fn all_ids() -> Vec<String> {
     .collect();
     v.extend(cad::LEAVES.iter().map(|(s, _)| format!("cad.{s}")));
     v.extend(camera::LEAVES.iter().map(|(s, _)| format!("camera.{s}")));
-    v.extend(dimension::LEAVES.iter().map(|(s, _)| format!("dimension.{s}")));
-    v.extend(plan::SCHEDULES.iter().map(|(s, _)| format!("schedules.{s}")));
+    v.extend(
+        dimension::LEAVES
+            .iter()
+            .map(|(s, _)| format!("dimension.{s}")),
+    );
+    v.extend(
+        plan::SCHEDULES
+            .iter()
+            .map(|(s, _)| format!("schedules.{s}")),
+    );
     v.extend(plan::TEXT_PAGES.iter().map(|(s, _)| format!("text.{s}")));
     for s in ["railing", "fence", "pony", "half", "glass", "attic"] {
         v.push(format!("walls.{s}"));

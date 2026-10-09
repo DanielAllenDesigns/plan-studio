@@ -91,7 +91,9 @@ fn stair_rails(ctx: &Ctx, out: &mut Vec<Finding>) {
         let on = |f: Finding| f.at(s.origin).on(Target::Stair(s.id));
         let risers = solve(p).risers;
         let railed = has_rail(p.left_side) || has_rail(p.right_side);
-        if risers >= o.handrail_risers && !p.handrail && !railed {
+        // A Handrail side is a handrail but not a guard (`SideKind::is_guard`).
+        let gripped = p.left_side == SideKind::Handrail || p.right_side == SideKind::Handrail;
+        if risers >= o.handrail_risers && !p.handrail && !railed && !gripped {
             out.push(on(finding(
                 "IRC R311.7.8 handrails",
                 Severity::Warning,
@@ -99,7 +101,7 @@ fn stair_rails(ctx: &Ctx, out: &mut Vec<Finding>) {
                     "A stair of {risers} risers has no handrail; {} or more risers need one on at least one side.",
                     o.handrail_risers
                 ),
-                "Turn on Handrail in the stair specification, or set a side to Railing or Half Wall.",
+                "Turn on Handrail in the stair specification, or set a side to Handrail, Railing or Half Wall.",
             )));
         }
         if railed && p.railing.height < o.stair_guard_height - EPS {

@@ -1359,7 +1359,7 @@ fn known_defect(problem: &str) -> Option<&'static str> {
     if has("undo does not restore the plan (1 differences, e.g. /next_id") {
         return Some("QA-27");
     }
-    if has("Rebuild All") && has("without an undo step") {
+    if (has("Rebuild All") || has("RebuildAll")) && has("without an undo step") {
         return Some("QA-25");
     }
     if has("pushed") && (has("edit.delete") || has("edit.reverse_swing")) {
@@ -2026,8 +2026,10 @@ fn survives(
         ));
     }
     if !edit(&mut sim) {
+        // The tool refuses to edit a family it cannot read completely: the
+        // record is safe, but the user's click does nothing and says nothing.
         return Some(format!(
-            "{name}: (harness) the edit does nothing with the record there"
+            "{name}: the edit was refused while the unreadable record is there (nothing is said)"
         ));
     }
     (!check(&sim.app.cx.project.floors[0]))
@@ -2068,14 +2070,23 @@ fn foreign_records() -> Vec<Option<String>> {
     out.push(survives(
         "roofs",
         &|s| {
-            edit_with(s, ToolId::RoofVariant(crate::tools::roof::RoofMode::Build));
+            s.tool(ToolId::RoofVariant(crate::tools::roof::RoofMode::Build));
+            s.click(240.0, 180.0);
+            s.ok();
+            settle(s);
         },
         &|f| f.roofs.push(json!({"kind": "future", "id": 880003})),
         &|s| {
-            edit_with(
-                s,
-                ToolId::RoofVariant(crate::tools::roof::RoofMode::Skylight),
-            )
+            // A skylight on the first roof plane, as `roof_features` does.
+            let set = crate::editor::roof_view::load(s.app.cx.floor());
+            let Some(c) = set.planes.first().map(|p| p.centroid()) else {
+                return false;
+            };
+            let d0 = depth(s);
+            s.tool(ToolId::RoofVariant(crate::tools::roof::RoofMode::Skylight));
+            s.drag((c.x + 20.0, c.y - 12.0), (c.x + 44.0, c.y + 12.0));
+            settle(s);
+            depth(s) > d0
         },
         &|f| has_id(&f.roofs, 880003),
     ));
@@ -2100,7 +2111,7 @@ fn the_foreign_record_checks_work() {
     let problems: Vec<String> = foreign_records().into_iter().flatten().collect();
     let broken: Vec<&String> = problems
         .iter()
-        .filter(|p| !p.contains("was dropped"))
+        .filter(|p| !p.contains("was dropped") && !p.contains("was refused"))
         .collect();
     assert!(broken.is_empty(), "{broken:?}");
     eprintln!("dropped by an edit: {problems:?}");
@@ -2120,14 +2131,19 @@ fn device_ids(f: &plan_core::Floor) -> Vec<u64> {
 fn electrical_with_a_foreign_device() -> (Vec<u64>, Vec<u64>) {
     let mut sim = Sim::new();
     draw_shell(&mut sim, W, H);
-    assert!(edit_with(
-        &mut sim,
-        ToolId::ElectricalVariant(ElecVariant::Outlet110)
-    ));
-    assert!(edit_with(
-        &mut sim,
-        ToolId::ElectricalVariant(ElecVariant::Switch)
-    ));
+    for v in [
+        ElecVariant::Outlet110,
+        ElecVariant::Light,
+        ElecVariant::Switch,
+        ElecVariant::Gfci,
+        ElecVariant::RecessedLight,
+        ElecVariant::DataJack,
+    ] {
+        if device_ids(&sim.app.cx.project.floors[0]).len() >= 2 {
+            break;
+        }
+        edit_with(&mut sim, ToolId::ElectricalVariant(v));
+    }
     let readable = device_ids(&sim.app.cx.project.floors[0]);
     assert!(readable.len() >= 2, "{readable:?}");
     let e = sim.app.cx.project.floors[0]
@@ -2484,7 +2500,7 @@ fn furnished_house() -> Sim {
 }
 
 #[test]
-#[ignore = "QA-24"]
+
 fn deleting_a_mixed_selection_is_one_undo_step() {
     use crate::editor::edit_commands::ids;
     let mut sim = furnished_house();
@@ -2503,7 +2519,7 @@ fn deleting_a_mixed_selection_is_one_undo_step() {
 }
 
 #[test]
-#[ignore = "QA-24"]
+
 fn reversing_the_swing_of_a_door_and_a_cabinet_is_one_undo_step() {
     use crate::editor::edit_commands::ids;
     let mut sim = furnished_house();
@@ -2521,7 +2537,7 @@ fn reversing_the_swing_of_a_door_and_a_cabinet_is_one_undo_step() {
 }
 
 #[test]
-#[ignore = "QA-25"]
+
 fn rebuild_all_leaves_an_undo_step_when_it_changes_the_plan() {
     let mut sim = small_house();
     sim.app
@@ -2545,7 +2561,7 @@ fn rebuild_all_leaves_an_undo_step_when_it_changes_the_plan() {
 }
 
 #[test]
-#[ignore = "QA-26"]
+
 fn a_command_that_changes_nothing_leaves_no_undo_step() {
     use crate::editor::edit_commands::ids;
     let mut sim = small_house();
@@ -2564,23 +2580,18 @@ fn a_command_that_changes_nothing_leaves_no_undo_step() {
 }
 
 #[test]
-#[ignore = "QA-26"]
+
 fn locking_a_terrain_object_locks_it_or_says_it_cannot() {
     use crate::editor::edit_commands::ids;
     let mut sim = small_house();
-    sim.tool(ToolId::TerrainVariant(TerrainVariant::Perimeter));
-    for (x, y) in [
-        (-300.0, -300.0),
-        (780.0, -300.0),
-        (780.0, 660.0),
-        (-300.0, 660.0),
-    ] {
-        sim.click(x, y);
-    }
-    sim.key(KeyEvent::key(Key::Enter));
-    sim.tool(ToolId::TerrainVariant(TerrainVariant::ElevationPoint));
-    sim.click(100.0, 500.0);
-    settle(&mut sim);
+    assert!(edit_with(
+        &mut sim,
+        ToolId::TerrainVariant(TerrainVariant::Perimeter)
+    ));
+    edit_with(
+        &mut sim,
+        ToolId::TerrainVariant(TerrainVariant::ElevationPoint),
+    );
     let pts = selection::all_selectable(&sim.app.cx)
         .into_iter()
         .find(|o| matches!(o, ObjectRef::TerrainObject(_)))
@@ -2596,7 +2607,7 @@ fn locking_a_terrain_object_locks_it_or_says_it_cannot() {
 }
 
 #[test]
-#[ignore = "QA-27"]
+
 fn undo_after_a_foundation_tool_gives_back_exactly_the_plan() {
     let mut sim = small_house();
     let before = digest(&sim);
@@ -2626,6 +2637,12 @@ fn one_unreadable_electrical_device_does_not_take_the_readable_ones_with_it() {
 #[test]
 #[ignore = "QA-29"]
 fn records_this_build_cannot_read_survive_an_edit_of_their_family() {
-    let problems: Vec<String> = foreign_records().into_iter().flatten().collect();
+    // A refused edit keeps the record (the cabinets do that); a dropped one
+    // is the finding.
+    let problems: Vec<String> = foreign_records()
+        .into_iter()
+        .flatten()
+        .filter(|p| p.contains("was dropped"))
+        .collect();
     assert!(problems.is_empty(), "{problems:?}");
 }

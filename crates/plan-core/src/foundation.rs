@@ -546,7 +546,7 @@ impl FoundationLayer {
     /// not parse). Reads the legacy CAD record when the slot is empty.
     pub fn load(floor: &Floor) -> Self {
         match &floor.foundation {
-            Some(v) => serde_json::from_value(v.clone()).unwrap_or_default(),
+            Some(v) => crate::foreign::read_layer(v),
             None => floor
                 .cad
                 .iter()
@@ -560,15 +560,9 @@ impl FoundationLayer {
     /// legacy record). An empty layer clears the slot.
     pub fn store(&self, floor: &mut Floor) {
         floor.cad.retain(|c| record_json(c).is_none());
-        // Plain data always serializes; keep the old slot on the impossible error.
-        floor.foundation = if self.is_empty() {
-            None
-        } else {
-            match serde_json::to_value(self) {
-                Ok(v) => Some(v),
-                Err(_) => floor.foundation.take(),
-            }
-        };
+        // Records this build cannot read stay in the slot (QA-28).
+        floor.foundation =
+            crate::foreign::layer_slot(self, self.is_empty(), floor.foundation.as_ref());
     }
 
     // ----- lookup -----

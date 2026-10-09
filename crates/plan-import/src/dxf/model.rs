@@ -529,15 +529,21 @@ impl DxfDrawing {
 
     /// A layer of the table by name.
     pub fn layer(&self, name: &str) -> Option<&DxfLayer> {
-        self.layers.iter().find(|l| l.name.eq_ignore_ascii_case(name))
+        self.layers
+            .iter()
+            .find(|l| l.name.eq_ignore_ascii_case(name))
     }
 
     pub fn linetype(&self, name: &str) -> Option<&DxfLinetype> {
-        self.linetypes.iter().find(|l| l.name.eq_ignore_ascii_case(name))
+        self.linetypes
+            .iter()
+            .find(|l| l.name.eq_ignore_ascii_case(name))
     }
 
     pub fn text_style(&self, name: &str) -> Option<&DxfTextStyle> {
-        self.text_styles.iter().find(|l| l.name.eq_ignore_ascii_case(name))
+        self.text_styles
+            .iter()
+            .find(|l| l.name.eq_ignore_ascii_case(name))
     }
 
     /// The dimension style `name`, else the header's current values.

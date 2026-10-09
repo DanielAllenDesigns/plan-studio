@@ -1065,6 +1065,7 @@ impl TerrainTool {
                         z: value,
                         control,
                         tension: DEFAULT_TENSION,
+                        ..Default::default()
                     });
                 });
                 "Elevation Line"

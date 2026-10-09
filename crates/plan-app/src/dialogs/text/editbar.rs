@@ -328,7 +328,11 @@ pub fn show(
         if ui.color_edit_button_srgb(&mut st.color).changed() {
             op = Some(Op::Color(st.color));
         }
-        if ui.button("Link").on_hover_text("Insert Hyperlink").clicked() {
+        if ui
+            .button("Link")
+            .on_hover_text("Insert Hyperlink")
+            .clicked()
+        {
             st.link_open = !st.link_open;
             if st.link_open {
                 let (a, b) = clamp_sel(markup, st.sel);
@@ -499,7 +503,10 @@ mod tests {
         assert!(link.underline);
         assert_eq!(link.color, Some([0, 0, 0xEE]));
         assert_eq!(link.link.as_deref(), Some("https://example.com"));
-        assert_eq!(links_of(&m), vec![("site".to_string(), "https://example.com".to_string())]);
+        assert_eq!(
+            links_of(&m),
+            vec![("site".to_string(), "https://example.com".to_string())]
+        );
         // An empty address removes the link, keeping the words.
         let selected: String = m.chars().skip(s.0).take(s.1 - s.0).collect();
         assert!(selected.contains("<link="));

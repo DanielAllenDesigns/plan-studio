@@ -1,11 +1,24 @@
 //! File > Print: the Print dialog for a layout or a plan view, Print Image, and
 //! the delivery of the finished PDF (a file, the system printer or a viewer).
 //!
-//! The dialog edits [`plan_layout::PrintOptions`]: destination, paper size and
-//! orientation, scale (fit to page, 1:1, a drawing scale, a custom ratio or a
-//! percentage), tiling with an overlap, margins, colour / grayscale / black
-//! and white, line weights, page range and copies. `shell::layout_window`
-//! builds the PDF from the answers; [`deliver`] gets it to its destination.
+//! The dialog follows Chief's Print View dialog (manual pp. 1440-1443):
+//! Destination (printer or PDF, DPI), Paper (size, orientation, source, Match
+//! Print Source), Print Range, Print Source (the Drawing Sheet or the current
+//! view), Drawing Scale (Fit to Paper at a global percentage, To Scale, Check
+//! Plot at a fraction), Options (copies and collate, Include Watermark, print
+//! in colour) and the information messages. It edits
+//! [`plan_layout::PrintOptions`]; `shell::layout_window` builds the PDF from
+//! the answers and [`deliver`] gets it to its destination.
+//!
+//! Settings are remembered per kind of view (plan, cross section / elevation,
+//! CAD Detail, layout, Materials List) in `~/.plan-studio/printsettings.json`,
+//! for every plan, unless the view's Drawing Sheet Setup turns Remember Print
+//! Settings after Printing off. Copies and the page range are never kept. The
+//! Fit to Paper percentage is global (default 95).
+//!
+//! What the dialog needs to know about the active view (its Drawing Sheet
+//! Setup, the Drawing Sheet's footprint, what is on screen) it reads from
+//! [`drawing_sheet::context`], which the canvas keeps current.
 //!
 //! PDF is the portable path and works everywhere. The system printer uses
 //! CUPS' `lp` (macOS and Linux), to the printer picked from the list that
@@ -14,16 +27,23 @@
 //! viewer" uses `open -a Preview` on macOS, `xdg-open` on Linux and `start` on
 //! Windows.
 
+use super::drawing_sheet::{self, scale_of, PrintViewContext};
 use super::layout::frame;
 use super::{row, section, Outcome};
 use eframe::egui::{self, Ui};
+use plan_core::drawing_sheet::ViewType;
 use plan_docs::{Scale, SheetSize};
-use plan_layout::{tile_grid, PaperSize, PrintColor, PrintOptions, PrintScale, TileGrid};
+use plan_layout::{
+    tile_grid, PaperSize, PenSetup, PrintColor, PrintOptions, PrintScale, TileGrid,
+    CHECK_PLOT_FRACTIONS, DEFAULT_FIT_PERCENT,
+};
+use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::path::Path;
 
 /// Where the print goes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Destination {
     /// A PDF file the user names.
     Pdf,
@@ -50,8 +70,24 @@ pub enum PrintTarget {
     },
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// Print Source (plan views): the whole Drawing Sheet, or the part of the view
+/// on screen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrintSource {
+    DrawingSheet,
+    CurrentView,
+}
+
+/// The Drawing Scale choices.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 enum ScaleChoice {
+    /// Fit to Paper, filling the global percentage of the paper.
+    FitPercent,
+    /// To Scale: the Drawing Sheet Setup's scale (a layout sheet at its size).
+    ToScale,
+    /// Check Plot at a fraction of the scale.
+    CheckPlot,
+    /// Fit to the whole paper.
     Fit,
     Actual,
     Percent,
@@ -59,29 +95,55 @@ enum ScaleChoice {
     Custom,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 enum PaperChoice {
     Standard(SheetSize),
     Custom,
+    /// "Match Print Source": the view's Drawing Sheet size and orientation.
+    MatchSource,
 }
 
+/// The paper sources the Paper section offers, with the CUPS `InputSlot`
+/// each asks for (`None`: the printer chooses).
+pub const PAPER_SOURCES: [(&str, Option<&str>); 4] = [
+    ("Automatic", None),
+    ("Tray 1", Some("Tray1")),
+    ("Tray 2", Some("Tray2")),
+    ("Manual feed", Some("Manual")),
+];
+
+/// The DPIs the Destination section offers.
+pub const DPI_CHOICES: [u32; 5] = [72, 150, 300, 600, 1200];
+
 /// Everything the dialog remembers between uses.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 struct Settings {
     dest: Destination,
+    dpi: u32,
     paper: PaperChoice,
     custom_w: f64,
     custom_h: f64,
     landscape: bool,
+    /// Index into [`PAPER_SOURCES`].
+    paper_source: usize,
     scale: ScaleChoice,
     percent: f64,
     ratio: f64,
+    /// Check Plot: the fraction of the scale.
+    check_plot: f64,
     tiling: bool,
     overlap: f64,
     margin: f64,
+    /// Plan views: the paper's margins are the sheet's Drawing Margins.
+    use_sheet_margins: bool,
     color: PrintColor,
     line_weights: bool,
+    /// Exact line weights: a sheet printed smaller or larger keeps each pen's
+    /// own thickness.
+    exact_weights: bool,
     copies: u32,
+    collate: bool,
     /// The printer picked from the list; `None` is the system default.
     printer: Option<String>,
     /// Layout prints: render perspective boxes at this DPI (`0` = as each box says).
@@ -94,24 +156,137 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             dest: Destination::Pdf,
+            dpi: 300,
             paper: PaperChoice::Standard(SheetSize::Letter),
             custom_w: 13.0,
             custom_h: 19.0,
             landscape: true,
-            scale: ScaleChoice::Fit,
+            paper_source: 0,
+            scale: ScaleChoice::FitPercent,
             percent: 100.0,
             ratio: 48.0,
+            check_plot: 0.5,
             tiling: false,
             overlap: 0.5,
             margin: 0.25,
+            use_sheet_margins: true,
             color: PrintColor::Color,
             line_weights: true,
+            exact_weights: false,
             copies: 1,
+            collate: true,
             printer: None,
             persp_dpi: 0,
             persp_samples: 0,
         }
     }
+}
+
+// ------------------------------------------------------ remembered settings --
+
+/// The print settings kept for every plan: one set per kind of view and the
+/// Fit to Paper percentage.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+struct PrintStore {
+    /// Fit to Paper fills this percentage of the paper (`None`: 95).
+    fit_percent: Option<f64>,
+    views: BTreeMap<String, Settings>,
+}
+
+thread_local! {
+    static STORE: RefCell<Option<PrintStore>> = const { RefCell::new(None) };
+    /// What the last accepted Print dialog asked of the printer beyond the PDF.
+    static EXTRAS: RefCell<DeliveryExtras> = RefCell::new(DeliveryExtras::default());
+}
+
+/// What the printer is asked besides the PDF: collating copies and a paper
+/// source (CUPS `lp -o` options).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DeliveryExtras {
+    pub collate: bool,
+    /// The CUPS `InputSlot` value; `None` leaves the choice to the printer.
+    pub input_slot: Option<String>,
+}
+
+/// `~/.plan-studio/printsettings.json`; none under test, so a test run never
+/// reads or writes the user's folder.
+fn store_path() -> Option<std::path::PathBuf> {
+    if cfg!(test) {
+        return None;
+    }
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
+    Some(
+        std::path::PathBuf::from(home)
+            .join(".plan-studio")
+            .join("printsettings.json"),
+    )
+}
+
+fn with_store<R>(f: impl FnOnce(&mut PrintStore) -> R) -> R {
+    STORE.with(|s| {
+        let mut s = s.borrow_mut();
+        let store = s.get_or_insert_with(|| {
+            store_path()
+                .and_then(|p| std::fs::read_to_string(p).ok())
+                .and_then(|t| serde_json::from_str(&t).ok())
+                .unwrap_or_default()
+        });
+        f(store)
+    })
+}
+
+fn save_store() {
+    let Some(path) = store_path() else { return };
+    let Some(text) = STORE.with(|s| {
+        s.borrow()
+            .as_ref()
+            .and_then(|st| serde_json::to_string_pretty(st).ok())
+    }) else {
+        return;
+    };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(path, text);
+}
+
+/// The Fit to Paper percentage, global to every view in every file.
+pub fn fit_percent() -> f64 {
+    with_store(|s| s.fit_percent).unwrap_or(DEFAULT_FIT_PERCENT)
+}
+
+/// Sets the Fit to Paper percentage (1 to 100).
+pub fn set_fit_percent(p: f64) {
+    with_store(|s| s.fit_percent = Some(p.clamp(1.0, 100.0)));
+}
+
+/// The settings last accepted for a kind of view.
+fn recall(key: &str) -> Option<Settings> {
+    with_store(|s| s.views.get(key).cloned())
+}
+
+/// Keeps the settings of an accepted print for the next one of that kind.
+/// Copies are never kept.
+fn remember(key: &str, s: &Settings) {
+    let mut keep = s.clone();
+    keep.copies = 1;
+    with_store(|st| {
+        st.views.insert(key.to_string(), keep);
+    });
+    save_store();
+}
+
+/// Forgets every remembered setting and the Fit to Paper percentage (tests;
+/// a fresh start).
+pub fn forget_remembered_settings() {
+    STORE.with(|s| *s.borrow_mut() = Some(PrintStore::default()));
+    save_store();
+}
+
+/// The extras the last accepted print asked of the printer.
+pub fn delivery_extras() -> DeliveryExtras {
+    EXTRAS.with(|e| e.borrow().clone())
 }
 
 // -------------------------------------------------------------- printers --
@@ -194,17 +369,51 @@ fn printer_picker(ui: &mut Ui, current: &mut Option<String>, printers: &Printers
     }
 }
 
-thread_local! {
-    static LAST: RefCell<Option<Settings>> = const { RefCell::new(None) };
+/// One paper in the Size list.
+#[derive(Clone, Debug, PartialEq)]
+enum PaperEntry {
+    Standard(SheetSize),
+    /// A custom sheet size (a name and its two sides, long first).
+    Named(String, (f64, f64)),
+}
+
+impl PaperEntry {
+    fn label(&self) -> String {
+        match self {
+            PaperEntry::Standard(z) => z.label().to_string(),
+            PaperEntry::Named(n, _) => n.clone(),
+        }
+    }
+
+    fn inches(&self) -> (f64, f64) {
+        match self {
+            PaperEntry::Standard(z) => z.inches(),
+            PaperEntry::Named(_, i) => *i,
+        }
+    }
 }
 
 /// The Print dialog.
 pub struct PrintDialog {
     target: PrintTarget,
+    /// The kind of view: its remembered settings and its Drawing Sheet Setup.
+    view: ViewType,
+    /// The active view as the canvas last saw it.
+    ctx: PrintViewContext,
     s: Settings,
+    source: PrintSource,
+    include_watermark: bool,
+    /// The Fit to Paper percentage (global).
+    fit_pct: f64,
     all: bool,
+    /// Print Range: only the page that is open (when [`with_current_page`] told).
+    ///
+    /// [`with_current_page`]: Self::with_current_page
+    current_only: bool,
     from: usize,
     to: usize,
+    /// The printed page (1-based among the printed pages) that is open.
+    current_page: Option<usize>,
     /// "Print Preview" was pressed: the owner shows the sheet at the chosen
     /// paper and scale, then clears this.
     pub preview_requested: bool,
@@ -212,32 +421,119 @@ pub struct PrintDialog {
     printers: Option<Printers>,
     /// The layout's own sizes (Customize Sheet Sizes), offered as paper.
     custom_papers: Vec<(String, (f64, f64))>,
+    /// The Check Plot fraction the paper was last matched to.
+    matched_check: Option<f64>,
 }
 
 impl PrintDialog {
     fn with(target: PrintTarget, pages: usize) -> Self {
-        let mut s = LAST.with(|l| l.borrow().clone()).unwrap_or_default();
-        if matches!(target, PrintTarget::Layout { .. })
-            && matches!(s.scale, ScaleChoice::Drawing(_) | ScaleChoice::Custom)
-        {
-            s.scale = ScaleChoice::Fit;
+        let ctx = drawing_sheet::context();
+        let layout = matches!(target, PrintTarget::Layout { .. });
+        let view = if layout {
+            ViewType::Layout
+        } else {
+            match ctx.view {
+                ViewType::Layout | ViewType::MaterialsList => ViewType::Plan,
+                v => v,
+            }
+        };
+        let setup = if layout {
+            &ctx.layout_sheet
+        } else {
+            &ctx.sheet
+        };
+        let remembered = if setup.remember_print_settings {
+            recall(view.key())
+        } else {
+            None
+        };
+        let fresh = remembered.is_none();
+        let mut s = remembered.unwrap_or_default();
+        if layout && matches!(s.scale, ScaleChoice::Drawing(_) | ScaleChoice::Custom) {
+            s.scale = ScaleChoice::FitPercent;
         }
+        if fresh && ctx.synced {
+            // The first print of this kind of view starts from its Drawing
+            // Sheet Setup: its sheet, and its scale when the sheet is shown.
+            s.paper = PaperChoice::MatchSource;
+            s.scale = if ctx.sheet_shown && !layout {
+                ScaleChoice::ToScale
+            } else {
+                ScaleChoice::FitPercent
+            };
+            if !layout {
+                s.margin = setup.margins_in.into_iter().fold(0.0, f64::max);
+            }
+        }
+        if !setup.remember_print_settings {
+            if let Some(p) = &setup.printer {
+                s.printer = Some(p.clone());
+            }
+        }
+        let source = if ctx.sheet_shown {
+            PrintSource::DrawingSheet
+        } else {
+            PrintSource::CurrentView
+        };
         Self {
             target,
+            view,
+            include_watermark: ctx.watermark_on && ctx.watermark_ready,
+            ctx,
             s,
+            source,
+            fit_pct: fit_percent(),
             all: true,
+            current_only: false,
             from: 1,
             to: pages.max(1),
+            current_page: None,
             preview_requested: false,
             printers: None,
             custom_papers: Vec::new(),
+            matched_check: None,
+        }
+    }
+
+    /// A dialog around given settings, for Print Model, which prints through
+    /// the same options.
+    fn bare(s: Settings) -> Self {
+        Self {
+            target: PrintTarget::PlanView {
+                floor: 0,
+                layer_set: String::new(),
+                title: String::new(),
+            },
+            view: ViewType::Plan,
+            ctx: PrintViewContext::default(),
+            s,
+            source: PrintSource::CurrentView,
+            include_watermark: false,
+            fit_pct: DEFAULT_FIT_PERCENT,
+            all: true,
+            current_only: false,
+            from: 1,
+            to: 1,
+            current_page: None,
+            preview_requested: false,
+            printers: None,
+            custom_papers: Vec::new(),
+            matched_check: None,
         }
     }
 
     /// Offers the layout's custom sheet sizes (`name`, long and short side in
-    /// inches) in the paper list; picking one fills in a custom paper.
+    /// inches) in the paper list besides the program-wide ones; picking one
+    /// fills in a custom paper.
     pub fn with_custom_papers(mut self, papers: Vec<(String, (f64, f64))>) -> Self {
         self.custom_papers = papers;
+        self
+    }
+
+    /// Tells the dialog which printed page of the layout is open (1-based),
+    /// which Print Range's Current Sheet prints.
+    pub fn with_current_page(mut self, ordinal: usize) -> Self {
+        self.current_page = Some(ordinal.max(1));
         self
     }
 
@@ -296,11 +592,24 @@ impl PrintDialog {
 
     /// Printed pages `(from, to)` for a layout; `None` prints every page.
     pub fn range(&self) -> Option<(usize, usize)> {
-        (!self.all).then_some((self.from, self.to))
+        match (self.current_only, self.current_page) {
+            (true, Some(n)) => Some((n, n)),
+            _ => (!self.all).then_some((self.from, self.to)),
+        }
     }
 
     pub fn copies(&self) -> u32 {
         self.s.copies.max(1)
+    }
+
+    /// Print Source (plan views).
+    pub fn source(&self) -> PrintSource {
+        self.source
+    }
+
+    /// Include Watermark.
+    pub fn includes_watermark(&self) -> bool {
+        self.include_watermark
     }
 
     /// Picks the colour mode as the radio buttons would (tests).
@@ -309,25 +618,160 @@ impl PrintDialog {
         self.s.color = color;
     }
 
-    /// The print options the dialog describes.
-    pub fn options(&self) -> PrintOptions {
+    fn is_layout(&self) -> bool {
+        matches!(self.target, PrintTarget::Layout { .. })
+    }
+
+    /// The Drawing Sheet Setup the print starts from.
+    fn setup(&self) -> &plan_core::drawing_sheet::ViewSheet {
+        if self.is_layout() {
+            &self.ctx.layout_sheet
+        } else {
+            &self.ctx.sheet
+        }
+    }
+
+    /// The sheet Match Print Source stands for, as drawn `(width, height)`.
+    fn match_sheet_in(&self) -> (f64, f64) {
+        match &self.target {
+            PrintTarget::Layout { sheet_in, .. } => *sheet_in,
+            PrintTarget::PlanView { .. } => self.ctx.sheet.inches(),
+        }
+    }
+
+    /// The paper and its orientation the options print on.
+    fn paper_and_orientation(&self) -> (PaperSize, bool) {
         let s = &self.s;
-        PrintOptions {
-            paper: match s.paper {
-                PaperChoice::Standard(z) => PaperSize::Standard(z),
-                PaperChoice::Custom => PaperSize::Custom {
+        match s.paper {
+            PaperChoice::Standard(z) => (PaperSize::Standard(z), s.landscape),
+            PaperChoice::Custom => (
+                PaperSize::Custom {
                     width_in: s.custom_w,
                     height_in: s.custom_h,
                 },
+                s.landscape,
+            ),
+            PaperChoice::MatchSource => {
+                let (w, h) = self.match_sheet_in();
+                let (long, short) = (w.max(h), w.min(h));
+                let std = SheetSize::ALL.into_iter().find(|z| {
+                    let (zl, zs) = z.inches();
+                    (zl - long).abs() < 1e-6 && (zs - short).abs() < 1e-6
+                });
+                let paper = match std {
+                    Some(z) => PaperSize::Standard(z),
+                    None => PaperSize::Custom {
+                        width_in: long,
+                        height_in: short,
+                    },
+                };
+                (paper, w >= h)
+            }
+        }
+    }
+
+    /// The part of the plan the print covers, plan inches; `None` prints the
+    /// whole plan (and does when the canvas has not told the dialog where the
+    /// sheet is).
+    fn plan_window(&self) -> Option<[f64; 4]> {
+        if self.is_layout() || !self.ctx.synced {
+            return None;
+        }
+        match self.source {
+            PrintSource::DrawingSheet => Some(self.ctx.sheet_window),
+            PrintSource::CurrentView => self.ctx.view_window,
+        }
+    }
+
+    /// Size in plan inches of what a plan print covers.
+    fn plan_window_dims(&self) -> (f64, f64) {
+        match self.plan_window() {
+            Some(w) => ((w[2] - w[0]).abs(), (w[3] - w[1]).abs()),
+            None => match self.ctx.plan_extent {
+                // The plan's own margin is 24 inches on every side.
+                Some((lo, hi)) => ((hi.x - lo.x).abs() + 48.0, (hi.y - lo.y).abs() + 48.0),
+                None => (120.0, 120.0),
             },
-            landscape: s.landscape,
-            scale: match s.scale {
-                ScaleChoice::Fit => PrintScale::Fit,
-                ScaleChoice::Actual => PrintScale::Actual,
-                ScaleChoice::Percent => PrintScale::Percent(s.percent),
-                ScaleChoice::Drawing(d) => PrintScale::Drawing(d),
-                ScaleChoice::Custom => PrintScale::Ratio(s.ratio),
+        }
+    }
+
+    /// The largest drawing scale at which a plan print fits `fraction` of the
+    /// printable area.
+    fn fit_scale(&self, fraction: f64) -> Scale {
+        let o = self.options();
+        let (pw, ph) = o.printable_in();
+        let (w, h) = self.plan_window_dims();
+        let mut s = Scale::ThreeInch;
+        loop {
+            let k = s.inches_per_foot() / 12.0;
+            if w * k <= pw * fraction + 1e-9 && (h * k + 0.3) <= ph * fraction + 1e-9 {
+                return s;
+            }
+            match s.smaller_any() {
+                Some(n) => s = n,
+                None => return s,
+            }
+        }
+    }
+
+    /// The drawing scale a plan view prints at under the choices made.
+    pub fn plan_scale(&self) -> Scale {
+        match self.s.scale {
+            ScaleChoice::ToScale | ScaleChoice::CheckPlot => scale_of(&self.ctx.sheet),
+            ScaleChoice::Drawing(sc) => sc,
+            ScaleChoice::Actual => Scale::Ratio(1),
+            ScaleChoice::Percent => Scale::Ratio(
+                (100.0 / self.s.percent.max(0.1))
+                    .round()
+                    .clamp(1.0, 10_000.0) as u32,
+            ),
+            ScaleChoice::Custom => Scale::Ratio(self.s.ratio.round().clamp(1.0, 10_000.0) as u32),
+            ScaleChoice::FitPercent if self.s.tiling => Scale::QuarterInch,
+            ScaleChoice::Fit if self.s.tiling => Scale::QuarterInch,
+            ScaleChoice::FitPercent => self.fit_scale((self.fit_pct / 100.0).clamp(0.01, 1.0)),
+            ScaleChoice::Fit => self.fit_scale(1.0),
+        }
+    }
+
+    /// The sheet as it comes off at its own size, inches: a layout sheet, or
+    /// the part of the plan at the drawing scale (with the note strip).
+    fn sheet_in(&self) -> (f64, f64) {
+        match &self.target {
+            PrintTarget::Layout { sheet_in, .. } => *sheet_in,
+            PrintTarget::PlanView { .. } => {
+                let k = self.plan_scale().inches_per_foot() / 12.0;
+                let (w, h) = self.plan_window_dims();
+                (w * k, h * k + 0.3)
+            }
+        }
+    }
+
+    /// The print options the dialog describes.
+    pub fn options(&self) -> PrintOptions {
+        let s = &self.s;
+        let layout = self.is_layout();
+        let (paper, landscape) = self.paper_and_orientation();
+        let setup = self.setup();
+        let sheet_scale = scale_of(&self.ctx.sheet);
+        let scale = match s.scale {
+            ScaleChoice::FitPercent => PrintScale::FitPercent(self.fit_pct),
+            ScaleChoice::ToScale if layout => PrintScale::Actual,
+            ScaleChoice::ToScale => PrintScale::Drawing(sheet_scale),
+            ScaleChoice::CheckPlot => PrintScale::CheckPlot {
+                scale: sheet_scale,
+                fraction: s.check_plot,
             },
+            ScaleChoice::Fit => PrintScale::Fit,
+            ScaleChoice::Actual => PrintScale::Actual,
+            ScaleChoice::Percent => PrintScale::Percent(s.percent),
+            ScaleChoice::Drawing(d) => PrintScale::Drawing(d),
+            ScaleChoice::Custom => PrintScale::Ratio(s.ratio),
+        };
+        let sheet_margins = if layout { [0.0; 4] } else { setup.margins_in };
+        PrintOptions {
+            paper,
+            landscape,
+            scale,
             tiling: s.tiling,
             overlap_in: s.overlap,
             margin_in: s.margin,
@@ -335,24 +779,39 @@ impl PrintDialog {
             line_weights: s.line_weights,
             range: self.range(),
             copies: s.copies.max(1),
+            collate: s.collate && s.copies > 1,
+            edge_margins_in: (!layout && s.use_sheet_margins && self.ctx.synced)
+                .then_some(setup.margins_in),
+            sheet_margins_in: sheet_margins,
+            plan_window: self.plan_window(),
+            watermark: self.include_watermark && self.ctx.watermark_ready,
+            pens: PenSetup {
+                scale_factor: setup.weights.factor(),
+                single_weight: setup.weights.single_weight,
+                exact: s.exact_weights,
+            },
+            dpi: s.dpi,
         }
     }
 
-    /// The tiles one layout sheet needs under the current options.
+    /// The options as the information messages read them: a plan view has
+    /// been drawn at its scale already, so only a Check Plot shrinks it.
+    fn info_options(&self) -> PrintOptions {
+        let mut o = self.options();
+        if !self.is_layout() && !matches!(o.scale, PrintScale::CheckPlot { .. }) {
+            o.scale = PrintScale::Actual;
+        }
+        o
+    }
+
+    /// The tiles one sheet needs under the current options.
     pub fn tiles(&self) -> Option<TileGrid> {
-        let PrintTarget::Layout { sheet_in, .. } = &self.target else {
-            return None;
-        };
-        let o = self.options();
+        let o = self.info_options();
+        let sheet = self.sheet_in();
         let (pw, ph) = o.printable_in();
-        let scale = match o.scale {
-            PrintScale::Fit if o.tiling => 1.0,
-            PrintScale::Fit => (pw / sheet_in.0).min(ph / sheet_in.1),
-            PrintScale::Percent(p) => p / 100.0,
-            _ => 1.0,
-        };
+        let scale = plan_layout::print_scale_factor(&o, sheet);
         Some(if o.tiling {
-            tile_grid(*sheet_in, scale, (pw, ph), o.overlap_in)
+            tile_grid(sheet, scale, (pw, ph), o.overlap_in)
         } else {
             TileGrid {
                 cols: 1,
@@ -362,13 +821,29 @@ impl PrintDialog {
         })
     }
 
+    /// The information messages under the preview: sheet and paper sizes, the
+    /// scale the print comes out at and what may go wrong.
+    pub fn info(&self) -> Vec<String> {
+        let mut out = plan_layout::print_info(self.sheet_in(), &self.info_options(), None);
+        if self.include_watermark && !self.ctx.watermark_ready {
+            out.push("The watermark has nothing to show: define it first.".to_string());
+        }
+        if self.s.dest == Destination::Printer && cfg!(target_os = "windows") {
+            out.push("Printing to a system printer is not available on Windows yet.".to_string());
+        }
+        out
+    }
+
     fn error(&self) -> Option<&'static str> {
         let s = &self.s;
         if let PrintTarget::Layout { pages, .. } = &self.target {
             if *pages == 0 {
                 return Some("The layout has no pages to print");
             }
-            if !self.all && (self.from < 1 || self.to < self.from || self.to > *pages) {
+            if !self.all
+                && !self.current_only
+                && (self.from < 1 || self.to < self.from || self.to > *pages)
+            {
                 return Some("Enter a page range inside the layout");
             }
         }
@@ -386,6 +861,12 @@ impl PrintDialog {
         }
         if s.scale == ScaleChoice::Percent && s.percent < 1.0 {
             return Some("The print percentage must be at least 1%");
+        }
+        if !(1.0..=100.0).contains(&self.fit_pct) {
+            return Some("Fit to Paper takes 1 to 100 percent of the paper");
+        }
+        if s.scale == ScaleChoice::CheckPlot && !(0.05..=1.0).contains(&s.check_plot) {
+            return Some("A check plot is 5 to 100 percent of the scale");
         }
         None
     }
@@ -409,10 +890,71 @@ impl PrintDialog {
                     }
                 )
             }
-            _ => "The floor plan is printed at the chosen scale (tiled when it is larger \
-                  than the paper)."
-                .to_string(),
+            (_, Some(g)) => {
+                let scale = self.plan_scale();
+                format!(
+                    "The plan prints at {}{}: {} paper page(s)",
+                    scale.label(),
+                    if g.scale < 0.999 {
+                        format!(" reduced to {:.0}%", g.scale * 100.0)
+                    } else {
+                        String::new()
+                    },
+                    g.count()
+                )
+            }
+            _ => String::new(),
         }
+    }
+
+    /// The papers the Size list offers: the standard sizes Customize Sheet
+    /// Sizes leaves in, then the program-wide and the layout's custom ones.
+    fn paper_entries(&self) -> Vec<PaperEntry> {
+        let keep = match self.s.paper {
+            PaperChoice::Standard(z) => Some(z),
+            _ => None,
+        };
+        let sizes = plan_layout::global_sheet_sizes();
+        let mut out: Vec<PaperEntry> = SheetSize::ALL
+            .into_iter()
+            .filter(|z| !sizes.hidden.contains(z) || Some(*z) == keep)
+            .map(PaperEntry::Standard)
+            .collect();
+        for (n, i) in plan_layout::global_custom_papers()
+            .into_iter()
+            .chain(self.custom_papers.iter().cloned())
+        {
+            if !out.iter().any(|e| e.label() == n) {
+                out.push(PaperEntry::Named(n, i));
+            }
+        }
+        out
+    }
+
+    /// Check Plot: the paper adjusts to the reduced sheet (the smallest that
+    /// holds it with the margins). Returns whether a paper was found.
+    fn match_check_plot_paper(&mut self) -> bool {
+        let sheet = self.sheet_in();
+        let entries = self.paper_entries();
+        let papers: Vec<(String, (f64, f64))> =
+            entries.iter().map(|e| (e.label(), e.inches())).collect();
+        let o = self.options();
+        let Some(i) =
+            plan_layout::paper_for_check_plot(sheet, self.s.check_plot, o.margins(), &papers)
+        else {
+            return false;
+        };
+        self.s.landscape = sheet.0 >= sheet.1;
+        match &entries[i] {
+            PaperEntry::Standard(z) => self.s.paper = PaperChoice::Standard(*z),
+            PaperEntry::Named(_, (long, short)) => {
+                self.s.paper = PaperChoice::Custom;
+                self.s.custom_w = *long;
+                self.s.custom_h = *short;
+            }
+        }
+        self.matched_check = Some(self.s.check_plot);
+        true
     }
 
     pub fn show(&mut self, ctx: &egui::Context) -> Outcome {
@@ -421,203 +963,403 @@ impl PrintDialog {
             PrintTarget::Layout { name, .. } => format!("Print: {name}"),
             PrintTarget::PlanView { title, .. } => format!("Print: {title}"),
         };
-        let layout = matches!(self.target, PrintTarget::Layout { .. });
+        if self.s.dest == Destination::Printer && self.printers.is_none() {
+            self.printers = Some(list_printers());
+        }
+        // A Check Plot adjusts the paper whenever its fraction changes.
+        if self.s.scale == ScaleChoice::CheckPlot && self.matched_check != Some(self.s.check_plot) {
+            self.match_check_plot_paper();
+        }
+        if self.s.scale != ScaleChoice::CheckPlot {
+            self.matched_check = None;
+        }
+        let summary = self.summary();
+        let info = self.info();
+        let this = &mut *self;
+        let out = frame(ctx, &title, 460.0, error, |ui| {
+            this.body(ui, &summary, &info)
+        });
+        if out == Outcome::Ok {
+            self.accepted();
+        }
+        out
+    }
+
+    /// The dialog was accepted: keep the settings for the next print of this
+    /// kind of view and what the printer is asked beyond the PDF.
+    fn accepted(&self) {
+        if self.setup().remember_print_settings {
+            remember(self.view.key(), &self.s);
+        }
+        set_fit_percent(self.fit_pct);
+        save_store();
+        let slot = PAPER_SOURCES
+            .get(self.s.paper_source)
+            .and_then(|p| p.1)
+            .map(str::to_string);
+        EXTRAS.with(|e| {
+            *e.borrow_mut() = DeliveryExtras {
+                collate: self.s.collate && self.s.copies > 1,
+                input_slot: slot,
+            }
+        });
+    }
+
+    fn body(&mut self, ui: &mut Ui, summary: &str, info: &[String]) {
+        let layout = self.is_layout();
         let pages = match &self.target {
             PrintTarget::Layout { pages, .. } => *pages,
             PrintTarget::PlanView { .. } => 1,
         };
-        let summary = self.summary();
-        if self.s.dest == Destination::Printer && self.printers.is_none() {
-            self.printers = Some(list_printers());
-        }
-        let Self {
-            s,
-            all,
-            from,
-            to,
-            preview_requested,
-            printers,
-            custom_papers,
-            ..
-        } = self;
-        let out = frame(ctx, &title, 420.0, error, |ui| {
-            section(ui, "Destination");
-            ui.horizontal(|ui| {
-                ui.radio_value(&mut s.dest, Destination::Pdf, "PDF file");
-                ui.radio_value(&mut s.dest, Destination::Printer, "System printer");
-                ui.radio_value(&mut s.dest, Destination::Viewer, "Open in viewer");
+
+        section(ui, "Destination");
+        ui.horizontal(|ui| {
+            ui.radio_value(&mut self.s.dest, Destination::Pdf, "PDF file");
+            ui.radio_value(&mut self.s.dest, Destination::Printer, "System printer");
+            ui.radio_value(&mut self.s.dest, Destination::Viewer, "Open in viewer");
+        });
+        if self.s.dest == Destination::Printer {
+            row(ui, "Printer", |ui| {
+                let list = self.printers.clone().unwrap_or_default();
+                printer_picker(ui, &mut self.s.printer, &list);
+                if ui.small_button("Refresh").clicked() {
+                    self.printers = Some(list_printers());
+                }
             });
-            if s.dest == Destination::Printer {
-                row(ui, "Printer", |ui| {
-                    let list = printers.clone().unwrap_or_default();
-                    printer_picker(ui, &mut s.printer, &list);
-                    if ui.small_button("Refresh").clicked() {
-                        *printers = Some(list_printers());
+        }
+        row(ui, "DPI", |ui| {
+            egui::ComboBox::from_id_salt("print_dpi")
+                .selected_text(format!("{}", self.s.dpi))
+                .width(80.0)
+                .show_ui(ui, |ui| {
+                    for d in DPI_CHOICES {
+                        ui.selectable_value(&mut self.s.dpi, d, format!("{d}"));
                     }
                 });
-                row(ui, "Copies", |ui| {
-                    ui.add(egui::DragValue::new(&mut s.copies).range(1..=99));
-                });
-            }
-            section(ui, "Paper");
-            row(ui, "Size", |ui| paper_combo(ui, s, custom_papers));
-            if s.paper == PaperChoice::Custom {
-                row(ui, "Width / Height", |ui| {
-                    ui.add(
-                        egui::DragValue::new(&mut s.custom_w)
-                            .suffix("\"")
-                            .speed(0.1),
-                    );
-                    ui.add(
-                        egui::DragValue::new(&mut s.custom_h)
-                            .suffix("\"")
-                            .speed(0.1),
-                    );
-                });
-            }
-            row(ui, "Orientation", |ui| {
-                ui.radio_value(&mut s.landscape, true, "Landscape");
-                ui.radio_value(&mut s.landscape, false, "Portrait");
+        });
+
+        section(ui, "Paper");
+        let entries = self.paper_entries();
+        row(ui, "Size", |ui| self.paper_combo(ui, &entries));
+        if self.s.paper == PaperChoice::Custom {
+            row(ui, "Width / Height", |ui| {
+                ui.add(
+                    egui::DragValue::new(&mut self.s.custom_w)
+                        .suffix("\"")
+                        .speed(0.1),
+                );
+                ui.add(
+                    egui::DragValue::new(&mut self.s.custom_h)
+                        .suffix("\"")
+                        .speed(0.1),
+                );
             });
+        }
+        if self.s.paper != PaperChoice::MatchSource {
+            row(ui, "Orientation", |ui| {
+                ui.radio_value(&mut self.s.landscape, true, "Landscape");
+                ui.radio_value(&mut self.s.landscape, false, "Portrait");
+            });
+        } else {
+            let (paper, landscape) = self.paper_and_orientation();
+            ui.weak(format!(
+                "Match Print Source: {} {}",
+                paper.label(),
+                if landscape { "landscape" } else { "portrait" }
+            ));
+        }
+        row(ui, "Source", |ui| {
+            let shown = PAPER_SOURCES
+                .get(self.s.paper_source)
+                .map_or("Automatic", |p| p.0);
+            egui::ComboBox::from_id_salt("print_paper_source")
+                .selected_text(shown)
+                .show_ui(ui, |ui| {
+                    for (i, (label, _)) in PAPER_SOURCES.iter().enumerate() {
+                        ui.selectable_value(&mut self.s.paper_source, i, *label);
+                    }
+                });
+        });
+        if !layout {
+            ui.checkbox(
+                &mut self.s.use_sheet_margins,
+                "Margins are the Drawing Margins of the sheet",
+            );
+        }
+        if layout || !self.s.use_sheet_margins {
             row(ui, "Margin", |ui| {
                 ui.add(
-                    egui::DragValue::new(&mut s.margin)
+                    egui::DragValue::new(&mut self.s.margin)
                         .suffix("\"")
                         .speed(0.05)
                         .max_decimals(2),
                 );
             });
-            section(ui, "Scale");
-            row(ui, "Print scale", |ui| {
-                scale_combo(ui, &mut s.scale, layout)
+        }
+
+        if layout {
+            section(ui, "Print Range");
+            if ui
+                .radio_value(&mut self.all, true, format!("All {pages} page(s)"))
+                .clicked()
+            {
+                self.current_only = false;
+            }
+            if self.current_page.is_some() {
+                let mut cur = self.current_only;
+                if ui.radio_value(&mut cur, true, "Current Sheet").clicked() {
+                    self.current_only = true;
+                    self.all = false;
+                }
+            }
+            ui.horizontal(|ui| {
+                if ui.radio_value(&mut self.all, false, "Sheets").clicked() {
+                    self.current_only = false;
+                }
+                let on = !self.all && !self.current_only;
+                ui.add_enabled(
+                    on,
+                    egui::DragValue::new(&mut self.from).range(1..=pages.max(1)),
+                );
+                ui.label("to");
+                ui.add_enabled(
+                    on,
+                    egui::DragValue::new(&mut self.to).range(1..=pages.max(1)),
+                );
             });
-            match s.scale {
-                ScaleChoice::Percent => row(ui, "Percent", |ui| {
+        } else {
+            section(ui, "Print Source");
+            ui.radio_value(
+                &mut self.source,
+                PrintSource::DrawingSheet,
+                "Drawing Sheet: the whole sheet, even zoomed in",
+            );
+            ui.radio_value(
+                &mut self.source,
+                PrintSource::CurrentView,
+                "Current View: what is on screen",
+            );
+        }
+
+        section(ui, "Drawing Scale");
+        self.scale_section(ui, layout);
+        row(ui, "Tiling", |ui| {
+            ui.checkbox(&mut self.s.tiling, "Print across several pages");
+        });
+        if self.s.tiling {
+            row(ui, "Overlap", |ui| {
+                ui.add(
+                    egui::DragValue::new(&mut self.s.overlap)
+                        .suffix("\"")
+                        .speed(0.05)
+                        .max_decimals(2),
+                );
+            });
+        }
+
+        section(ui, "Options");
+        row(ui, "Copies", |ui| {
+            ui.add(egui::DragValue::new(&mut self.s.copies).range(1..=99));
+            ui.add_enabled(
+                self.s.copies >= 2,
+                egui::Checkbox::new(&mut self.s.collate, "Collate"),
+            );
+        });
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut self.include_watermark, "Include Watermark");
+            if ui.small_button("Define\u{2026}").clicked() {
+                super::watermark::request_open();
+            }
+        });
+        row(ui, "Print in Color", |ui| {
+            ui.radio_value(&mut self.s.color, PrintColor::Color, "Color");
+            ui.radio_value(&mut self.s.color, PrintColor::Grayscale, "Grayscale");
+            ui.radio_value(&mut self.s.color, PrintColor::BlackWhite, "Black and white");
+        });
+        ui.checkbox(&mut self.s.line_weights, "Print line weights");
+        ui.add_enabled(
+            self.s.line_weights,
+            egui::Checkbox::new(&mut self.s.exact_weights, "Exact line weights"),
+        )
+        .on_hover_text("A sheet printed smaller or larger keeps each pen's own thickness");
+        if layout {
+            row(ui, "Perspective views", |ui| {
+                ui.add(
+                    egui::DragValue::new(&mut self.s.persp_dpi)
+                        .range(0..=600)
+                        .speed(1.0)
+                        .custom_formatter(|v, _| {
+                            if v < 1.0 {
+                                "as set".to_string()
+                            } else {
+                                format!("{v:.0} dpi")
+                            }
+                        }),
+                )
+                .on_hover_text("Render perspective boxes at this DPI (0 keeps each box's own)");
+                ui.add(
+                    egui::DragValue::new(&mut self.s.persp_samples)
+                        .range(0..=256)
+                        .custom_formatter(|v, _| {
+                            if v < 1.0 {
+                                "as set".to_string()
+                            } else {
+                                format!("{v:.0} samples")
+                            }
+                        }),
+                );
+            });
+        }
+
+        section(ui, "Advanced Options");
+        if ui
+            .button("Open System Print Dialog")
+            .on_hover_text(
+                "Opens the PDF in the viewer, where its own Print command is the system dialog",
+            )
+            .clicked()
+        {
+            self.s.dest = Destination::Viewer;
+        }
+
+        section(ui, "Preview");
+        ui.weak(summary);
+        if ui
+            .button("Print Preview")
+            .on_hover_text("Show the pages as they will print")
+            .clicked()
+        {
+            self.preview_requested = true;
+        }
+        if !info.is_empty() {
+            section(ui, "Information");
+            for m in info {
+                ui.weak(m);
+            }
+        }
+    }
+
+    /// Drawing Scale: Fit to Paper, To Scale, Check Plot, and the older
+    /// choices under More scales.
+    fn scale_section(&mut self, ui: &mut Ui, layout: bool) {
+        let to_scale_label = if layout {
+            "To Scale: each sheet at its own size".to_string()
+        } else {
+            format!("To Scale: {}", scale_of(&self.ctx.sheet).label())
+        };
+        ui.horizontal(|ui| {
+            ui.radio_value(&mut self.s.scale, ScaleChoice::FitPercent, "Fit to Paper");
+            ui.add_enabled(
+                self.s.scale == ScaleChoice::FitPercent,
+                egui::DragValue::new(&mut self.fit_pct)
+                    .range(1.0..=100.0)
+                    .speed(0.5)
+                    .max_decimals(0)
+                    .suffix("%"),
+            )
+            .on_hover_text("Of the paper; global to every view in every file");
+        });
+        ui.radio_value(&mut self.s.scale, ScaleChoice::ToScale, to_scale_label);
+        ui.horizontal(|ui| {
+            ui.radio_value(&mut self.s.scale, ScaleChoice::CheckPlot, "Check Plot at");
+            ui.add_enabled_ui(self.s.scale == ScaleChoice::CheckPlot, |ui| {
+                egui::ComboBox::from_id_salt("print_check_plot")
+                    .selected_text(plan_layout::check_plot_label(self.s.check_plot))
+                    .width(70.0)
+                    .show_ui(ui, |ui| {
+                        for (f, label) in CHECK_PLOT_FRACTIONS {
+                            ui.selectable_value(&mut self.s.check_plot, f, label);
+                        }
+                    });
+            });
+        });
+        let other = !matches!(
+            self.s.scale,
+            ScaleChoice::FitPercent | ScaleChoice::ToScale | ScaleChoice::CheckPlot
+        );
+        ui.horizontal(|ui| {
+            if ui.radio(other, "Other").clicked() && !other {
+                self.s.scale = ScaleChoice::Fit;
+            }
+            ui.add_enabled_ui(other, |ui| scale_combo(ui, &mut self.s.scale, layout));
+        });
+        match self.s.scale {
+            ScaleChoice::Percent => {
+                row(ui, "Percent", |ui| {
                     ui.add(
-                        egui::DragValue::new(&mut s.percent)
+                        egui::DragValue::new(&mut self.s.percent)
                             .range(1.0..=800.0)
                             .suffix("%"),
                     );
-                }),
-                ScaleChoice::Custom => row(ui, "Ratio 1 :", |ui| {
-                    ui.add(egui::DragValue::new(&mut s.ratio).range(1.0..=10_000.0));
-                }),
-                _ => {}
-            }
-            row(ui, "Tiling", |ui| {
-                ui.checkbox(&mut s.tiling, "Tile onto several pages");
-            });
-            if s.tiling {
-                row(ui, "Overlap", |ui| {
-                    ui.add(
-                        egui::DragValue::new(&mut s.overlap)
-                            .suffix("\"")
-                            .speed(0.05)
-                            .max_decimals(2),
-                    );
                 });
             }
-            section(ui, "Appearance");
-            row(ui, "Color", |ui| {
-                ui.radio_value(&mut s.color, PrintColor::Color, "Color");
-                ui.radio_value(&mut s.color, PrintColor::Grayscale, "Grayscale");
-                ui.radio_value(&mut s.color, PrintColor::BlackWhite, "Black and white");
-            });
-            ui.checkbox(&mut s.line_weights, "Print line weights");
-            if layout {
-                row(ui, "Perspective views", |ui| {
-                    ui.add(
-                        egui::DragValue::new(&mut s.persp_dpi)
-                            .range(0..=600)
-                            .speed(1.0)
-                            .custom_formatter(|v, _| {
-                                if v < 1.0 {
-                                    "as set".to_string()
-                                } else {
-                                    format!("{v:.0} dpi")
-                                }
-                            }),
-                    )
-                    .on_hover_text("Render perspective boxes at this DPI (0 keeps each box's own)");
-                    ui.add(
-                        egui::DragValue::new(&mut s.persp_samples)
-                            .range(0..=256)
-                            .custom_formatter(|v, _| {
-                                if v < 1.0 {
-                                    "as set".to_string()
-                                } else {
-                                    format!("{v:.0} samples")
-                                }
-                            }),
-                    );
-                });
-                section(ui, "Print range");
-                ui.radio_value(all, true, format!("All {pages} page(s)"));
-                ui.horizontal(|ui| {
-                    ui.radio_value(all, false, "Pages");
-                    ui.add_enabled(!*all, egui::DragValue::new(from).range(1..=pages.max(1)));
-                    ui.label("to");
-                    ui.add_enabled(!*all, egui::DragValue::new(to).range(1..=pages.max(1)));
+            ScaleChoice::Custom => {
+                row(ui, "Ratio 1 :", |ui| {
+                    ui.add(egui::DragValue::new(&mut self.s.ratio).range(1.0..=10_000.0));
                 });
             }
-            ui.add_space(6.0);
-            ui.weak(&summary);
-            if ui
-                .button("Print Preview")
-                .on_hover_text("Show the sheet at this paper size and scale in the plan")
-                .clicked()
-            {
-                *preview_requested = true;
-            }
-        });
-        if out == Outcome::Ok {
-            LAST.with(|l| *l.borrow_mut() = Some(self.s.clone()));
+            _ => {}
         }
-        out
     }
-}
 
-fn paper_combo(ui: &mut Ui, s: &mut Settings, custom_papers: &[(String, (f64, f64))]) {
-    let shown = match s.paper {
-        PaperChoice::Standard(z) => z.label().to_string(),
-        PaperChoice::Custom => custom_papers
-            .iter()
-            .find(|(_, (a, b))| {
-                (a.max(*b) - s.custom_w.max(s.custom_h)).abs() < 1e-6
-                    && (a.min(*b) - s.custom_w.min(s.custom_h)).abs() < 1e-6
-            })
-            .map_or_else(|| "Custom".to_string(), |(n, _)| n.clone()),
-    };
-    egui::ComboBox::from_id_salt("print_paper")
-        .selected_text(shown)
-        .show_ui(ui, |ui| {
-            for z in SheetSize::ALL {
-                ui.selectable_value(&mut s.paper, PaperChoice::Standard(z), z.label());
-            }
-            for (name, (a, b)) in custom_papers {
-                if ui.selectable_label(false, name).clicked() {
-                    s.paper = PaperChoice::Custom;
-                    s.custom_w = a.max(*b);
-                    s.custom_h = a.min(*b);
+    fn paper_combo(&mut self, ui: &mut Ui, entries: &[PaperEntry]) {
+        let shown = match self.s.paper {
+            PaperChoice::Standard(z) => z.label().to_string(),
+            PaperChoice::MatchSource => "Match Print Source".to_string(),
+            PaperChoice::Custom => entries
+                .iter()
+                .find(|e| {
+                    let (a, b) = e.inches();
+                    (a.max(b) - self.s.custom_w.max(self.s.custom_h)).abs() < 1e-6
+                        && (a.min(b) - self.s.custom_w.min(self.s.custom_h)).abs() < 1e-6
+                })
+                .map_or_else(|| "Custom".to_string(), PaperEntry::label),
+        };
+        egui::ComboBox::from_id_salt("print_paper")
+            .selected_text(shown)
+            .show_ui(ui, |ui| {
+                ui.selectable_value(
+                    &mut self.s.paper,
+                    PaperChoice::MatchSource,
+                    "Match Print Source",
+                );
+                for e in entries {
+                    match e {
+                        PaperEntry::Standard(z) => {
+                            ui.selectable_value(
+                                &mut self.s.paper,
+                                PaperChoice::Standard(*z),
+                                z.label(),
+                            );
+                        }
+                        PaperEntry::Named(name, (a, b)) => {
+                            if ui.selectable_label(false, name).clicked() {
+                                self.s.paper = PaperChoice::Custom;
+                                self.s.custom_w = a.max(*b);
+                                self.s.custom_h = a.min(*b);
+                            }
+                        }
+                    }
                 }
-            }
-            ui.selectable_value(&mut s.paper, PaperChoice::Custom, "Custom size");
-        });
+                ui.selectable_value(&mut self.s.paper, PaperChoice::Custom, "Custom size");
+            });
+    }
 }
 
 fn scale_combo(ui: &mut Ui, current: &mut ScaleChoice, layout: bool) {
     let shown = match current {
-        ScaleChoice::Fit => "Fit to page".to_string(),
+        ScaleChoice::Fit => "Fit to the whole paper".to_string(),
         ScaleChoice::Actual if layout => "100% (actual size)".to_string(),
         ScaleChoice::Actual => "1:1 (full size)".to_string(),
         ScaleChoice::Percent => "Percentage".to_string(),
         ScaleChoice::Drawing(s) => s.label().to_string(),
         ScaleChoice::Custom => "Custom ratio".to_string(),
+        _ => "Choose\u{2026}".to_string(),
     };
     egui::ComboBox::from_id_salt("print_scale")
         .selected_text(shown)
         .show_ui(ui, |ui| {
-            ui.selectable_value(current, ScaleChoice::Fit, "Fit to page");
+            ui.selectable_value(current, ScaleChoice::Fit, "Fit to the whole paper");
             if layout {
                 ui.selectable_value(current, ScaleChoice::Actual, "100% (actual size)");
                 ui.selectable_value(current, ScaleChoice::Percent, "Percentage");
@@ -868,6 +1610,59 @@ fn paint_preview(
                 shape.override_text_color = Some(c);
                 p.add(egui::Shape::Text(shape));
             }
+            I::Mark(m) => {
+                // A watermark mark: centred on (cx, cy), turned about it.
+                let c = at(m.cx, m.cy);
+                let phi = -(m.angle as f32);
+                let (sp, cp) = phi.sin_cos();
+                let a = (m.alpha.clamp(0.0, 1.0) * 255.0).round() as u8;
+                let turn = |x: f32, y: f32| c + egui::vec2(x * cp - y * sp, x * sp + y * cp);
+                match &m.kind {
+                    plan_layout::PreviewMarkKind::Text { text, size_pt } => {
+                        let size = (*size_pt as f32 * k).max(1.0);
+                        if size < 2.0 {
+                            continue;
+                        }
+                        let col = egui::Color32::from_rgba_unmultiplied(
+                            m.color[0], m.color[1], m.color[2], a,
+                        );
+                        let galley =
+                            p.layout_no_wrap(text.clone(), egui::FontId::proportional(size), col);
+                        let half = galley.size() * 0.5;
+                        let pos = turn(-half.x, -half.y);
+                        let mut shape =
+                            egui::epaint::TextShape::new(pos, galley, col).with_angle(phi);
+                        shape.override_text_color = Some(col);
+                        p.add(egui::Shape::Text(shape));
+                    }
+                    plan_layout::PreviewMarkKind::Image { px, rgba } => {
+                        let tex = textures.entry((page_index, idx)).or_insert_with(|| {
+                            let img = egui::ColorImage::from_rgba_unmultiplied(
+                                [px.0 as usize, px.1 as usize],
+                                rgba,
+                            );
+                            ui.ctx().load_texture(
+                                format!("print_preview_mark_{page_index}_{idx}"),
+                                img,
+                                egui::TextureOptions::LINEAR,
+                            )
+                        });
+                        let (hw, hh) = (m.w as f32 * k * 0.5, m.h as f32 * k * 0.5);
+                        let corners = [(-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh)];
+                        let uv = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)];
+                        let mut mesh = egui::Mesh::with_texture(tex.id());
+                        for ((x, y), (u, v)) in corners.into_iter().zip(uv) {
+                            mesh.vertices.push(egui::epaint::Vertex {
+                                pos: turn(x, y),
+                                uv: egui::pos2(u, v),
+                                color: egui::Color32::from_white_alpha(a),
+                            });
+                        }
+                        mesh.indices.extend([0, 1, 2, 0, 2, 3]);
+                        p.add(egui::Shape::mesh(mesh));
+                    }
+                }
+            }
             I::Image { rect: r, px, rgba } => {
                 let tex = textures.entry((page_index, idx)).or_insert_with(|| {
                     let img = egui::ColorImage::from_rgba_unmultiplied(
@@ -893,14 +1688,25 @@ fn paint_preview(
 
 // ----------------------------------------------------------- Print Image --
 
-/// Print Image: the current plan view as a PNG.
+/// Print Image (manual p. 1443): the current plan view as pixels, not
+/// vectors. Destination, DPI and Paper decide how many pixels: the picture can
+/// be sized to the printable width of a paper at the DPI, or given a width.
 pub struct ImageDialog {
     pub width_px: u32,
     /// `None` fits the plan to the image; `Some` draws it at that scale.
     pub scale: Option<Scale>,
     pub floor: usize,
     pub layer_set: String,
+    /// Dots per inch of the print.
+    pub dpi: u32,
+    /// Size the picture to the printable width of `paper` at the DPI.
+    pub fit_paper: bool,
+    paper: SheetSize,
+    landscape: bool,
 }
+
+/// The margin Print Image leaves on the paper, inches.
+const IMAGE_MARGIN_IN: f64 = 0.25;
 
 impl ImageDialog {
     pub fn new(floor: usize, layer_set: &str) -> Self {
@@ -909,23 +1715,103 @@ impl ImageDialog {
             scale: None,
             floor,
             layer_set: layer_set.to_string(),
+            dpi: 300,
+            fit_paper: false,
+            paper: SheetSize::Letter,
+            landscape: true,
+        }
+    }
+
+    /// The pixel width the paper's printable width comes to at the DPI.
+    pub fn paper_width_px(&self) -> u32 {
+        let (w, h) = self.paper.inches();
+        let across = if self.landscape { w } else { h };
+        (((across - 2.0 * IMAGE_MARGIN_IN) * f64::from(self.dpi)).round() as u32).max(16)
+    }
+
+    /// The information messages: what the picture is on paper and what may
+    /// go wrong.
+    pub fn info(&self) -> Vec<String> {
+        let w = self.effective_width();
+        let inches = f64::from(w) / f64::from(self.dpi.max(1));
+        let mut out = vec![format!(
+            "The picture is {w} pixels wide: {inches:.1} inches at {} dpi.",
+            self.dpi
+        )];
+        if self.dpi < 150 {
+            out.push("Below 150 dpi lines look coarse on paper.".to_string());
+        }
+        if w > 8000 {
+            out.push("The most the picture can be is 8000 pixels wide.".to_string());
+        }
+        out
+    }
+
+    fn effective_width(&self) -> u32 {
+        if self.fit_paper {
+            self.paper_width_px()
+        } else {
+            self.width_px
+        }
+    }
+
+    /// Settles the width the paper and DPI ask for (OK takes `width_px`).
+    pub fn settle(&mut self) {
+        if self.fit_paper {
+            self.width_px = self.paper_width_px().clamp(256, 8000);
         }
     }
 
     pub fn show(&mut self, ctx: &egui::Context) -> Outcome {
-        let error = (!(256..=8000).contains(&self.width_px))
-            .then_some("The image must be 256 to 8000 pixels wide");
+        self.settle();
+        let w = self.effective_width();
+        let error =
+            (!(256..=8000).contains(&w)).then_some("The image must be 256 to 8000 pixels wide");
+        let info = self.info();
         let Self {
-            width_px, scale, ..
+            width_px,
+            scale,
+            dpi,
+            fit_paper,
+            paper,
+            landscape,
+            ..
         } = self;
-        frame(ctx, "Print Image", 360.0, error, |ui| {
-            row(ui, "Width", |ui| {
-                ui.add(
-                    egui::DragValue::new(width_px)
-                        .range(64..=9000)
-                        .suffix(" px"),
-                );
+        let out = frame(ctx, "Print Image", 380.0, error, |ui| {
+            row(ui, "DPI", |ui| {
+                egui::ComboBox::from_id_salt("print_image_dpi")
+                    .selected_text(format!("{dpi}"))
+                    .width(80.0)
+                    .show_ui(ui, |ui| {
+                        for d in DPI_CHOICES {
+                            ui.selectable_value(dpi, d, format!("{d}"));
+                        }
+                    });
             });
+            ui.checkbox(fit_paper, "Size the picture to the paper");
+            if *fit_paper {
+                row(ui, "Paper", |ui| {
+                    egui::ComboBox::from_id_salt("print_image_paper")
+                        .selected_text(paper.label())
+                        .show_ui(ui, |ui| {
+                            for z in SheetSize::ALL {
+                                ui.selectable_value(paper, z, z.label());
+                            }
+                        });
+                });
+                row(ui, "Orientation", |ui| {
+                    ui.radio_value(landscape, true, "Landscape");
+                    ui.radio_value(landscape, false, "Portrait");
+                });
+            } else {
+                row(ui, "Width", |ui| {
+                    ui.add(
+                        egui::DragValue::new(width_px)
+                            .range(64..=9000)
+                            .suffix(" px"),
+                    );
+                });
+            }
             row(ui, "Scale", |ui| {
                 let shown = scale.map_or("Fit the plan".to_string(), |s| s.label().to_string());
                 egui::ComboBox::from_id_salt("print_image_scale")
@@ -940,7 +1826,13 @@ impl ImageDialog {
             ui.weak(
                 "Saves the floor plan's lines as a PNG. For a rendering, use Ray Trace > Save PNG.",
             );
-        })
+            section(ui, "Information");
+            for m in &info {
+                ui.weak(m);
+            }
+        });
+        self.settle();
+        out
     }
 }
 
@@ -1029,7 +1921,7 @@ impl ModelDialog {
     /// `cameras` are the project's perspective cameras (id and name); `current`
     /// is the one the 3D view shows, if any.
     pub fn new(cameras: Vec<(plan_core::Id, String)>, current: Option<plan_core::Id>) -> Self {
-        let s = LAST.with(|l| l.borrow().clone()).unwrap_or_default();
+        let s = recall("model").unwrap_or_default();
         let camera = current
             .filter(|c| cameras.iter().any(|(id, _)| id == c))
             .or_else(|| cameras.first().map(|(id, _)| *id))
@@ -1070,21 +1962,7 @@ impl ModelDialog {
             scale: PrintScale::Actual,
             range: None,
             tiling: false,
-            ..PrintDialog {
-                target: PrintTarget::PlanView {
-                    floor: 0,
-                    layer_set: String::new(),
-                    title: String::new(),
-                },
-                s: self.s.clone(),
-                all: true,
-                from: 1,
-                to: 1,
-                preview_requested: false,
-                printers: None,
-                custom_papers: Vec::new(),
-            }
-            .options()
+            ..PrintDialog::bare(self.s.clone()).options()
         }
     }
 
@@ -1150,7 +2028,7 @@ impl ModelDialog {
                 );
             });
             section(ui, "Paper");
-            row(ui, "Size", |ui| paper_combo(ui, s, &[]));
+            row(ui, "Size", |ui| simple_paper_combo(ui, s));
             row(ui, "Orientation", |ui| {
                 ui.radio_value(&mut s.landscape, true, "Landscape");
                 ui.radio_value(&mut s.landscape, false, "Portrait");
@@ -1174,10 +2052,26 @@ impl ModelDialog {
             ui.weak(format!("Renders {px_w} x {px_h} pixels."));
         });
         if out == Outcome::Ok {
-            LAST.with(|l| *l.borrow_mut() = Some(self.s.clone()));
+            remember("model", &self.s);
         }
         out
     }
+}
+
+/// The paper list of Print Model: the standard sizes and a custom one.
+fn simple_paper_combo(ui: &mut Ui, s: &mut Settings) {
+    let shown = match s.paper {
+        PaperChoice::Standard(z) => z.label().to_string(),
+        _ => "Custom".to_string(),
+    };
+    egui::ComboBox::from_id_salt("model_paper")
+        .selected_text(shown)
+        .show_ui(ui, |ui| {
+            for z in SheetSize::ALL {
+                ui.selectable_value(&mut s.paper, PaperChoice::Standard(z), z.label());
+            }
+            ui.selectable_value(&mut s.paper, PaperChoice::Custom, "Custom size");
+        });
 }
 
 // -------------------------------------------------------------- delivery --
@@ -1189,6 +2083,17 @@ pub fn printer_command_to(
     copies: u32,
     printer: Option<&str>,
 ) -> (&'static str, Vec<String>) {
+    printer_command_ext(path, copies, printer, &DeliveryExtras::default())
+}
+
+/// [`printer_command_to`] with the options of the Print dialog: collating
+/// copies (`-o collate=true`) and a paper source (`-o InputSlot=...`).
+pub fn printer_command_ext(
+    path: &Path,
+    copies: u32,
+    printer: Option<&str>,
+    extras: &DeliveryExtras,
+) -> (&'static str, Vec<String>) {
     let mut args = Vec::new();
     if let Some(p) = printer.filter(|p| !p.is_empty()) {
         args.push("-d".to_string());
@@ -1196,6 +2101,14 @@ pub fn printer_command_to(
     }
     args.push("-n".to_string());
     args.push(copies.max(1).to_string());
+    if extras.collate && copies > 1 {
+        args.push("-o".to_string());
+        args.push("collate=true".to_string());
+    }
+    if let Some(slot) = extras.input_slot.as_deref().filter(|s| !s.is_empty()) {
+        args.push("-o".to_string());
+        args.push(format!("InputSlot={slot}"));
+    }
     args.push(path.to_string_lossy().into_owned());
     ("lp", args)
 }
@@ -1268,7 +2181,7 @@ pub fn deliver_to(
                 return format!("Could not write the print file: {e}");
             }
             let (prog, args) = if dest == Destination::Printer {
-                printer_command_to(&path, copies, printer)
+                printer_command_ext(&path, copies, printer, &delivery_extras())
             } else {
                 viewer_command(&path)
             };
@@ -1350,7 +2263,6 @@ mod tests {
         d.s.scale = ScaleChoice::Custom;
         d.s.ratio = 0.5;
         assert!(d.error().is_some());
-        assert!(d.tiles().is_none());
     }
 
     #[test]
@@ -1567,5 +2479,349 @@ mod tests {
                 c.show(ctx);
             });
         }
+    }
+
+    // ----------------------------------------------------------- round 16 --
+
+    fn synced_context(f: impl FnOnce(&mut PrintViewContext)) {
+        let mut c = PrintViewContext {
+            synced: true,
+            ..PrintViewContext::default()
+        };
+        f(&mut c);
+        drawing_sheet::set_context(c);
+    }
+
+    #[test]
+    fn fit_to_paper_defaults_to_95_percent_and_the_percentage_is_global() {
+        forget_remembered_settings();
+        assert_eq!(fit_percent(), 95.0);
+        let d = PrintDialog::for_layout(1, (36.0, 24.0), "L");
+        assert_eq!(d.options().scale, PrintScale::FitPercent(95.0));
+        set_fit_percent(80.0);
+        let d = PrintDialog::for_plan(0, "Default Set", "PLAN");
+        assert_eq!(d.options().scale, PrintScale::FitPercent(80.0));
+        set_fit_percent(500.0);
+        assert_eq!(fit_percent(), 100.0, "it takes 1 to 100 percent");
+        forget_remembered_settings();
+    }
+
+    #[test]
+    fn settings_are_remembered_per_view_type_and_copies_reset() {
+        forget_remembered_settings();
+        synced_context(|_| {});
+        let mut plan = PrintDialog::for_plan(0, "Default Set", "PLAN");
+        plan.s.color = PrintColor::Grayscale;
+        plan.s.copies = 3;
+        plan.s.collate = false;
+        plan.s.dest = Destination::Viewer;
+        plan.accepted();
+        let plan2 = PrintDialog::for_plan(0, "Default Set", "PLAN");
+        assert_eq!(plan2.s.color, PrintColor::Grayscale);
+        assert_eq!(plan2.s.dest, Destination::Viewer);
+        assert_eq!(plan2.s.copies, 1, "copies always reset");
+        assert!(!plan2.s.collate);
+        // A layout has its own settings.
+        let lay = PrintDialog::for_layout(2, (36.0, 24.0), "L");
+        assert_eq!(lay.s.color, PrintColor::Color);
+        assert_eq!(lay.s.dest, Destination::Pdf);
+        // The range is not kept either.
+        let mut lay = lay;
+        lay.all = false;
+        lay.from = 2;
+        lay.accepted();
+        assert!(PrintDialog::for_layout(2, (36.0, 24.0), "L").all);
+        // Remember Print Settings after Printing off: nothing is kept or applied.
+        synced_context(|c| c.sheet.remember_print_settings = false);
+        let mut plan3 = PrintDialog::for_plan(0, "Default Set", "PLAN");
+        assert_eq!(
+            plan3.s.color,
+            PrintColor::Color,
+            "the remembered set is not used"
+        );
+        plan3.s.color = PrintColor::BlackWhite;
+        plan3.accepted();
+        synced_context(|_| {});
+        assert_eq!(
+            PrintDialog::for_plan(0, "Default Set", "PLAN").s.color,
+            PrintColor::Grayscale,
+            "and it kept nothing new"
+        );
+        forget_remembered_settings();
+    }
+
+    #[test]
+    fn the_first_print_of_a_view_starts_from_its_drawing_sheet_setup() {
+        forget_remembered_settings();
+        synced_context(|c| {
+            c.sheet.sheet =
+                plan_core::drawing_sheet::SheetDims::new("ARCH C (18 x 24)", 24.0, 18.0);
+            c.sheet.scale = plan_core::drawing_sheet::DrawingScale::per_foot(0.125);
+            c.sheet.margins_in = [0.5, 0.5, 0.25, 0.25];
+            c.sheet_shown = true;
+        });
+        let d = PrintDialog::for_plan(0, "Default Set", "PLAN");
+        // Match Print Source: the Drawing Sheet's size and orientation.
+        assert_eq!(d.s.paper, PaperChoice::MatchSource);
+        let o = d.options();
+        assert_eq!(o.paper, PaperSize::Standard(SheetSize::ArchC));
+        assert!(o.landscape);
+        // Print Source follows the Drawing Sheet toggle, the scale is To Scale.
+        assert_eq!(d.source(), PrintSource::DrawingSheet);
+        assert_eq!(o.scale, PrintScale::Drawing(Scale::EighthInch));
+        // The paper's margins are the sheet's Drawing Margins, top bottom left right.
+        assert_eq!(o.edge_margins_in, Some([0.5, 0.5, 0.25, 0.25]));
+        assert_eq!(o.printable_in(), (23.5, 17.0));
+        // Not shown: Current View.
+        synced_context(|c| c.sheet_shown = false);
+        assert_eq!(
+            PrintDialog::for_plan(0, "Default Set", "PLAN").source(),
+            PrintSource::CurrentView
+        );
+        // A portrait sheet turns the paper.
+        synced_context(|c| c.sheet.portrait = true);
+        let o = PrintDialog::for_plan(0, "Default Set", "PLAN").options();
+        assert!(!o.landscape);
+        assert_eq!(o.paper.inches(o.landscape), (18.0, 24.0));
+        forget_remembered_settings();
+    }
+
+    #[test]
+    fn print_source_chooses_the_part_of_the_plan() {
+        forget_remembered_settings();
+        synced_context(|c| {
+            c.sheet_window = [0.0, 0.0, 1728.0, 1152.0];
+            c.view_window = Some([100.0, 100.0, 500.0, 400.0]);
+            c.sheet_shown = true;
+        });
+        let mut d = PrintDialog::for_plan(0, "Default Set", "PLAN");
+        assert_eq!(d.options().plan_window, Some([0.0, 0.0, 1728.0, 1152.0]));
+        d.source = PrintSource::CurrentView;
+        assert_eq!(d.options().plan_window, Some([100.0, 100.0, 500.0, 400.0]));
+        // A layout never prints a window of the plan.
+        assert_eq!(
+            PrintDialog::for_layout(1, (36.0, 24.0), "L")
+                .options()
+                .plan_window,
+            None
+        );
+        // Without a canvas that told the dialog, the whole plan prints.
+        drawing_sheet::set_context(PrintViewContext::default());
+        assert_eq!(
+            PrintDialog::for_plan(0, "Default Set", "PLAN")
+                .options()
+                .plan_window,
+            None
+        );
+        forget_remembered_settings();
+    }
+
+    #[test]
+    fn a_check_plot_matches_the_paper_to_the_reduced_sheet() {
+        forget_remembered_settings();
+        let mut d = PrintDialog::for_layout(1, (36.0, 24.0), "L");
+        d.s.margin = 0.0;
+        d.s.scale = ScaleChoice::CheckPlot;
+        d.s.check_plot = 0.5;
+        assert!(d.match_check_plot_paper());
+        assert_eq!(d.s.paper, PaperChoice::Standard(SheetSize::ArchB));
+        assert!(d.s.landscape);
+        let o = d.options();
+        assert_eq!(
+            o.scale,
+            PrintScale::CheckPlot {
+                scale: Scale::QuarterInch,
+                fraction: 0.5
+            }
+        );
+        assert_eq!(plan_layout::print_scale_factor(&o, (36.0, 24.0)), 0.5);
+        // One page, no tiling needed.
+        assert_eq!(d.tiles().unwrap().count(), 1);
+        // A quarter plot goes onto Letter.
+        d.s.check_plot = 0.25;
+        d.s.margin = 0.25;
+        assert!(d.match_check_plot_paper());
+        assert_eq!(d.s.paper, PaperChoice::Standard(SheetSize::Letter));
+        // The information says what it is.
+        assert!(
+            d.info().iter().any(|m| m.contains("Check plot at 1/4")),
+            "{:?}",
+            d.info()
+        );
+        forget_remembered_settings();
+    }
+
+    #[test]
+    fn collate_and_the_paper_source_reach_the_printer() {
+        let extras = DeliveryExtras {
+            collate: true,
+            input_slot: Some("Tray2".into()),
+        };
+        let (p, a) = printer_command_ext(Path::new("/tmp/x.pdf"), 3, Some("HP"), &extras);
+        assert_eq!(p, "lp");
+        assert_eq!(
+            a,
+            [
+                "-d",
+                "HP",
+                "-n",
+                "3",
+                "-o",
+                "collate=true",
+                "-o",
+                "InputSlot=Tray2",
+                "/tmp/x.pdf"
+            ]
+            .map(String::from)
+        );
+        // One copy needs no collating.
+        let (_, a) = printer_command_ext(Path::new("/tmp/x.pdf"), 1, None, &extras);
+        assert!(!a.contains(&"collate=true".to_string()));
+        // The dialog sets them when it is accepted.
+        forget_remembered_settings();
+        let mut d = PrintDialog::for_plan(0, "Default Set", "PLAN");
+        d.s.copies = 2;
+        d.s.collate = true;
+        d.s.paper_source = 1;
+        assert!(d.options().collate);
+        d.accepted();
+        assert_eq!(
+            delivery_extras(),
+            DeliveryExtras {
+                collate: true,
+                input_slot: Some("Tray1".into())
+            }
+        );
+        d.s.copies = 1;
+        assert!(!d.options().collate);
+        forget_remembered_settings();
+    }
+
+    #[test]
+    fn include_watermark_needs_something_to_show() {
+        forget_remembered_settings();
+        synced_context(|c| {
+            c.watermark_on = true;
+            c.watermark_ready = false;
+        });
+        let d = PrintDialog::for_plan(0, "Default Set", "PLAN");
+        assert!(
+            !d.includes_watermark(),
+            "the view has it on, but it is empty"
+        );
+        synced_context(|c| {
+            c.watermark_on = true;
+            c.watermark_ready = true;
+        });
+        let mut d = PrintDialog::for_plan(0, "Default Set", "PLAN");
+        assert!(d.includes_watermark());
+        assert!(d.options().watermark);
+        d.include_watermark = false;
+        assert!(!d.options().watermark);
+        // Ticked with nothing to show: a message, and no watermark in the options.
+        synced_context(|c| {
+            c.watermark_on = false;
+            c.watermark_ready = false;
+        });
+        let mut d = PrintDialog::for_plan(0, "Default Set", "PLAN");
+        d.include_watermark = true;
+        assert!(!d.options().watermark);
+        assert!(d.info().iter().any(|m| m.contains("watermark")));
+        forget_remembered_settings();
+    }
+
+    #[test]
+    fn a_plan_print_reports_its_sheet_pages_and_scale() {
+        forget_remembered_settings();
+        // ARCH D at 1/4" = 1' shown, printed on Letter at 95%.
+        synced_context(|c| c.sheet_shown = true);
+        let mut d = PrintDialog::for_plan(0, "Default Set", "PLAN");
+        d.s.paper = PaperChoice::Standard(SheetSize::Letter);
+        d.s.scale = ScaleChoice::ToScale;
+        d.s.margin = 0.25;
+        d.s.use_sheet_margins = false;
+        // At its own scale a 36 x 24 sheet does not fit Letter: it says so.
+        assert!(
+            d.info().iter().any(|m| m.contains("cut off")),
+            "{:?}",
+            d.info()
+        );
+        d.s.tiling = true;
+        let g = d.tiles().unwrap();
+        assert!(g.count() > 1);
+        assert!(d.summary().contains("paper page"), "{}", d.summary());
+        assert!(d.info().iter().any(|m| m.contains("crop marks")));
+        forget_remembered_settings();
+    }
+
+    #[test]
+    fn print_image_sizes_the_picture_to_the_paper_at_the_dpi() {
+        let mut i = ImageDialog::new(0, "All");
+        assert!(!i.fit_paper);
+        i.fit_paper = true;
+        // Letter landscape, 1/4" margins: 10.5" printable at 300 dpi.
+        assert_eq!(i.paper_width_px(), 3150);
+        i.dpi = 150;
+        assert_eq!(i.paper_width_px(), 1575);
+        i.landscape = false;
+        assert_eq!(
+            i.paper_width_px(),
+            1125,
+            "portrait Letter is 8.5 - 0.5 = 8 inches wide"
+        );
+        i.settle();
+        assert_eq!(i.width_px, 1125);
+        assert!(i.info()[0].contains("1125 pixels wide") && i.info()[0].contains("7.5 inches"));
+        i.dpi = 72;
+        assert!(i.info().iter().any(|m| m.contains("coarse")));
+        let ctx = egui::Context::default();
+        for _ in 0..2 {
+            let _ = ctx.run(egui::RawInput::default(), |c| {
+                i.show(c);
+            });
+        }
+    }
+
+    #[test]
+    fn the_whole_dialog_draws_with_every_option() {
+        forget_remembered_settings();
+        synced_context(|c| {
+            c.sheet_shown = true;
+            c.watermark_ready = true;
+            c.plan_extent = Some((
+                plan_core::Point::new(0.0, 0.0),
+                plan_core::Point::new(720.0, 480.0),
+            ));
+        });
+        let ctx = egui::Context::default();
+        let mut plan = PrintDialog::for_plan(0, "Default Set", "PLAN").with_current_page(1);
+        let mut lay = PrintDialog::for_layout(3, (36.0, 24.0), "L").with_current_page(2);
+        lay.current_only = true;
+        lay.all = false;
+        assert_eq!(lay.range(), Some((2, 2)));
+        for choice in [
+            ScaleChoice::FitPercent,
+            ScaleChoice::ToScale,
+            ScaleChoice::CheckPlot,
+            ScaleChoice::Fit,
+            ScaleChoice::Percent,
+            ScaleChoice::Custom,
+            ScaleChoice::Drawing(Scale::QuarterInch),
+        ] {
+            plan.s.scale = choice;
+            lay.s.scale = choice;
+            for _ in 0..2 {
+                let _ = ctx.run(egui::RawInput::default(), |c| {
+                    plan.show(c);
+                    lay.show(c);
+                });
+            }
+        }
+        plan.s.dest = Destination::Printer;
+        plan.s.copies = 3;
+        let _ = ctx.run(egui::RawInput::default(), |c| {
+            plan.show(c);
+        });
+        forget_remembered_settings();
     }
 }

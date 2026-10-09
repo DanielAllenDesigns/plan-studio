@@ -176,7 +176,10 @@ mod tests {
         draw_fill(&mut cv, &o, &a, &tp);
         assert!(matches!(
             cv.prims[0],
-            Prim::Fill { color: PdfColor::Rgb(10, 20, 30), .. }
+            Prim::Fill {
+                color: PdfColor::Rgb(10, 20, 30),
+                ..
+            }
         ));
         let pen = pen_for(&a, Pen::new(0.5));
         assert_eq!(pen.dash, Dash::Dashed);

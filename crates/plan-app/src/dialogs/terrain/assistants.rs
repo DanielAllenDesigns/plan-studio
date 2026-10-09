@@ -274,7 +274,7 @@ impl ImportState {
 
     pub fn scale_data(&mut self, ui: &mut Ui, fields: &mut Fields, draft: &mut TerrainRecord) {
         section(ui, "Scale Data");
-        let mut axis = |ui: &mut Ui, label: &str, salt: &str, unit: &mut ImportUnit| {
+        let axis = |ui: &mut Ui, label: &str, salt: &str, unit: &mut ImportUnit| {
             row(ui, label, |ui| {
                 egui::ComboBox::from_id_salt(salt)
                     .selected_text(unit.name())

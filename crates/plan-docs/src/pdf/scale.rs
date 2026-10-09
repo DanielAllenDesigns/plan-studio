@@ -267,6 +267,19 @@ impl Scale {
         }
     }
 
+    /// The scale that draws `ipf` paper inches per plan foot (what the
+    /// two-part Drawing Scale of a view comes to): the architectural scale
+    /// with that value, else the metric ratio 1:n nearest to it.
+    pub fn from_inches_per_foot(ipf: f64) -> Scale {
+        if let Some(s) = Scale::ALL
+            .into_iter()
+            .find(|s| (s.inches_per_foot() - ipf).abs() < 1e-9)
+        {
+            return s;
+        }
+        Scale::Ratio((12.0 / ipf.max(1e-6)).round().clamp(1.0, 100_000.0) as u32)
+    }
+
     /// Parse a scale note such as `1/4" = 1'`, `1/4"=1'-0"`, `3/16 in = 1 ft`,
     /// `1" = 10'` or `1:50`. Returns `None` for text that is not one of the
     /// supported scales.
@@ -412,6 +425,16 @@ mod tests {
         assert_eq!(Scale::from_label("1:0"), None);
         assert_eq!(Scale::from_label("1/4"), None);
         assert_eq!(Scale::from_label("1/4\" = 1"), None);
+    }
+
+    #[test]
+    fn a_view_scale_in_inches_per_foot_finds_its_scale() {
+        assert_eq!(Scale::from_inches_per_foot(0.25), Scale::QuarterInch);
+        assert_eq!(Scale::from_inches_per_foot(3.0), Scale::ThreeInch);
+        assert_eq!(Scale::from_inches_per_foot(0.05), Scale::OneInchEq20Ft);
+        // 1 mm = 50 mm draws 0.24 inch per foot: the ratio 1:50.
+        assert_eq!(Scale::from_inches_per_foot(0.24), Scale::Ratio(50));
+        assert_eq!(Scale::from_inches_per_foot(0.0), Scale::Ratio(100_000));
     }
 
     #[test]

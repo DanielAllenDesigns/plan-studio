@@ -15,6 +15,7 @@ mod model3d;
 mod options;
 mod plan;
 mod railing;
+mod sections;
 
 use layout::Layout;
 use plan_core::{Id, Point};
@@ -28,6 +29,7 @@ pub use options::{
     RadiusRef, Runner, Starter, StringerOptions, TopLanding, ViewMode, Walkline,
 };
 pub use plan::{plan_symbol, Stroke};
+pub use sections::{complete_break, disconnect, MIN_BREAK_LANDING};
 pub use railing::{
     landing_edges, landing_guards, plan_symbol_railing, railing_meshes, railing_segments, stair_half_wall,
     stair_half_wall_skipping, stair_posts, stair_railing, stair_railing_geometry,
@@ -50,6 +52,9 @@ pub const MIN_HEADROOM: f64 = 80.0;
 const EPS: f64 = 1e-9;
 /// Maximum rise of one ramp run between landings, IBC 1012.2 (30").
 pub const RAMP_MAX_RISE: f64 = 30.0;
+/// The steepest ramp slope code allows, as run per inch of rise (IBC
+/// 1012.2: 1:12).
+pub const RAMP_MIN_SLOPE: f64 = 12.0;
 /// Length of the flat landing between two ramp runs, IBC 1012.6 (60").
 pub const RAMP_LANDING: f64 = 60.0;
 /// Narrowest tread of a curved stair at the inside edge, IRC R311.7.5.2.1 (6").
@@ -324,6 +329,10 @@ pub struct StairParams {
     /// Landings: the railing of each edge of the outline, in the order of
     /// the outline (missing entries are automatic).
     pub edge_rails: Vec<EdgeRail>,
+    /// A downward stair (drawn with Alt or the right mouse button): the plan
+    /// arrow starts at the top and points down, labelled DN instead of UP.
+    /// The steps themselves are the same as an upward stair's.
+    pub down: bool,
 }
 
 impl Default for StairParams {
@@ -372,6 +381,7 @@ impl Default for StairParams {
             railing_openings: false,
             allow_wrap: false,
             edge_rails: Vec::new(),
+            down: false,
         }
     }
 }
@@ -599,7 +609,7 @@ pub fn solve(params: &StairParams) -> StairSolution {
         let runs = ramp_runs(params.total_rise);
         let run =
             params.total_rise.max(0.0) * slope_1_in.max(0.0) + f64::from(runs - 1) * RAMP_LANDING;
-        if slope_1_in < 12.0 {
+        if slope_1_in < RAMP_MIN_SLOPE {
             code_ok = false;
             warnings.push(format!(
                 "ramp slope 1:{slope_1_in:.1} is steeper than the 1:12 maximum"
@@ -799,3 +809,5 @@ pub fn top_point(stair: &Stair) -> (Point, f64) {
 mod tests;
 #[cfg(test)]
 mod tests_r15;
+#[cfg(test)]
+mod tests_sections;

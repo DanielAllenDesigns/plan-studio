@@ -134,12 +134,24 @@ pub fn dimension_entities(d: &DxfDimension, st: &DxfDimStyle, props: &DxfProps) 
                 b.sub(a).normalized()
             };
             let n = dir.perp();
-            let s = if d.def_pt.sub(a).dot(n) >= 0.0 { 1.0 } else { -1.0 };
+            let s = if d.def_pt.sub(a).dot(n) >= 0.0 {
+                1.0
+            } else {
+                -1.0
+            };
             let foot = |p: Point| p.add(n.scale(d.def_pt.sub(p).dot(n)));
             let (fa, fb) = (foot(a), foot(b));
             for (p, f) in [(a, fa), (b, fb)] {
-                let sgn = if d.def_pt.sub(p).dot(n) >= 0.0 { 1.0 } else { -1.0 };
-                out.push(line(p.add(n.scale(exo * sgn)), f.add(n.scale(exe * sgn)), props));
+                let sgn = if d.def_pt.sub(p).dot(n) >= 0.0 {
+                    1.0
+                } else {
+                    -1.0
+                };
+                out.push(line(
+                    p.add(n.scale(exo * sgn)),
+                    f.add(n.scale(exe * sgn)),
+                    props,
+                ));
             }
             out.push(line(fa, fb, props));
             let span = fb.sub(fa);
@@ -154,7 +166,13 @@ pub fn dimension_entities(d: &DxfDimension, st: &DxfDimStyle, props: &DxfProps) 
             } else {
                 d.text_pt
             };
-            out.push(label(at, &shown(d.measurement.unwrap_or(m), "", ""), txt_h, readable(dir.angle().to_degrees()), props));
+            out.push(label(
+                at,
+                &shown(d.measurement.unwrap_or(m), "", ""),
+                txt_h,
+                readable(dir.angle().to_degrees()),
+                props,
+            ));
         }
         3 | 4 => {
             // Diameter: 10 and 15 are opposite points on the circle. Radius:
@@ -168,8 +186,18 @@ pub fn dimension_entities(d: &DxfDimension, st: &DxfDimStyle, props: &DxfProps) 
             } else {
                 (p.dist(q), "R")
             };
-            let at = if d.text_pt == Point::ZERO { q.add(dir.scale(txt_h * 2.0)) } else { d.text_pt };
-            out.push(label(at, &shown(d.measurement.unwrap_or(m), pre, ""), txt_h, readable(dir.angle().to_degrees()), props));
+            let at = if d.text_pt == Point::ZERO {
+                q.add(dir.scale(txt_h * 2.0))
+            } else {
+                d.text_pt
+            };
+            out.push(label(
+                at,
+                &shown(d.measurement.unwrap_or(m), pre, ""),
+                txt_h,
+                readable(dir.angle().to_degrees()),
+                props,
+            ));
         }
         2 | 5 => {
             // 2-line: lines 13-14 and 15-10, arc through 16. 3-point: the
@@ -196,8 +224,16 @@ pub fn dimension_entities(d: &DxfDimension, st: &DxfDimStyle, props: &DxfProps) 
                     },
                     props,
                 ));
-                out.push(line(e1, vertex.add(Point::new(a1.cos(), a1.sin()).scale(r)), props));
-                out.push(line(e2, vertex.add(Point::new(a2.cos(), a2.sin()).scale(r)), props));
+                out.push(line(
+                    e1,
+                    vertex.add(Point::new(a1.cos(), a1.sin()).scale(r)),
+                    props,
+                ));
+                out.push(line(
+                    e2,
+                    vertex.add(Point::new(a2.cos(), a2.sin()).scale(r)),
+                    props,
+                ));
             }
             let sweep = (e - s).rem_euclid(TAU);
             let deg = d.measurement.map_or(sweep.to_degrees(), f64::to_degrees);
@@ -209,14 +245,30 @@ pub fn dimension_entities(d: &DxfDimension, st: &DxfDimStyle, props: &DxfProps) 
                 d.text_pt
             };
             let tang = (mid + PI / 2.0).to_degrees();
-            out.push(label(at, &shown(m, "", "\u{b0}"), txt_h, readable(tang), props));
+            out.push(label(
+                at,
+                &shown(m, "", "\u{b0}"),
+                txt_h,
+                readable(tang),
+                props,
+            ));
         }
         _ => {
             // Ordinate: a leader from the feature point to the text.
             out.push(line(d.p13, d.p14, props));
-            let at = if d.text_pt == Point::ZERO { d.p14 } else { d.text_pt };
+            let at = if d.text_pt == Point::ZERO {
+                d.p14
+            } else {
+                d.text_pt
+            };
             let m = if d.p13.x != d.p14.x { d.p13.x } else { d.p13.y };
-            out.push(label(at, &shown(d.measurement.unwrap_or(m), "", ""), txt_h, 0.0, props));
+            out.push(label(
+                at,
+                &shown(d.measurement.unwrap_or(m), "", ""),
+                txt_h,
+                0.0,
+                props,
+            ));
         }
     }
     out
@@ -231,7 +283,11 @@ fn line_meet(a: Point, b: Point, c: Point, d: Point) -> Option<Point> {
 pub fn xform_dimension(xf: &Xf, d: &DxfDimension) -> DxfDimension {
     DxfDimension {
         def_pt: xf.point(d.def_pt),
-        text_pt: if d.text_pt == Point::ZERO { d.text_pt } else { xf.point(d.text_pt) },
+        text_pt: if d.text_pt == Point::ZERO {
+            d.text_pt
+        } else {
+            xf.point(d.text_pt)
+        },
         p13: xf.point(d.p13),
         p14: xf.point(d.p14),
         p15: xf.point(d.p15),
@@ -266,19 +322,43 @@ mod tests {
     #[test]
     fn aligned_and_rotated_dimensions_have_start_end_and_offset() {
         // Horizontal 100 long, dimension line 20 above.
-        let d = dim(0, Point::new(50.0, 20.0), Point::new(0.0, 0.0), Point::new(100.0, 0.0), 0.0);
+        let d = dim(
+            0,
+            Point::new(50.0, 20.0),
+            Point::new(0.0, 0.0),
+            Point::new(100.0, 0.0),
+            0.0,
+        );
         let (s, e, off) = linear_dimension(&d).unwrap();
         assert_eq!((s, e), (Point::new(0.0, 0.0), Point::new(100.0, 0.0)));
         assert!((off - 20.0).abs() < 1e-9);
         // Below the line: negative offset (the left side walking start to end is up).
-        let below = dim(1, Point::new(50.0, -8.0), Point::new(0.0, 0.0), Point::new(100.0, 0.0), 0.0);
+        let below = dim(
+            1,
+            Point::new(50.0, -8.0),
+            Point::new(0.0, 0.0),
+            Point::new(100.0, 0.0),
+            0.0,
+        );
         assert!((linear_dimension(&below).unwrap().2 + 8.0).abs() < 1e-9);
         // A horizontal dimension of a slanted pair measures the x run.
-        let slanted = dim(0, Point::new(0.0, 30.0), Point::new(0.0, 0.0), Point::new(60.0, 20.0), 0.0);
+        let slanted = dim(
+            0,
+            Point::new(0.0, 30.0),
+            Point::new(0.0, 0.0),
+            Point::new(60.0, 20.0),
+            0.0,
+        );
         let (s, e, _) = linear_dimension(&slanted).unwrap();
         assert!((e.sub(s).length() - 60.0).abs() < 1e-9 && e.y.abs() < 1e-9);
         // A pair walked backwards reads start to end along the dimension.
-        let back = dim(0, Point::new(0.0, 5.0), Point::new(100.0, 0.0), Point::new(0.0, 0.0), 0.0);
+        let back = dim(
+            0,
+            Point::new(0.0, 5.0),
+            Point::new(100.0, 0.0),
+            Point::new(0.0, 0.0),
+            0.0,
+        );
         let (s, e, _) = linear_dimension(&back).unwrap();
         assert!((s.x - 100.0).abs() < 1e-9 && e.x.abs() < 1e-9);
         assert!(linear_dimension(&dim(2, Point::ZERO, Point::ZERO, Point::ZERO, 0.0)).is_none());
@@ -299,10 +379,19 @@ mod tests {
 
     #[test]
     fn a_missing_block_is_drawn_from_the_definition_points() {
-        let d = dim(1, Point::new(50.0, 20.0), Point::new(0.0, 0.0), Point::new(100.0, 0.0), 0.0);
+        let d = dim(
+            1,
+            Point::new(50.0, 20.0),
+            Point::new(0.0, 0.0),
+            Point::new(100.0, 0.0),
+            0.0,
+        );
         let st = DxfDimStyle::default();
         let es = dimension_entities(&d, &st, &DxfProps::default());
-        let lines = es.iter().filter(|e| matches!(e.kind, DxfKind::Line { .. })).count();
+        let lines = es
+            .iter()
+            .filter(|e| matches!(e.kind, DxfKind::Line { .. }))
+            .count();
         let texts: Vec<&DxfText> = es
             .iter()
             .filter_map(|e| match &e.kind {
@@ -313,11 +402,22 @@ mod tests {
         assert_eq!(lines, 3, "two extension lines and the dimension line");
         assert_eq!(texts[0].text, "100");
         // An angular dimension gets its arc and two extension lines.
-        let mut a = dim(5, Point::new(7.0, 7.0), Point::new(10.0, 0.0), Point::new(0.0, 10.0), 0.0);
+        let mut a = dim(
+            5,
+            Point::new(7.0, 7.0),
+            Point::new(10.0, 0.0),
+            Point::new(0.0, 10.0),
+            0.0,
+        );
         a.p15 = Point::ZERO;
         let es = dimension_entities(&a, &st, &DxfProps::default());
         let arc = es.iter().find_map(|e| match e.kind {
-            DxfKind::Arc { radius, start_deg, end_deg, .. } => Some((radius, start_deg, end_deg)),
+            DxfKind::Arc {
+                radius,
+                start_deg,
+                end_deg,
+                ..
+            } => Some((radius, start_deg, end_deg)),
             _ => None,
         });
         let (r, s, e) = arc.unwrap();

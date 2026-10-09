@@ -32,13 +32,7 @@ pub mod cmd {
 }
 
 fn stair_id(c: stairs_view::StairCommand) -> &'static str {
-    use stairs_view::StairCommand as C;
-    match c {
-        C::AutoStairwell => cmd::STAIR_WELL,
-        C::FlareCurve => cmd::STAIR_FLARE,
-        C::ToggleBreakLine => cmd::STAIR_BREAK,
-        C::MakeRailing => cmd::STAIR_RAILING,
-    }
+    c.id()
 }
 
 fn stair_command(id: &str) -> Option<stairs_view::StairCommand> {
@@ -265,7 +259,11 @@ impl EditorContext {
         };
         match one {
             // The CAD edit tools (fillet, chamfer, offset, ...) under Select.
-            ObjectRef::Cad(_) => v.extend(crate::tools::cad::edit_actions(self)),
+            ObjectRef::Cad(_) => {
+                v.extend(crate::tools::cad::edit_actions(self));
+                // Specification, Set as Default and the conversions (CAD-67).
+                v.extend(crate::dialogs::construction_line::edit_actions(self));
+            }
             ObjectRef::Dimension(_) => v.extend(crate::tools::dimension::edit_actions(self)),
             ObjectRef::Stair(_) => {
                 for (c, on) in stairs_view::edit_commands(self) {
@@ -335,6 +333,12 @@ impl EditorContext {
         }
         // Tools > Materials List and the Calculate Materials buttons.
         if crate::dialogs::materials_list::run_command(self, id) {
+            return;
+        }
+        // Construction lines and the Reference Display's commands.
+        if crate::dialogs::construction_line::run_command(self, id)
+            || crate::dialogs::reference_display::run_command(self, id)
+        {
             return;
         }
         if let Some(c) = stair_command(id) {

@@ -327,10 +327,20 @@ fn retie_anchors(
             AnchorTarget::Opening => ObjectRef::Opening(a.wall),
             AnchorTarget::Cabinet => ObjectRef::Cabinet(a.wall),
             AnchorTarget::Symbol => ObjectRef::Symbol(a.wall),
+            AnchorTarget::Cad => ObjectRef::Cad(a.wall),
+            AnchorTarget::Stair => ObjectRef::Stair(a.wall),
+            AnchorTarget::Device => ObjectRef::Device(a.wall),
         };
         let now = match map.get(&was) {
-            Some(ObjectRef::Wall(id) | ObjectRef::Opening(id) | ObjectRef::Cabinet(id))
-            | Some(ObjectRef::Symbol(id)) => *id,
+            Some(
+                ObjectRef::Wall(id)
+                | ObjectRef::Opening(id)
+                | ObjectRef::Cabinet(id)
+                | ObjectRef::Symbol(id)
+                | ObjectRef::Cad(id)
+                | ObjectRef::Stair(id)
+                | ObjectRef::Device(id),
+            ) => *id,
             _ => return [None, None],
         };
         let mut copy = *a;

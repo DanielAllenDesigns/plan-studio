@@ -153,7 +153,7 @@ fn the_new_layout_tools_are_in_the_toolbar_catalog() {
         .map(|e| e.key)
         .collect();
     for want in [
-        "Page Specification",
+        "Page Information",
         "Customize Sheet Sizes",
         "New Layout File",
         "Open Source View",

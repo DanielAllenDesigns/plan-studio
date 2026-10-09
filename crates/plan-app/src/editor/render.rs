@@ -97,7 +97,10 @@ pub fn draw_plan(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
         "underlays",
         crate::tools::underlay::draw_underlays(cx, painter, cam)
     );
-    section!("reference floor", draw_reference_floor(cx, painter, cam));
+    section!(
+        "reference floor",
+        crate::editor::ref_overlay::draw_reference(cx, painter, cam, false)
+    );
     section!(
         "site",
         crate::editor::site_view::draw_site(cx, painter, cam)
@@ -105,6 +108,11 @@ pub fn draw_plan(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
     section!("rooms", draw_rooms(cx, painter, cam));
     // CAD objects in a drawing group below the walls' draw under them.
     section!("cad behind walls", draw_cad_pass(cx, painter, cam, true));
+    // Construction lines in a drawing group below the walls' (group 21).
+    section!(
+        "construction lines behind walls",
+        crate::editor::ref_overlay::draw_construction(cx, painter, cam, true)
+    );
     // Slabs, pads and piers sit under the walls.
     section!(
         "foundation",
@@ -187,6 +195,20 @@ pub fn draw_plan(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
     // CAD objects whose drawing group is above the walls' draw over everything.
     section!("cad", draw_cad_pass(cx, painter, cam, false));
     section!(
+        "construction lines",
+        crate::editor::ref_overlay::draw_construction(cx, painter, cam, false)
+    );
+    // Reference rows above the Current line draw over the plan; a wall drawn
+    // exactly over its reference counterpart gets light blue edges (S-194).
+    section!(
+        "reference front",
+        crate::editor::ref_overlay::draw_reference(cx, painter, cam, true)
+    );
+    section!(
+        "reference alignment",
+        crate::editor::ref_overlay::draw_alignment(cx, painter, cam)
+    );
+    section!(
         "space boxes",
         crate::editor::rooms_edit::draw_space_boxes(cx, painter, cam)
     );
@@ -235,6 +257,8 @@ fn draw_cad_pass(cx: &EditorContext, painter: &egui::Painter, cam: &Camera, behi
         return;
     }
     let attrs = floor.cad_attr_map();
+    // Construction lines are drawn by `ref_overlay` (infinite, with callouts).
+    let construction = floor.construction_ids();
     // Text objects are drawn in their text style's font; anything drawn
     // after them (tool previews) in the Default Text Style's.
     let default_face = face_of(
@@ -243,7 +267,7 @@ fn draw_cad_pass(cx: &EditorContext, painter: &egui::Painter, cam: &Camera, behi
             .resolve(plan_core::text_styles::DEFAULT_TEXT_STYLE_NAME),
     );
     for c in objects {
-        if !cx.layers().is_visible(&c.layer) {
+        if !cx.layers().is_visible(&c.layer) || construction.contains(&c.id) {
             continue;
         }
         if matches!(c.item, CadItem::Text { .. }) {
@@ -845,22 +869,12 @@ fn weighted(cx: &EditorContext, painter: &egui::Painter, layer: &str, draw: impl
 /// the floor above or another floor. Nothing when the display is off, when
 /// there is no such floor, or for walls on layers the chosen layer set hides
 /// or whose Ref box (LAY-10) is off.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn reference_polygons(cx: &EditorContext) -> Vec<Vec<Point>> {
     crate::dialogs::reference_display::reference_walls(cx)
         .iter()
         .map(|w| w.footprint().to_vec())
         .collect()
-}
-
-/// Reference Display: the chosen floor, walls only, dimmed in the chosen
-/// color (gray by default).
-fn draw_reference_floor(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
-    let [r, g, b] = crate::dialogs::reference_display::settings(&cx.project).color;
-    let fill = Color32::from_rgba_unmultiplied(r, g, b, 70);
-    let edge = Stroke::new(0.75_f32, Color32::from_rgba_unmultiplied(r, g, b, 170));
-    for poly in reference_polygons(cx) {
-        painter.add(Shape::convex_polygon(quad(cam, &poly), fill, edge));
-    }
 }
 
 /// The parts of `clip` that lie outside `sheet` (up to four rectangles).
@@ -1386,6 +1400,14 @@ fn draw_dimension_ends(
             let tick = perp * (size * 0.5).clamp(2.5, 14.0);
             for s in [sp, sq] {
                 painter.line_segment([s - tick, s + tick], stroke);
+            }
+        }
+        DimArrow::Slash => {
+            // A long drafting slash, steeper than the tick (about 60 degrees).
+            let len = (size * 0.6).clamp(4.0, 20.0);
+            let slash = perp * len + dir * (len * 0.58);
+            for s in [sp, sq] {
+                painter.line_segment([s - slash, s + slash], stroke);
             }
         }
         DimArrow::Dot => {

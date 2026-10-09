@@ -203,7 +203,11 @@ pub fn mtext_runs(raw: &str, base_height: f64) -> (Vec<DxfRun>, String) {
                         let arg = until_semicolon(&mut chars);
                         flush(&mut buf, &cur, &mut runs);
                         cur.color = arg.trim().parse::<u32>().ok().map(|v| {
-                            [(v & 255) as u8, ((v >> 8) & 255) as u8, ((v >> 16) & 255) as u8]
+                            [
+                                (v & 255) as u8,
+                                ((v >> 8) & 255) as u8,
+                                ((v >> 16) & 255) as u8,
+                            ]
                         });
                     }
                     'S' => {
@@ -285,12 +289,19 @@ mod tests {
         assert_eq!(clean_text("deg \\U+00B0 and \\U+20AC"), "deg ° and €");
         assert_eq!(clean_text("%%176"), "°");
         assert_eq!(clean_text("100%%% sure"), "100% sure");
-        assert_eq!(clean_text("100%% sure"), "100%% sure", "a lone %% is not a code");
+        assert_eq!(
+            clean_text("100%% sure"),
+            "100%% sure",
+            "a lone %% is not a code"
+        );
     }
 
     #[test]
     fn mtext_formatting_is_stripped_and_kept_as_runs() {
-        assert_eq!(strip_mtext("{\\fArial|b0;Hi}\\Pthere\\~now"), "Hi\nthere now");
+        assert_eq!(
+            strip_mtext("{\\fArial|b0;Hi}\\Pthere\\~now"),
+            "Hi\nthere now"
+        );
         assert_eq!(strip_mtext("\\H2.5;Big \\C1;red"), "Big red");
         assert_eq!(strip_mtext("\\S1/2;in"), "1/2in");
         let (runs, plain) = mtext_runs("plain {\\fArial|b1|i1;bold}{\\L under\\l} \\H2x;big", 2.0);

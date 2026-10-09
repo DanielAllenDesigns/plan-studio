@@ -59,10 +59,14 @@ pub use pages::{
     REVISION_TABLE_COLUMNS,
 };
 pub use print::{
-    layout_print_preview, plan_print_scale, plan_view_image, plan_view_print_preview,
-    print_layout_pdf, print_model_pdf, print_plan_view_pdf, rasterize_lines, tile_grid,
-    with_perspective_quality, PaperSize, PreviewItem, PreviewPage, PrintColor, PrintOptions,
-    PrintScale, TileGrid,
+    adopt_layout_sheet_sizes, check_plot_label, drawing_sheet_window, extent_center,
+    global_custom_papers, global_sheet_sizes, layout_print_preview, paper_for_check_plot,
+    plan_extent, plan_print_scale, plan_view_image, plan_view_print_preview, print_info,
+    print_layout_pdf, print_model_pdf, print_plan_view_pdf, print_scale_factor, rasterize_lines,
+    scale_to_fit, set_global_sheet_sizes, tile_grid, use_sheet_sizes, window_of,
+    with_perspective_quality, PaperSize, PenSetup, PreviewItem, PreviewMark, PreviewMarkKind,
+    PreviewPage, PrintColor, PrintOptions, PrintScale, SheetSizeFile, TileGrid,
+    CHECK_PLOT_FRACTIONS, DEFAULT_FIT_PERCENT,
 };
 pub use render::{
     macros_for, perspective_request, render_box_artwork, render_box_artwork_in, render_box_lines,

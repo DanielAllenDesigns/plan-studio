@@ -112,3 +112,64 @@ fn standard_fonts_carry_widths_and_a_descriptor() {
     assert_eq!(count(&pdf, "/FirstChar 32 /LastChar 126 /Widths ["), 2);
     assert!(t.contains("/FontDescriptor "));
 }
+
+// ------------------------------------------------------------ opacity --
+
+#[test]
+fn set_alpha_adds_an_ext_gstate_to_the_page_that_uses_it() {
+    let mut d = PdfDoc::new(200.0, 200.0);
+    d.line(0.0, 0.0, 10.0, 10.0, 1.0);
+    d.new_page();
+    d.save_state();
+    d.set_alpha(0.3);
+    d.set_alpha(0.3);
+    d.text(10.0, 10.0, 12.0, "DRAFT");
+    d.restore_state();
+    let pdf = d.finish();
+    let t = text(&pdf);
+    // One resource for the level, named in the page that sets it.
+    assert_eq!(
+        count(&pdf, "/GSA30 << /Type/ExtGState /ca 0.3 /CA 0.3 >>"),
+        1
+    );
+    assert_eq!(count(&pdf, "/GSA30 gs"), 2);
+    let first = t.find("/Type /Page ").unwrap();
+    let second = t[first + 10..].find("/Type /Page ").unwrap() + first + 10;
+    assert!(
+        !t[first..second].contains("ExtGState"),
+        "page 1 sets no opacity"
+    );
+    assert!(t[second..].contains("ExtGState"));
+    check_xref(&pdf);
+}
+
+#[test]
+fn a_picture_with_transparent_parts_gets_a_soft_mask() {
+    let mut d = PdfDoc::new(200.0, 200.0);
+    // Two pixels: one solid red, one half transparent green.
+    let rgba = [255u8, 0, 0, 255, 0, 255, 0, 128];
+    assert!(d.image_rgba_placed(100.0, 100.0, 40.0, 20.0, 0.0, 2, 1, &rgba));
+    // All-opaque pictures need no mask.
+    assert!(d.image_rgba_placed(50.0, 50.0, 10.0, 10.0, 0.0, 1, 1, &[1, 2, 3, 255]));
+    assert!(!d.image_rgba_placed(0.0, 0.0, 1.0, 1.0, 0.0, 2, 2, &[0; 4]));
+    let pdf = d.finish();
+    let t = text(&pdf);
+    assert_eq!(count(&pdf, "/ColorSpace/DeviceGray"), 1);
+    assert_eq!(count(&pdf, "/SMask "), 1);
+    // The unturned picture: width 40, height 20, lower-left at (80, 90).
+    assert!(t.contains("q 40 0 0 20 80 90 cm /Im1 Do Q"), "{t}");
+    // The mask is the alpha plane.
+    assert!(pdf.windows(2).any(|w| w == [255u8, 128]));
+    check_xref(&pdf);
+}
+
+#[test]
+fn a_turned_picture_is_placed_by_its_centre() {
+    let mut d = PdfDoc::new(200.0, 200.0);
+    let quarter = std::f64::consts::FRAC_PI_2;
+    assert!(d.image_rgba_placed(100.0, 100.0, 40.0, 20.0, quarter, 1, 1, &[9, 9, 9, 255]));
+    let t = text(&d.finish());
+    // Turned a quarter: the x axis points up, the y axis points left; the
+    // lower-left corner of the image is at (110, 80).
+    assert!(t.contains("q 0 40 -20 0 110 80 cm /Im1 Do Q"), "{t}");
+}

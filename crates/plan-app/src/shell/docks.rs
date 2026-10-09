@@ -851,8 +851,32 @@ fn layout_pages(ui: &mut egui::Ui, cx: &EditorContext, requests: &mut Vec<DockRe
         } else {
             egui::RichText::new(label)
         };
-        if ui.selectable_label(showing == Some(i), text).clicked() {
+        let r = ui
+            .selectable_label(showing == Some(i), text)
+            .interact(Sense::click_and_drag())
+            .on_hover_text("Click to open; drag to another page to move it (the # labels renumber)");
+        if r.clicked() {
             run(requests, C::GoToPage(i));
+        }
+        r.dnd_set_drag_payload(LayoutPageDrag(i));
+        if let Some(p) = r.dnd_hover_payload::<LayoutPageDrag>() {
+            if p.0 != i {
+                let y = if p.0 < i {
+                    r.rect.bottom()
+                } else {
+                    r.rect.top()
+                };
+                ui.painter().hline(
+                    r.rect.x_range(),
+                    y,
+                    Stroke::new(2.0_f32, theme::current_chrome().accent),
+                );
+            }
+        }
+        if let Some(p) = r.dnd_release_payload::<LayoutPageDrag>() {
+            if p.0 != i {
+                run(requests, C::MovePage(p.0, i));
+            }
         }
     }
     // The plan's other layout files, parked until opened (File > New Layout
@@ -888,6 +912,9 @@ fn layout_pages(ui: &mut egui::Ui, cx: &EditorContext, requests: &mut Vec<DockRe
 
 /// A plan view row being dragged to a new place in the list.
 struct PlanViewDrag(usize);
+
+/// A layout page row being dragged to a new place in the list.
+struct LayoutPageDrag(usize);
 
 /// The row being renamed in place: `key` names the row, `text` is the edit.
 #[derive(Clone, Default)]

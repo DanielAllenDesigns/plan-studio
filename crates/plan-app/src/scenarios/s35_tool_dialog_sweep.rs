@@ -395,6 +395,12 @@ fn role(id: ToolId) -> Role {
         ToolId::MaterialsPolyline => NoObject(
             "draws a Materials List Polyline whose own specification the Materials List hosts (s58)",
         ),
+        ToolId::ConstructionLine => NoObject(
+            "draws a construction line (a CAD line with a record) whose gestures s66 drives",
+        ),
+        ToolId::ReferenceOffset => NoObject(
+            "mode: moves and turns another plan file in the Reference Display (s66)",
+        ),
         ToolId::Library => Creates(Fx::Library, IN_ROOM),
         ToolId::Images => NoObject("base id: the Images flyout entries are the tools"),
         ToolId::Wall { .. } => Creates(Fx::Shell, DRAG),

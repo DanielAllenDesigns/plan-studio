@@ -191,14 +191,23 @@ impl MarkerForm {
             ui.weak("Alignment applies to Level Line and Elevation markers.");
         }
         ui.add_enabled_ui(m.kind.has_line(), |ui| {
-            Self::text_block(ui, "marker_below", "Text Below Line", &mut m.below, true, "Marker");
+            Self::text_block(
+                ui,
+                "marker_below",
+                "Text Below Line",
+                &mut m.below,
+                true,
+                "Marker",
+            );
         });
         section(ui, "Size");
         self.fields
             .length_row(ui, "Marker Radius", "marker_radius", &mut m.radius);
         self.fields
             .length_row(ui, "Height", "marker_height", &mut m.height_z);
-        ui.weak("Shown by the %height% macro in the label; in plan view it does not move the marker.");
+        ui.weak(
+            "Shown by the %height% macro in the label; in plan view it does not move the marker.",
+        );
     }
 }
 

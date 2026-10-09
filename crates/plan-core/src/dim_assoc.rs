@@ -12,6 +12,7 @@
 //! tie is dropped instead of dragging the end back, and an automatic
 //! dimension edited this way becomes manual (DIM-33).
 
+use crate::cad::{CadItem, CadObject};
 use crate::dimension::{AutoGroup, Dimension, DimensionKind};
 use crate::geometry::Point;
 use crate::model::{Floor, Opening, Wall};
@@ -30,8 +31,12 @@ pub enum DimAttach {
     /// or across an opening (0.5 is its center).
     Along(f64),
     /// A cabinet or fixture: `u` along its width and `v` from its back,
-    /// inches in its own frame.
+    /// inches in its own frame. For a CAD object, a stair or an electrical
+    /// device, the offset from the object's reference point (a line's start,
+    /// a circle's center, a stair's origin, a device's position).
     Local { u: f64, v: f64 },
+    /// A polyline's vertex (CAD objects).
+    Vertex(u32),
 }
 
 /// The kind of object an anchor is tied to.
@@ -43,6 +48,13 @@ pub enum AnchorTarget {
     Cabinet,
     /// A placed library symbol (a fixture).
     Symbol,
+    /// A CAD object: a line's ends, a polyline's vertices, a circle's or
+    /// arc's center.
+    Cad,
+    /// A stair (its origin and direction carry the point).
+    Stair,
+    /// An electrical device.
+    Device,
 }
 
 impl AnchorTarget {
@@ -52,6 +64,9 @@ impl AnchorTarget {
             AnchorTarget::Opening => "Opening",
             AnchorTarget::Cabinet => "Cabinet",
             AnchorTarget::Symbol => "Fixture",
+            AnchorTarget::Cad => "CAD Object",
+            AnchorTarget::Stair => "Stair",
+            AnchorTarget::Device => "Device",
         }
     }
 }
@@ -109,6 +124,20 @@ pub struct Targets<'a> {
     pub openings: &'a [Opening],
     pub cabinets: &'a [serde_json::Value],
     pub symbols: &'a [PlacedSymbol],
+    pub cad: &'a [CadObject],
+    pub stairs: &'a [serde_json::Value],
+    /// The electrical layer's `devices` records.
+    pub devices: &'a [serde_json::Value],
+}
+
+/// The `devices` array of a floor's opaque electrical layer.
+fn device_records(floor: &Floor) -> &[serde_json::Value] {
+    floor
+        .electrical
+        .as_ref()
+        .and_then(|e| e.get("devices"))
+        .and_then(serde_json::Value::as_array)
+        .map_or(&[], Vec::as_slice)
 }
 
 impl<'a> Targets<'a> {
@@ -118,7 +147,14 @@ impl<'a> Targets<'a> {
             openings: &floor.openings,
             cabinets: &floor.cabinets,
             symbols: &floor.symbols,
+            cad: &floor.cad,
+            stairs: &floor.stairs,
+            devices: device_records(floor),
         }
+    }
+
+    fn cad_object(&self, id: Id) -> Option<&'a CadObject> {
+        self.cad.iter().find(|c| c.id == id)
     }
 
     fn wall(&self, id: Id) -> Option<&'a Wall> {
@@ -147,9 +183,38 @@ impl<'a> Targets<'a> {
                     d: s.depth,
                 }
             }),
+            AnchorTarget::Stair => self
+                .stairs
+                .iter()
+                .find(|v| v.get("id").and_then(serde_json::Value::as_u64) == Some(id))
+                .and_then(|v| pose_frame(v, "origin", "direction")),
+            AnchorTarget::Device => self
+                .devices
+                .iter()
+                .find(|v| v.get("id").and_then(serde_json::Value::as_u64) == Some(id))
+                .and_then(|v| pose_frame(v, "position", "angle")),
             _ => None,
         }
     }
+}
+
+/// A frame at the point `pos` of a JSON record turned by its `angle` (radians):
+/// the reference of a stair or an electrical device.
+fn pose_frame(v: &serde_json::Value, pos: &str, angle: &str) -> Option<Frame> {
+    let p = v.get(pos)?;
+    let origin = Point::new(p.get("x")?.as_f64()?, p.get("y")?.as_f64()?);
+    let a = v
+        .get(angle)
+        .and_then(serde_json::Value::as_f64)
+        .unwrap_or(0.0);
+    let u = Point::new(a.cos(), a.sin());
+    Some(Frame {
+        origin,
+        u,
+        v: u.perp(),
+        w: 0.0,
+        d: 0.0,
+    })
 }
 
 /// A cabinet's or fixture's rectangle: its back-left corner, the unit
@@ -198,7 +263,7 @@ impl DimAnchor {
             DimAttach::Start => wall.start,
             DimAttach::End => wall.end,
             DimAttach::Along(t) => Point::lerp(wall.start, wall.end, t),
-            DimAttach::Local { .. } => wall.start,
+            DimAttach::Local { .. } | DimAttach::Vertex(_) => wall.start,
         };
         base.add(wall.direction().scale(self.extra))
             .add(wall.normal().scale(self.side))
@@ -215,18 +280,22 @@ impl DimAnchor {
                     DimAttach::Start => o.start_offset(),
                     DimAttach::End => o.end_offset(),
                     DimAttach::Along(f) => o.start_offset() + f * o.width,
-                    DimAttach::Local { .. } => o.center_offset,
+                    DimAttach::Local { .. } | DimAttach::Vertex(_) => o.center_offset,
                 };
                 // `off` is arc length on a curved wall (DW-88).
                 Some(w.point_along(off).add(w.normal_along(off).scale(self.side)))
             }
-            AnchorTarget::Cabinet | AnchorTarget::Symbol => {
+            AnchorTarget::Cabinet
+            | AnchorTarget::Symbol
+            | AnchorTarget::Stair
+            | AnchorTarget::Device => {
                 let f = t.frame(self.target, self.wall)?;
                 match self.at {
                     DimAttach::Local { u, v } => Some(f.world(u, v)),
                     _ => None,
                 }
             }
+            AnchorTarget::Cad => cad_point(t.cad_object(self.wall)?, self.at),
         }
     }
 
@@ -258,9 +327,114 @@ impl DimAnchor {
             AnchorTarget::Wall | AnchorTarget::Opening => ", surface",
             _ => "",
         };
+        let place = match (self.target, self.at) {
+            (AnchorTarget::Cad, DimAttach::Start) => " start",
+            (AnchorTarget::Cad, DimAttach::End) => " end",
+            (AnchorTarget::Cad, DimAttach::Vertex(i)) => {
+                return format!("CAD Object {} point {}", self.wall, i + 1)
+            }
+            _ => place,
+        };
         format!("{} {}{place}{face}", self.target.label(), self.wall)
     }
 }
+
+/// The reference point of a CAD item `Local` offsets are measured from: a
+/// line's start, a circle's or arc's center, a polyline's first vertex, a
+/// text's anchor.
+fn cad_reference(item: &CadItem) -> Point {
+    match item {
+        CadItem::Line { a, .. } => *a,
+        CadItem::Arc { center, .. } | CadItem::Circle { center, .. } => *center,
+        CadItem::Polyline { points, .. } => points.first().copied().unwrap_or(Point::ZERO),
+        CadItem::Text { pos, .. } => *pos,
+    }
+}
+
+/// The point an anchor names on a CAD object now.
+fn cad_point(c: &CadObject, at: DimAttach) -> Option<Point> {
+    match (&c.item, at) {
+        (CadItem::Line { a, .. }, DimAttach::Start) => Some(*a),
+        (CadItem::Line { b, .. }, DimAttach::End) => Some(*b),
+        (CadItem::Line { a, b }, DimAttach::Along(t)) => Some(Point::lerp(*a, *b, t)),
+        (CadItem::Polyline { points, .. }, DimAttach::Start) => points.first().copied(),
+        (CadItem::Polyline { points, .. }, DimAttach::End) => points.last().copied(),
+        (CadItem::Polyline { points, .. }, DimAttach::Vertex(i)) => points.get(i as usize).copied(),
+        (item, DimAttach::Local { u, v }) => Some(cad_reference(item).add(Point::new(u, v))),
+        _ => None,
+    }
+}
+
+/// The anchor for `p` on a CAD object: a line's ends or points along it, a
+/// polyline's vertices, a circle's or arc's center (or any point of them
+/// when `anywhere`).
+fn cad_anchor(c: &CadObject, p: Point, anywhere: bool) -> Option<DimAnchor> {
+    let near = |q: Point| q.dist(p) <= ATTACH_TOL;
+    let at = match &c.item {
+        CadItem::Line { a, b } => {
+            if near(*a) {
+                DimAttach::Start
+            } else if near(*b) {
+                DimAttach::End
+            } else {
+                let (t, q) = crate::geometry::project_on_segment(p, *a, *b);
+                if near(q) && (anywhere || (0.0..=1.0).contains(&t)) {
+                    DimAttach::Along(t)
+                } else {
+                    return None;
+                }
+            }
+        }
+        CadItem::Polyline { points, .. } => {
+            let i = points.iter().position(|q| near(*q))?;
+            DimAttach::Vertex(i as u32)
+        }
+        CadItem::Circle { center, radius } | CadItem::Arc { center, radius, .. } => {
+            let on = near(*center) || (p.dist(*center) - radius).abs() <= ATTACH_TOL;
+            if !on && !anywhere {
+                return None;
+            }
+            let o = p.sub(*center);
+            DimAttach::Local { u: o.x, v: o.y }
+        }
+        CadItem::Text { pos, .. } => {
+            if !near(*pos) && !anywhere {
+                return None;
+            }
+            let o = p.sub(*pos);
+            DimAttach::Local { u: o.x, v: o.y }
+        }
+    };
+    let last = cad_point(c, at)?;
+    Some(DimAnchor {
+        wall: c.id,
+        target: AnchorTarget::Cad,
+        at,
+        side: 0.0,
+        last,
+        axis: AnchorAxis::Both,
+        extra: 0.0,
+    })
+}
+
+/// The anchor for `p` against a record with a pose (a stair or a device): a
+/// point of the object, kept in the object's own frame so it follows moves
+/// and turns.
+fn pose_anchor(target: AnchorTarget, id: Id, f: &Frame, p: Point) -> DimAnchor {
+    let (u, v) = f.local(p);
+    DimAnchor {
+        wall: id,
+        target,
+        at: DimAttach::Local { u, v },
+        side: 0.0,
+        last: f.world(u, v),
+        axis: AnchorAxis::Both,
+        extra: 0.0,
+    }
+}
+
+/// How close to a device's position a point ties to the device, inches.
+const DEVICE_TOL: f64 = 6.0;
 
 /// Ends closer than this to an object point are tied to it, inches.
 pub const ATTACH_TOL: f64 = 0.5;
@@ -351,6 +525,9 @@ fn opening_anchor(wall: &Wall, o: &Opening, p: Point) -> Option<DimAnchor> {
         openings: std::slice::from_ref(o),
         cabinets: &[],
         symbols: &[],
+        cad: &[],
+        stairs: &[],
+        devices: &[],
     };
     a.last = a.resolve_in(&targets)?;
     Some(a)
@@ -418,6 +595,21 @@ pub fn find_anchor(t: &Targets, p: Point) -> Option<DimAnchor> {
             return a;
         }
     }
+    for c in t.cad {
+        if let Some(a) = cad_anchor(c, p, false) {
+            return Some(a);
+        }
+    }
+    for d in t.devices {
+        let Some(id) = d.get("id").and_then(serde_json::Value::as_u64) else {
+            continue;
+        };
+        if let Some(f) =
+            pose_frame(d, "position", "angle").filter(|f| f.origin.dist(p) <= DEVICE_TOL)
+        {
+            return Some(pose_anchor(AnchorTarget::Device, id, &f, p));
+        }
+    }
     None
 }
 
@@ -434,6 +626,10 @@ fn hinted_anchor(t: &Targets, hint: (AnchorTarget, Id), p: Point) -> Option<DimA
         AnchorTarget::Cabinet | AnchorTarget::Symbol => t
             .frame(target, id)
             .and_then(|f| frame_anchor(target, id, &f, p, true)),
+        AnchorTarget::Cad => t.cad_object(id).and_then(|c| cad_anchor(c, p, true)),
+        AnchorTarget::Stair | AnchorTarget::Device => {
+            t.frame(target, id).map(|f| pose_anchor(target, id, &f, p))
+        }
     }
 }
 
@@ -519,14 +715,25 @@ impl Floor {
             openings,
             cabinets,
             symbols,
+            cad,
+            stairs,
+            electrical,
             dimensions,
             ..
         } = self;
+        let devices = electrical
+            .as_ref()
+            .and_then(|e| e.get("devices"))
+            .and_then(serde_json::Value::as_array)
+            .map_or(&[][..], Vec::as_slice);
         let t = Targets {
             walls,
             openings,
             cabinets,
             symbols,
+            cad,
+            stairs,
+            devices,
         };
         let mut changed = false;
         for d in dimensions.iter_mut() {
@@ -1029,5 +1236,135 @@ mod tests {
             d.start.dist(na) < 0.6 && d.end.dist(nb) < 0.6,
             "{d:?} {na:?} {nb:?}"
         );
+    }
+
+    #[test]
+    fn a_dimension_follows_the_ends_of_a_cad_line_and_a_polyline_vertex() {
+        let mut p = house();
+        let line = p.add_cad(
+            0,
+            "CAD, Default",
+            CadItem::Line {
+                a: Point::new(300.0, 0.0),
+                b: Point::new(400.0, 0.0),
+            },
+        );
+        let id = dim(&mut p, Point::new(300.0, 0.0), Point::new(400.0, 0.0));
+        let anchors = get(&p, id).anchors;
+        assert!(anchors
+            .iter()
+            .flatten()
+            .all(|a| a.target == AnchorTarget::Cad && a.wall == line));
+        assert_eq!(anchors[0].unwrap().at, DimAttach::Start);
+        assert_eq!(anchors[1].unwrap().at, DimAttach::End);
+        // Stretch the line's end, then slide both ends.
+        if let Some(c) = p.floors[0].cad.iter_mut().find(|c| c.id == line) {
+            c.item = CadItem::Line {
+                a: Point::new(300.0, 20.0),
+                b: Point::new(450.0, 20.0),
+            };
+        }
+        assert!(p.floors[0].sync_dimension_anchors());
+        let d = get(&p, id);
+        assert!(d.start.dist(Point::new(300.0, 20.0)) < 1e-9);
+        assert!(d.end.dist(Point::new(450.0, 20.0)) < 1e-9);
+        // A polyline vertex keeps its index when the polyline moves.
+        let poly = p.add_cad(
+            0,
+            "CAD, Default",
+            CadItem::Polyline {
+                points: vec![
+                    Point::new(0.0, 500.0),
+                    Point::new(100.0, 500.0),
+                    Point::new(100.0, 560.0),
+                ],
+                closed: false,
+            },
+        );
+        let id2 = dim(&mut p, Point::new(100.0, 500.0), Point::new(100.0, 560.0));
+        let a = get(&p, id2).anchors;
+        assert_eq!(a[0].unwrap().at, DimAttach::Vertex(1));
+        assert_eq!(a[1].unwrap().at, DimAttach::End);
+        assert!(a[0].unwrap().describe().contains("point 2"));
+        if let Some(c) = p.floors[0].cad.iter_mut().find(|c| c.id == poly) {
+            if let CadItem::Polyline { points, .. } = &mut c.item {
+                for q in points.iter_mut() {
+                    q.y += 40.0;
+                }
+            }
+        }
+        assert!(p.floors[0].sync_dimension_anchors());
+        let d = get(&p, id2);
+        assert!(d.start.dist(Point::new(100.0, 540.0)) < 1e-9, "{:?}", d.start);
+        assert!(d.end.dist(Point::new(100.0, 600.0)) < 1e-9);
+    }
+
+    #[test]
+    fn a_circle_center_a_stair_and_an_electrical_device_keep_their_dimensions() {
+        let mut p = house();
+        let circle = p.add_cad(
+            0,
+            "CAD, Default",
+            CadItem::Circle {
+                center: Point::new(60.0, 60.0),
+                radius: 10.0,
+            },
+        );
+        // A dimension from the circle's center to the south wall's face.
+        let id = dim(&mut p, Point::new(60.0, 60.0), Point::new(60.0, 3.0));
+        let a = get(&p, id).anchors[0].unwrap();
+        assert_eq!((a.target, a.wall), (AnchorTarget::Cad, circle));
+        if let Some(c) = p.floors[0].cad.iter_mut().find(|c| c.id == circle) {
+            c.item = CadItem::Circle {
+                center: Point::new(90.0, 80.0),
+                radius: 10.0,
+            };
+        }
+        assert!(p.floors[0].sync_dimension_anchors());
+        assert!(get(&p, id).start.dist(Point::new(90.0, 80.0)) < 1e-9);
+
+        // An electrical device: a record with a position.
+        p.floors[0].electrical = Some(serde_json::json!({
+            "devices": [{"id": 77, "position": {"x": 120.0, "y": 100.0}, "angle": 0.0}]
+        }));
+        let did = dim(&mut p, Point::new(120.0, 100.0), Point::new(120.0, 3.0));
+        let a = get(&p, did).anchors[0].unwrap();
+        assert_eq!((a.target, a.wall), (AnchorTarget::Device, 77));
+        p.floors[0].electrical = Some(serde_json::json!({
+            "devices": [{"id": 77, "position": {"x": 150.0, "y": 90.0}, "angle": 0.0}]
+        }));
+        assert!(p.floors[0].sync_dimension_anchors());
+        assert!(get(&p, did).start.dist(Point::new(150.0, 90.0)) < 1e-9);
+
+        // A stair is tied through a hint (no outline is known here); the
+        // point turns with it.
+        p.floors[0].stairs = vec![serde_json::json!({
+            "id": 9, "origin": {"x": 200.0, "y": 50.0}, "direction": 0.0
+        })];
+        let sid = p.add_dimension(
+            0,
+            Dimension::new(
+                0,
+                DimensionKind::Manual,
+                Point::new(230.0, 50.0),
+                Point::new(230.0, 3.0),
+                20.0,
+            ),
+        );
+        p.floors[0].attach_dimension_hinted(
+            sid,
+            [
+                hint(AnchorTarget::Stair, 9, Point::new(230.0, 50.0)),
+                None,
+            ],
+        );
+        let a = get(&p, sid).anchors[0].unwrap();
+        assert_eq!((a.target, a.wall), (AnchorTarget::Stair, 9));
+        p.floors[0].stairs = vec![serde_json::json!({
+            "id": 9, "origin": {"x": 200.0, "y": 50.0}, "direction": std::f64::consts::FRAC_PI_2
+        })];
+        assert!(p.floors[0].sync_dimension_anchors());
+        // 30 inches along the stair's direction now points north.
+        assert!(get(&p, sid).start.dist(Point::new(200.0, 80.0)) < 1e-9, "{:?}", get(&p, sid).start);
     }
 }

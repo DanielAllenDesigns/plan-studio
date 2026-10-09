@@ -71,6 +71,9 @@ mod s56_callouts_r15;
 mod s58_integration2_layout;
 mod s58_materials_list_r15;
 mod s59_terrain_r15;
+mod s60_layout_pages;
+mod s62_print_watermark;
+mod s66_construction_reference;
 
 use crate::editor::{EditorContext, EditorRequest, ObjectRef};
 use crate::tools::{KeyEvent, PointerEvent, ToolId, ToolResult};

@@ -27,6 +27,7 @@ pub mod ops;
 pub mod placed;
 pub mod plan_overlay;
 pub mod plan_tabs;
+pub mod ref_overlay;
 pub mod render;
 pub mod restyle;
 pub mod roof_view;

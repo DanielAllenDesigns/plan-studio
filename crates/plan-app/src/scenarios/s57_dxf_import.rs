@@ -208,7 +208,10 @@ fn the_menu_command_opens_the_file_picker_hook_and_pages_run_in_order() {
     let (checked, junk) = imp::with_assistant(|a| {
         (
             a.rows.iter().filter(|r| r.include).count(),
-            a.rows.iter().find(|r| r.name == "JUNK").map(|r| (r.include, r.frozen)),
+            a.rows
+                .iter()
+                .find(|r| r.name == "JUNK")
+                .map(|r| (r.include, r.frozen)),
         )
     })
     .unwrap();
@@ -255,7 +258,8 @@ fn units_come_from_the_file_and_the_drawing_lands_where_it_was_asked() {
     });
     assert!(!imp::next(&mut sim.app.cx));
     let f = sim.app.cx.floor();
-    let walls: Vec<&plan_core::cad::CadObject> = f.cad.iter().filter(|c| c.layer == "A-WALL").collect();
+    let walls: Vec<&plan_core::cad::CadObject> =
+        f.cad.iter().filter(|c| c.layer == "A-WALL").collect();
     assert_eq!(walls.len(), 8);
     let (mut lo, mut hi) = (Point::new(1e9, 1e9), Point::new(-1e9, -1e9));
     for w in &walls {
@@ -286,7 +290,11 @@ fn the_advanced_layer_mapping_renames_skips_and_creates_layers() {
             }
         }
         // Do not import the notes.
-        a.rows.iter_mut().find(|r| r.name == "NOTES").unwrap().include = false;
+        a.rows
+            .iter_mut()
+            .find(|r| r.name == "NOTES")
+            .unwrap()
+            .include = false;
     });
     for _ in 0..3 {
         imp::next(&mut sim.app.cx);
@@ -300,9 +308,15 @@ fn the_advanced_layer_mapping_renames_skips_and_creates_layers() {
     imp::next(&mut sim.app.cx);
     assert!(!imp::next(&mut sim.app.cx));
     let f = sim.app.cx.floor();
-    assert_eq!(f.cad.iter().filter(|c| c.layer == "Walls, Normal").count(), 8);
+    assert_eq!(
+        f.cad.iter().filter(|c| c.layer == "Walls, Normal").count(),
+        8
+    );
     assert!(f.cad.iter().any(|c| c.layer == "Furniture"));
-    assert!(f.cad.iter().all(|c| !matches!(&c.item, CadItem::Text { text, .. } if text == "LIVING")));
+    assert!(f
+        .cad
+        .iter()
+        .all(|c| !matches!(&c.item, CadItem::Text { text, .. } if text == "LIVING")));
     assert!(sim.app.cx.project.layers.get("Furniture").is_some());
     // Layers made from the file carry its colors.
     let hatch_layer = sim.app.cx.project.layers.get("A-HATCH").unwrap();
@@ -336,11 +350,21 @@ fn one_layer_for_everything_keeps_the_looks_on_the_objects() {
 fn layers_marked_to_walls_make_walls_of_the_chosen_type() {
     let mut sim = sim();
     // A wall type the plan has.
-    let ty = sim.app.cx.wall_types().first().cloned().expect("a wall type");
+    let ty = sim
+        .app
+        .cx
+        .wall_types()
+        .first()
+        .cloned()
+        .expect("a wall type");
     open(&mut sim, "site.dxf", site_dxf().into_bytes());
     imp::with_assistant(|a| {
         a.show_assistant = false;
-        a.rows.iter_mut().find(|r| r.name == "A-WALL").unwrap().walls = true;
+        a.rows
+            .iter_mut()
+            .find(|r| r.name == "A-WALL")
+            .unwrap()
+            .walls = true;
         a.wall_type = ty.name.clone();
     });
     imp::next(&mut sim.app.cx);
@@ -387,7 +411,13 @@ fn the_chair_is_a_cad_block_with_its_attribute_and_dimensions_are_objects() {
     assert!((d.offset.abs() - 400.0 / 25.4).abs() < 1e-6);
     // Everything that came in is selected so it can be moved.
     assert!(sim.app.cx.selection.items.len() > 10);
-    assert!(sim.app.cx.selection.items.iter().all(|o| matches!(o, ObjectRef::Cad(_))));
+    assert!(sim
+        .app
+        .cx
+        .selection
+        .items
+        .iter()
+        .all(|o| matches!(o, ObjectRef::Cad(_))));
 }
 
 #[test]
@@ -417,7 +447,10 @@ fn a_pattern_hatch_is_drawn_with_the_hatch_tools_lines() {
         .iter()
         .find(|c| c.layer == "A-HATCH" && matches!(c.item, CadItem::Polyline { closed: true, .. }))
         .expect("the hatch outline");
-    let fill = f.cad_attrs(outline.id).and_then(|a| a.fill).expect("a fill");
+    let fill = f
+        .cad_attrs(outline.id)
+        .and_then(|a| a.fill)
+        .expect("a fill");
     assert_eq!(fill.pattern, "Diagonal Lines");
     assert!(!fill.lines.is_empty(), "the pattern lines were drawn");
     assert!(fill.lines.iter().all(|l| f.cad.iter().any(|c| c.id == *l)));
@@ -434,10 +467,20 @@ fn a_binary_dxf_imports_like_the_text_one() {
     imp::next(&mut a.app.cx);
     let mut b = sim();
     open(&mut b, "site.dxf", tokens::ascii_to_binary(&site_dxf()));
-    assert!(imp::with_assistant(|x| x.drawing().format == plan_import::dxf::DxfFormat::Binary).unwrap());
+    assert!(
+        imp::with_assistant(|x| x.drawing().format == plan_import::dxf::DxfFormat::Binary).unwrap()
+    );
     imp::with_assistant(|x| x.show_assistant = false);
     imp::next(&mut b.app.cx);
-    let items = |s: &Sim| s.app.cx.floor().cad.iter().map(|c| (c.layer.clone(), c.item.clone())).collect::<Vec<_>>();
+    let items = |s: &Sim| {
+        s.app
+            .cx
+            .floor()
+            .cad
+            .iter()
+            .map(|c| (c.layer.clone(), c.item.clone()))
+            .collect::<Vec<_>>()
+    };
     assert_eq!(items(&a), items(&b));
     assert!(!items(&a).is_empty());
 }
@@ -450,7 +493,13 @@ fn a_dwg_is_refused_with_the_way_to_save_a_dxf() {
     open(&mut sim, "plan.dwg", dwg);
     assert!(!imp::is_open());
     let msg = imp::notice().expect("a message");
-    assert!(msg.contains("DWG") && msg.contains("2018") && msg.contains("Save As") && msg.contains("DXF"), "{msg}");
+    assert!(
+        msg.contains("DWG")
+            && msg.contains("2018")
+            && msg.contains("Save As")
+            && msg.contains("DXF"),
+        "{msg}"
+    );
     assert!(sim.app.cx.status.starts_with("Import failed"));
     frames(&mut sim);
     assert!(imp::notice().is_some(), "the message stays until OK");
@@ -480,7 +529,14 @@ fn a_block_the_floor_already_has_asks_what_to_do() {
     assert_eq!(imp::page(), Some(Page::DrawingUnit));
     imp::next(&mut sim.app.cx);
     assert!(!imp::next(&mut sim.app.cx));
-    let names: Vec<String> = sim.app.cx.floor().cad_blocks().into_iter().map(|b| b.name).collect();
+    let names: Vec<String> = sim
+        .app
+        .cx
+        .floor()
+        .cad_blocks()
+        .into_iter()
+        .map(|b| b.name)
+        .collect();
     assert_eq!(names, vec!["CHAIR".to_string(), "CHAIR_Copy_1".to_string()]);
 }
 
@@ -490,7 +546,10 @@ fn two_files_import_side_by_side_as_blocks_in_one_step() {
     let one = dxf("0 SECTION\n2 ENTITIES\n0 LINE\n8 A\n10 0\n20 0\n11 100\n21 0\n0 CIRCLE\n8 A\n10 50\n20 50\n40 10\n0 ENDSEC\n0 EOF");
     imp::open_files(
         &mut sim.app.cx,
-        vec![("a.dxf".into(), one.clone().into_bytes()), ("b.dxf".into(), one.into_bytes())],
+        vec![
+            ("a.dxf".into(), one.clone().into_bytes()),
+            ("b.dxf".into(), one.into_bytes()),
+        ],
     );
     imp::with_assistant(|a| {
         a.show_assistant = false;
@@ -502,12 +561,12 @@ fn two_files_import_side_by_side_as_blocks_in_one_step() {
     let f = sim.app.cx.floor();
     let blocks = f.cad_blocks();
     assert_eq!(blocks.len(), 2);
-    let mut xs: Vec<f64> = blocks
-        .iter()
-        .map(|b| f.block_bounds(b.group).0.x)
-        .collect();
+    let mut xs: Vec<f64> = blocks.iter().map(|b| f.block_bounds(b.group).0.x).collect();
     xs.sort_by(|a, b| a.total_cmp(b));
-    assert!(xs[1] - xs[0] > 100.0, "the second drawing sits to the right: {xs:?}");
+    assert!(
+        xs[1] - xs[0] > 100.0,
+        "the second drawing sits to the right: {xs:?}"
+    );
     assert_eq!(sim.app.cx.undo_label(), Some("Import Drawing"));
     sim.undo();
     assert!(sim.app.cx.floor().cad.is_empty());
@@ -553,31 +612,73 @@ fn the_plans_own_dxf_export_reads_back_with_the_same_counts_and_geometry() {
         Point::new(0.0, 180.0),
     ];
     for i in 0..4 {
-        sim.app
-            .cx
-            .project
-            .add_wall(0, corners[i], corners[(i + 1) % 4], 6.0, 96.0, WallKind::Exterior);
+        sim.app.cx.project.add_wall(
+            0,
+            corners[i],
+            corners[(i + 1) % 4],
+            6.0,
+            96.0,
+            WallKind::Exterior,
+        );
     }
     let p = &mut sim.app.cx.project;
-    p.add_cad(0, "CAD, Default", CadItem::Line { a: Point::new(10.0, 20.0), b: Point::new(110.5, 60.25) });
-    p.add_cad(0, "CAD, Default", CadItem::Circle { center: Point::new(50.0, 70.0), radius: 12.5 });
     p.add_cad(
         0,
         "CAD, Default",
-        CadItem::Arc { center: Point::new(150.0, 70.0), radius: 20.0, start_angle: 0.3, end_angle: 2.1 },
+        CadItem::Line {
+            a: Point::new(10.0, 20.0),
+            b: Point::new(110.5, 60.25),
+        },
     );
     p.add_cad(
         0,
         "CAD, Default",
-        CadItem::Polyline { points: vec![Point::new(5.0, 5.0), Point::new(35.0, 8.0), Point::new(40.0, 30.0)], closed: false },
+        CadItem::Circle {
+            center: Point::new(50.0, 70.0),
+            radius: 12.5,
+        },
+    );
+    p.add_cad(
+        0,
+        "CAD, Default",
+        CadItem::Arc {
+            center: Point::new(150.0, 70.0),
+            radius: 20.0,
+            start_angle: 0.3,
+            end_angle: 2.1,
+        },
+    );
+    p.add_cad(
+        0,
+        "CAD, Default",
+        CadItem::Polyline {
+            points: vec![
+                Point::new(5.0, 5.0),
+                Point::new(35.0, 8.0),
+                Point::new(40.0, 30.0),
+            ],
+            closed: false,
+        },
     );
     p.add_cad(
         0,
         "Notes",
-        CadItem::Text { pos: Point::new(20.0, 150.0), text: "Kitchen".into(), height: 4.0, angle: 0.0 },
+        CadItem::Text {
+            pos: Point::new(20.0, 150.0),
+            text: "Kitchen".into(),
+            height: 4.0,
+            angle: 0.0,
+        },
     );
     sim.app.cx.refresh();
-    let before: Vec<(String, CadItem)> = sim.app.cx.floor().cad.iter().map(|c| (c.layer.clone(), c.item.clone())).collect();
+    let before: Vec<(String, CadItem)> = sim
+        .app
+        .cx
+        .floor()
+        .cad
+        .iter()
+        .map(|c| (c.layer.clone(), c.item.clone()))
+        .collect();
     let wall_outlines = sim.app.cx.outlines.len();
     assert_eq!(wall_outlines, 4);
 
@@ -590,7 +691,10 @@ fn the_plans_own_dxf_export_reads_back_with_the_same_counts_and_geometry() {
         // Read it into an empty plan by the assistant, with its own units.
         let mut other = Sim::new();
         draw_shell(&mut other, 480.0, 360.0);
-        imp::open_files(&mut other.app.cx, vec![("round.dxf".into(), text.into_bytes())]);
+        imp::open_files(
+            &mut other.app.cx,
+            vec![("round.dxf".into(), text.into_bytes())],
+        );
         imp::with_assistant(|a| {
             a.show_assistant = false;
             a.to_origin = false;
@@ -599,16 +703,35 @@ fn the_plans_own_dxf_export_reads_back_with_the_same_counts_and_geometry() {
         imp::next(&mut other.app.cx);
         let f = other.app.cx.floor();
         // Counts: the CAD objects and one closed outline per wall come back.
-        let count = |pred: &dyn Fn(&CadItem) -> bool| f.cad.iter().filter(|c| pred(&c.item)).count();
-        assert_eq!(count(&|i| matches!(i, CadItem::Line { .. })), 1, "{units:?}");
+        let count =
+            |pred: &dyn Fn(&CadItem) -> bool| f.cad.iter().filter(|c| pred(&c.item)).count();
+        assert_eq!(
+            count(&|i| matches!(i, CadItem::Line { .. })),
+            1,
+            "{units:?}"
+        );
         assert_eq!(count(&|i| matches!(i, CadItem::Circle { .. })), 1);
         assert_eq!(count(&|i| matches!(i, CadItem::Arc { .. })), 1);
-        assert_eq!(count(&|i| matches!(i, CadItem::Polyline { closed: false, .. })), 1);
-        assert_eq!(count(&|i| matches!(i, CadItem::Polyline { closed: true, .. })), wall_outlines);
-        assert_eq!(count(&|i| matches!(i, CadItem::Text { text, .. } if text == "Kitchen")), 1);
+        assert_eq!(
+            count(&|i| matches!(i, CadItem::Polyline { closed: false, .. })),
+            1
+        );
+        assert_eq!(
+            count(&|i| matches!(i, CadItem::Polyline { closed: true, .. })),
+            wall_outlines
+        );
+        assert_eq!(
+            count(&|i| matches!(i, CadItem::Text { text, .. } if text == "Kitchen")),
+            1
+        );
         // Geometry within 1e-3 of an inch.
         let want = |layer: &str, pred: &dyn Fn(&CadItem) -> bool| -> CadItem {
-            before.iter().find(|(l, i)| l == layer && pred(i)).unwrap().1.clone()
+            before
+                .iter()
+                .find(|(l, i)| l == layer && pred(i))
+                .unwrap()
+                .1
+                .clone()
         };
         let got = |pred: &dyn Fn(&CadItem) -> bool| -> CadItem {
             f.cad.iter().find(|c| pred(&c.item)).unwrap().item.clone()
@@ -620,7 +743,10 @@ fn the_plans_own_dxf_export_reads_back_with_the_same_counts_and_geometry() {
         );
         match (w, g) {
             (CadItem::Line { a, b }, CadItem::Line { a: ga, b: gb }) => {
-                assert!(a.dist(ga) < tol && b.dist(gb) < tol, "{units:?} line {ga:?} {gb:?}");
+                assert!(
+                    a.dist(ga) < tol && b.dist(gb) < tol,
+                    "{units:?} line {ga:?} {gb:?}"
+                );
             }
             _ => unreachable!(),
         }
@@ -628,7 +754,13 @@ fn the_plans_own_dxf_export_reads_back_with_the_same_counts_and_geometry() {
             want("CAD, Default", &|i| matches!(i, CadItem::Circle { .. })),
             got(&|i| matches!(i, CadItem::Circle { .. })),
         ) {
-            (CadItem::Circle { center, radius }, CadItem::Circle { center: gc, radius: gr }) => {
+            (
+                CadItem::Circle { center, radius },
+                CadItem::Circle {
+                    center: gc,
+                    radius: gr,
+                },
+            ) => {
                 assert!(center.dist(gc) < tol && (radius - gr).abs() < tol);
             }
             _ => unreachable!(),
@@ -638,8 +770,18 @@ fn the_plans_own_dxf_export_reads_back_with_the_same_counts_and_geometry() {
             got(&|i| matches!(i, CadItem::Arc { .. })),
         ) {
             (
-                CadItem::Arc { center, radius, start_angle, end_angle },
-                CadItem::Arc { center: gc, radius: gr, start_angle: gs, end_angle: ge },
+                CadItem::Arc {
+                    center,
+                    radius,
+                    start_angle,
+                    end_angle,
+                },
+                CadItem::Arc {
+                    center: gc,
+                    radius: gr,
+                    start_angle: gs,
+                    end_angle: ge,
+                },
             ) => {
                 assert!(center.dist(gc) < tol && (radius - gr).abs() < tol);
                 // The file keeps degrees to four places.
@@ -661,7 +803,14 @@ fn the_plans_own_dxf_export_reads_back_with_the_same_counts_and_geometry() {
             want("Notes", &|i| matches!(i, CadItem::Text { .. })),
             got(&|i| matches!(i, CadItem::Text { .. })),
         ) {
-            (CadItem::Text { pos, height, .. }, CadItem::Text { pos: gp, height: gh, .. }) => {
+            (
+                CadItem::Text { pos, height, .. },
+                CadItem::Text {
+                    pos: gp,
+                    height: gh,
+                    ..
+                },
+            ) => {
                 assert!(pos.dist(gp) < tol && (height - gh).abs() < tol);
             }
             _ => unreachable!(),
@@ -670,7 +819,10 @@ fn the_plans_own_dxf_export_reads_back_with_the_same_counts_and_geometry() {
         let area_of = |items: &mut dyn Iterator<Item = &CadItem>| -> f64 {
             items
                 .filter_map(|i| match i {
-                    CadItem::Polyline { points, closed: true } => Some(plan_core::geometry::polygon_area(points).abs()),
+                    CadItem::Polyline {
+                        points,
+                        closed: true,
+                    } => Some(plan_core::geometry::polygon_area(points).abs()),
                     _ => None,
                 })
                 .sum()
@@ -683,6 +835,9 @@ fn the_plans_own_dxf_export_reads_back_with_the_same_counts_and_geometry() {
             .iter()
             .map(|o| plan_core::geometry::polygon_area(&o.polygon).abs())
             .sum();
-        assert!((got_area - want_area).abs() < 0.01, "{units:?}: {got_area} vs {want_area}");
+        assert!(
+            (got_area - want_area).abs() < 0.01,
+            "{units:?}: {got_area} vs {want_area}"
+        );
     }
 }

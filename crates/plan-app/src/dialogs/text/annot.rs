@@ -15,11 +15,10 @@ use super::note::NoteDialog;
 use crate::dialogs::{row, Fields, Outcome};
 use crate::editor::{EditorContext, ObjectRef};
 use eframe::egui::{self, Align2, Color32, Painter, Pos2, Rect, Stroke, Ui};
-use plan_core::callout::{
-    AnnotRef, Callout, Gen, LineLook, LinkInfo, Marker, Note, ViewKind, ViewLink,
-    ANNOT_LAYER,
-};
 use plan_core::cad::CadItem;
+use plan_core::callout::{
+    AnnotRef, Callout, Gen, LineLook, LinkInfo, Marker, Note, ViewKind, ViewLink, ANNOT_LAYER,
+};
 use plan_core::geometry::Point;
 use plan_core::layers::LineStyle;
 use plan_core::Id;
@@ -118,7 +117,12 @@ impl Env {
                 .into_iter()
                 .map(str::to_string)
                 .collect(),
-            note_types: p.note_types().types.iter().map(|t| t.name.clone()).collect(),
+            note_types: p
+                .note_types()
+                .types
+                .iter()
+                .map(|t| t.name.clone())
+                .collect(),
             links,
             saved_name: p.annot_defaults.saved_name.clone(),
             floor: cx.floor,
@@ -449,11 +453,20 @@ pub fn line_look_rows(ui: &mut Ui, look: &mut LineLook) {
     row(ui, "Style", |ui| {
         let mut by_layer = look.style.is_none();
         if ui.checkbox(&mut by_layer, "By Layer").changed() {
-            look.style = if by_layer { None } else { Some(LineStyle::Solid) };
+            look.style = if by_layer {
+                None
+            } else {
+                Some(LineStyle::Solid)
+            };
         }
         if let Some(s) = &mut look.style {
             egui::ComboBox::from_id_salt(("annot_line_style", ui.id()))
-                .selected_text(LINE_STYLES.iter().find(|(_, v)| v == s).map_or("Solid", |(n, _)| n))
+                .selected_text(
+                    LINE_STYLES
+                        .iter()
+                        .find(|(_, v)| v == s)
+                        .map_or("Solid", |(n, _)| n),
+                )
                 .show_ui(ui, |ui| {
                     for (n, v) in LINE_STYLES {
                         ui.selectable_value(s, v, n);
@@ -469,7 +482,11 @@ pub fn line_look_rows(ui: &mut Ui, look: &mut LineLook) {
         if let Some(w) = &mut look.weight {
             let mut v = *w;
             if ui
-                .add(egui::DragValue::new(&mut v).range(1..=200).suffix(" /100 mm"))
+                .add(
+                    egui::DragValue::new(&mut v)
+                        .range(1..=200)
+                        .suffix(" /100 mm"),
+                )
                 .changed()
             {
                 *w = v;
@@ -555,10 +572,9 @@ pub fn draw_preview(p: &Painter, rect: Rect, g: &Gen) {
     };
     for (it, at) in &g.items {
         let stroke = Stroke::new(1.2_f32, ink);
-        let fill = at
-            .fill
-            .as_ref()
-            .map(|f| Color32::from_rgba_unmultiplied(f.color[0], f.color[1], f.color[2], f.opacity));
+        let fill = at.fill.as_ref().map(|f| {
+            Color32::from_rgba_unmultiplied(f.color[0], f.color[1], f.color[2], f.opacity)
+        });
         match it {
             CadItem::Line { a, b } => {
                 p.line_segment([sc(*a), sc(*b)], stroke);

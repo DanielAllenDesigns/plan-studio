@@ -440,19 +440,25 @@ fn curve_arrow(
     let opts = &stair.params.plan;
     let walk = c.walk();
     let da = |len: f64| len / walk.max(1e-9);
+    let down = stair.params.down;
+    // A downward stair starts its arrow at the top and points to the bottom.
+    let (circle_a, from, to) = if down {
+        (end, (end - da(CIRCLE_RADIUS)).max(circle_at), circle_at)
+    } else {
+        (circle_at, (circle_at + da(CIRCLE_RADIUS)).min(end), end)
+    };
     let mut out = Vec::new();
     if opts.arrow != ArrowStyle::None {
         out.push(Stroke::Arc {
-            center: to_plan(c.at(circle_at, walk)),
+            center: to_plan(c.at(circle_a, walk)),
             radius: CIRCLE_RADIUS,
             start_deg: 0.0,
             end_deg: 360.0,
         });
-        let start = (circle_at + da(CIRCLE_RADIUS)).min(end);
-        if end - start > 1e-6 {
-            let n = (((end - start).to_degrees() / 5.0).ceil() as usize).max(1);
+        if (to - from).abs() > 1e-6 {
+            let n = (((to - from).abs().to_degrees() / 5.0).ceil() as usize).max(1);
             let plan_pts: Vec<Point> = (0..=n)
-                .map(|i| to_plan(c.at(start + (end - start) * i as f64 / n as f64, walk)))
+                .map(|i| to_plan(c.at(from + (to - from) * i as f64 / n as f64, walk)))
                 .collect();
             out.push(Stroke::Polyline(plan_pts.clone(), false));
             if let [.., a, b] = plan_pts[..] {
@@ -464,12 +470,17 @@ fn curve_arrow(
             }
         }
     }
+    let label_at = if down {
+        circle_a - da(CIRCLE_RADIUS + 3.0)
+    } else {
+        circle_a + da(CIRCLE_RADIUS + 3.0)
+    };
     out.push(Stroke::Text {
         pos: to_plan(c.at_lat(
-            circle_at + da(CIRCLE_RADIUS + 3.0),
+            label_at,
             (c.width / 2.0 + CIRCLE_RADIUS + 0.5 * TEXT_HEIGHT + 1.0).min(c.width),
         )),
-        text: "UP".into(),
+        text: if down { "DN" } else { "UP" }.into(),
         height: TEXT_HEIGHT,
         angle: stair.direction.to_degrees().rem_euclid(360.0),
     });
@@ -660,47 +671,64 @@ fn direction_arrow(stair: &Stair, layout: &Layout, last: usize, cut: Option<f64>
     let f0 = &flights[0];
     let mid = f0.width / 2.0;
     let circle_along = CIRCLE_ALONG.min(f0.len / 2.0);
+    let down = stair.params.down;
     let mut out = Vec::new();
+    // The centreline of the whole run, bottom to top.
+    let mut path = vec![f0.at(circle_along + CIRCLE_RADIUS, mid)];
+    for (i, f) in flights.iter().enumerate().take(last + 1) {
+        let end = if i == last {
+            cut.unwrap_or(f.len)
+        } else {
+            f.len
+        };
+        let exit = f.at(f.len, mid);
+        path.push(f.at(end, mid));
+        if i < last {
+            let next = &flights[i + 1];
+            let entry = next.at(0.0, next.width / 2.0);
+            let dot = f.dir.0 * next.dir.0 + f.dir.1 * next.dir.1;
+            if dot > 0.5 {
+                // Straight on (a ramp landing): the centreline just continues.
+            } else if dot.abs() < 1e-9 {
+                // Quarter turn: meet where the two centrelines cross.
+                path.push(if f.dir.1 == 0.0 {
+                    (entry.0, exit.1)
+                } else {
+                    (exit.0, entry.1)
+                });
+            } else {
+                // Half turn: cross the landing at its middle.
+                let half = landing_extent(layout, f.dir) / 2.0;
+                path.push((exit.0 + f.dir.0 * half, exit.1 + f.dir.1 * half));
+                path.push((entry.0 + f.dir.0 * half, entry.1 + f.dir.1 * half));
+            }
+            path.push(entry);
+        }
+    }
+    // The circle marks where the arrow starts: near the bottom going up, near
+    // the top going down.
+    let (circle, path) = if down {
+        let top = *path.last().expect("a path has points");
+        let before = path[path.len().saturating_sub(2)];
+        let (dx, dy) = (before.0 - top.0, before.1 - top.1);
+        let l = (dx * dx + dy * dy).sqrt().max(1e-9);
+        let step = |d: f64| {
+            let d = d.min(l);
+            (top.0 + dx / l * d, top.1 + dy / l * d)
+        };
+        let mut rev: Vec<Uv> = path.iter().rev().copied().collect();
+        rev[0] = step(circle_along + CIRCLE_RADIUS);
+        (step(circle_along), rev)
+    } else {
+        (f0.at(circle_along, mid), path)
+    };
     if opts.arrow != ArrowStyle::None {
         out.push(Stroke::Arc {
-            center: to_plan(f0.at(circle_along, mid)),
+            center: to_plan(circle),
             radius: CIRCLE_RADIUS,
             start_deg: 0.0,
             end_deg: 360.0,
         });
-
-        let mut path = vec![f0.at(circle_along + CIRCLE_RADIUS, mid)];
-        for (i, f) in flights.iter().enumerate().take(last + 1) {
-            let end = if i == last {
-                cut.unwrap_or(f.len)
-            } else {
-                f.len
-            };
-            let exit = f.at(f.len, mid);
-            path.push(f.at(end, mid));
-            if i < last {
-                let next = &flights[i + 1];
-                let entry = next.at(0.0, next.width / 2.0);
-                let dot = f.dir.0 * next.dir.0 + f.dir.1 * next.dir.1;
-                if dot > 0.5 {
-                    // Straight on (a ramp landing): the centreline just continues.
-                } else if dot.abs() < 1e-9 {
-                    // Quarter turn: meet where the two centrelines cross.
-                    path.push(if f.dir.1 == 0.0 {
-                        (entry.0, exit.1)
-                    } else {
-                        (exit.0, entry.1)
-                    });
-                } else {
-                    // Half turn: cross the landing at its middle.
-                    let half = landing_extent(layout, f.dir) / 2.0;
-                    path.push((exit.0 + f.dir.0 * half, exit.1 + f.dir.1 * half));
-                    path.push((entry.0 + f.dir.0 * half, entry.1 + f.dir.1 * half));
-                }
-                path.push(entry);
-            }
-        }
-
         if let [.., a, b] = path[..] {
             let seg = ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt();
             if seg > 1e-6 && path.len() > 1 {
@@ -717,9 +745,20 @@ fn direction_arrow(stair: &Stair, layout: &Layout, last: usize, cut: Option<f64>
     }
 
     let label_lateral = (mid + CIRCLE_RADIUS + 0.5 * TEXT_HEIGHT + 1.0).min(f0.width);
+    let label_at = if down {
+        // Just inside the circle at the top.
+        let last_f = &flights[last];
+        let end = cut.unwrap_or(last_f.len);
+        last_f.at(
+            (end - circle_along - CIRCLE_RADIUS - 3.0 - 2.0 * TEXT_HEIGHT).max(0.0),
+            label_lateral.min(last_f.width),
+        )
+    } else {
+        f0.at(circle_along + CIRCLE_RADIUS + 3.0, label_lateral)
+    };
     out.push(Stroke::Text {
-        pos: to_plan(f0.at(circle_along + CIRCLE_RADIUS + 3.0, label_lateral)),
-        text: "UP".into(),
+        pos: to_plan(label_at),
+        text: if down { "DN" } else { "UP" }.into(),
         height: TEXT_HEIGHT,
         angle: stair.direction.to_degrees().rem_euclid(360.0),
     });

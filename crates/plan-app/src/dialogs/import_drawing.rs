@@ -29,8 +29,8 @@ use plan_core::units::parse_ft_in;
 use plan_import::{
     add_objects, cad_to_walls, convert, default_units, drawing_bounds, layer_counts, make_blocks,
     parse_dxf_bytes, to_inches_factor, unused_blocks, BlockConflict, BlockMode, CadToWallsOptions,
-    Converted, DimensionMode, DxfDrawing, DxfUnits, HatchSpec, ImportError,
-    ImportOptions, LayerMapping, LayerTarget,
+    Converted, DimensionMode, DxfDrawing, DxfUnits, HatchSpec, ImportError, ImportOptions,
+    LayerMapping, LayerTarget,
 };
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -142,6 +142,8 @@ pub struct Assistant {
     pub message: String,
     /// The pages already visited, for Back.
     pub trail: Vec<Page>,
+    /// Whether the layer tables were read with paper space included.
+    pub loaded_paper: bool,
 }
 
 /// What an import would do, for the last page.
@@ -217,7 +219,9 @@ pub fn open_paths(cx: &mut EditorContext, paths: &[PathBuf]) {
         match std::fs::read(p) {
             Ok(bytes) => files.push((file_name(p), bytes)),
             Err(e) => {
-                NOTICE.with(|n| *n.borrow_mut() = Some(format!("Could not read {}: {e}", p.display())));
+                NOTICE.with(|n| {
+                    *n.borrow_mut() = Some(format!("Could not read {}: {e}", p.display()))
+                });
             }
         }
     }
@@ -288,6 +292,7 @@ impl Assistant {
             preview: None,
             message: String::new(),
             trail: Vec::new(),
+            loaded_paper: false,
         };
         a.single_layer = plan_layers(cx).first().cloned().unwrap_or_default();
         a.load_file(cx);
@@ -320,6 +325,7 @@ impl Assistant {
             })
             .collect();
         self.rows = rows;
+        self.loaded_paper = self.paper_space;
         self.preview = None;
     }
 
@@ -400,7 +406,9 @@ impl Assistant {
                     }
                     let target = match choice {
                         LayerChoice::Same => LayerTarget::Keep,
-                        LayerChoice::Plan(n) | LayerChoice::Named(n) => LayerTarget::Rename(n.clone()),
+                        LayerChoice::Plan(n) | LayerChoice::Named(n) => {
+                            LayerTarget::Rename(n.clone())
+                        }
                     };
                     o.layers.push(LayerMapping {
                         source: src.clone(),
@@ -465,7 +473,9 @@ impl Assistant {
             0
         } else {
             let lines = wall_lines(&conv, &self.wall_layers());
-            cad_to_walls(&lines, &CadToWallsOptions::default()).walls.len()
+            cad_to_walls(&lines, &CadToWallsOptions::default())
+                .walls
+                .len()
         };
         let mut notes = conv.notes.clone();
         let unused = unused_blocks(d);
@@ -496,14 +506,16 @@ impl Assistant {
         let mut shift = 0.0;
         // The drawing goes onto the floor chosen on the Drawing Unit page.
         let active = cx.floor;
-        let target = self.target_floor.min(cx.project.floors.len().saturating_sub(1));
+        let target = self
+            .target_floor
+            .min(cx.project.floors.len().saturating_sub(1));
         cx.floor = target;
         let files: Vec<&FileEntry> = if self.show_each {
             vec![&self.files[self.cur.min(self.files.len() - 1)]]
         } else {
             self.files.iter().collect()
         };
-        for (i, f) in files.iter().enumerate() {
+        for f in files.iter() {
             let mut a = self.shared_for(f);
             a.cur = a.files.iter().position(|x| x.name == f.name).unwrap_or(0);
             let opts = a.options(cx, &f.drawing, shift);
@@ -525,7 +537,6 @@ impl Assistant {
             if self.auto_position {
                 if let Some((lo, hi)) = conv.bounds() {
                     shift += (hi.x - lo.x) + 48.0;
-                    let _ = (lo, i);
                 }
             }
         }
@@ -576,6 +587,7 @@ impl Assistant {
             preview: None,
             message: String::new(),
             trail: Vec::new(),
+            loaded_paper: false,
         };
         if self.files.len() > 1 && !self.show_each && f.name != self.file_name() {
             // Another file of a shared import: its own layers, the choices
@@ -685,7 +697,12 @@ fn rows_for(d: &DxfDrawing, paper: bool) -> Vec<LayerRow> {
 }
 
 fn plan_layers(cx: &EditorContext) -> Vec<String> {
-    cx.project.layers.layers.iter().map(|l| l.name.clone()).collect()
+    cx.project
+        .layers
+        .layers
+        .iter()
+        .map(|l| l.name.clone())
+        .collect()
 }
 
 /// The line segments, in the plan, of the objects that came from the DXF
@@ -701,10 +718,7 @@ fn wall_lines(conv: &Converted, layers: &[String]) -> Vec<(Point, Point)> {
 /// Draws the hatch lines of `h` on the closed outline `id`; false when the
 /// pattern cannot be drawn.
 fn draw_hatch(cx: &mut EditorContext, id: plan_core::Id, h: &HatchSpec) -> bool {
-    let choice = HATCHES
-        .iter()
-        .position(|(n, _)| *n == h.style)
-        .unwrap_or(1);
+    let choice = HATCHES.iter().position(|(n, _)| *n == h.style).unwrap_or(1);
     let mut spacing = h.spacing;
     for _ in 0..8 {
         if let Ok(job) = plan_hatch(cx, id, choice, spacing) {
@@ -743,9 +757,13 @@ fn add_walls(cx: &mut EditorContext, result: &plan_import::CadToWallsResult, ty:
         }
     }
     for w in &result.walls {
-        let (thickness, kind) = def.as_ref().map_or((w.thickness, w.kind), |d| (d.thickness(), d.kind));
+        let (thickness, kind) = def
+            .as_ref()
+            .map_or((w.thickness, w.kind), |d| (d.thickness(), d.kind));
         let height = cx.wall_height(kind);
-        let id = cx.project.add_wall(floor, w.start, w.end, thickness, height, kind);
+        let id = cx
+            .project
+            .add_wall(floor, w.start, w.end, thickness, height, kind);
         if let (Some(d), Some(wall)) = (&def, cx.project.floors[floor].wall_mut(id)) {
             wall.wall_type = Some(d.name.clone());
         }
@@ -928,6 +946,9 @@ mod tests {
             status_line(&r),
             "Imported 12 objects, 1 dimensions, 2 CAD blocks (3 new layers) and made 4 walls"
         );
-        assert_eq!(status_line(&Report::default()), "The drawing had nothing to import");
+        assert_eq!(
+            status_line(&Report::default()),
+            "The drawing had nothing to import"
+        );
     }
 }

@@ -1052,7 +1052,13 @@ pub fn callout_items(c: &Callout, v: &Vars) -> Gen {
         at.fill = extra_fill;
         at
     };
-    push_shape(&mut g, c.shape, c.center, &placed, &line_attrs(fill.clone()));
+    push_shape(
+        &mut g,
+        c.shape,
+        c.center,
+        &placed,
+        &line_attrs(fill.clone()),
+    );
     push_label(
         &mut g,
         c.center,
@@ -1154,7 +1160,11 @@ pub fn callout_items(c: &Callout, v: &Vars) -> Gen {
             color: ar.color,
             ..CadAttrs::default()
         };
-        at.fill = fill_attr(ar.filled, Some(ar.color.unwrap_or([0, 0, 0])), ar.transparency);
+        at.fill = fill_attr(
+            ar.filled,
+            Some(ar.color.unwrap_or([0, 0, 0])),
+            ar.transparency,
+        );
         g.push(
             CadItem::Polyline {
                 points: tri,
@@ -1724,7 +1734,14 @@ impl Project {
                     && !v.link.as_ref().is_some_and(|l| l.valid);
                 let g = callout_with_caution(&rec, &v, broken);
                 let layer = rec.layer.clone();
-                let wrote = self.write_gen(fi, &mut rec.items, &mut rec.pose_idx, &mut rec.pose, &layer, g);
+                let wrote = self.write_gen(
+                    fi,
+                    &mut rec.items,
+                    &mut rec.pose_idx,
+                    &mut rec.pose,
+                    &layer,
+                    g,
+                );
                 let differs = rec != self.floors[fi].annots.callouts[i];
                 if differs {
                     self.floors[fi].annots.callouts[i] = rec;
@@ -1739,7 +1756,14 @@ impl Project {
                 }
                 let g = marker_items(&rec, &Vars::default());
                 let layer = rec.layer.clone();
-                let wrote = self.write_gen(fi, &mut rec.items, &mut rec.pose_idx, &mut rec.pose, &layer, g);
+                let wrote = self.write_gen(
+                    fi,
+                    &mut rec.items,
+                    &mut rec.pose_idx,
+                    &mut rec.pose,
+                    &layer,
+                    g,
+                );
                 let differs = rec != self.floors[fi].annots.markers[i];
                 if differs {
                     self.floors[fi].annots.markers[i] = rec;
@@ -1762,7 +1786,14 @@ impl Project {
                 let caution = !self.note_schedule_exists(&rec.note_type);
                 let g = note_items(&rec, &v, caution);
                 let layer = rec.layer.clone();
-                let wrote = self.write_gen(fi, &mut rec.items, &mut rec.pose_idx, &mut rec.pose, &layer, g);
+                let wrote = self.write_gen(
+                    fi,
+                    &mut rec.items,
+                    &mut rec.pose_idx,
+                    &mut rec.pose,
+                    &layer,
+                    g,
+                );
                 let differs = rec != self.floors[fi].annots.notes[i];
                 if differs {
                     self.floors[fi].annots.notes[i] = rec;
@@ -1820,7 +1851,9 @@ impl Project {
         if items.len() > want {
             let gone: Vec<Id> = items.split_off(want);
             self.floors[fi].cad.retain(|c| !gone.contains(&c.id));
-            self.floors[fi].cad_attrs.retain(|a| !gone.contains(&a.target));
+            self.floors[fi]
+                .cad_attrs
+                .retain(|a| !gone.contains(&a.target));
             changed = true;
         }
         for (id, (item, mut attrs)) in items.clone().into_iter().zip(g.items) {
@@ -1846,9 +1879,11 @@ impl Project {
         // They select as one.
         if items.len() >= 2 {
             let f = &self.floors[fi];
-            let whole = f
-                .group_of(ObjectRef::Cad(items[0]))
-                .is_some_and(|gr| items.iter().all(|i| gr.members.contains(&ObjectRef::Cad(*i))));
+            let whole = f.group_of(ObjectRef::Cad(items[0])).is_some_and(|gr| {
+                items
+                    .iter()
+                    .all(|i| gr.members.contains(&ObjectRef::Cad(*i)))
+            });
             if !whole {
                 let members: Vec<ObjectRef> = items.iter().map(|i| ObjectRef::Cad(*i)).collect();
                 self.make_group(fi, &members);
@@ -1981,7 +2016,9 @@ pub fn callout_handles(c: &Callout, v: &Vars, up: f64) -> Vec<AnnotHandle> {
     let below_dir = dirv(ang - FRAC_PI_2);
     out.push(AnnotHandle {
         id: handle::ADD_LINE,
-        pos: placed.exit(c.center, below_dir).add(below_dir.scale(up * 0.7)),
+        pos: placed
+            .exit(c.center, below_dir)
+            .add(below_dir.scale(up * 0.7)),
     });
     let hat = dirv(ang + FRAC_PI_4);
     out.push(AnnotHandle {
@@ -2005,7 +2042,13 @@ pub fn callout_handles(c: &Callout, v: &Vars, up: f64) -> Vec<AnnotHandle> {
 /// Drags handle `id` of `c` to `world` (the callout as it was when the drag
 /// began). `step` snaps angles to that many degrees. Returns false for a
 /// handle the callout does not have.
-pub fn drag_callout_handle(c: &mut Callout, v: &Vars, id: u8, world: Point, step: Option<f64>) -> bool {
+pub fn drag_callout_handle(
+    c: &mut Callout,
+    v: &Vars,
+    id: u8,
+    world: Point,
+    step: Option<f64>,
+) -> bool {
     let to = world.sub(c.center);
     let dist = to.length();
     let ang_deg = to.angle().to_degrees();
@@ -2035,7 +2078,8 @@ pub fn drag_callout_handle(c: &mut Callout, v: &Vars, id: u8, world: Point, step
                 return true;
             }
             c.section.on = true;
-            c.section.rel_angle = norm((snap_deg(ang_deg, step) - c.shape_angle).to_radians()).to_degrees();
+            c.section.rel_angle =
+                norm((snap_deg(ang_deg, step) - c.shape_angle).to_radians()).to_degrees();
             // The line starts on the outline: its length is what is left.
             let mut probe = c.clone();
             probe.section.min_length = 0.0;
@@ -2163,7 +2207,13 @@ mod tests {
     }
 
     fn item_of(p: &Project, id: Id) -> CadItem {
-        p.floors[0].cad.iter().find(|c| c.id == id).unwrap().item.clone()
+        p.floors[0]
+            .cad
+            .iter()
+            .find(|c| c.id == id)
+            .unwrap()
+            .item
+            .clone()
     }
 
     fn texts(p: &Project, items: &[Id]) -> Vec<String> {
@@ -2185,7 +2235,11 @@ mod tests {
             let pts = s.outline(6.0, 4.0);
             assert!(pts.len() >= 3, "{}", s.label());
             // Every outline holds the origin (the label sits there).
-            assert!(crate::geometry::point_in_polygon(Point::ZERO, &pts), "{}", s.label());
+            assert!(
+                crate::geometry::point_in_polygon(Point::ZERO, &pts),
+                "{}",
+                s.label()
+            );
             assert_eq!(CalloutShape::from_label(s.label()), Some(s));
         }
     }
@@ -2203,7 +2257,11 @@ mod tests {
             assert_eq!(g.items.len(), 2, "{}", s.label());
             let (lo, hi) = g.items[0].0.bounds();
             let (tlo, thi) = g.items[1].0.bounds();
-            assert!(lo.x <= tlo.x + 1e-6 && hi.x >= thi.x - 1e-6, "{}", s.label());
+            assert!(
+                lo.x <= tlo.x + 1e-6 && hi.x >= thi.x - 1e-6,
+                "{}",
+                s.label()
+            );
         }
         let none = callout_items(
             &Callout {
@@ -2250,7 +2308,12 @@ mod tests {
             .filter(|(i, _)| matches!(i, CadItem::Text { .. }))
             .count();
         assert_eq!(n_text, 3, "label, text above and text below");
-        let arrow = &g.items.iter().find(|(i, _)| matches!(i, CadItem::Line { a: s, .. } if s.dist(b) < 1e-9)).unwrap().1;
+        let arrow = &g
+            .items
+            .iter()
+            .find(|(i, _)| matches!(i, CadItem::Line { a: s, .. } if s.dist(b) < 1e-9))
+            .unwrap()
+            .1;
         assert_eq!(arrow.arrow_end, ArrowStyle::Filled);
     }
 
@@ -2263,7 +2326,16 @@ mod tests {
         c.section.on = true;
         c.section.above.text = "X".into();
         let g = callout_items(&c, &Vars::default());
-        let CadItem::Line { a, b } = g.items.iter().find(|(i, _)| matches!(i, CadItem::Line { .. })).unwrap().0.clone() else { unreachable!() };
+        let CadItem::Line { a, b } = g
+            .items
+            .iter()
+            .find(|(i, _)| matches!(i, CadItem::Line { .. }))
+            .unwrap()
+            .0
+            .clone()
+        else {
+            unreachable!()
+        };
         assert!((norm(b.sub(a).angle() - PI)).abs() < 1e-9);
         // The label above the line reads left to right even though the
         // line points left.
@@ -2284,8 +2356,16 @@ mod tests {
         c.section.double = true;
         c.label = "7".into();
         let g = callout_items(&c, &Vars::default());
-        let circles = g.items.iter().filter(|(i, _)| matches!(i, CadItem::Circle { .. })).count();
-        let labels = g.items.iter().filter(|(i, _)| matches!(i, CadItem::Text { text, .. } if text == "7")).count();
+        let circles = g
+            .items
+            .iter()
+            .filter(|(i, _)| matches!(i, CadItem::Circle { .. }))
+            .count();
+        let labels = g
+            .items
+            .iter()
+            .filter(|(i, _)| matches!(i, CadItem::Text { text, .. } if text == "7"))
+            .count();
         assert_eq!((circles, labels), (2, 2));
     }
 
@@ -2300,8 +2380,17 @@ mod tests {
         let g = callout_items(&c, &Vars::default());
         let tri = g.items.iter().filter(|(i, _)| matches!(i, CadItem::Polyline { points, closed: true } if points.len() == 3)).count();
         assert_eq!(tri, 1);
-        let (leader, at) = g.items.iter().find(|(i, a)| matches!(i, CadItem::Polyline { closed: false, .. }) && a.arrow_start == ArrowStyle::Filled).unwrap();
-        let CadItem::Polyline { points, .. } = leader else { unreachable!() };
+        let (leader, at) = g
+            .items
+            .iter()
+            .find(|(i, a)| {
+                matches!(i, CadItem::Polyline { closed: false, .. })
+                    && a.arrow_start == ArrowStyle::Filled
+            })
+            .unwrap();
+        let CadItem::Polyline { points, .. } = leader else {
+            unreachable!()
+        };
         assert_eq!(points[0], Point::new(100.0, 0.0));
         let r = match &g.items[0].0 {
             CadItem::Circle { radius, .. } => *radius,
@@ -2321,7 +2410,14 @@ mod tests {
         let level = marker_items(&m, &Vars::default());
         // Circle, two filled quadrants, the line, two texts.
         assert_eq!(level.items.len(), 6);
-        let t: Vec<String> = level.items.iter().filter_map(|(i, _)| match i { CadItem::Text { text, .. } => Some(text.clone()), _ => None }).collect();
+        let t: Vec<String> = level
+            .items
+            .iter()
+            .filter_map(|(i, _)| match i {
+                CadItem::Text { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
         assert_eq!(t, vec!["T.O. PLATE".to_string(), "8'-0\"".to_string()]);
         m.kind = MarkerKind::TestBoring;
         m.below.text.clear();
@@ -2334,13 +2430,22 @@ mod tests {
         m.kind = MarkerKind::Elevation;
         m.label.text = "%height%".into();
         let e = marker_items(&m, &Vars::default());
-        assert!(e.items.iter().any(|(i, _)| matches!(i, CadItem::Text { text, .. } if text == "8'-0\"")));
+        assert!(e
+            .items
+            .iter()
+            .any(|(i, _)| matches!(i, CadItem::Text { text, .. } if text == "8'-0\"")));
     }
 
     #[test]
     fn adding_a_callout_draws_grouped_cad_and_a_second_sync_changes_nothing() {
         let mut p = project();
-        let id = p.add_callout(0, Callout { label: "A".into(), ..Callout::default() });
+        let id = p.add_callout(
+            0,
+            Callout {
+                label: "A".into(),
+                ..Callout::default()
+            },
+        );
         {
             let f = &p.floors[0];
             assert_eq!(f.annots.callouts.len(), 1);
@@ -2352,7 +2457,11 @@ mod tests {
         assert!(!p.sync_annotations());
         let f = &p.floors[0];
         // The text is drawn through the box path (so it turns).
-        let txt = f.cad.iter().find(|c| matches!(c.item, CadItem::Text { .. })).unwrap();
+        let txt = f
+            .cad
+            .iter()
+            .find(|c| matches!(c.item, CadItem::Text { .. }))
+            .unwrap();
         assert_eq!(f.cad_attrs(txt.id).unwrap().text_box.halign, HAlign::Center);
     }
 
@@ -2371,7 +2480,8 @@ mod tests {
         let items = p.floors[0].annots.callouts[0].items.clone();
         let _ = id;
         // Move by (20, 10) and turn 90 degrees about (0, 0).
-        let x = Xform::translate(Point::new(20.0, 10.0)).then(Xform::rotate(Point::ZERO, FRAC_PI_2));
+        let x =
+            Xform::translate(Point::new(20.0, 10.0)).then(Xform::rotate(Point::ZERO, FRAC_PI_2));
         for c in &mut p.floors[0].cad {
             xform_cad_item(&mut c.item, &x);
         }
@@ -2400,7 +2510,11 @@ mod tests {
         let mut c = Callout {
             auto_below: true,
             label: "%referenced_view_callout_label%".into(),
-            link: Some(ViewLink { kind: ViewKind::Camera, id: cam, name: "Section A".into() }),
+            link: Some(ViewLink {
+                kind: ViewKind::Camera,
+                id: cam,
+                name: "Section A".into(),
+            }),
             ..Callout::default()
         };
         c.section.on = true;
@@ -2421,8 +2535,15 @@ mod tests {
         let items = p.floors[0].annots.callouts[0].items.clone();
         assert_eq!(texts(&p, &items), vec!["1", "A-3", "Section A"]);
         let _ = id;
-        let info = p.resolve_view_link(&ViewLink { kind: ViewKind::Camera, id: cam, name: String::new() });
-        assert_eq!((info.page_label.as_str(), info.page_number), ("A-3", Some(3)));
+        let info = p.resolve_view_link(&ViewLink {
+            kind: ViewKind::Camera,
+            id: cam,
+            name: String::new(),
+        });
+        assert_eq!(
+            (info.page_label.as_str(), info.page_number),
+            ("A-3", Some(3))
+        );
         assert_eq!(info.file_name, "Plans");
         // Moved to another page: the callout follows.
         p.layout.as_mut().unwrap()["pages"][1]["number"] = 5.into();
@@ -2449,25 +2570,61 @@ mod tests {
         p.layout = Some(serde_json::json!({
             "name": "L", "pages": [{"number": 2, "title": "Details", "boxes": [{"source": {"CadDetail": {"name": "A", "items": []}}}]}]
         }));
-        let i = p.resolve_view_link(&ViewLink { kind: ViewKind::CadDetail, id: 0, name: "A".into() });
+        let i = p.resolve_view_link(&ViewLink {
+            kind: ViewKind::CadDetail,
+            id: 0,
+            name: "A".into(),
+        });
         assert!(i.valid);
-        assert_eq!((i.view_name.as_str(), i.page_label.as_str(), i.view_type.as_str()), ("A", "A-2", "CAD Detail"));
-        let l = p.resolve_view_link(&ViewLink { kind: ViewKind::LayoutPage, id: 2, name: String::new() });
+        assert_eq!(
+            (
+                i.view_name.as_str(),
+                i.page_label.as_str(),
+                i.view_type.as_str()
+            ),
+            ("A", "A-2", "CAD Detail")
+        );
+        let l = p.resolve_view_link(&ViewLink {
+            kind: ViewKind::LayoutPage,
+            id: 2,
+            name: String::new(),
+        });
         assert!(l.valid && l.view_name == "Details" && l.page_label == "A-2");
-        assert!(!p.resolve_view_link(&ViewLink { kind: ViewKind::LayoutPage, id: 9, name: String::new() }).valid);
-        assert!(!p.resolve_view_link(&ViewLink { kind: ViewKind::CadDetail, id: 0, name: "Z".into() }).valid);
+        assert!(
+            !p.resolve_view_link(&ViewLink {
+                kind: ViewKind::LayoutPage,
+                id: 9,
+                name: String::new()
+            })
+            .valid
+        );
+        assert!(
+            !p.resolve_view_link(&ViewLink {
+                kind: ViewKind::CadDetail,
+                id: 0,
+                name: "Z".into()
+            })
+            .valid
+        );
     }
 
     #[test]
     fn notes_number_per_type_in_draw_order_and_renumber_when_one_goes() {
         let mut p = project();
-        let note = |t: &str, ty: &str| Note { text: t.into(), note_type: ty.into(), ..Note::default() };
+        let note = |t: &str, ty: &str| Note {
+            text: t.into(),
+            note_type: ty.into(),
+            ..Note::default()
+        };
         p.add_note(0, note("first", "General Note"));
         p.add_note(0, note("framing", "Framing Note"));
         p.add_note(0, note("second", "General Note"));
         p.add_note(0, note("third", "General Note"));
         let rows = p.note_rows();
-        let list: Vec<(String, u32, String)> = rows.iter().map(|r| (r.note_type.clone(), r.number, r.text.clone())).collect();
+        let list: Vec<(String, u32, String)> = rows
+            .iter()
+            .map(|r| (r.note_type.clone(), r.number, r.text.clone()))
+            .collect();
         assert_eq!(
             list,
             vec![
@@ -2483,7 +2640,12 @@ mod tests {
         // Deleting the first renumbers the rest.
         p.remove_annot(0, AnnotRef::Note(0));
         p.sync_annotations();
-        let nums: Vec<u32> = p.note_rows().iter().filter(|r| r.note_type == "General Note").map(|r| r.number).collect();
+        let nums: Vec<u32> = p
+            .note_rows()
+            .iter()
+            .filter(|r| r.note_type == "General Note")
+            .map(|r| r.number)
+            .collect();
         assert_eq!(nums, vec![1, 2]);
         let shown: Vec<Vec<String>> = p.floors[0]
             .annots
@@ -2499,11 +2661,19 @@ mod tests {
     #[test]
     fn a_note_shows_a_caution_symbol_until_a_note_schedule_exists() {
         let mut p = project();
-        let id = p.add_note(0, Note { text: "x".into(), ..Note::default() });
+        let id = p.add_note(
+            0,
+            Note {
+                text: "x".into(),
+                ..Note::default()
+            },
+        );
         let n_items = |p: &Project| p.floors[0].annots.notes[0].items.len();
         // Shape, label, caution triangle and its mark.
         assert_eq!(n_items(&p), 4);
-        let sid = p.create_note_schedule(0, &["General Note".to_string()], Point::new(500.0, 0.0)).unwrap();
+        let sid = p
+            .create_note_schedule(0, &["General Note".to_string()], Point::new(500.0, 0.0))
+            .unwrap();
         assert!(sid > 0 || sid == 0);
         p.sync_annotations();
         assert_eq!(n_items(&p), 2);
@@ -2519,14 +2689,30 @@ mod tests {
     #[test]
     fn convert_text_to_note_keeps_the_text_as_the_schedule_text() {
         let mut p = project();
-        let t = p.add_cad(0, "Text", CadItem::Text { pos: Point::new(10.0, 20.0), text: "Verify".into(), height: 6.0, angle: 0.0 });
-        let id = p.convert_text_to_note(0, t, "Electrical Note", &Note::default()).unwrap();
+        let t = p.add_cad(
+            0,
+            "Text",
+            CadItem::Text {
+                pos: Point::new(10.0, 20.0),
+                text: "Verify".into(),
+                height: 6.0,
+                angle: 0.0,
+            },
+        );
+        let id = p
+            .convert_text_to_note(0, t, "Electrical Note", &Note::default())
+            .unwrap();
         assert!(p.floors[0].cad.iter().all(|c| c.id != t));
         let n = &p.floors[0].annots.notes[0];
-        assert_eq!((n.text.as_str(), n.note_type.as_str(), n.center), ("Verify", "Electrical Note", Point::new(10.0, 20.0)));
+        assert_eq!(
+            (n.text.as_str(), n.note_type.as_str(), n.center),
+            ("Verify", "Electrical Note", Point::new(10.0, 20.0))
+        );
         assert_eq!(n.items[0], id);
         // A note is not converted again.
-        assert!(p.convert_text_to_note(0, id, "General Note", &Note::default()).is_none());
+        assert!(p
+            .convert_text_to_note(0, id, "General Note", &Note::default())
+            .is_none());
     }
 
     #[test]
@@ -2552,7 +2738,11 @@ mod tests {
         let mut p = project();
         let mut c = Callout::default();
         c.section.on = true;
-        c.link = Some(ViewLink { kind: ViewKind::Camera, id: 4, name: "x".into() });
+        c.link = Some(ViewLink {
+            kind: ViewKind::Camera,
+            id: 4,
+            name: "x".into(),
+        });
         p.add_callout(0, c);
         p.add_marker(0, Marker::default());
         p.add_note(0, Note::default());
@@ -2584,12 +2774,21 @@ mod tests {
     #[test]
     fn macros_expand_from_the_link_and_number() {
         let v = Vars {
-            link: Some(LinkInfo { valid: true, view_name: "V".into(), callout_label: "2".into(), page_label: "A-4".into(), ..LinkInfo::default() }),
+            link: Some(LinkInfo {
+                valid: true,
+                view_name: "V".into(),
+                callout_label: "2".into(),
+                page_label: "A-4".into(),
+                ..LinkInfo::default()
+            }),
             number: Some(9),
             ..Vars::default()
         };
         assert_eq!(expand_macros("%linked_view_name% %linked_view_layout_page_label% %referenced_view_callout_label% %layout_page_label% %automatic_label% %simple_schedule_number%", &v), "V A-4 2 A-4 2 9");
-        let broken = Vars { link: Some(LinkInfo::default()), ..Vars::default() };
+        let broken = Vars {
+            link: Some(LinkInfo::default()),
+            ..Vars::default()
+        };
         assert_eq!(expand_macros("[%linked_view_name%]", &broken), "[]");
         assert_eq!(expand_macros("100%", &v), "100%");
     }

@@ -1151,7 +1151,6 @@ impl SelectTool {
             }
             Op::Group => {
                 let items = cx.selection.items.clone();
-                eprintln!("DBGG total={:?} delta={:?}", total, behaviors::group_delta(cx, total));
                 move_group_ex(cx, &items, behaviors::group_delta(cx, total), !a.copy);
             }
             Op::GroupRotate(center) => {

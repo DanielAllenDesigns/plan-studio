@@ -21,7 +21,6 @@ use crate::editor::{Camera, EditorContext};
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Shape};
 use plan_core::cad::CadItem;
 use plan_core::geometry::{dist_to_segment, point_in_polygon, Point};
-use plan_core::units::fmt_ft_in_frac;
 use plan_core::{Floor, Id, Project, Wall};
 use plan_electrical::{place_on_wall, Device, ElectricalLayer, Stroke as ElStroke, WallSide};
 use plan_terrain::{

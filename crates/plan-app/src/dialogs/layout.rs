@@ -721,6 +721,8 @@ pub fn source_name(s: &BoxSource) -> String {
         BoxSource::Text { .. } => "Text".into(),
         BoxSource::Perspective { .. } => "Perspective view".into(),
         BoxSource::SheetIndex => "Sheet index".into(),
+        BoxSource::PageTable => "Layout Page Table".into(),
+        BoxSource::RevisionTable => "Layout Revision Table".into(),
         BoxSource::Materials { category, .. } => match category {
             Some(c) => format!("Materials List: {c}"),
             None => "Materials List".into(),

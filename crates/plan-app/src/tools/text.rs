@@ -45,8 +45,8 @@ use crate::editor::selection::{cad_by_id, cad_distance, hit_test};
 use crate::editor::snap::SnapResult;
 use crate::editor::{render, Camera, EditorContext, EditorRequest, ObjectRef};
 use eframe::egui::{self, Rect, Stroke};
-use plan_core::callout::{CalloutShape, MarkerKind};
 use plan_core::cad::{CadItem, TEXT_WIDTH_FACTOR};
+use plan_core::callout::{CalloutShape, MarkerKind};
 use plan_core::geometry::{point_in_polygon, Point};
 use plan_core::text_box::{layout, TextBox};
 use plan_core::text_styles::{
@@ -424,7 +424,11 @@ impl TextTool {
         } else {
             cx.project.annot_defaults.text.height
         };
-        let h = if own > 0.0 { own } else { cx.defaults.text.height };
+        let h = if own > 0.0 {
+            own
+        } else {
+            cx.defaults.text.height
+        };
         let h = if h > 0.0 { h } else { 6.0 };
         let h = cx
             .project
@@ -692,7 +696,8 @@ impl TextTool {
                 }
                 if rich && self.rich.halign != plan_core::text_box::HAlign::Left {
                     let (fl, h) = (cx.floor, self.rich.halign);
-                    cx.project.edit_cad_attrs(fl, ids[0], |a| a.text_box.halign = h);
+                    cx.project
+                        .edit_cad_attrs(fl, ids[0], |a| a.text_box.halign = h);
                 }
                 ToolResult::committed(label)
             }
@@ -877,7 +882,11 @@ impl TextTool {
                 BTN_FONT,
                 self.rich.font.is_some(),
             ));
-            v.push(StripButton::new("Color", BTN_COLOR, self.rich.color.is_some()));
+            v.push(StripButton::new(
+                "Color",
+                BTN_COLOR,
+                self.rich.color.is_some(),
+            ));
             v.push(StripButton::new(
                 format!("Align: {}", self.rich.halign.label()),
                 BTN_ALIGN,
@@ -1032,8 +1041,11 @@ impl TextTool {
                 };
             }
             BTN_COLOR => {
-                let at = STRIP_COLORS.iter().position(|c| Some(*c) == self.rich.color);
-                self.rich.color = Some(STRIP_COLORS[at.map_or(1, |i| (i + 1) % STRIP_COLORS.len())]);
+                let at = STRIP_COLORS
+                    .iter()
+                    .position(|c| Some(*c) == self.rich.color);
+                self.rich.color =
+                    Some(STRIP_COLORS[at.map_or(1, |i| (i + 1) % STRIP_COLORS.len())]);
             }
             BTN_ALIGN => {
                 use plan_core::text_box::HAlign;
@@ -1464,7 +1476,9 @@ fn mode_kind(m: TextMode) -> AnnotKind {
 /// The items a callout, marker or note placed at `at` would draw (the ghost
 /// that follows the pointer).
 fn annot_ghost(cx: &EditorContext, kind: AnnotKind, at: Point) -> Vec<CadItem> {
-    use plan_core::callout::{callout_items, marker_items, note_items, Callout, Marker, Note, Vars};
+    use plan_core::callout::{
+        callout_items, marker_items, note_items, Callout, Marker, Note, Vars,
+    };
     let d = &cx.project.annot_defaults;
     let v = Vars {
         number: Some(1),
@@ -1521,7 +1535,9 @@ pub fn selected_annot(cx: &EditorContext) -> Option<(plan_core::callout::AnnotRe
 pub fn annot_handles(cx: &EditorContext, scale: f64) -> Vec<crate::editor::handles::Handle> {
     use crate::editor::handles::{Handle, HandleKind};
     use eframe::egui::CursorIcon;
-    use plan_core::callout::{callout_handles, handle, marker_handles, note_handles, AnnotRef, Vars};
+    use plan_core::callout::{
+        callout_handles, handle, marker_handles, note_handles, AnnotRef, Vars,
+    };
     let Some((r, head)) = selected_annot(cx) else {
         return Vec::new();
     };
@@ -1664,7 +1680,10 @@ pub fn edit_actions(cx: &EditorContext) -> Vec<crate::editor::EditAction> {
             !n.ignore_no_schedule && !cx.project.note_schedule_exists(&n.note_type)
         });
         if lone {
-            v.push(custom_action(CMD_IGNORE_NOTE, "Ignore Note With No Schedule"));
+            v.push(custom_action(
+                CMD_IGNORE_NOTE,
+                "Ignore Note With No Schedule",
+            ));
             v.push(custom_action(
                 CMD_IGNORE_NOTES,
                 "Ignore All Notes With No Schedule",
@@ -1692,7 +1711,9 @@ pub fn run_command(cx: &mut EditorContext, id: &str) -> bool {
         }
         CMD_UNLINK => {
             if let Some((plan_core::callout::AnnotRef::Callout(i), head)) = selected_annot(cx) {
-                if cx.check_unlocked(ObjectRef::Cad(head)) && cx.floor().annots.callouts[i].link.is_some() {
+                if cx.check_unlocked(ObjectRef::Cad(head))
+                    && cx.floor().annots.callouts[i].link.is_some()
+                {
                     cx.begin_change("Unlink View");
                     cx.project.floors[fl].annots.callouts[i].link = None;
                     cx.project.sync_annotations();
@@ -1706,7 +1727,10 @@ pub fn run_command(cx: &mut EditorContext, id: &str) -> bool {
                 let info = link.map(|l| cx.project.resolve_view_link(&l));
                 cx.status = match info {
                     Some(i) if i.valid && !i.page_label.is_empty() => {
-                        format!("{} is on layout page {} ({})", i.view_name, i.page_label, i.file_name)
+                        format!(
+                            "{} is on layout page {} ({})",
+                            i.view_name, i.page_label, i.file_name
+                        )
                     }
                     Some(i) if i.valid => format!("{} has not been sent to layout", i.view_name),
                     _ => "The link is broken".into(),
@@ -1770,7 +1794,10 @@ pub fn run_command(cx: &mut EditorContext, id: &str) -> bool {
             let mut made: Vec<ObjectRef> = Vec::new();
             for t in texts {
                 if let Some(head) = cx.project.convert_text_to_note(fl, t, &ty, &base) {
-                    made.extend(crate::editor::selection::expand_groups(cx, &[ObjectRef::Cad(head)]));
+                    made.extend(crate::editor::selection::expand_groups(
+                        cx,
+                        &[ObjectRef::Cad(head)],
+                    ));
                 }
             }
             cx.selection.items = made;
@@ -1816,7 +1843,13 @@ pub fn follow_hyperlink(url: &str) -> Result<(), String> {
 /// Dragging an annotation's handle under Select: applies the pointer
 /// position `world` to the record whose first CAD object is `head` and
 /// regenerates its objects. Angles snap to 15 degrees unless `free`.
-fn drag_annot_handle(cx: &mut EditorContext, head: Id, handle_id: u8, world: Point, free: bool) -> bool {
+fn drag_annot_handle(
+    cx: &mut EditorContext,
+    head: Id,
+    handle_id: u8,
+    world: Point,
+    free: bool,
+) -> bool {
     use plan_core::callout::{
         drag_callout_handle, drag_marker_handle, drag_note_handle, AnnotRef, Vars,
     };
@@ -2357,7 +2390,10 @@ mod tests {
         assert_eq!(cx.undo_label(), Some("Place Callout"));
         // A record, its circle and its label, selected as one group.
         assert_eq!(cx.floor().annots.callouts.len(), 1);
-        assert_eq!(cx.floor().annots.callouts[0].center, Point::new(100.0, 50.0));
+        assert_eq!(
+            cx.floor().annots.callouts[0].center,
+            Point::new(100.0, 50.0)
+        );
         assert!(cx.floor().cad.iter().any(|c| matches!(&c.item,
             CadItem::Text { text, .. } if text == "A1")));
         assert!(cx.selection.items.contains(&ObjectRef::Cad(id)));
@@ -2390,14 +2426,22 @@ mod tests {
             assert_eq!(title, "Note Specification");
             assert_eq!(
                 tabs,
-                vec!["Note", "Line Style", "Text Style", "Object Information", "Schedule"]
+                vec![
+                    "Note",
+                    "Line Style",
+                    "Text Style",
+                    "Object Information",
+                    "Schedule"
+                ]
             );
             edit_label(&mut n, |t| *t = body.into());
             place(&mut n, &mut cx);
         }
         let rows = cx.project.note_rows();
         assert_eq!(
-            rows.iter().map(|r| (r.mark.as_str(), r.text.as_str())).collect::<Vec<_>>(),
+            rows.iter()
+                .map(|r| (r.mark.as_str(), r.text.as_str()))
+                .collect::<Vec<_>>(),
             vec![("Note 1", "Verify"), ("Note 2", "Match existing")]
         );
         assert_eq!(cx.undo_label(), Some("Place Note"));
@@ -2420,7 +2464,10 @@ mod tests {
         assert_eq!(cx.floor().annots.callouts[0].shape, CalloutShape::Oval);
         let mut m = tool(TextMode::Marker);
         m.strip_click(&mut cx, BTN_MARKER_KIND);
-        assert_eq!(cx.project.annot_defaults.marker.kind, MarkerKind::TestBoring);
+        assert_eq!(
+            cx.project.annot_defaults.marker.kind,
+            MarkerKind::TestBoring
+        );
         let mut n = tool(TextMode::Note);
         n.strip_click(&mut cx, BTN_NOTE_TYPE);
         assert_eq!(n.note_type, "Construction Note");

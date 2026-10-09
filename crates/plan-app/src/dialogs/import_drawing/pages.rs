@@ -133,7 +133,10 @@ pub(super) fn go_next(a: &mut Assistant, cx: &mut EditorContext) -> bool {
             }
         }
         Page::SelectFile => {
-            a.load_file(cx);
+            // Paper space adds objects to the layers: read the tables again.
+            if a.paper_space != a.loaded_paper {
+                a.load_file(cx);
+            }
             goto(a, Page::SelectLayers);
             true
         }
@@ -289,36 +292,52 @@ fn select_layers_page(a: &mut Assistant, ui: &mut Ui, cx: &EditorContext) {
             a.rows.iter_mut().for_each(|r| r.include = false);
         }
     });
-    ScrollArea::vertical().max_height(260.0).id_salt("import_layers_scroll").show(ui, |ui| {
-        Grid::new("import_layers_grid").num_columns(8).spacing([10.0, 4.0]).striped(true).show(ui, |ui| {
-            for h in ["", "Layer", "Color", "Status", "Line type", "Weight", "Objects", "To walls"] {
-                ui.weak(h);
-            }
-            ui.end_row();
-            for r in a.rows.iter_mut() {
-                ui.checkbox(&mut r.include, "");
-                ui.label(&r.name);
-                let (rect, _) = ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
-                ui.painter().rect_filled(rect, 2.0, swatch(r.color));
-                ui.label(if r.frozen {
-                    "Frozen"
-                } else if r.on {
-                    "Visible"
-                } else {
-                    "Off"
+    ScrollArea::vertical()
+        .max_height(260.0)
+        .id_salt("import_layers_scroll")
+        .show(ui, |ui| {
+            Grid::new("import_layers_grid")
+                .num_columns(8)
+                .spacing([10.0, 4.0])
+                .striped(true)
+                .show(ui, |ui| {
+                    for h in [
+                        "",
+                        "Layer",
+                        "Color",
+                        "Status",
+                        "Line type",
+                        "Weight",
+                        "Objects",
+                        "To walls",
+                    ] {
+                        ui.weak(h);
+                    }
+                    ui.end_row();
+                    for r in a.rows.iter_mut() {
+                        ui.checkbox(&mut r.include, "");
+                        ui.label(&r.name);
+                        let (rect, _) = ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
+                        ui.painter().rect_filled(rect, 2.0, swatch(r.color));
+                        ui.label(if r.frozen {
+                            "Frozen"
+                        } else if r.on {
+                            "Visible"
+                        } else {
+                            "Off"
+                        });
+                        ui.label(&r.linetype);
+                        ui.label(if r.weight > 0 {
+                            format!("{:.2} mm", f64::from(r.weight) / 100.0)
+                        } else {
+                            "Default".into()
+                        });
+                        ui.label(r.objects.to_string());
+                        ui.add_enabled(r.include, egui::Checkbox::without_text(&mut r.walls));
+                        ui.end_row();
+                    }
                 });
-                ui.label(&r.linetype);
-                ui.label(if r.weight > 0 {
-                    format!("{:.2} mm", f64::from(r.weight) / 100.0)
-                } else {
-                    "Default".into()
-                });
-                ui.label(r.objects.to_string());
-                ui.add_enabled(r.include, egui::Checkbox::without_text(&mut r.walls));
-                ui.end_row();
-            }
         });
-    });
     if a.rows.iter().any(|r| r.walls) {
         ui.separator();
         ui.horizontal(|ui| {
@@ -343,7 +362,11 @@ fn select_layers_page(a: &mut Assistant, ui: &mut Ui, cx: &EditorContext) {
 
 fn layer_mapping_page(a: &mut Assistant, ui: &mut Ui, plan: &[String]) {
     ui.strong("Layer Mapping");
-    ui.radio_value(&mut a.mode, MappingMode::Single, "A single layer in Plan Studio");
+    ui.radio_value(
+        &mut a.mode,
+        MappingMode::Single,
+        "A single layer in Plan Studio",
+    );
     ui.add_enabled_ui(a.mode == MappingMode::Single, |ui| {
         ui.horizontal(|ui| {
             ui.add_space(20.0);
@@ -359,11 +382,18 @@ fn layer_mapping_page(a: &mut Assistant, ui: &mut Ui, plan: &[String]) {
         });
         ui.weak("Original layer attributes are lost; each object keeps its color, line style and weight.");
     });
-    ui.radio_value(&mut a.mode, MappingMode::SameName, "Layers of the same names");
+    ui.radio_value(
+        &mut a.mode,
+        MappingMode::SameName,
+        "Layers of the same names",
+    );
     ui.add_enabled_ui(a.mode == MappingMode::SameName, |ui| {
         ui.horizontal(|ui| {
             ui.add_space(20.0);
-            ui.checkbox(&mut a.layer_attrs, "Import the attributes of each layer (color, line style, weight)");
+            ui.checkbox(
+                &mut a.layer_attrs,
+                "Import the attributes of each layer (color, line style, weight)",
+            );
         });
     });
     ui.radio_value(&mut a.mode, MappingMode::Advanced, "Advanced layer mapping");
@@ -371,55 +401,76 @@ fn layer_mapping_page(a: &mut Assistant, ui: &mut Ui, plan: &[String]) {
 
 fn advanced_mapping_page(a: &mut Assistant, ui: &mut Ui, plan: &[String]) {
     ui.strong("Advanced Layer Mapping");
-    ScrollArea::vertical().max_height(300.0).id_salt("import_adv_scroll").show(ui, |ui| {
-        Grid::new("import_adv_grid").num_columns(3).spacing([12.0, 4.0]).striped(true).show(ui, |ui| {
-            ui.weak("DXF layer");
-            ui.weak("Plan Studio layer");
-            ui.weak("");
-            ui.end_row();
-            let included: Vec<bool> = a
-                .advanced
-                .iter()
-                .map(|(n, _)| a.rows.iter().any(|r| r.name == *n && r.include))
-                .collect();
-            for (i, (name, choice)) in a.advanced.iter_mut().enumerate() {
-                if !included[i] {
-                    continue;
-                }
-                ui.label(name.as_str());
-                let label = match choice {
-                    LayerChoice::Same => format!("{name} (same name)"),
-                    LayerChoice::Plan(n) => n.clone(),
-                    LayerChoice::Named(_) => "New layer named...".into(),
-                };
-                ui.horizontal(|ui| {
-                    ComboBox::from_id_salt(("import_adv_to", i)).selected_text(label).width(200.0).show_ui(ui, |ui| {
-                        ui.selectable_value(choice, LayerChoice::Same, format!("{name} (same name)"));
-                        for p in plan {
-                            ui.selectable_value(choice, LayerChoice::Plan(p.clone()), p);
+    ScrollArea::vertical()
+        .max_height(300.0)
+        .id_salt("import_adv_scroll")
+        .show(ui, |ui| {
+            Grid::new("import_adv_grid")
+                .num_columns(3)
+                .spacing([12.0, 4.0])
+                .striped(true)
+                .show(ui, |ui| {
+                    ui.weak("DXF layer");
+                    ui.weak("Plan Studio layer");
+                    ui.weak("");
+                    ui.end_row();
+                    let included: Vec<bool> = a
+                        .advanced
+                        .iter()
+                        .map(|(n, _)| a.rows.iter().any(|r| r.name == *n && r.include))
+                        .collect();
+                    for (i, (name, choice)) in a.advanced.iter_mut().enumerate() {
+                        if !included[i] {
+                            continue;
                         }
-                        if ui
-                            .selectable_label(matches!(choice, LayerChoice::Named(_)), "New layer named...")
-                            .clicked()
-                            && !matches!(choice, LayerChoice::Named(_))
-                        {
-                            *choice = LayerChoice::Named(name.clone());
-                        }
-                    });
-                    if let LayerChoice::Named(n) = choice {
-                        ui.add(egui::TextEdit::singleline(n).desired_width(120.0));
+                        ui.label(name.as_str());
+                        let label = match choice {
+                            LayerChoice::Same => format!("{name} (same name)"),
+                            LayerChoice::Plan(n) => n.clone(),
+                            LayerChoice::Named(_) => "New layer named...".into(),
+                        };
+                        ui.horizontal(|ui| {
+                            ComboBox::from_id_salt(("import_adv_to", i))
+                                .selected_text(label)
+                                .width(200.0)
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(
+                                        choice,
+                                        LayerChoice::Same,
+                                        format!("{name} (same name)"),
+                                    );
+                                    for p in plan {
+                                        ui.selectable_value(
+                                            choice,
+                                            LayerChoice::Plan(p.clone()),
+                                            p,
+                                        );
+                                    }
+                                    if ui
+                                        .selectable_label(
+                                            matches!(choice, LayerChoice::Named(_)),
+                                            "New layer named...",
+                                        )
+                                        .clicked()
+                                        && !matches!(choice, LayerChoice::Named(_))
+                                    {
+                                        *choice = LayerChoice::Named(name.clone());
+                                    }
+                                });
+                            if let LayerChoice::Named(n) = choice {
+                                ui.add(egui::TextEdit::singleline(n).desired_width(120.0));
+                            }
+                        });
+                        let is_new = match choice {
+                            LayerChoice::Plan(_) => false,
+                            LayerChoice::Same => !plan.iter().any(|p| p.eq_ignore_ascii_case(name)),
+                            LayerChoice::Named(n) => !plan.iter().any(|p| p == n),
+                        };
+                        ui.label(if is_new { "New" } else { "" });
+                        ui.end_row();
                     }
                 });
-                let is_new = match choice {
-                    LayerChoice::Plan(_) => false,
-                    LayerChoice::Same => !plan.iter().any(|p| p.eq_ignore_ascii_case(name)),
-                    LayerChoice::Named(n) => !plan.iter().any(|p| p == n),
-                };
-                ui.label(if is_new { "New" } else { "" });
-                ui.end_row();
-            }
         });
-    });
     ui.checkbox(&mut a.layer_attrs, "Import the attributes of new layers");
 }
 
@@ -435,72 +486,120 @@ fn duplicate_page(a: &mut Assistant, ui: &mut Ui, _cx: &EditorContext) {
     ui.strong("Duplicate CAD Blocks");
     ui.label(format!(
         "These blocks are already on this floor: {}",
-        a.dup_names.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>().join(", ")
+        a.dup_names
+            .iter()
+            .map(|(n, _)| n.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
     ));
     for (v, text) in [
-        (BlockConflict::AutoName, "Give each duplicate a unique name (name_Copy_1)"),
-        (BlockConflict::Replace, "Replace the blocks on the floor with the ones being imported"),
-        (BlockConflict::UseExisting, "Keep the blocks on the floor and discard the imported ones"),
+        (
+            BlockConflict::AutoName,
+            "Give each duplicate a unique name (name_Copy_1)",
+        ),
+        (
+            BlockConflict::Replace,
+            "Replace the blocks on the floor with the ones being imported",
+        ),
+        (
+            BlockConflict::UseExisting,
+            "Keep the blocks on the floor and discard the imported ones",
+        ),
     ] {
         if ui.radio_value(&mut a.dup_default, v, text).clicked() {
             a.dup_each = false;
         }
     }
-    if ui.radio(a.dup_each, "Manage each duplicate individually").clicked() {
+    if ui
+        .radio(a.dup_each, "Manage each duplicate individually")
+        .clicked()
+    {
         a.dup_each = true;
     }
 }
 
 fn advanced_duplicate_page(a: &mut Assistant, ui: &mut Ui) {
     ui.strong("Advanced Duplicate CAD Blocks");
-    Grid::new("import_dup_grid").num_columns(2).spacing([14.0, 5.0]).show(ui, |ui| {
-        for (i, (name, c)) in a.dup_names.iter_mut().enumerate() {
-            ui.label(name.as_str());
-            ComboBox::from_id_salt(("import_dup", i)).selected_text(conflict_label(*c)).show_ui(ui, |ui| {
-                for v in [BlockConflict::AutoName, BlockConflict::Replace, BlockConflict::UseExisting] {
-                    ui.selectable_value(c, v, conflict_label(v));
-                }
-            });
-            ui.end_row();
-        }
-    });
+    Grid::new("import_dup_grid")
+        .num_columns(2)
+        .spacing([14.0, 5.0])
+        .show(ui, |ui| {
+            for (i, (name, c)) in a.dup_names.iter_mut().enumerate() {
+                ui.label(name.as_str());
+                ComboBox::from_id_salt(("import_dup", i))
+                    .selected_text(conflict_label(*c))
+                    .show_ui(ui, |ui| {
+                        for v in [
+                            BlockConflict::AutoName,
+                            BlockConflict::Replace,
+                            BlockConflict::UseExisting,
+                        ] {
+                            ui.selectable_value(c, v, conflict_label(v));
+                        }
+                    });
+                ui.end_row();
+            }
+        });
 }
 
 fn unit_page(a: &mut Assistant, ui: &mut Ui, cx: &EditorContext) {
     ui.strong("Drawing Unit");
     let label = a.units_label();
-    Grid::new("import_unit_grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
-        ui.label("Unit");
-        let file_units = default_units(a.drawing());
-        ComboBox::from_id_salt("import_units").selected_text(label).show_ui(ui, |ui| {
-            ui.selectable_value(&mut a.units, None, format!("As the file says ({})", file_units.label()));
-            for u in DxfUnits::CHOICES {
-                ui.selectable_value(&mut a.units, Some(u), u.label());
-            }
-        });
-        ui.end_row();
-        ui.label("Scale");
-        ui.add(egui::DragValue::new(&mut a.scale).speed(0.01).range(0.001..=1000.0).max_decimals(6))
+    Grid::new("import_unit_grid")
+        .num_columns(2)
+        .spacing([12.0, 6.0])
+        .show(ui, |ui| {
+            ui.label("Unit");
+            let file_units = default_units(a.drawing());
+            ComboBox::from_id_salt("import_units")
+                .selected_text(label)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut a.units,
+                        None,
+                        format!("As the file says ({})", file_units.label()),
+                    );
+                    for u in DxfUnits::CHOICES {
+                        ui.selectable_value(&mut a.units, Some(u), u.label());
+                    }
+                });
+            ui.end_row();
+            ui.label("Scale");
+            ui.add(
+                egui::DragValue::new(&mut a.scale)
+                    .speed(0.01)
+                    .range(0.001..=1000.0)
+                    .max_decimals(6),
+            )
             .on_hover_text("A drawing made at another scale than 1:1: multiply its size");
-        ui.end_row();
-        ui.label("Rotation");
-        ui.add(egui::DragValue::new(&mut a.rotation_deg).speed(0.5).range(-360.0..=360.0).suffix("\u{b0}"));
-        ui.end_row();
-        ui.label("Place it on");
-        let names: Vec<String> = cx.project.floors.iter().map(|f| f.name.clone()).collect();
-        a.target_floor = a.target_floor.min(names.len().saturating_sub(1));
-        ComboBox::from_id_salt("import_target_floor")
-            .selected_text(names.get(a.target_floor).cloned().unwrap_or_default())
-            .show_ui(ui, |ui| {
-                for (i, n) in names.iter().enumerate() {
-                    ui.selectable_value(&mut a.target_floor, i, n);
-                }
-            });
-        ui.end_row();
-    });
+            ui.end_row();
+            ui.label("Rotation");
+            ui.add(
+                egui::DragValue::new(&mut a.rotation_deg)
+                    .speed(0.5)
+                    .range(-360.0..=360.0)
+                    .suffix("\u{b0}"),
+            );
+            ui.end_row();
+            ui.label("Place it on");
+            let names: Vec<String> = cx.project.floors.iter().map(|f| f.name.clone()).collect();
+            a.target_floor = a.target_floor.min(names.len().saturating_sub(1));
+            ComboBox::from_id_salt("import_target_floor")
+                .selected_text(names.get(a.target_floor).cloned().unwrap_or_default())
+                .show_ui(ui, |ui| {
+                    for (i, n) in names.iter().enumerate() {
+                        ui.selectable_value(&mut a.target_floor, i, n);
+                    }
+                });
+            ui.end_row();
+        });
     ui.separator();
     ui.label("Dimensions");
-    ui.radio_value(&mut a.dims, DimensionMode::Objects, "Import as dimensions where possible");
+    ui.radio_value(
+        &mut a.dims,
+        DimensionMode::Objects,
+        "Import as dimensions where possible",
+    );
     ui.radio_value(&mut a.dims, DimensionMode::Blocks, "Import as CAD blocks");
     ui.separator();
     ui.checkbox(&mut a.to_origin, "Move drawing to the origin");
@@ -533,16 +632,26 @@ fn complete_page(a: &mut Assistant, ui: &mut Ui, cx: &mut EditorContext) {
             s.objects, s.lines, s.polylines, s.arcs_circles, s.texts, s.hatches, s.dimensions, s.blocks, s.layers
         ));
         if let Some((w, h)) = p.size {
-            ui.label(format!("Size in the plan: {} x {}", cx.fmt_dim(w), cx.fmt_dim(h)));
+            ui.label(format!(
+                "Size in the plan: {} x {}",
+                cx.fmt_dim(w),
+                cx.fmt_dim(h)
+            ));
         }
         if p.walls > 0 {
-            ui.label(format!("{} walls will be made from the lines of the layers marked To walls.", p.walls));
+            ui.label(format!(
+                "{} walls will be made from the lines of the layers marked To walls.",
+                p.walls
+            ));
         }
         for n in &p.notes {
             ui.add(egui::Label::new(RichText::new(n).weak()).wrap());
         }
         if s.objects + s.dimensions == 0 {
-            ui.colored_label(Color32::from_rgb(200, 60, 40), "Nothing would be imported: check the layers.");
+            ui.colored_label(
+                Color32::from_rgb(200, 60, 40),
+                "Nothing would be imported: check the layers.",
+            );
         }
     }
     ui.weak("The drawing's components are selected afterward, so you can move it.");

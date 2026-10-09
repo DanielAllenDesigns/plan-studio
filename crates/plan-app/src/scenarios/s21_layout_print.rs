@@ -516,25 +516,23 @@ fn rect_of(v: &LayoutView, id: Id) -> [f64; 4] {
 }
 
 #[test]
-fn page_specification_sets_number_title_flags_and_a_sheet_of_its_own() {
+fn page_information_sets_label_title_flags_and_a_sheet_of_its_own() {
     let mut sim = house();
     let mut v = view(&mut sim);
     v.send(&mut sim.app.cx.project, &plan_spec(0), None)
         .unwrap();
-    let mut spec = v.page_spec().expect("a page specification");
-    assert_eq!((spec.number, spec.title.as_str()), (1, "Page 1"));
-    assert_eq!(spec.sheet, None, "the page follows the layout's sheet");
-    spec.title = "Presentation Plan".into();
-    spec.number = 7;
-    spec.sheet = Some(SheetChoice::Standard(SheetSize::ArchD));
     let at = v.page;
-    assert_eq!(
-        v.apply_page_spec(&mut sim.app.cx.project, at, &spec),
-        Ok(true)
-    );
-    assert_eq!(v.undo_label(), Some("Page Specification"));
+    let mut d = v.page_info_dialog(&sim.app.cx.project).expect("a dialog");
+    assert_eq!(d.selected(), at);
+    assert_eq!(d.entries()[at].info.title, "Page 1");
+    assert_eq!(d.entries()[at].sheet.sheet, None, "the page follows the layout's sheet");
+    d.info_mut().unwrap().title = "Presentation Plan".into();
+    d.info_mut().unwrap().label = "S-#".into();
+    d.sheet_mut().unwrap().sheet = Some(SheetChoice::Standard(SheetSize::ArchD));
+    assert_eq!(v.apply_page_info(&mut sim.app.cx.project, &d), Ok(true));
+    assert_eq!(v.undo_label(), Some("Page Information"));
     let l = v.layout().unwrap();
-    assert_eq!(l.pages[at].sheet_number(), "A-7");
+    assert_eq!(l.sheet_number_of(&l.pages[at]), "S-1");
     assert_eq!(l.page_sheet_inches(&l.pages[at]), (36.0, 24.0));
     assert_eq!(l.sheet_inches(), (24.0, 18.0), "the layout is untouched");
     let pdf = lw::print_bytes(l, &sim.app.cx.project, None);
@@ -543,42 +541,43 @@ fn page_specification_sets_number_title_flags_and_a_sheet_of_its_own() {
         "the page's own sheet"
     );
     // The dialog reads the page back the way it was set.
-    let again = v.page_spec().unwrap();
-    assert_eq!(again.sheet, Some(SheetChoice::Standard(SheetSize::ArchD)));
-    assert!(!again.portrait);
+    let again = v.page_info_dialog(&sim.app.cx.project).unwrap();
     assert_eq!(
-        v.apply_page_spec(&mut sim.app.cx.project, at, &again),
+        again.entries()[at].sheet.sheet,
+        Some(SheetChoice::Standard(SheetSize::ArchD))
+    );
+    assert!(!again.entries()[at].sheet.portrait);
+    assert_eq!(
+        v.apply_page_info(&mut sim.app.cx.project, &again),
         Ok(false),
         "nothing changed"
     );
-    // A number another page has is refused and nothing changes.
+    // A label another page has is legal (as in Chief): duplicates stand.
     v.add_page(&mut sim.app.cx.project, false);
     let here = v.page;
-    let mut clash = v.page_spec().unwrap();
-    clash.number = 7;
-    assert_eq!(
-        v.apply_page_spec(&mut sim.app.cx.project, here, &clash),
-        Err("Another page already has that sheet number")
-    );
-    assert_ne!(v.layout().unwrap().pages[here].number, 7);
+    let mut dup = v.page_info_dialog(&sim.app.cx.project).unwrap();
+    dup.info_mut().unwrap().label = "Cover".into();
+    dup.select(at);
+    dup.info_mut().unwrap().label = "Cover".into();
+    assert_eq!(v.apply_page_info(&mut sim.app.cx.project, &dup), Ok(true));
+    let l = v.layout().unwrap();
+    assert_eq!(l.sheet_number_of(&l.pages[at]), "Cover");
+    assert_eq!(l.sheet_number_of(&l.pages[here]), "Cover");
     // Portrait turns the page's sheet upright; None follows the layout again.
-    let mut up = v.page_spec().unwrap();
-    up.sheet = Some(SheetChoice::Standard(SheetSize::Tabloid));
-    up.portrait = true;
-    up.no_title_block = true;
-    assert_eq!(
-        v.apply_page_spec(&mut sim.app.cx.project, here, &up),
-        Ok(true)
-    );
+    let mut up = v.page_info_dialog(&sim.app.cx.project).unwrap();
+    up.select(here);
+    up.sheet_mut().unwrap().sheet = Some(SheetChoice::Standard(SheetSize::Tabloid));
+    up.sheet_mut().unwrap().portrait = true;
+    up.sheet_mut().unwrap().no_title_block = true;
+    assert_eq!(v.apply_page_info(&mut sim.app.cx.project, &up), Ok(true));
     let l = v.layout().unwrap();
     assert_eq!(l.page_sheet_inches(&l.pages[here]), (11.0, 17.0));
     assert!(l.pages[here].no_title_block);
-    assert_eq!(v.page_spec().unwrap(), up);
-    up.sheet = None;
-    assert_eq!(
-        v.apply_page_spec(&mut sim.app.cx.project, here, &up),
-        Ok(true)
-    );
+    let mut back = v.page_info_dialog(&sim.app.cx.project).unwrap();
+    back.select(here);
+    assert_eq!(back.entries()[here].sheet, up.entries()[here].sheet);
+    back.sheet_mut().unwrap().sheet = None;
+    assert_eq!(v.apply_page_info(&mut sim.app.cx.project, &back), Ok(true));
     assert_eq!(v.layout().unwrap().pages[here].size_override_in, None);
 }
 

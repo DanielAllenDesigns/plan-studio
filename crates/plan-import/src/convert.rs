@@ -486,7 +486,11 @@ pub fn convert(drawing: &DxfDrawing, opts: &ImportOptions) -> Converted {
     if !xrefs.is_empty() {
         out.notes.push(format!(
             "External references are not imported (the files are missing from this import): {}",
-            xrefs.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+            xrefs
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
         ));
     }
     if !opts.include_paper_space && !drawing.paper_entities.is_empty() {
@@ -531,7 +535,11 @@ impl Conv<'_> {
         } else {
             None
         };
-        Look { color, weight, dash }
+        Look {
+            color,
+            weight,
+            dash,
+        }
     }
 
     fn linestyle(&self, name: &str) -> LineStyle {
@@ -639,7 +647,13 @@ impl Conv<'_> {
                 };
                 self.push(p, &layer, item, look, inst, |_| {});
             }
-            DxfKind::Ellipse { center, u, v, t0, t1 } => {
+            DxfKind::Ellipse {
+                center,
+                u,
+                v,
+                t0,
+                t1,
+            } => {
                 let pts = ellipse_points(*center, *u, *v, *t0, *t1);
                 let full = (t1 - t0).abs() >= TAU - 1e-6;
                 self.polyline_item(p, &layer, pts, full, look, inst);
@@ -667,7 +681,8 @@ impl Conv<'_> {
                 };
                 let mut pts = pts;
                 let mut is_closed = *closed;
-                if pts.len() > 2 && pts[0].dist(pts[pts.len() - 1]) < 1e-9 * (1.0 + pts[0].length()) {
+                if pts.len() > 2 && pts[0].dist(pts[pts.len() - 1]) < 1e-9 * (1.0 + pts[0].length())
+                {
                     pts.pop();
                     is_closed = true;
                 }
@@ -740,7 +755,11 @@ impl Conv<'_> {
                         v: VJust::Top,
                         text: m.text.clone(),
                         runs: Vec::new(),
-                        height: if m.height > 0.0 { m.height } else { 0.125 / k.max(1e-9) },
+                        height: if m.height > 0.0 {
+                            m.height
+                        } else {
+                            0.125 / k.max(1e-9)
+                        },
                         angle_deg: m.angle_deg,
                         width_factor: 1.0,
                         oblique_deg: 0.0,
@@ -772,7 +791,10 @@ impl Conv<'_> {
             return;
         }
         let pts: Vec<Point> = pts.into_iter().map(|q| self.place(q)).collect();
-        let item = CadItem::Polyline { points: pts, closed };
+        let item = CadItem::Polyline {
+            points: pts,
+            closed,
+        };
         self.push(p, layer, item, look, inst, |_| {});
     }
 
@@ -860,7 +882,8 @@ impl Conv<'_> {
             (lay.width, lay.height)
         } else {
             (
-                (t.text.chars().count() as f64 * h_in * TEXT_WIDTH_FACTOR * t.width_factor).max(lay.width * t.width_factor),
+                (t.text.chars().count() as f64 * h_in * TEXT_WIDTH_FACTOR * t.width_factor)
+                    .max(lay.width * t.width_factor),
                 h_in * lines as f64,
             )
         };
@@ -876,7 +899,9 @@ impl Conv<'_> {
         };
         let ang = (t.angle_deg + self.o.rotation_deg).to_radians();
         let (s, c) = ang.sin_cos();
-        let pos = self.place(t.pos).add(Point::new(dx * c - dy * s, dx * s + dy * c));
+        let pos = self
+            .place(t.pos)
+            .add(Point::new(dx * c - dy * s, dx * s + dy * c));
         let style = (!t.style.is_empty())
             .then(|| {
                 self.o
@@ -928,7 +953,11 @@ impl Conv<'_> {
                 seen.push((o.layer.clone(), o.source_layer.clone()));
             }
         }
-        let single = self.o.single_layer.as_ref().filter(|s| !s.trim().is_empty());
+        let single = self
+            .o
+            .single_layer
+            .as_ref()
+            .filter(|s| !s.trim().is_empty());
         for (name, from) in seen {
             let src = (!from.is_empty()).then(|| self.d.layer(&from)).flatten();
             let spec = match src {
@@ -991,7 +1020,11 @@ pub fn linetype_style(def: Option<&DxfLinetype>, name: &str) -> LineStyle {
     if n.is_empty() || n == "CONTINUOUS" || n == "BYLAYER" || n == "BYBLOCK" {
         return LineStyle::Solid;
     }
-    if n.contains("DASHDOT") || n.contains("CENTER") || n.contains("PHANTOM") || n.contains("DIVIDE") {
+    if n.contains("DASHDOT")
+        || n.contains("CENTER")
+        || n.contains("PHANTOM")
+        || n.contains("DIVIDE")
+    {
         return LineStyle::DashDot;
     }
     if n.contains("DOT") && !n.contains("DASH") {
@@ -1024,16 +1057,13 @@ pub fn hatch_style(name: &str, angle_deg: f64) -> (&'static str, bool) {
     let n = name.trim().to_ascii_uppercase();
     match n.as_str() {
         "" | "SOLID" => ("Solid", true),
-        "ANSI31" | "ANSI32" | "ANSI33" | "ANSI34" | "ANSI35" | "ANSI36" | "ANSI39" | "STEEL" | "ANGLE" => {
-            ("Diagonal Lines", false)
-        }
-        "ANSI37" | "ANSI38" | "NET" | "NET3" | "CROSS" | "PLUS" | "GRATE" | "HOUND" | "DASH" | "ESCHER" | "STARS" | "ZIGZAG" | "SWAMP" => {
-            ("Cross Hatch", false)
-        }
+        "ANSI31" | "ANSI32" | "ANSI33" | "ANSI34" | "ANSI35" | "ANSI36" | "ANSI39" | "STEEL"
+        | "ANGLE" => ("Diagonal Lines", false),
+        "ANSI37" | "ANSI38" | "NET" | "NET3" | "CROSS" | "PLUS" | "GRATE" | "HOUND" | "DASH"
+        | "ESCHER" | "STARS" | "ZIGZAG" | "SWAMP" => ("Cross Hatch", false),
         "LINE" => ("Horizontal Lines", false),
-        "BRICK" | "BRSTONE" | "AR-BRSTD" | "AR-B816" | "AR-B816C" | "AR-B88" | "AR-RROOF" | "AR-RSHKE" => {
-            ("Brick", false)
-        }
+        "BRICK" | "BRSTONE" | "AR-BRSTD" | "AR-B816" | "AR-B816C" | "AR-B88" | "AR-RROOF"
+        | "AR-RSHKE" => ("Brick", false),
         "AR-HBONE" | "AR-PARQ1" | "HONEY" | "SQUARE" | "BOX" | "TRIANG" | "ARROWS" | "ANSI3A" => {
             ("Block", false)
         }
@@ -1115,12 +1145,18 @@ fn join_lines(c: &mut Converted, opts: &ImportOptions) {
             };
             if keep && pts.len() > 2 {
                 let mut o = objs[i].clone();
-                o.item = CadItem::Polyline { points: pts, closed };
+                o.item = CadItem::Polyline {
+                    points: pts,
+                    closed,
+                };
                 out.push(o);
             } else if keep {
                 // A lone segment stays a line.
                 let mut o = objs[i].clone();
-                o.item = CadItem::Line { a: pts[0], b: pts[1] };
+                o.item = CadItem::Line {
+                    a: pts[0],
+                    b: pts[1],
+                };
                 out.push(o);
             } else {
                 // Put the segments back as they were.

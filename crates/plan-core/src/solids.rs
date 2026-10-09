@@ -361,6 +361,22 @@ impl CompoundSolid {
         }
     }
 
+    /// Carries the mesh through the plan transform `x` (move, turn, resize
+    /// in plan, mirror). A mirror flips the triangles so they stay outward
+    /// facing.
+    pub fn xform(&mut self, x: &crate::transform::Xform) {
+        for t in &mut self.tris {
+            for v in t.iter_mut() {
+                let p = x.apply(Point::new(v[0], v[1]));
+                v[0] = p.x;
+                v[1] = p.y;
+            }
+            if x.is_mirror() {
+                t.swap(1, 2);
+            }
+        }
+    }
+
     /// Moves the mesh so its lowest point is at `bottom`.
     pub fn set_bottom(&mut self, bottom: f64) {
         let dz = bottom - self.bottom();
@@ -752,22 +768,78 @@ pub fn top_outline(tris: &[Tri]) -> Vec<Vec<Point>> {
     // Directed edges of up-facing triangles, projected; an edge that also
     // appears reversed is interior and cancels.
     let mut edges: HashMap<((i64, i64), (i64, i64)), (Point, Point)> = HashMap::new();
-    for t in tris {
-        if tri_normal(t)[2] <= 1e-6 {
-            continue;
-        }
-        let p = [
-            Point::new(t[0][0], t[0][1]),
-            Point::new(t[1][0], t[1][1]),
-            Point::new(t[2][0], t[2][1]),
-        ];
+    let up: Vec<[Point; 3]> = tris
+        .iter()
+        .filter(|t| tri_normal(t)[2] > 1e-6)
+        .map(|t| {
+            [
+                Point::new(t[0][0], t[0][1]),
+                Point::new(t[1][0], t[1][1]),
+                Point::new(t[2][0], t[2][1]),
+            ]
+        })
+        .collect();
+    // BSP clipping leaves T-junctions (a vertex of one triangle in the middle
+    // of a neighbour's edge); split every edge at the vertices on it so that
+    // shared edges cancel exactly.
+    let verts: Vec<Point> = {
+        let mut seen: std::collections::HashSet<(i64, i64)> = std::collections::HashSet::new();
+        up.iter()
+            .flatten()
+            .filter(|p| seen.insert(key(**p)))
+            .copied()
+            .collect()
+    };
+    let mut by_x: Vec<usize> = (0..verts.len()).collect();
+    by_x.sort_by(|&a, &b| verts[a].x.total_cmp(&verts[b].x));
+    let mut by_y: Vec<usize> = (0..verts.len()).collect();
+    by_y.sort_by(|&a, &b| verts[a].y.total_cmp(&verts[b].y));
+    let eps = 2e-3;
+    for p in &up {
         for i in 0..3 {
             let (a, b) = (p[i], p[(i + 1) % 3]);
             if key(a) == key(b) {
                 continue;
             }
-            if edges.remove(&(key(b), key(a))).is_none() {
-                edges.insert((key(a), key(b)), (a, b));
+            let use_x = (b.x - a.x).abs() >= (b.y - a.y).abs();
+            let (order, lo, hi) = if use_x {
+                (&by_x, a.x.min(b.x) - eps, a.x.max(b.x) + eps)
+            } else {
+                (&by_y, a.y.min(b.y) - eps, a.y.max(b.y) + eps)
+            };
+            let first = order.partition_point(|&i| {
+                let v = &verts[i];
+                (if use_x { v.x } else { v.y }) < lo
+            });
+            let ab = b - a;
+            let len2 = ab.x * ab.x + ab.y * ab.y;
+            let mut cuts: Vec<(f64, Point)> = Vec::new();
+            for &vi in &order[first..] {
+                let v = verts[vi];
+                if (if use_x { v.x } else { v.y }) > hi {
+                    break;
+                }
+                if key(v) == key(a) || key(v) == key(b) {
+                    continue;
+                }
+                let t = ((v.x - a.x) * ab.x + (v.y - a.y) * ab.y) / len2;
+                if t <= 0.0 || t >= 1.0 {
+                    continue;
+                }
+                let d = (v - a).cross(ab).abs() / len2.sqrt();
+                if d < eps {
+                    cuts.push((t, v));
+                }
+            }
+            cuts.sort_by(|x, y| x.0.total_cmp(&y.0));
+            let mut prev = a;
+            for (_, v) in cuts.into_iter().chain(std::iter::once((1.0, b))) {
+                if key(prev) != key(v) {
+                    if edges.remove(&(key(v), key(prev))).is_none() {
+                        edges.insert((key(prev), key(v)), (prev, v));
+                    }
+                }
+                prev = v;
             }
         }
     }
@@ -1334,6 +1406,47 @@ pub fn pyramid_solid(id: Id, position: Point, h: f64, spec: &PyramidSpec) -> Sol
         position,
         ..Solid3d::default()
     }
+}
+
+/// Carries a primitive through the plan transform `x`: its position, its
+/// turn about Z and (for a resize) its plan dimensions. A mirror rewrites an
+/// outline solid's outline in place so the shape really is mirrored.
+pub fn xform_solid(s: &mut Solid3d, x: &crate::transform::Xform) {
+    let k = x.scale_factor();
+    let new_pos = x.apply(s.position);
+    let outline_kind = matches!(
+        s.kind,
+        SolidKind::PolylineSolid { .. } | SolidKind::Pyramid { .. } | SolidKind::Face { .. }
+    );
+    if x.is_mirror() && outline_kind {
+        let world: Vec<Point> = s.footprint().into_iter().map(|p| x.apply(p)).collect();
+        let local: Vec<Point> = world.iter().map(|p| *p - new_pos).collect();
+        match &mut s.kind {
+            SolidKind::PolylineSolid { outline, .. } | SolidKind::Pyramid { outline, .. } => {
+                *outline = local
+            }
+            SolidKind::Face { polygon } => *polygon = local,
+            _ => {}
+        }
+        s.rotation = 0.0;
+    } else {
+        s.rotation = x.map_angle(s.rotation.to_radians()).to_degrees();
+        if (k - 1.0).abs() > 1e-9 {
+            match &mut s.kind {
+                SolidKind::Box { w, d, .. } => {
+                    *w *= k;
+                    *d *= k;
+                }
+                SolidKind::Cylinder { r, .. } | SolidKind::Cone { r, .. } => *r *= k,
+                SolidKind::Sphere { r } => *r *= k,
+                SolidKind::PolylineSolid { outline, .. } | SolidKind::Pyramid { outline, .. } => {
+                    outline.iter_mut().for_each(|p| *p = *p * k)
+                }
+                SolidKind::Face { polygon } => polygon.iter_mut().for_each(|p| *p = *p * k),
+            }
+        }
+    }
+    s.position = new_pos;
 }
 
 /// Hook for the dialogs: the polygon of a circle used for plan drawing.

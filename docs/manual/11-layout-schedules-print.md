@@ -242,14 +242,21 @@ The tool row of the layout view makes the boxes and drawings that are not views 
 File > **Print...** (also the row 1 Print button, `Cmd+P`, Layout > Print Layout..., the layout toolbar's Print and the Project Browser's Print...) opens the **Print** dialog for the layout when its view is open, else for the active floor of the plan.
 The Print Layout and Export Layout PDF commands in the File > Print and Layout menus are shortcuts to the same PDF writer (Export asks for the file at once and writes every printed page).
 
+The dialog follows Chief's Print View dialog (manual pp. 1440-1443), in Chief's order:
+
 | Section | Choices |
 |---|---|
-| Destination | **PDF file** (a file dialog asks where; default `<layout name>.pdf`), **System printer** (CUPS `lp` on macOS and Linux, with Copies and a **Printer** list read from `lpstat -p`: the default printer, then every printer found, or "No printers found"; Windows saves the PDF instead) or **Open in viewer** (a temporary PDF in Preview, the system viewer or `start`). |
-| Paper | Size (the Arch, ANSI and ISO list, or Custom size in inches), Orientation (landscape or portrait) and Margin (the unprintable border; default 1/4"). |
-| Scale | A layout: Fit to page, 100% (actual size) or Percentage. A plan view: Fit to page, 1:1, any drawing scale from the Scale list, or a Custom ratio `1 : n`. **Tile onto several pages** cuts a sheet bigger than the paper into tiles with an Overlap (default 1/2"); the summary line says how many tiles per sheet and how many paper pages. |
-| Appearance | Color, Grayscale or Black and white, and **Print line weights** (off: every line is a 0.5 pt hairline). |
-| Print range | A layout: All pages or Pages `from` to `to` among the printed pages (the template page never prints). |
+| Destination | **PDF file** (a file dialog asks where; default `<layout name>.pdf`), **System printer** (CUPS `lp` on macOS and Linux, with a **Printer** list read from `lpstat -p`: the default printer, then every printer found, or "No printers found"; Windows saves the PDF instead) or **Open in viewer** (a temporary PDF in Preview, the system viewer or `start`). **DPI** (72 to 1200; vector prints do not depend on it, it sizes Print Image pictures and appears in the messages). |
+| Paper | **Size**: Match Print Source (the view's Drawing Sheet size and orientation), the Arch, ANSI and ISO list less the sizes Customize Sheet Sizes hides, the custom sizes (program-wide) or Custom size in inches. **Orientation**, **Source** (Automatic, Tray 1, Tray 2, Manual feed: sent to CUPS as `InputSlot`). A plan view's margins are the **Drawing Margins** of its sheet (top, bottom, left, right); a layout has one **Margin** (the unprintable border; default 1/4"). |
+| Print Range | A layout: **All** pages, **Current Sheet** (the page that is open, when the layout window tells the dialog) or **Sheets** `from` to `to` among the printed pages (the template page never prints). |
+| Print Source | A plan view: **Drawing Sheet** (the whole sheet, even when zoomed in; the default while View > Drawing Sheet is on) or **Current View** (only what is on screen; the default while the sheet is off). |
+| Drawing Scale | **Fit to Paper** at a percentage of the paper (default **95%**, global to every view in every file, kept between sessions), **To Scale** (the Drawing Sheet Setup's scale; a layout sheet prints at its own size) or **Check Plot at** a fraction (3/4, 2/3, 1/2, 1/3, 1/4, 1/8): the sheet, its drawing scale and its line weights print at that fraction and the paper changes to the smallest that holds it. **Other** keeps the older choices: Fit to the whole paper, 100%, Percentage, any drawing scale, Custom ratio `1 : n`. **Print across several pages** cuts a sheet bigger than the paper into tiles with an Overlap (default 1/2") and crop marks. |
+| Options | **Copies** with **Collate** (from two copies; sent as `-o collate=true`), **Include Watermark** with **Define...** (opens the Watermark Defaults, 11.3), **Print in Color** (Color, Grayscale, Black and white) and **Print line weights** (off: every line is a 0.5 pt hairline; the view's "Use 1 for all line weights" prints every line 1/300 inch). |
 | Perspective views | A layout: render perspective boxes at the dialog's **DPI** and **samples** instead of each box's own (0 keeps each box's setting). |
+| Advanced Options | **Open System Print Dialog** opens the PDF in the viewer, whose Print command is the system dialog. |
+| Preview and Information | **Print Preview** and the summary line (sheets, scale, pages). Under it, **messages** about the print: the sheet and paper sizes, "prints at 46% of its size, so the drawing is not to scale", "Check plot at 1/2: the drawing and its line weights print at 50%", "larger than the printable area and will be cut off", "takes 6 pages (3 x 2); cut along the crop marks", pictures below 150 dpi. |
+
+**Settings are remembered per kind of view** (plan, cross section / elevation, CAD Detail, layout, Materials List) in `~/.plan-studio/printsettings.json`, for every plan, unless the view's Drawing Sheet Setup has *Remember Print Settings after Printing* off (then the setup's printer is used and nothing is kept). Copies, the page range and Print Source are never kept. The first print of a kind starts from its Drawing Sheet Setup: paper Match Print Source, To Scale while the sheet is shown.
 
 **Print Preview** in the dialog sets the plan's Drawing Sheet to the chosen paper size (and, for a plan view, the print scale) and turns on View > Drawing Sheet and Print Preview, so the plan shows what the sheet will cover (11.7). Since Round 13 the preview also shows the dialog's **Appearance**: with Grayscale or Black and white chosen, the plan on screen is drawn in grays or in black on white, and the sheet's caption names the mode. **File > Print > Print Image...** saves the active floor's plan lines as a PNG (256 to 8000 pixels wide, fitted or at a drawing scale; for a rendering use Ray Trace > Save PNG).
 Every printed sheet of a layout PDF gets a **bookmark** (`A-1 Page 1`), so a PDF viewer lists the sheets. The settings are remembered while the program runs. The status bar reports "Saved <path>" or "Print cancelled".
@@ -257,6 +264,38 @@ Every printed sheet of a layout PDF gets a **bookmark** (`A-1 Page 1`), so a PDF
 **Print Model...** (the layout toolbar's tool row; `LayoutCommand::PrintModel`) prints one perspective camera big: a dialog asks for the **Camera** (the plan's perspective cameras, the one in the 3D view first), a **Resolution** (20 to 600 dpi; 150 by default) and a **Quality** (1 to 512 samples per pixel; 16 by default), the paper, orientation and margin, and the destination (PDF, printer, viewer), and says how many pixels it renders. The camera is ray traced onto one sheet. "Print Model needs a perspective camera: add one with the Camera tools" if there is none.
 
 **Print Image of the 3D view.** With a 3D view open, **File > Print > Print Image...** opens a size dialog (64 to 4096 pixels each way, 24 samples, starting at the view's aspect ratio) and ray traces the picture from the viewport's camera with the default sun and sky, because the live view has no offscreen target to read back (`print_image_3d`, `Image3dDialog`); you then save the PNG. With the floor plan showing, the command saves the plan view as a PNG as before. **Print Model...** is also in the File > Print menu, and **Layer Display Options...** and **Add Sheet Index** are rows of the Layout menu (as well as buttons of the layout window's toolbar).
+
+**Print Image** (File > Print > Print Image...) is the pixel variant: **DPI**, an optional **Size the picture to the paper** (a paper size and orientation: the width becomes the paper's printable width at the DPI, 10.5 in at 300 dpi is 3150 pixels on Letter), or a typed width, and the **Scale** (fit the plan or a drawing scale). The Information lines give the picture's size in pixels, megapixels and inches at the DPI and warn below 150 dpi.
+
+### Drawing Sheet Setup, Scale to Fit and Center Sheet (round 16)
+
+File > Print holds Chief's print setup tools: **Drawing Sheet Setup...**, **Scale to Fit**, **Center Sheet**, **Print Preview**, **Print...**, **Print Image...**, **Print Model...**, **Customize Sheet Sizes...** and **Clear Printer Info**.
+
+**Drawing Sheet Setup** is per kind of view and saved in the plan: the plan views, the cross section / elevation views, CAD Details, the layout and the Materials List each have their own; a kind with none of its own starts from the plan's, and a layout is always 1 in = 1 in. The **View** list at the top picks which one you edit. While the layout shows, the command opens the layout's Page Setup instead (a layout's sheet is its Page Setup).
+
+| Section | Choices |
+|---|---|
+| Drawing Sheet | **Orientation**, **Size** (the standard sizes less the hidden ones, and the program-wide custom sizes) with **Customize...**, and **Show Drawing Sheet in View** (the View > Drawing Sheet switch). |
+| Drawing Scale | Two parts, `[1/4] in = [1] ft` or `[1] mm = [50] mm`, each side with its own unit (in, ft, mm, m); **Common scales** fills it in. It is what the plan is drawn at, what printed-size text styles follow, and the scale **Print** (To Scale) and **Send to Layout** start from. |
+| Printer for View | **Remember Print Settings after Printing**; when it is off, the **Printer** you choose here is the one Print uses. |
+| Drawing Margins | **Top, Bottom, Left, Right**: the printable area of the sheet (a blue border on the plan) and the printing margins of a plan print. **Populate from Printer** puts 1/4 in all round for a printer, none for PDF. |
+| Advanced Line Weights | **Use 1 for all line weights** (every line prints 1/300 in at any scale), the **Line Weight Scale** `1 = 1/100 mm` by default (a different scale multiplies every pen), and a **Preview** of weights 5, 10, 25 and 50 at that scale. Exact weights (a sheet printed smaller keeps its pen thickness) are available to the print options. |
+
+**The Drawing Sheet is an object** while View > Drawing Sheet is on: drag its border to move it, drag a corner handle to resize it (a custom size); a blue border marks the printable area. **Center Sheet** puts the sheet on the middle of the floor's walls and dimensions and **Scale to Fit** picks the largest scale at which they fit inside the sheet's margins (and centers the sheet). The sheet's place is stored per floor and never moves a coordinate. Each is one undo step.
+
+**Customize Sheet Sizes** is program-wide, as in Chief: the sizes live in `~/.plan-studio/sheetsizes.json` and are shared by every plan and layout. The same dialog opens from File > Print, from the Layout menu and from the layout toolbar. Sizes an older layout kept for itself are taken over by name.
+
+### Watermark (round 16)
+
+**View > Watermark** puts a text or picture mark over the view, switched on per saved plan view (and for the CAD Detail views; one switch covers every page of the layout). **Edit > Default Settings > Watermark** (or **Define...** in the Print dialog) opens the **Watermark Defaults**; the view behind the dialog shows the mark and updates as you change it (or when you press Update).
+
+| Section | Choices |
+|---|---|
+| Type | **Text**: the words, a **Color**, the **Print Size** (the height of a capital A, in inches) and a **Font**. **Image**: a picture file (Browse..., or type the path), **Delete From Plan**, and **Ratio to Sheet** (how far across the sheet it reaches; unused by Fit to Sheet). |
+| General | **Layout**: **Tile** (Marks per Row by Marks per Column cells, one mark centred in each), **Border** (marks along the four edges) or **Fit to Sheet** (one mark grown to fill the sheet). **Angle** (counter-clockwise from horizontal), **Transparency** (0 to 100%). |
+| Margins | **Use Drawing Sheet Margin**, or your own Top, Bottom, Left, Right. |
+
+The watermark is saved with the plan (it is file-specific). It shows on the plan behind the Drawing Sheet, in the Print Preview window and in the PDF when **Include Watermark** is ticked in the Print dialog (it starts ticked when View > Watermark is on); the PDF draws it with true see-through transparency, a picture with its own transparent parts.
 
 ## 11.4 Project Information and the title block
 

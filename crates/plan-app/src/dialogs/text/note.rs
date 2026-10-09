@@ -173,7 +173,11 @@ impl NoteForm {
         let n = &mut self.spec;
         section(ui, "Schedule");
         row(ui, "Text", |ui| {
-            ui.add(egui::TextEdit::multiline(&mut n.text).desired_rows(3).desired_width(260.0));
+            ui.add(
+                egui::TextEdit::multiline(&mut n.text)
+                    .desired_rows(3)
+                    .desired_width(260.0),
+            );
         });
         row(ui, "", |ui| {
             insert_menu(ui, "note_text", &mut n.text, Macros::Note);
@@ -255,8 +259,10 @@ impl NoteForm {
         });
         ui.checkbox(&mut n.auto_adjust_text, "Auto Adjust Text Direction");
         section(ui, "Position");
-        self.fields.length_row(ui, "X Position", "note_x", &mut n.center.x);
-        self.fields.length_row(ui, "Y Position", "note_y", &mut n.center.y);
+        self.fields
+            .length_row(ui, "X Position", "note_x", &mut n.center.x);
+        self.fields
+            .length_row(ui, "Y Position", "note_y", &mut n.center.y);
         self.fields.length_row(ui, "Z Position", "note_z", &mut n.z);
         ui.checkbox(&mut n.auto_height, "Auto Adjust Height in Plan View");
     }
@@ -290,7 +296,11 @@ impl NoteForm {
         ui.add_enabled_ui(n.include_in_schedule, |ui| {
             let mut auto = n.category.is_none();
             if ui.checkbox(&mut auto, "Auto Schedule Category").changed() {
-                n.category = if auto { None } else { Some(n.note_type.clone()) };
+                n.category = if auto {
+                    None
+                } else {
+                    Some(n.note_type.clone())
+                };
             }
             if let Some(c) = &mut n.category {
                 row(ui, "Include in Schedule As", |ui| {

@@ -34,7 +34,7 @@ use super::{KeyEvent, PointerEvent, Tool, ToolId, ToolResult};
 use crate::editor::snap::snap_to_grid;
 use crate::editor::stairs_view::{self as view, StairHandleKind, StairKind, StairObj};
 use crate::editor::{Camera, EditAction, EditActionKind, EditorContext, ObjectRef};
-use eframe::egui::{self, Pos2, Shape, Stroke};
+use eframe::egui::{self, PointerButton, Pos2, Shape, Stroke};
 use plan_core::geometry::Point;
 use plan_core::Id;
 use plan_stairs::Turn;
@@ -47,6 +47,14 @@ const MIN_DRAG: f64 = 6.0;
 struct Press {
     screen: Pos2,
     start: Point,
+    /// The press was a right-button press: the stair runs downward (DN).
+    down: bool,
+}
+
+/// Ctrl (Cmd on a Mac) overrides the snaps while drawing; Alt reverses the
+/// direction instead (the manual, "Drawing stairs").
+fn skips_snap(p: &PointerEvent) -> bool {
+    p.modifiers.command || p.modifiers.ctrl
 }
 
 /// A handle drag of an existing stair.
@@ -67,6 +75,8 @@ pub struct StairsTool {
     heading: Option<f64>,
     /// Corners of the polygon landing being drawn.
     corners: Vec<Point>,
+    /// Alt is held: the stair being drawn runs downward (DN).
+    reverse: bool,
 }
 
 impl Default for StairsTool {
@@ -85,6 +95,7 @@ impl StairsTool {
             edit: None,
             heading: None,
             corners: Vec::new(),
+            reverse: false,
         }
     }
 
@@ -108,7 +119,30 @@ impl StairsTool {
     }
 
     fn snap(&self, cx: &EditorContext, p: &PointerEvent, origin: Option<Point>) -> Point {
-        cx.snap_at(p.world, origin, p.modifiers.alt, &[]).point
+        cx.snap_at(p.world, origin, skips_snap(p), &[]).point
+    }
+
+    /// Does the stair being drawn run downward: Alt held, or a right-button
+    /// press? Landings and the deck tool have no direction to reverse.
+    fn runs_down(&self, press_down: bool) -> bool {
+        (press_down || self.reverse)
+            && !matches!(self.kind, StairKind::Landing | StairKind::ToDeck)
+    }
+
+    /// The object the tool would place for `a` and `b` right now.
+    fn make(&self, cx: &EditorContext, a: Point, b: Option<Point>, down: bool) -> Option<StairObj> {
+        match self.kind {
+            StairKind::ToDeck => view::build_to_deck(&cx.project, cx.floor, &cx.rooms, a).ok(),
+            _ if down => Some(view::build_down(
+                &cx.project,
+                cx.floor,
+                self.kind,
+                self.turn,
+                a,
+                b,
+            )),
+            k => Some(view::build(&cx.project, cx.floor, k, self.turn, a, b)),
+        }
     }
 
     /// The origin for the angle snap of the drag end: a landing is dragged
@@ -136,8 +170,14 @@ impl StairsTool {
         let sol = o.solution();
         if o.is_ramp() {
             let slope = sol.total_run / o.stair.params.total_rise.max(1.0);
+            let name = match (o.stair.params.ramp_curve, o.stair.params.down) {
+                (Some(_), true) => "Curved ramp down",
+                (Some(_), false) => "Curved ramp",
+                (None, true) => "Ramp down",
+                (None, false) => "Ramp",
+            };
             return format!(
-                "Ramp: run {}, rise {}, slope 1:{slope:.1}",
+                "{name}: run {}, rise {}, slope 1:{slope:.1}",
                 cx.fmt_dim(sol.total_run),
                 cx.fmt_dim(o.stair.params.total_rise)
             );
@@ -146,6 +186,8 @@ impl StairsTool {
             "Spiral stairs"
         } else if o.is_curved() {
             "Curved stairs"
+        } else if o.stair.params.down {
+            "Stairs down"
         } else {
             "Stairs"
         };
@@ -159,10 +201,30 @@ impl StairsTool {
         )
     }
 
-    fn place(&mut self, cx: &mut EditorContext, a: Point, b: Option<Point>) -> ToolResult {
+    fn place(
+        &mut self,
+        cx: &mut EditorContext,
+        a: Point,
+        b: Option<Point>,
+        down: bool,
+    ) -> ToolResult {
         let b = b.or_else(|| self.click_end(cx, a));
-        let obj = view::build(&cx.project, cx.floor, self.kind, self.turn, a, b);
-        self.add_object(cx, obj, self.kind.name())
+        let down = self.runs_down(down);
+        let obj = if self.kind == StairKind::ToDeck {
+            match view::build_to_deck(&cx.project, cx.floor, &cx.rooms, a) {
+                Ok(o) => o,
+                Err(e) => {
+                    cx.status = e;
+                    return ToolResult::consumed();
+                }
+            }
+        } else if down {
+            view::build_down(&cx.project, cx.floor, self.kind, self.turn, a, b)
+        } else {
+            view::build(&cx.project, cx.floor, self.kind, self.turn, a, b)
+        };
+        let label = if down { "Draw Stairs Down" } else { self.kind.name() };
+        self.add_object(cx, obj, label)
     }
 
     /// Adds `obj` as one undo step named `label`, joins it to the landings
@@ -231,9 +293,10 @@ impl StairsTool {
         ToolResult::consumed()
     }
 
-    fn update_readout(&self, cx: &mut EditorContext, a: Point, b: Point) {
-        let o = view::build(&cx.project, cx.floor, self.kind, self.turn, a, Some(b));
-        cx.readout = Some(Self::describe(cx, &o));
+    fn update_readout(&self, cx: &mut EditorContext, a: Point, b: Point, down: bool) {
+        if let Some(o) = self.make(cx, a, Some(b), self.runs_down(down)) {
+            cx.readout = Some(Self::describe(cx, &o));
+        }
     }
 
     /// Applies the current pointer position to the handle drag.
@@ -248,7 +311,7 @@ impl StairsTool {
             _ => p.world,
         };
         let mut n = view::drag_handle(&e.orig, e.kind, e.start, to);
-        if e.kind == StairHandleKind::Move && !p.modifiers.alt {
+        if e.kind == StairHandleKind::Move && !skips_snap(p) {
             n.stair.origin = snap_to_grid(n.stair.origin, cx.snap_unit());
         }
         let (id, fl) = (e.id, cx.floor);
@@ -292,6 +355,10 @@ impl Tool for StairsTool {
         self.edit = None;
         self.corners.clear();
         self.heading = None;
+        self.reverse = false;
+        if let Some(o) = view::selected_stair(cx) {
+            view::set_edit_mode(o.id(), view::EditMode::Normal);
+        }
         cx.readout = None;
         cx.last_snap = None;
     }
@@ -300,12 +367,14 @@ impl Tool for StairsTool {
         if self.edit.is_some() {
             return self.drag_edit(cx, &p);
         }
+        // Alt reverses the direction (UP becomes DN) while the stair is drawn.
+        self.reverse = p.modifiers.alt;
         if let Some(press) = &self.press {
-            let start = press.start;
+            let (start, down) = (press.start, press.down);
             let end = self.snap(cx, &p, self.angle_origin(start));
             self.hover = Some(end);
             if start.dist(end) >= MIN_DRAG {
-                self.update_readout(cx, start, end);
+                self.update_readout(cx, start, end, down);
             }
         } else {
             if let Some(prev) = self.hover {
@@ -340,6 +409,7 @@ impl Tool for StairsTool {
         self.press = Some(Press {
             screen: p.screen,
             start,
+            down: p.button == PointerButton::Secondary,
         });
         self.hover = Some(start);
         ToolResult::consumed()
@@ -348,6 +418,15 @@ impl Tool for StairsTool {
     fn pointer_up(&mut self, cx: &mut EditorContext, p: PointerEvent) -> ToolResult {
         if let Some(e) = self.edit.take() {
             cx.readout = None;
+            // A click on the Starter Tread handle goes round none, one, two.
+            if e.kind == StairHandleKind::Starter && view::find(cx.floor(), e.id).as_ref() == Some(&e.orig) {
+                let n = view::drag_handle(&e.orig, e.kind, e.start, e.start);
+                let (id, fl) = (e.id, cx.floor);
+                view::update(&mut cx.project, fl, id, |o| *o = n.clone());
+                cx.mark_dirty();
+                cx.status = format!("Starter Tread: {}", n.stair.params.starter.name());
+                return ToolResult::committed(view::drag_label(e.kind));
+            }
             return if view::find(cx.floor(), e.id).as_ref() == Some(&e.orig) {
                 cx.cancel_change();
                 ToolResult::consumed()
@@ -366,21 +445,22 @@ impl Tool for StairsTool {
         if self.kind == StairKind::Landing && (!dragged || !self.corners.is_empty()) {
             return self.landing_click(cx, press.start);
         }
-        self.place(cx, press.start, dragged.then_some(end))
+        let down = press.down || p.modifiers.alt;
+        self.place(cx, press.start, dragged.then_some(end), down)
     }
 
     fn double_click(&mut self, cx: &mut EditorContext, p: PointerEvent) -> ToolResult {
         if self.kind != StairKind::Landing {
             return ToolResult::ignored();
         }
-        let at = cx.snap_at(p.world, None, p.modifiers.alt, &[]).point;
+        let at = cx.snap_at(p.world, None, skips_snap(&p), &[]).point;
         match self.corners.len() {
             0 | 1 => {
                 // A double-click on its own places a default square landing.
                 let a = self.corners.first().copied().unwrap_or(at);
                 self.corners.clear();
                 self.press = None;
-                self.place(cx, a, None)
+                self.place(cx, a, None, false)
             }
             2 => {
                 if self.corners.last().is_some_and(|l| l.dist(at) >= 0.5) {
@@ -411,6 +491,12 @@ impl Tool for StairsTool {
                 cx.readout = None;
                 return ToolResult::consumed();
             }
+            if let Some(o) = view::selected_stair(cx) {
+                if view::edit_mode(o.id()) != view::EditMode::Normal {
+                    view::set_edit_mode(o.id(), view::EditMode::Normal);
+                    return ToolResult::consumed();
+                }
+            }
             return ToolResult::ignored();
         }
         if k.is(egui::Key::Enter) && !self.corners.is_empty() {
@@ -434,6 +520,7 @@ impl Tool for StairsTool {
                     | StairKind::CurveLeft
                     | StairKind::CurveRight
                     | StairKind::Curved
+                    | StairKind::CurvedRamp
                     | StairKind::Spiral
             )
         {
@@ -472,7 +559,10 @@ impl Tool for StairsTool {
             None => (h, None),
         };
         let b = b.or_else(|| self.click_end(cx, a));
-        let ghost = view::build(&cx.project, cx.floor, self.kind, self.turn, a, b);
+        let down = self.runs_down(self.press.as_ref().is_some_and(|p| p.down));
+        let Some(ghost) = self.make(cx, a, b, down) else {
+            return;
+        };
         let pts = ghost
             .footprint()
             .iter()

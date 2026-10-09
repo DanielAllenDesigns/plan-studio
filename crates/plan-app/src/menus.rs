@@ -501,14 +501,53 @@ fn file_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
             Action::ToggleFlag(ViewFlag::PrintPreview),
             out,
         );
+        // A layout's sheet is its Page Setup; every other view has its own
+        // Drawing Sheet Setup.
         live(
             ui,
             "Drawing Sheet Setup\u{2026}",
             "",
             false,
-            Action::Layout(LayoutCommand::PageSetup),
+            if crate::shell::layout_window::is_active() {
+                Action::Layout(LayoutCommand::PageSetup)
+            } else {
+                Action::Custom(crate::dialogs::drawing_sheet::OPEN)
+            },
             out,
         );
+        live(
+            ui,
+            "Scale to Fit",
+            "",
+            false,
+            Action::Custom(crate::dialogs::drawing_sheet::SCALE_TO_FIT),
+            out,
+        );
+        live(
+            ui,
+            "Center Sheet",
+            "",
+            false,
+            Action::Custom(crate::dialogs::drawing_sheet::CENTER_SHEET),
+            out,
+        );
+        live(
+            ui,
+            "Customize Sheet Sizes\u{2026}",
+            "",
+            false,
+            Action::Custom(crate::dialogs::drawing_sheet::CUSTOMIZE),
+            out,
+        );
+        live(
+            ui,
+            "Clear Printer Info",
+            "",
+            false,
+            Action::Custom(crate::dialogs::drawing_sheet::CLEAR_PRINTER),
+            out,
+        );
+        ui.separator();
         live(
             ui,
             "Print Image\u{2026}",
@@ -682,6 +721,14 @@ fn edit_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
         "Drawing Groups\u{2026}",
         "Drawing Groups",
         crate::tools::cad_ops::DG_DEFAULTS,
+        out,
+    );
+    live(
+        ui,
+        "Watermark Defaults\u{2026}",
+        "",
+        false,
+        Action::Custom(crate::dialogs::watermark::DEFAULTS),
         out,
     );
     live(
@@ -1435,6 +1482,19 @@ fn camera_step_menus(ui: &mut egui::Ui, out: &mut Vec<Action>) {
     });
 }
 
+/// Tools > Floor/Reference Display: Change Floor/Reference, Swap
+/// Floor/Reference and Edit Reference Document Offset (manual pp. 89-91).
+fn reference_menu(ui: &mut egui::Ui, out: &mut Vec<Action>) {
+    use crate::dialogs::reference_display as rd;
+    for (label, cmd) in [
+        ("Change Floor/Reference\u{2026}", rd::CHANGE),
+        ("Swap Floor/Reference", rd::SWAP),
+        ("Edit Reference Document Offset", rd::EDIT_OFFSET),
+    ] {
+        live(ui, label, "", false, Action::Custom(cmd), out);
+    }
+}
+
 /// A CAD menu entry that starts the CAD tool in mode `m`.
 fn cad_mode(ui: &mut egui::Ui, label: &str, m: CadMode, out: &mut Vec<Action>) {
     live(
@@ -1456,6 +1516,19 @@ fn cad_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
         toolbar::boxes(),
     ] {
         toolbar::flyout_menu(ui, &f, state, out);
+    }
+    // Construction lines: the rule sets that number them and the defaults.
+    for (label, cmd) in [
+        (
+            "Construction Line Order Management\u{2026}",
+            crate::dialogs::construction_line::ORDER,
+        ),
+        (
+            "Construction Line Defaults\u{2026}",
+            crate::dialogs::construction_line::DEFAULTS,
+        ),
+    ] {
+        live(ui, label, "", false, Action::Custom(cmd), out);
     }
     cad_mode(ui, "Revision Cloud", CadMode::RevisionCloud, out);
     cad_mode(ui, "Spline", CadMode::Spline, out);
@@ -1642,14 +1715,7 @@ fn tools_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
             out,
         );
     });
-    live(
-        ui,
-        "Floor/Reference Display\u{2026}",
-        "",
-        false,
-        Action::ReferenceDisplayOptions,
-        out,
-    );
+    ui.menu_button("Floor/Reference Display", |ui| reference_menu(ui, out));
     live(
         ui,
         "Underlays\u{2026}",
@@ -2222,6 +2288,14 @@ fn view_menu(
         Action::ToggleFlag(ViewFlag::DrawingSheet),
         out,
     );
+    live(
+        ui,
+        "Watermark",
+        "",
+        crate::dialogs::watermark::menu_checked(),
+        Action::Custom(crate::dialogs::watermark::TOGGLE),
+        out,
+    );
     ui.separator();
     live(
         ui,
@@ -2394,7 +2468,11 @@ fn layout_menu(ui: &mut egui::Ui, out: &mut Vec<Action>) {
     row(ui, "Previous Page", C::PreviousPage, out);
     row(ui, "Next Page", C::NextPage, out);
     row(ui, "Layout Page Table\u{2026}", C::PageTable, out);
-    row(ui, "Page Specification\u{2026}", C::PageSpecification, out);
+    row(ui, "Page Information\u{2026}", C::PageInformation, out);
+    row(ui, "Layout Revision Table", C::RevisionTable, out);
+    row(ui, "Add Layout Revision\u{2026}", C::AddLayoutRevision, out);
+    row(ui, "Copy Drawings to Page\u{2026}", C::CopyDrawingsToPage, out);
+    row(ui, "General Layout Defaults\u{2026}", C::LayoutDefaults, out);
     ui.separator();
     row(ui, "Page Setup\u{2026}", C::PageSetup, out);
     row(

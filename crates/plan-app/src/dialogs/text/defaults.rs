@@ -67,15 +67,28 @@ pub enum DefaultsDialog {
 pub fn open(cx: &EditorContext, kind: DefaultsKind) -> DefaultsDialog {
     let d = &cx.project.annot_defaults;
     match kind {
-        DefaultsKind::Callout => DefaultsDialog::Annot(Box::new(annot::defaults_dialog(cx, AnnotKind::Callout))),
-        DefaultsKind::Marker => DefaultsDialog::Annot(Box::new(annot::defaults_dialog(cx, AnnotKind::Marker))),
-        DefaultsKind::Note => DefaultsDialog::Annot(Box::new(annot::defaults_dialog(cx, AnnotKind::Note))),
+        DefaultsKind::Callout => {
+            DefaultsDialog::Annot(Box::new(annot::defaults_dialog(cx, AnnotKind::Callout)))
+        }
+        DefaultsKind::Marker => {
+            DefaultsDialog::Annot(Box::new(annot::defaults_dialog(cx, AnnotKind::Marker)))
+        }
+        DefaultsKind::Note => {
+            DefaultsDialog::Annot(Box::new(annot::defaults_dialog(cx, AnnotKind::Note)))
+        }
         DefaultsKind::Text | DefaultsKind::RichText => {
             let rich = kind == DefaultsKind::RichText;
             let spec = if rich { d.rich.clone() } else { d.text.clone() };
             let title = format!("{} Defaults - {}", kind.name(), d.saved_name);
             DefaultsDialog::Text(Box::new(TextDefaultsDialog {
-                frame: SpecDialog::new(title, if rich { "rich_defaults" } else { "text_defaults" }),
+                frame: SpecDialog::new(
+                    title,
+                    if rich {
+                        "rich_defaults"
+                    } else {
+                        "text_defaults"
+                    },
+                ),
                 form: TextDefaultsForm {
                     orig: spec.clone(),
                     spec,
@@ -172,12 +185,20 @@ impl SpecPages for TextDefaultsForm {
                         .show_ui(ui, |ui| {
                             ui.selectable_value(&mut self.spec.style, None, "Use Layer Text Style");
                             for n in &self.styles {
-                                ui.selectable_value(&mut self.spec.style, Some(n.clone()), n.as_str());
+                                ui.selectable_value(
+                                    &mut self.spec.style,
+                                    Some(n.clone()),
+                                    n.as_str(),
+                                );
                             }
                         });
                 });
-                self.fields
-                    .length_row(ui, "Character Height", "text_def_height", &mut self.spec.height);
+                self.fields.length_row(
+                    ui,
+                    "Character Height",
+                    "text_def_height",
+                    &mut self.spec.height,
+                );
                 ui.weak("0 follows the plan's text height.");
             }
             _ => {

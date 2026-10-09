@@ -31,30 +31,39 @@ use eframe::egui::{self, Align2, Painter, Pos2, Rect, Shape, Stroke, Ui};
 use plan_core::geometry::Point;
 use plan_core::Id;
 use plan_stairs::{
-    solve, Bullnose, RailStyle, RailingParams, SideKind, StairParams, StairShape, StringerStyle,
-    Turn,
+    solve, ArrowStyle, Bullnose, BreakStyle, DisplayRule, EdgeRail, PostProfile, RadiusRef,
+    RailStyle, RailingParams, SideKind, StairParams, StairShape, Starter, StringerStyle, Turn,
+    ViewMode,
 };
 
+/// The Staircase Specification (and Ramp Specification) of Chief X18. The
+/// frame adds Properties, the Materials List's Components and Object
+/// Information after these (`object_info`), so a stair has all of Chief's.
 const STAIR_TABS: &[Tab] = &[
     on("General"),
     on("Style"),
-    on("Newels/Balusters"),
+    on("Stringers"),
     on("Rails"),
+    on("Newels/Balusters"),
+    on("Rail Style"),
     on("Line Style"),
     on("Fill Style"),
     on("Materials"),
+    on("Label"),
     on("Components"),
     on("Schedule"),
-    on("Label"),
 ];
 
 const LANDING_TABS: &[Tab] = &[
     on("General"),
     on("Rails"),
+    on("Newels/Balusters"),
+    on("Rail Style"),
     on("Line Style"),
     on("Fill Style"),
     on("Materials"),
     on("Label"),
+    on("Components"),
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -366,6 +375,13 @@ impl StairForm {
                             .speed(0.1),
                     );
                 });
+                code_notice(
+                    ui,
+                    "IBC 1012.2 ramp slope (1 in)",
+                    slope_1_in,
+                    plan_stairs::RAMP_MIN_SLOPE,
+                    LimitKind::Min,
+                );
             }
             StairShape::Curved { inner_radius } => {
                 let mut r = *inner_radius;
@@ -410,6 +426,45 @@ impl StairForm {
             }
             _ => {}
         }
+        if matches!(self.draft.stair.params.shape, StairShape::UShaped { .. }) {
+            let p = &mut self.draft.stair.params;
+            self.fields
+                .length_row(ui, "Gap Between Flights", "u_gap", &mut p.u_gap);
+            p.u_gap = p.u_gap.max(0.0);
+            ui.checkbox(
+                &mut p.split_landing,
+                "Split landing (two landings, one at the end of each flight)",
+            );
+        }
+        if matches!(self.draft.stair.params.shape, StairShape::Curved { .. })
+            && !self.draft.stair.params.spiral
+        {
+            let p = &mut self.draft.stair.params;
+            combo(
+                ui,
+                "Radius Reference",
+                "radius_ref",
+                &mut p.radius_ref,
+                &RadiusRef::ALL,
+                RadiusRef::name,
+            );
+            let which = p.radius_ref;
+            let mut r = p.curve_radius(which).unwrap_or(0.0);
+            if self.fields.length_row(ui, "Radius", "curve_radius", &mut r) {
+                p.set_curve_radius(which, r);
+            }
+        }
+        if self.draft.is_ramp() {
+            let p = &mut self.draft.stair.params;
+            let mut curved = p.ramp_curve.is_some();
+            if ui.checkbox(&mut curved, "Curved ramp").changed() {
+                p.ramp_curve = curved.then(|| (view::DEFAULT_CURVE_RADIUS - p.width / 2.0).max(0.0));
+            }
+            if let Some(r) = &mut p.ramp_curve {
+                self.fields.length_row(ui, "Inside Radius", "ramp_inner", r);
+                *r = r.max(0.0);
+            }
+        }
         if let StairShape::Curved { inner_radius } = &mut self.draft.stair.params.shape {
             // A spiral: wedge treads round a centre pole, judged by the
             // spiral-stair code (9 1/2" risers, 6 3/4" treads, 26" wide).
@@ -428,7 +483,8 @@ impl StairForm {
                 | StairShape::UShaped { .. }
                 | StairShape::Winder { .. }
                 | StairShape::Curved { .. }
-        ) {
+        ) || (self.draft.is_ramp() && self.draft.stair.params.ramp_curve.is_some())
+        {
             row(ui, "Turn", |ui| {
                 let t = &mut self.draft.stair.params.turn;
                 ui.radio_value(t, Turn::Left, "Left");
@@ -446,6 +502,11 @@ impl StairForm {
                 &mut self.draft.stair.params.landing_depth,
             );
         }
+
+        ui.checkbox(
+            &mut self.draft.stair.params.down,
+            "Downward stair (the plan arrow starts at the top and reads DN)",
+        );
 
         section(ui, "Solved from the floor-to-floor rise");
         let sol = solve(&self.draft.stair.params);
@@ -476,6 +537,7 @@ impl StairForm {
     }
 
     fn style(&mut self, ui: &mut Ui) {
+        let straight = view::straight_family(&self.draft);
         let p = &mut self.draft.stair.params;
         section(ui, "Treads and Risers");
         ui.checkbox(&mut p.open_risers, "Open risers");
@@ -483,6 +545,8 @@ impl StairForm {
             .length_row(ui, "Nosing", "nosing", &mut p.nosing);
         self.fields
             .length_row(ui, "Tread Thickness", "tread_t", &mut p.tread_thickness);
+        self.fields
+            .length_row(ui, "Riser Thickness", "riser_t", &mut p.riser_thickness);
         if matches!(
             p.shape,
             StairShape::Straight
@@ -490,6 +554,7 @@ impl StairForm {
                 | StairShape::UShaped { .. }
                 | StairShape::Winder { .. }
         ) {
+            section(ui, "Bottom Tread");
             self.fields
                 .length_row(ui, "Flared Bottom Tread", "flare", &mut p.flare);
             ui.weak("The bottom tread reaches this far past the stair on each side, in a half-round end. 0 keeps it square.");
@@ -504,10 +569,99 @@ impl StairForm {
                     });
             });
             ui.weak("A bullnose rounds the chosen end of the bottom tread into a half-round the depth of the tread; it wins over the flare on that end.");
+            combo(ui, "Starter Treads", "stair_starter", &mut p.starter, &Starter::ALL, Starter::name);
+            ui.weak("Starter treads are rounded and reach past the open sides; the second is concentric with the first. The Starter Tread edit mode has a handle for them.");
         }
+        if straight {
+            section(ui, "Flare and Curve");
+            let fl = &mut p.flare_shape;
+            for (i, label) in [
+                "Flare, Bottom Left",
+                "Flare, Bottom Right",
+                "Flare, Top Left",
+                "Flare, Top Right",
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                if i >= 2 && p.shape != StairShape::Straight {
+                    break;
+                }
+                self.fields
+                    .length_row(ui, label, FLARE_KEYS[i], &mut fl.corners[i]);
+                fl.corners[i] = fl.corners[i].clamp(0.0, view::MAX_FLARE);
+            }
+            row(ui, "Soften Flare", |ui| {
+                ui.add(egui::Slider::new(&mut fl.soften, 0.0..=1.0));
+            });
+            row(ui, "Flare Starts At", |ui| {
+                let mut pct = if fl.start > 1e-9 { fl.start * 100.0 } else { 100.0 };
+                if ui
+                    .add(
+                        egui::DragValue::new(&mut pct)
+                            .range(10.0..=100.0)
+                            .suffix("% of the run")
+                            .speed(0.5),
+                    )
+                    .changed()
+                {
+                    fl.start = if pct >= 99.0 { 0.0 } else { pct / 100.0 };
+                }
+            });
+            self.fields
+                .length_row(ui, "Curve Bottom Treads", "curve_bottom", &mut fl.curve_bottom);
+            self.fields
+                .length_row(ui, "Curve All Treads", "curve_all", &mut fl.curve_all);
+            fl.curve_bottom = fl.curve_bottom.clamp(0.0, p.tread_depth.max(0.0));
+            fl.curve_all = fl.curve_all.clamp(0.0, p.tread_depth.max(0.0));
+            ui.weak("Treads curve down the stair by at most one tread depth. The Flare/Curve Stairs edit mode has handles for all of these.");
+        }
+        if matches!(p.shape, StairShape::Winder { .. }) {
+            section(ui, "Winders");
+            self.fields.length_row(
+                ui,
+                "Max Tread Contraction",
+                "winder_contraction",
+                &mut p.winder_contraction,
+            );
+            ui.weak("The narrowest a winder tread may get at the inside corner; 0 lets the points of the fan meet. 2\" leaves room for a wall under the stair.");
+            p.winder_contraction = p.winder_contraction.max(0.0);
+        }
+        section(ui, "Runner");
         self.fields
-            .length_row(ui, "Riser Thickness", "riser_t", &mut p.riser_thickness);
-        section(ui, "Stringers");
+            .length_row(ui, "Runner Width", "runner_w", &mut p.runner.width);
+        p.runner.width = p.runner.width.max(0.0);
+        ui.checkbox(&mut p.runner.tucked, "Runner tucked under the nosing");
+        section(ui, "Walkline");
+        ui.checkbox(&mut p.walkline.on, "Use walkline (tread depth is measured along it)");
+        self.fields.length_row(
+            ui,
+            "Distance From Edge",
+            "walk_dist",
+            &mut p.walkline.distance,
+        );
+        p.walkline.distance = p.walkline.distance.max(0.0);
+        ui.checkbox(&mut p.walkline.show, "Show walkline in plan");
+        section(ui, "Top Landing");
+        ui.checkbox(&mut p.top_landing.nosing, "Nosing at top landing");
+        ui.checkbox(
+            &mut p.top_landing.riser_surface,
+            "Riser surface at top landing",
+        );
+        section(ui, "Options");
+        ui.checkbox(
+            &mut p.railing_openings,
+            "Automatic railing openings (a doorway is cut in a railing the stair meets)",
+        );
+        ui.checkbox(
+            &mut p.allow_wrap,
+            "Allow wrap (sections wrap around a deck or landing corner and share attributes)",
+        );
+    }
+
+    fn stringers(&mut self, ui: &mut Ui) {
+        let p = &mut self.draft.stair.params;
+        section(ui, "Stringer Style");
         row(ui, "Stringer Style", |ui| {
             egui::ComboBox::from_id_salt("stair_stringer")
                 .selected_text(stringer_name(p.stringer))
@@ -521,12 +675,45 @@ impl StairForm {
                     }
                 });
         });
+        ui.weak("Closed: a full board whose top edge follows the nosing line. Open: a notched (cut) stringer with the steps cut out of the board. None: the treads span between walls.");
         self.fields
             .length_row(ui, "Stringer Depth", "stringer", &mut p.stringer_depth);
+        self.fields.length_row(
+            ui,
+            "Stringer Thickness",
+            "stringer_t",
+            &mut p.stringers.thickness,
+        );
+        p.stringers.thickness = p.stringers.thickness.max(0.25);
+        row(ui, "Middle Stringers", |ui| {
+            let mut n = u32::from(p.stringers.centre);
+            if ui.add(egui::DragValue::new(&mut n).range(0..=3)).changed() {
+                p.stringers.centre = n as u8;
+            }
+        });
+        ui.checkbox(
+            &mut p.stringers.no_sides,
+            "Leave out the side stringers (only the middle ones remain)",
+        );
+        ui.weak("A steel stringer with concrete treads: one middle stringer, no side stringers, Open Underneath.");
+        section(ui, "Underneath");
+        ui.checkbox(&mut p.stringers.open_underneath, "Open underneath");
+        ui.add_enabled_ui(!p.stringers.open_underneath, |ui| {
+            self.fields
+                .length_row(ui, "Side Inset", "side_inset", &mut p.stringers.side_inset);
+        });
+        p.stringers.side_inset = p.stringers.side_inset.max(0.0);
+        ui.weak("Off closes the underside with a soffit and a skirt along both sides, set in by the side inset.");
+        ui.checkbox(
+            &mut p.stringers.extend_top,
+            "Extend stringer top (it carries on up to the floor above)",
+        );
+        ui.checkbox(
+            &mut p.stringers.large_base,
+            "Large stringer base (a deeper board at the bottom, for concrete stairs)",
+        );
         self.fields
             .length_row(ui, "Slab Thickness", "slab_t", &mut p.slab_thickness);
-        section(ui, "Handrail");
-        ui.checkbox(&mut p.handrail, "Handrail on both sides");
     }
 
     /// The "Applies to" row of the Newels/Balusters and Rails tabs: both
@@ -587,8 +774,27 @@ impl StairForm {
     fn newels_balusters(&mut self, ui: &mut Ui) {
         self.scope_row(ui);
         let scope = self.scope;
+        // The library items are stair-wide; the rest follows the scope.
+        {
+            let params = &mut self.draft.stair.params;
+            library_row(
+                ui,
+                "Newel Library Item",
+                "newel_item",
+                &mut params.newel_item,
+                view::PostKind::Newel,
+            );
+            library_row(
+                ui,
+                "Baluster Library Item",
+                "baluster_item",
+                &mut params.baluster_item,
+                view::PostKind::Baluster,
+            );
+        }
         let r = scoped_railing(&mut self.draft.stair.params, scope);
         section(ui, "Newels");
+        combo(ui, "Newel Type", "newel_type", &mut r.newel.profile, &PostProfile::ALL, PostProfile::name);
         self.fields
             .length_row(ui, "Newel Size", "newel_size", &mut r.newel.size);
         self.fields
@@ -600,20 +806,24 @@ impl StairForm {
             &mut r.newel.max_spacing,
         );
         ui.checkbox(&mut r.newel.cap, "Newel cap");
+        ui.checkbox(
+            &mut r.newel.post_to_beam,
+            "Post to beam (newels reach down through the floor structure)",
+        );
+        if r.newel.post_to_beam {
+            self.fields
+                .length_row(ui, "Post Below Foot", "beam_drop", &mut r.newel.beam_drop);
+            r.newel.beam_drop = r.newel.beam_drop.max(0.0);
+        }
         section(ui, "Balusters");
-        let name = baluster_name(&r.style);
-        row(ui, "Infill", |ui| {
-            egui::ComboBox::from_id_salt("stair_infill")
-                .selected_text(name)
-                .show_ui(ui, |ui| {
-                    for (label, make) in BALUSTER_STYLES {
-                        let on = baluster_name(&r.style) == label;
-                        if ui.selectable_label(on, label).clicked() && !on {
-                            r.style = make();
-                        }
-                    }
-                });
-        });
+        combo(
+            ui,
+            "Baluster Type",
+            "baluster_type",
+            &mut r.baluster_profile,
+            &PostProfile::ALL,
+            PostProfile::name,
+        );
         match &mut r.style {
             RailStyle::Balusters { spacing, size } => {
                 self.fields
@@ -628,17 +838,75 @@ impl StairForm {
                 self.fields
                     .length_row(ui, "Baluster Size", "baluster_size", size);
             }
+            _ => {
+                ui.weak("The Rail Style tab has the infill; balusters are in use when it is set to Balusters.");
+            }
+        }
+        ui.weak("Balusters stand on the treads, enough per tread to keep every opening within the clear spacing (4\" by code). A library item with a 3D model stands in for the built-in post at the same places and sizes.");
+        section(ui, "Plan Display");
+        let plan = &mut self.draft.stair.params.plan;
+        ui.checkbox(&mut plan.draw_newels, "Draw newels in plan");
+        ui.checkbox(&mut plan.draw_balusters, "Draw balusters in plan");
+        ui.checkbox(&mut plan.draw_rails, "Draw rails in plan");
+    }
+
+    /// The infill between the rails (Chief's Rail Style tab).
+    fn rail_style(&mut self, ui: &mut Ui) {
+        self.scope_row(ui);
+        let scope = self.scope;
+        let r = scoped_railing(&mut self.draft.stair.params, scope);
+        section(ui, "Rail Style");
+        let name = baluster_name(&r.style);
+        row(ui, "Infill", |ui| {
+            egui::ComboBox::from_id_salt("stair_infill")
+                .selected_text(name)
+                .show_ui(ui, |ui| {
+                    for (label, make) in BALUSTER_STYLES {
+                        let on = baluster_name(&r.style) == label;
+                        if ui.selectable_label(on, label).clicked() && !on {
+                            r.style = make();
+                        }
+                    }
+                });
+        });
+        match &mut r.style {
             RailStyle::Cable { rows } => {
                 row(ui, "Cable Rows", |ui| {
                     ui.add(egui::DragValue::new(rows).range(1..=12));
                 });
             }
-            _ => {}
+            RailStyle::Balusters { .. } => {
+                ui.weak("Spacing, size and type of the balusters are on the Newels/Balusters tab.");
+            }
+            RailStyle::Panels => {
+                ui.weak("Framed panels between the newels.");
+            }
+            RailStyle::Solid => {
+                ui.weak("A solid infill between the newels.");
+            }
+            RailStyle::Glass => {
+                ui.weak("Glass panels between the newels, held by the rails.");
+            }
         }
-        ui.weak("Balusters stand on the treads, enough per tread to keep every opening within the clear spacing (4\" by code).");
+        section(ui, "Half Wall");
+        let mut half = r.half_wall.is_some();
+        if ui
+            .checkbox(&mut half, "Infill stands on a half wall")
+            .changed()
+        {
+            r.half_wall = half.then_some(plan_stairs::GUARD_HEIGHT * 0.5);
+        }
+        if let Some(h) = &mut r.half_wall {
+            self.fields
+                .length_row(ui, "Half Wall Height", "half_wall_h", h);
+            *h = h.max(0.0);
+        }
     }
 
     fn rails(&mut self, ui: &mut Ui) {
+        if self.draft.is_landing() {
+            self.landing_edges(ui);
+        }
         section(ui, "Sides");
         for (label, left) in [("Left Side", true), ("Right Side", false)] {
             row(ui, label, |ui| {
@@ -693,7 +961,44 @@ impl StairForm {
             "bottom_rail_h",
             &mut r.bottom_rail.1,
         );
+        if !self.draft.is_landing() {
+            let p = &mut self.draft.stair.params;
+            section(ui, "Handrail");
+            ui.checkbox(&mut p.handrail, "Handrail on both sides");
+            let h = &mut p.handrail_options;
+            self.fields
+                .length_row(ui, "Extend Top End", "rail_ext_top", &mut h.extend_top);
+            self.fields.length_row(
+                ui,
+                "Extend Bottom End",
+                "rail_ext_bottom",
+                &mut h.extend_bottom,
+            );
+            h.extend_top = h.extend_top.max(0.0);
+            h.extend_bottom = h.extend_bottom.max(0.0);
+            ui.checkbox(&mut h.return_top, "Return to wall at the top");
+            ui.checkbox(&mut h.return_bottom, "Return to wall at the bottom");
+        }
         ui.weak("Railing: a guard with newels, balusters and a rail that follows the pitch. Handrail: a rail on the wall only, no guard. Half Wall: a cap rail on a solid panel. Wall: a full-height wall.");
+    }
+
+    /// The Selected Edge panel of a landing: what stands on each edge.
+    fn landing_edges(&mut self, ui: &mut Ui) {
+        let n = self.draft.footprint().len();
+        let rails = &mut self.draft.stair.params.edge_rails;
+        if rails.len() < n {
+            rails.resize(n, EdgeRail::Automatic);
+        }
+        section(ui, "Landing Edges");
+        for (i, rail) in rails.iter_mut().enumerate().take(n) {
+            let label = format!("Edge {}", i + 1);
+            combo(ui, &label, &format!("edge_rail_{i}"), rail, &EdgeRail::ALL, EdgeRail::name);
+        }
+        // Back to the shorter list when nothing is forced.
+        if rails.iter().all(|e| *e == EdgeRail::Automatic) {
+            rails.clear();
+        }
+        ui.weak("Automatic puts a railing on the open sides and none where a stair or landing meets the edge; No Railing and Has Railing override it for one edge.");
     }
 
     fn line_style(&mut self, ui: &mut Ui) {
@@ -735,6 +1040,64 @@ impl StairForm {
                 ),
             )
             .on_disabled_hover_text("Make a stairwell first (Auto Stairwell)");
+
+            let p = &mut self.draft.stair.params;
+            section(ui, "Plan Display");
+            combo(
+                ui,
+                "Display on Floor Above",
+                "plan_floor_above",
+                &mut p.plan.floor_above,
+                &DisplayRule::ALL,
+                DisplayRule::name,
+            );
+            combo(
+                ui,
+                "Floor Above Display",
+                "plan_above_view",
+                &mut p.plan.above_view,
+                &ViewMode::ALL,
+                ViewMode::name,
+            );
+            combo(
+                ui,
+                "Current Floor Display",
+                "plan_beyond_view",
+                &mut p.plan.beyond_view,
+                &ViewMode::ALL,
+                ViewMode::name,
+            );
+            ui.weak("Floor Above Display is the part of the stair before the break line as the floor above sees it; Current Floor Display is the part beyond the break line on the stair's own floor.");
+            ui.checkbox(&mut p.plan.number_treads, "Number the treads");
+            section(ui, "Break Line");
+            combo(
+                ui,
+                "Break Style",
+                "plan_break_style",
+                &mut p.plan.break_style,
+                &BreakStyle::ALL,
+                BreakStyle::name,
+            );
+            self.fields
+                .degrees_row(ui, "Break Angle", "break_angle", &mut p.plan.break_angle);
+            self.fields
+                .length_row(ui, "Break Size", "break_size", &mut p.plan.break_size);
+            self.fields
+                .length_row(ui, "Gap After Break", "break_gap", &mut p.plan.break_gap);
+            p.plan.break_size = p.plan.break_size.max(0.0);
+            p.plan.break_gap = p.plan.break_gap.max(0.0);
+            section(ui, "Arrow");
+            combo(
+                ui,
+                "Arrow Style",
+                "plan_arrow",
+                &mut p.plan.arrow,
+                &ArrowStyle::ALL,
+                ArrowStyle::name,
+            );
+            self.fields
+                .length_row(ui, "Arrow Size", "arrow_size", &mut p.plan.arrow_size);
+            p.plan.arrow_size = p.plan.arrow_size.max(0.0);
         }
     }
 
@@ -839,6 +1202,62 @@ impl StairForm {
     }
 }
 
+const FLARE_KEYS: [&str; 4] = ["flare_bl", "flare_br", "flare_tl", "flare_tr"];
+
+/// A labelled drop-down over `all`, named by `name`.
+fn combo<T: Copy + PartialEq>(
+    ui: &mut Ui,
+    label: &str,
+    salt: &str,
+    value: &mut T,
+    all: &[T],
+    name: impl Fn(T) -> &'static str,
+) {
+    row(ui, label, |ui| {
+        egui::ComboBox::from_id_salt(salt)
+            .selected_text(name(*value))
+            .show_ui(ui, |ui| {
+                for &v in all {
+                    ui.selectable_value(value, v, name(v));
+                }
+            });
+    });
+}
+
+/// The drop-down of library newels or balusters: the built-in post, then the
+/// items of the library folder.
+fn library_row(ui: &mut Ui, label: &str, salt: &str, current: &mut String, kind: view::PostKind) {
+    let items = view::library_posts(kind);
+    let shown = if current.is_empty() {
+        "Built-in".to_string()
+    } else {
+        items
+            .iter()
+            .find(|i| i.0 == *current)
+            .map_or_else(|| current.clone(), |i| i.1.clone())
+    };
+    row(ui, label, |ui| {
+        egui::ComboBox::from_id_salt(salt)
+            .selected_text(shown)
+            .show_ui(ui, |ui| {
+                if ui.selectable_label(current.is_empty(), "Built-in").clicked() {
+                    current.clear();
+                }
+                for (id, name) in &items {
+                    if ui.selectable_label(current == id, name).clicked() {
+                        *current = id.clone();
+                    }
+                }
+            });
+    });
+    if items.is_empty() {
+        ui.weak(format!(
+            "The library has no items in its {} folder yet: import a 3D model there (User Catalog) to use it here.",
+            kind.folder()
+        ));
+    }
+}
+
 fn stringer_name(s: StringerStyle) -> &'static str {
     match s {
         StringerStyle::Closed => "Closed (full board)",
@@ -901,7 +1320,9 @@ impl SpecPages for StairForm {
         match tabs[tab.min(tabs.len() - 1)].name {
             "General" => self.general(ui),
             "Style" => self.style(ui),
+            "Stringers" => self.stringers(ui),
             "Newels/Balusters" => self.newels_balusters(ui),
+            "Rail Style" => self.rail_style(ui),
             "Rails" => self.rails(ui),
             "Line Style" => self.line_style(ui),
             "Fill Style" => self.fill_style(ui),

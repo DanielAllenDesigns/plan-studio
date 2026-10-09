@@ -25,9 +25,9 @@ pub fn decode_text(bytes: &[u8]) -> Cow<'_, str> {
 
 fn cp1252(b: u8) -> char {
     const HIGH: [char; 32] = [
-        '\u{20ac}', '\u{81}', '\u{201a}', '\u{192}', '\u{201e}', '\u{2026}', '\u{2020}', '\u{2021}',
-        '\u{2c6}', '\u{2030}', '\u{160}', '\u{2039}', '\u{152}', '\u{8d}', '\u{17d}', '\u{8f}',
-        '\u{90}', '\u{2018}', '\u{2019}', '\u{201c}', '\u{201d}', '\u{2022}', '\u{2013}',
+        '\u{20ac}', '\u{81}', '\u{201a}', '\u{192}', '\u{201e}', '\u{2026}', '\u{2020}',
+        '\u{2021}', '\u{2c6}', '\u{2030}', '\u{160}', '\u{2039}', '\u{152}', '\u{8d}', '\u{17d}',
+        '\u{8f}', '\u{90}', '\u{2018}', '\u{2019}', '\u{201c}', '\u{201d}', '\u{2022}', '\u{2013}',
         '\u{2014}', '\u{2dc}', '\u{2122}', '\u{161}', '\u{203a}', '\u{153}', '\u{9d}', '\u{17e}',
         '\u{178}',
     ];
@@ -175,8 +175,12 @@ pub fn encode_binary(pairs: &[Pair<'_>]) -> Vec<u8> {
                 out.extend_from_slice(value.as_bytes());
                 out.push(0);
             }
-            Wire::I16 => out.extend_from_slice(&(v.parse::<i64>().unwrap_or(0) as i16).to_le_bytes()),
-            Wire::I32 => out.extend_from_slice(&(v.parse::<i64>().unwrap_or(0) as i32).to_le_bytes()),
+            Wire::I16 => {
+                out.extend_from_slice(&(v.parse::<i64>().unwrap_or(0) as i16).to_le_bytes())
+            }
+            Wire::I32 => {
+                out.extend_from_slice(&(v.parse::<i64>().unwrap_or(0) as i32).to_le_bytes())
+            }
             Wire::I64 => out.extend_from_slice(&v.parse::<i64>().unwrap_or(0).to_le_bytes()),
             Wire::F64 => out.extend_from_slice(&v.parse::<f64>().unwrap_or(0.0).to_le_bytes()),
             Wire::Bool => out.push(v.parse::<i64>().unwrap_or(0) as u8),

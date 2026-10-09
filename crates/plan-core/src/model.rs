@@ -402,6 +402,15 @@ pub struct Floor {
     /// Layer tables of material regions (see [`crate::material_region`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub region_layers: Vec<crate::material_region::RegionStructure>,
+    /// Construction line records, keyed by the id of their CAD line (see
+    /// [`crate::construction`]).
+    #[serde(default, skip_serializing_if = "crate::construction::ConstructionLayer::is_empty")]
+    pub construction: crate::construction::ConstructionLayer,
+    /// Center Sheet (File > Print): where the middle of this floor's Drawing
+    /// Sheet sits on the plan. `None` centers the sheet on the walls. Moves
+    /// the sheet only, never an object (manual p. 1432).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sheet_center: Option<Point>,
 }
 
 impl Floor {
@@ -437,6 +446,8 @@ impl Floor {
             blocks: crate::arch_block::BlockLayer::default(),
             solid_layer: crate::solids::SolidLayer::default(),
             region_layers: Vec::new(),
+            construction: crate::construction::ConstructionLayer::default(),
+            sheet_center: None,
         }
     }
     pub fn wall(&self, id: Id) -> Option<&Wall> {
@@ -550,6 +561,24 @@ pub struct Project {
     /// [`crate::materials_data`].
     #[serde(default, skip_serializing_if = "crate::materials_data::MaterialsData::is_empty")]
     pub materials: crate::materials_data::MaterialsData,
+    /// Drawing Sheet Setup of each kind of view and the Watermark (File >
+    /// Print, View > Watermark); see [`crate::drawing_sheet`].
+    #[serde(default, skip_serializing_if = "crate::drawing_sheet::PrintSetup::is_default")]
+    pub print_setup: crate::drawing_sheet::PrintSetup,
+    /// Construction Line Defaults and the order rule sets (Construction
+    /// Line Order Management); see [`crate::construction`].
+    #[serde(
+        default,
+        skip_serializing_if = "crate::construction::ConstructionSettings::is_default"
+    )]
+    pub construction: crate::construction::ConstructionSettings,
+    /// The Change Floor/Reference table: the reference rows in draw order;
+    /// see [`crate::construction::ReferenceTable`].
+    #[serde(
+        default,
+        skip_serializing_if = "crate::construction::ReferenceTable::is_default"
+    )]
+    pub reference_table: crate::construction::ReferenceTable,
 }
 
 fn default_project_name() -> String {
@@ -598,6 +627,9 @@ impl Project {
             props: crate::props::PropTable::default(),
             drawing_group_defaults: crate::drawing_group::DrawingGroupTable::default(),
             materials: crate::materials_data::MaterialsData::default(),
+            print_setup: crate::drawing_sheet::PrintSetup::default(),
+            construction: crate::construction::ConstructionSettings::default(),
+            reference_table: crate::construction::ReferenceTable::default(),
         }
     }
 

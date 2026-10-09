@@ -2500,7 +2500,6 @@ fn furnished_house() -> Sim {
 }
 
 #[test]
-
 fn deleting_a_mixed_selection_is_one_undo_step() {
     use crate::editor::edit_commands::ids;
     let mut sim = furnished_house();
@@ -2519,7 +2518,6 @@ fn deleting_a_mixed_selection_is_one_undo_step() {
 }
 
 #[test]
-
 fn reversing_the_swing_of_a_door_and_a_cabinet_is_one_undo_step() {
     use crate::editor::edit_commands::ids;
     let mut sim = furnished_house();
@@ -2537,7 +2535,6 @@ fn reversing_the_swing_of_a_door_and_a_cabinet_is_one_undo_step() {
 }
 
 #[test]
-
 fn rebuild_all_leaves_an_undo_step_when_it_changes_the_plan() {
     let mut sim = small_house();
     sim.app
@@ -2561,7 +2558,6 @@ fn rebuild_all_leaves_an_undo_step_when_it_changes_the_plan() {
 }
 
 #[test]
-
 fn a_command_that_changes_nothing_leaves_no_undo_step() {
     use crate::editor::edit_commands::ids;
     let mut sim = small_house();
@@ -2580,7 +2576,6 @@ fn a_command_that_changes_nothing_leaves_no_undo_step() {
 }
 
 #[test]
-
 fn locking_a_terrain_object_locks_it_or_says_it_cannot() {
     use crate::editor::edit_commands::ids;
     let mut sim = small_house();
@@ -2607,7 +2602,6 @@ fn locking_a_terrain_object_locks_it_or_says_it_cannot() {
 }
 
 #[test]
-
 fn undo_after_a_foundation_tool_gives_back_exactly_the_plan() {
     let mut sim = small_house();
     let before = digest(&sim);
@@ -2624,7 +2618,6 @@ fn undo_after_a_foundation_tool_gives_back_exactly_the_plan() {
 }
 
 #[test]
-#[ignore = "QA-28"]
 fn one_unreadable_electrical_device_does_not_take_the_readable_ones_with_it() {
     let (before, after) = electrical_with_a_foreign_device();
     let lost: Vec<&u64> = before.iter().filter(|i| !after.contains(i)).collect();
@@ -2635,7 +2628,6 @@ fn one_unreadable_electrical_device_does_not_take_the_readable_ones_with_it() {
 }
 
 #[test]
-#[ignore = "QA-29"]
 fn records_this_build_cannot_read_survive_an_edit_of_their_family() {
     // A refused edit keeps the record (the cabinets do that); a dropped one
     // is the finding.

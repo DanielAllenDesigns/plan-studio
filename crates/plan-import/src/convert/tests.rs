@@ -58,16 +58,23 @@ fn unit_factors() {
     assert_eq!(to_inches_factor(DxfUnits::Yards, None), 36.0);
     assert!((to_inches_factor(DxfUnits::Meters, None) - 39.370_078_74).abs() < 1e-6);
     assert!((to_inches_factor(DxfUnits::Centimeters, None) - 1.0 / 2.54).abs() < 1e-12);
-    assert_eq!(to_inches_factor(DxfUnits::Millimeters, Some(DxfUnits::Feet)), 12.0);
+    assert_eq!(
+        to_inches_factor(DxfUnits::Millimeters, Some(DxfUnits::Feet)),
+        12.0
+    );
 }
 
 #[test]
 fn a_file_without_units_is_inches_or_millimeters_by_its_measurement() {
     let imperial = parse_dxf("0\nSECTION\n2\nENTITIES\n0\nENDSEC\n0\nEOF\n").unwrap();
     assert_eq!(default_units(&imperial), DxfUnits::Inches);
-    let metric = parse_dxf("0\nSECTION\n2\nHEADER\n9\n$MEASUREMENT\n70\n1\n0\nENDSEC\n0\nEOF\n").unwrap();
+    let metric =
+        parse_dxf("0\nSECTION\n2\nHEADER\n9\n$MEASUREMENT\n70\n1\n0\nENDSEC\n0\nEOF\n").unwrap();
     assert_eq!(default_units(&metric), DxfUnits::Millimeters);
-    let declared = parse_dxf("0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n2\n9\n$MEASUREMENT\n70\n1\n0\nENDSEC\n0\nEOF\n").unwrap();
+    let declared = parse_dxf(
+        "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n2\n9\n$MEASUREMENT\n70\n1\n0\nENDSEC\n0\nEOF\n",
+    )
+    .unwrap();
     assert_eq!(default_units(&declared), DxfUnits::Feet);
 }
 
@@ -76,8 +83,14 @@ fn layer_mapping_renames_skips_and_keeps() {
     let d = two_layer_drawing();
     let mut o = ImportOptions::new(1.0, "DXF: ");
     o.layers = vec![
-        LayerMapping { source: "A-WALL".into(), target: LayerTarget::Rename("Walls, Normal".into()) },
-        LayerMapping { source: "NOTES".into(), target: LayerTarget::Skip },
+        LayerMapping {
+            source: "A-WALL".into(),
+            target: LayerTarget::Rename("Walls, Normal".into()),
+        },
+        LayerMapping {
+            source: "NOTES".into(),
+            target: LayerTarget::Skip,
+        },
     ];
     let objs = to_cad_objects_with(&d, &o);
     let layers: Vec<&str> = objs.iter().map(|c| c.layer.as_str()).collect();
@@ -115,7 +128,12 @@ fn scale_rotation_and_insertion_place_every_entity() {
         other => panic!("{other:?}"),
     }
     match &c.objects[2].item {
-        CadItem::Arc { radius, start_angle, end_angle, .. } => {
+        CadItem::Arc {
+            radius,
+            start_angle,
+            end_angle,
+            ..
+        } => {
             assert!((radius - 5.0).abs() < 1e-9);
             assert!((start_angle - FRAC_PI_2).abs() < 1e-9);
             assert!((end_angle - 2.0 * FRAC_PI_2).abs() < 1e-9);
@@ -142,7 +160,10 @@ fn plain_options_equal_the_old_conversion() {
 
 #[test]
 fn a_bulged_polyline_samples_an_arc_and_remembers_the_edge() {
-    let d = drawing("", "0 LWPOLYLINE\n8 W\n90 2\n70 0\n10 0\n20 0\n42 1\n10 10\n20 0");
+    let d = drawing(
+        "",
+        "0 LWPOLYLINE\n8 W\n90 2\n70 0\n10 0\n20 0\n42 1\n10 10\n20 0",
+    );
     let c = conv(&d);
     let o = &c.objects[0];
     match &o.item {
@@ -159,14 +180,23 @@ fn a_bulged_polyline_samples_an_arc_and_remembers_the_edge() {
     let e = o.attrs.arc_edges[0];
     assert_eq!((e.from, e.to, e.bulge), (0, 16, 1.0));
     // A closed polyline whose last edge is the arc points past the end.
-    let d = drawing("", "0 LWPOLYLINE\n8 W\n90 3\n70 1\n10 0\n20 0\n10 10\n20 0\n10 10\n20 10\n42 1");
+    let d = drawing(
+        "",
+        "0 LWPOLYLINE\n8 W\n90 3\n70 1\n10 0\n20 0\n10 10\n20 0\n10 10\n20 10\n42 1",
+    );
     let o = &conv(&d).objects[0];
     let n = match &o.item {
-        CadItem::Polyline { points, closed: true } => points.len(),
+        CadItem::Polyline {
+            points,
+            closed: true,
+        } => points.len(),
         other => panic!("{other:?}"),
     };
     assert_eq!(o.attrs.arc_edges.len(), 1);
-    assert_eq!(o.attrs.arc_edges[0].to, n, "the closing arc ends at the first point");
+    assert_eq!(
+        o.attrs.arc_edges[0].to, n,
+        "the closing arc ends at the first point"
+    );
 }
 
 #[test]
@@ -187,26 +217,42 @@ fn ellipses_splines_solids_and_points_become_plan_shapes() {
         CadItem::Polyline { points, closed } => {
             assert!(*closed);
             let (lo, hi) = c.objects[0].item.bounds();
-            assert!((hi.x - 10.0).abs() < 0.02 && (lo.y + 5.0).abs() < 0.02, "{lo:?} {hi:?} {}", points.len());
+            assert!(
+                (hi.x - 10.0).abs() < 0.02 && (lo.y + 5.0).abs() < 0.02,
+                "{lo:?} {hi:?} {}",
+                points.len()
+            );
         }
         other => panic!("{other:?}"),
     }
     // The NURBS ends where its control points do; the fit-point spline passes its points.
     match &c.objects[1].item {
-        CadItem::Polyline { points, closed: false } => {
+        CadItem::Polyline {
+            points,
+            closed: false,
+        } => {
             assert!(near(points[0], 0.0, 0.0) && near(*points.last().unwrap(), 20.0, 0.0));
             assert!(points.len() > 8);
         }
         other => panic!("{other:?}"),
     }
     match &c.objects[2].item {
-        CadItem::Polyline { points, .. } => assert!(points.iter().any(|p| p.dist(Point::new(5.0, 5.0)) < 1e-9)),
+        CadItem::Polyline { points, .. } => {
+            assert!(points.iter().any(|p| p.dist(Point::new(5.0, 5.0)) < 1e-9))
+        }
         other => panic!("{other:?}"),
     }
     // The solid is a filled outline in its colour; the 3D face is an outline.
-    assert!(matches!(&c.objects[3].item, CadItem::Polyline { closed: true, points } if points.len() == 4));
-    assert_eq!(c.objects[3].attrs.fill.as_ref().map(|f| f.color), Some([255, 0, 0]));
-    assert!(matches!(&c.objects[4].item, CadItem::Polyline { closed: true, points } if points.len() == 3));
+    assert!(
+        matches!(&c.objects[3].item, CadItem::Polyline { closed: true, points } if points.len() == 4)
+    );
+    assert_eq!(
+        c.objects[3].attrs.fill.as_ref().map(|f| f.color),
+        Some([255, 0, 0])
+    );
+    assert!(
+        matches!(&c.objects[4].item, CadItem::Polyline { closed: true, points } if points.len() == 3)
+    );
     assert!(c.objects[4].attrs.fill.is_none());
     assert!(matches!(c.objects[5].item, CadItem::Circle { radius, .. } if radius == POINT_RADIUS));
     let mut o = ImportOptions::new(1.0, "");
@@ -216,11 +262,22 @@ fn ellipses_splines_solids_and_points_become_plan_shapes() {
 
 #[test]
 fn hatches_are_filled_outlines_or_pattern_requests() {
-    let loop_ = "92 7\n72 0\n73 1\n93 4\n10 0\n20 0\n10 100\n20 0\n10 100\n20 100\n10 0\n20 100\n97 0\n";
-    let solid = drawing("", &format!("0 HATCH\n8 H\n62 3\n2 SOLID\n70 1\n71 0\n91 1\n{loop_}75 0\n76 1\n98 0"));
+    let loop_ =
+        "92 7\n72 0\n73 1\n93 4\n10 0\n20 0\n10 100\n20 0\n10 100\n20 100\n10 0\n20 100\n97 0\n";
+    let solid = drawing(
+        "",
+        &format!("0 HATCH\n8 H\n62 3\n2 SOLID\n70 1\n71 0\n91 1\n{loop_}75 0\n76 1\n98 0"),
+    );
     let c = conv(&solid);
     assert_eq!(c.objects.len(), 1);
-    assert_eq!(c.objects[0].attrs.fill.as_ref().map(|f| (f.color, f.pattern.clone())), Some(([0, 255, 0], String::new())));
+    assert_eq!(
+        c.objects[0]
+            .attrs
+            .fill
+            .as_ref()
+            .map(|f| (f.color, f.pattern.clone())),
+        Some(([0, 255, 0], String::new()))
+    );
     assert!(c.objects[0].hatch.is_none());
 
     let pat = drawing(
@@ -250,7 +307,12 @@ fn text_is_anchored_by_its_justification_and_keeps_its_formatting() {
     o.text_styles = vec!["NOTES".into()];
     let c = convert(&d, &o);
     match &c.objects[0].item {
-        CadItem::Text { pos, text, height, angle } => {
+        CadItem::Text {
+            pos,
+            text,
+            height,
+            angle,
+        } => {
             assert!(near(*pos, 5.0, 6.0));
             assert_eq!((text.as_str(), *height, *angle), ("Kitchen", 2.0, 0.0));
         }
@@ -258,7 +320,10 @@ fn text_is_anchored_by_its_justification_and_keeps_its_formatting() {
     }
     assert_eq!(c.objects[0].attrs.text_style.as_deref(), Some("NOTES"));
     // Centered and middle: moved left by half the width and down by half the height.
-    let d = drawing("", "0 TEXT\n8 T\n10 0\n20 0\n11 50\n21 60\n40 4\n1 Hello\n72 1\n73 2");
+    let d = drawing(
+        "",
+        "0 TEXT\n8 T\n10 0\n20 0\n11 50\n21 60\n40 4\n1 Hello\n72 1\n73 2",
+    );
     match &conv(&d).objects[0].item {
         CadItem::Text { pos, .. } => {
             let w = 5.0 * 4.0 * TEXT_WIDTH_FACTOR;
@@ -277,7 +342,10 @@ fn text_is_anchored_by_its_justification_and_keeps_its_formatting() {
         other => panic!("{other:?}"),
     }
     // Formatting and a wrap width make rich runs and a text box.
-    let d = drawing("", "0 MTEXT\n8 T\n10 0\n20 0\n40 3\n41 90\n71 2\n1 {\\fArial|b1;Bold} and plain");
+    let d = drawing(
+        "",
+        "0 MTEXT\n8 T\n10 0\n20 0\n40 3\n41 90\n71 2\n1 {\\fArial|b1;Bold} and plain",
+    );
     let c = conv(&d);
     let a = &c.objects[0].attrs;
     assert_eq!(a.runs.len(), 2);
@@ -293,21 +361,39 @@ fn inserts_become_cad_blocks_with_nesting_scale_and_rotation() {
 0 LINE\n8 0\n10 0\n20 0\n11 40\n21 0\n\
 0 INSERT\n8 0\n2 LEG\n10 0\n20 0\n\
 0 INSERT\n8 0\n2 LEG\n10 40\n20 0\n0 ENDBLK";
-    let d = drawing(blocks, "0 INSERT\n8 FURN\n2 table\n10 100\n20 200\n41 2\n42 2\n50 90");
+    let d = drawing(
+        blocks,
+        "0 INSERT\n8 FURN\n2 table\n10 100\n20 200\n41 2\n42 2\n50 90",
+    );
     let c = conv(&d);
     // 1 top + 2 legs, all on the INSERT's layer, one CAD block.
     assert_eq!(c.objects.len(), 3);
-    assert!(c.objects.iter().all(|o| o.layer == "FURN" && o.block == Some(0)));
-    assert_eq!(c.blocks, vec![ImportedBlock { name: "table".into(), insertion: Point::new(100.0, 200.0) }]);
+    assert!(c
+        .objects
+        .iter()
+        .all(|o| o.layer == "FURN" && o.block == Some(0)));
+    assert_eq!(
+        c.blocks,
+        vec![ImportedBlock {
+            name: "table".into(),
+            insertion: Point::new(100.0, 200.0)
+        }]
+    );
     // The top: (0,0)-(40,0) x2 rotated 90 deg at (100,200) -> (100,200)-(100,280).
     match &c.objects[0].item {
-        CadItem::Line { a, b } => assert!(near(*a, 100.0, 200.0) && near(*b, 100.0, 280.0), "{a:?} {b:?}"),
+        CadItem::Line { a, b } => assert!(
+            near(*a, 100.0, 200.0) && near(*b, 100.0, 280.0),
+            "{a:?} {b:?}"
+        ),
         other => panic!("{other:?}"),
     }
     // A leg of the nested block: its INSERT sits at (40,0) in the table,
     // which is (100, 280) in the plan; the leg runs 10*2 along the rotated y (-x).
     match &c.objects[2].item {
-        CadItem::Line { a, b } => assert!(near(*a, 100.0, 280.0) && near(*b, 80.0, 280.0), "{a:?} {b:?}"),
+        CadItem::Line { a, b } => assert!(
+            near(*a, 100.0, 280.0) && near(*b, 80.0, 280.0),
+            "{a:?} {b:?}"
+        ),
         other => panic!("{other:?}"),
     }
     // Loose objects when blocks are off.
@@ -329,7 +415,11 @@ fn byblock_colors_and_layer_zero_follow_the_insert() {
     let d = drawing(blocks, "0 INSERT\n8 FURN\n62 1\n2 B\n10 0\n20 0");
     let c = conv(&d);
     assert_eq!(c.objects[0].layer, "FURN");
-    assert_eq!(c.objects[0].attrs.color, Some([255, 0, 0]), "BYBLOCK takes the insert's colour");
+    assert_eq!(
+        c.objects[0].attrs.color,
+        Some([255, 0, 0]),
+        "BYBLOCK takes the insert's colour"
+    );
     assert_eq!(c.objects[1].layer, "KEEP");
     assert_eq!(c.objects[1].attrs.color, Some([0, 255, 0]));
 }
@@ -340,26 +430,53 @@ fn attributes_replace_the_definitions_and_arrays_repeat() {
 0 ATTDEF\n8 0\n10 0\n20 1\n40 2\n1 default\n2 NAME\n70 0\n0 ENDBLK";
     let with = drawing(blocks, "0 INSERT\n8 F\n66 1\n2 TAGGED\n10 0\n20 0\n0 ATTRIB\n8 F\n10 1\n20 1\n40 2\n1 A-12\n2 NAME\n70 0\n0 SEQEND");
     let c = conv(&with);
-    let texts: Vec<&str> = c.objects.iter().filter_map(|o| match &o.item { CadItem::Text { text, .. } => Some(text.as_str()), _ => None }).collect();
+    let texts: Vec<&str> = c
+        .objects
+        .iter()
+        .filter_map(|o| match &o.item {
+            CadItem::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
     assert_eq!(texts, vec!["A-12"]);
     // Without attributes the definition's default shows.
     let without = drawing(blocks, "0 INSERT\n8 F\n2 TAGGED\n10 0\n20 0");
-    let texts: Vec<String> = conv(&without).objects.iter().filter_map(|o| match &o.item { CadItem::Text { text, .. } => Some(text.clone()), _ => None }).collect();
+    let texts: Vec<String> = conv(&without)
+        .objects
+        .iter()
+        .filter_map(|o| match &o.item {
+            CadItem::Text { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+        .collect();
     assert_eq!(texts, vec!["default".to_string()]);
     // A 3x2 array of the block.
-    let arr = drawing(blocks, "0 INSERT\n8 F\n2 TAGGED\n10 0\n20 0\n70 3\n71 2\n44 10\n45 20");
-    let lines = conv(&arr).objects.iter().filter(|o| matches!(o.item, CadItem::Line { .. })).count();
+    let arr = drawing(
+        blocks,
+        "0 INSERT\n8 F\n2 TAGGED\n10 0\n20 0\n70 3\n71 2\n44 10\n45 20",
+    );
+    let lines = conv(&arr)
+        .objects
+        .iter()
+        .filter(|o| matches!(o.item, CadItem::Line { .. }))
+        .count();
     assert_eq!(lines, 6);
 }
 
 #[test]
 fn a_missing_block_and_an_xref_are_reported() {
-    let d = drawing("0 BLOCK\n2 SITE\n70 4\n1 site.dwg\n0 ENDBLK", "0 INSERT\n8 F\n2 GONE\n10 0\n20 0\n0 INSERT\n8 F\n2 SITE\n10 0\n20 0");
+    let d = drawing(
+        "0 BLOCK\n2 SITE\n70 4\n1 site.dwg\n0 ENDBLK",
+        "0 INSERT\n8 F\n2 GONE\n10 0\n20 0\n0 INSERT\n8 F\n2 SITE\n10 0\n20 0",
+    );
     let c = conv(&d);
     assert!(c.objects.is_empty());
     let notes = c.notes.join("\n");
     assert!(notes.contains("GONE"), "{notes}");
-    assert!(notes.contains("site.dwg") && notes.contains("External references"), "{notes}");
+    assert!(
+        notes.contains("site.dwg") && notes.contains("External references"),
+        "{notes}"
+    );
 }
 
 #[test]
@@ -391,7 +508,10 @@ fn dimensions_become_objects_or_drawn_blocks() {
     let c = convert(&d, &o);
     assert!(c.dimensions.is_empty());
     assert_eq!(c.objects.len(), 4);
-    assert!(c.objects.iter().all(|x| x.layer == "D" && x.block == Some(0)));
+    assert!(c
+        .objects
+        .iter()
+        .all(|x| x.layer == "D" && x.block == Some(0)));
     assert_eq!(c.blocks[0].name, "Dimension");
     // A dimension scaled by its drawing's units: 1 unit = 2 inches.
     let mut o = ImportOptions::new(2.0, "");
@@ -399,8 +519,14 @@ fn dimensions_become_objects_or_drawn_blocks() {
     let dim = &convert(&d, &o).dimensions[0].dim;
     assert!(near(dim.end, 200.0, 0.0) && (dim.offset - 40.0).abs() < 1e-9);
     // An overriding text is kept.
-    let d = drawing("", "0 DIMENSION\n8 D\n10 5\n20 5\n70 0\n1 EQ\n13 0\n23 0\n14 10\n24 0\n50 0");
-    assert_eq!(conv(&d).dimensions[0].dim.text_override.as_deref(), Some("EQ"));
+    let d = drawing(
+        "",
+        "0 DIMENSION\n8 D\n10 5\n20 5\n70 0\n1 EQ\n13 0\n23 0\n14 10\n24 0\n50 0",
+    );
+    assert_eq!(
+        conv(&d).dimensions[0].dim.text_override.as_deref(),
+        Some("EQ")
+    );
 }
 
 #[test]
@@ -408,8 +534,14 @@ fn angular_and_radius_dimensions_are_drawn_without_a_block() {
     let d = drawing("", "0 DIMENSION\n8 D\n10 7\n20 7\n11 8\n21 8\n70 5\n13 10\n23 0\n14 0\n24 10\n15 0\n25 0\n3 STANDARD");
     let c = conv(&d);
     assert!(c.dimensions.is_empty());
-    assert!(c.objects.iter().any(|o| matches!(o.item, CadItem::Arc { .. })));
-    assert!(c.objects.iter().any(|o| matches!(&o.item, CadItem::Text { text, .. } if text.contains("90"))));
+    assert!(c
+        .objects
+        .iter()
+        .any(|o| matches!(o.item, CadItem::Arc { .. })));
+    assert!(c
+        .objects
+        .iter()
+        .any(|o| matches!(&o.item, CadItem::Text { text, .. } if text.contains("90"))));
 }
 
 #[test]
@@ -422,14 +554,15 @@ fn leaders_get_an_arrow_and_multileaders_their_text() {
     let c = conv(&d);
     assert_eq!(c.objects.len(), 3);
     assert_eq!(c.objects[0].attrs.arrow_start, ArrowStyle::Filled);
-    assert!(matches!(&c.objects[0].item, CadItem::Polyline { points, closed: false } if points.len() == 3));
+    assert!(
+        matches!(&c.objects[0].item, CadItem::Polyline { points, closed: false } if points.len() == 3)
+    );
     assert!(matches!(&c.objects[2].item, CadItem::Text { text, .. } if text == "Drain"));
 }
 
 #[test]
 fn looks_follow_the_object_or_the_layer() {
-    let src = dxf(
-        "0 SECTION
+    let src = dxf("0 SECTION
 2 TABLES
 0 TABLE
 2 LAYER
@@ -478,8 +611,7 @@ fn looks_follow_the_object_or_the_layer() {
 11 1
 21 0
 0 ENDSEC
-0 EOF",
-    );
+0 EOF");
     let d = parse_dxf(&src).unwrap();
     // Layer attributes are imported: only the object's own look is on it.
     let mut o = ImportOptions::new(1.0, "");
@@ -487,9 +619,15 @@ fn looks_follow_the_object_or_the_layer() {
     let c = convert(&d, &o);
     assert!(c.objects[0].attrs.is_default());
     let a = &c.objects[1].attrs;
-    assert_eq!((a.color, a.weight, a.dash), (Some([0, 0, 255]), Some(25), Some(LineStyle::Dotted)));
+    assert_eq!(
+        (a.color, a.weight, a.dash),
+        (Some([0, 0, 255]), Some(25), Some(LineStyle::Dotted))
+    );
     let wall = c.layers.iter().find(|l| l.name == "A-WALL").unwrap();
-    assert_eq!((wall.color, wall.weight, wall.line_style), ([255, 0, 0], 50, LineStyle::Dashed));
+    assert_eq!(
+        (wall.color, wall.weight, wall.line_style),
+        ([255, 0, 0], 50, LineStyle::Dashed)
+    );
     let plain = c.layers.iter().find(|l| l.name == "PLAIN").unwrap();
     assert_eq!(plain.color, [0, 0, 0], "index 7 prints black");
     // Without them (one plan layer) each object carries the look of its layer.
@@ -498,7 +636,10 @@ fn looks_follow_the_object_or_the_layer() {
     o.object_attrs = true;
     let c = convert(&d, &o);
     let a = &c.objects[0].attrs;
-    assert_eq!((a.color, a.weight, a.dash), (Some([255, 0, 0]), Some(50), Some(LineStyle::Dashed)));
+    assert_eq!(
+        (a.color, a.weight, a.dash),
+        (Some([255, 0, 0]), Some(50), Some(LineStyle::Dashed))
+    );
     assert!(c.objects[2].attrs.is_default() || c.objects[2].attrs.color == Some([0, 0, 0]));
     assert_eq!(c.layers.len(), 1);
     assert_eq!(c.layers[0].name, "All");
@@ -511,11 +652,21 @@ fn line_types_map_to_the_nearest_style() {
     assert_eq!(linetype_style(None, "CENTER"), LineStyle::DashDot);
     assert_eq!(linetype_style(None, "DOT"), LineStyle::Dotted);
     assert_eq!(linetype_style(None, "ACAD_ISO02W100"), LineStyle::Solid);
-    let custom = DxfLinetype { name: "MINE".into(), description: String::new(), pattern: vec![1.0, -0.5, 0.0, -0.5] };
+    let custom = DxfLinetype {
+        name: "MINE".into(),
+        description: String::new(),
+        pattern: vec![1.0, -0.5, 0.0, -0.5],
+    };
     assert_eq!(linetype_style(Some(&custom), "MINE"), LineStyle::DashDot);
-    let dashes = DxfLinetype { pattern: vec![1.0, -0.5], ..custom.clone() };
+    let dashes = DxfLinetype {
+        pattern: vec![1.0, -0.5],
+        ..custom.clone()
+    };
     assert_eq!(linetype_style(Some(&dashes), "MINE"), LineStyle::Dashed);
-    let dots = DxfLinetype { pattern: vec![0.0, -0.5], ..custom };
+    let dots = DxfLinetype {
+        pattern: vec![0.0, -0.5],
+        ..custom
+    };
     assert_eq!(linetype_style(Some(&dots), "MINE"), LineStyle::Dotted);
 }
 
@@ -534,14 +685,25 @@ fn lines_join_into_polylines_and_boxes() {
     o.boxes = true;
     let c = convert(&d, &o);
     // The rectangle is a box; the open pair stays two lines.
-    let polys = c.objects.iter().filter(|x| matches!(x.item, CadItem::Polyline { closed: true, .. })).count();
-    let lines = c.objects.iter().filter(|x| matches!(x.item, CadItem::Line { .. })).count();
+    let polys = c
+        .objects
+        .iter()
+        .filter(|x| matches!(x.item, CadItem::Polyline { closed: true, .. }))
+        .count();
+    let lines = c
+        .objects
+        .iter()
+        .filter(|x| matches!(x.item, CadItem::Line { .. }))
+        .count();
     assert_eq!((polys, lines), (1, 2));
     o.boxes = false;
     o.join_lines = true;
     let c = convert(&d, &o);
     assert_eq!(c.objects.len(), 2);
-    assert!(c.objects.iter().all(|x| matches!(x.item, CadItem::Polyline { .. })));
+    assert!(c
+        .objects
+        .iter()
+        .all(|x| matches!(x.item, CadItem::Polyline { .. })));
 }
 
 #[test]
@@ -566,7 +728,10 @@ fn counts_unused_blocks_and_bounds() {
     );
     assert_eq!(unused_blocks(&d), vec!["SPARE".to_string()]);
     let (lo, hi) = drawing_bounds(&d, false).unwrap();
-    assert!(near(lo, 0.0, 0.0) && near(hi, 101.0, 101.0), "{lo:?} {hi:?}");
+    assert!(
+        near(lo, 0.0, 0.0) && near(hi, 101.0, 101.0),
+        "{lo:?} {hi:?}"
+    );
     let counts = layer_counts(&d, false);
     assert_eq!(counts, vec![("A".to_string(), 1), ("F".to_string(), 1)]);
 }
@@ -612,9 +777,16 @@ fn a_block_the_floor_already_has_is_renamed_replaced_or_reused() {
         (p, first, rep)
     };
     let (p, _, rep) = run(BlockConflict::AutoName);
-    let names: Vec<String> = p.floors[0].cad_blocks().into_iter().map(|b| b.name).collect();
+    let names: Vec<String> = p.floors[0]
+        .cad_blocks()
+        .into_iter()
+        .map(|b| b.name)
+        .collect();
     assert_eq!(names, vec!["CHAIR".to_string(), "CHAIR_Copy_1".to_string()]);
-    assert_eq!(rep.renamed_blocks, vec![("CHAIR".to_string(), "CHAIR_Copy_1".to_string())]);
+    assert_eq!(
+        rep.renamed_blocks,
+        vec![("CHAIR".to_string(), "CHAIR_Copy_1".to_string())]
+    );
     let (p, first, rep) = run(BlockConflict::Replace);
     let blocks = p.floors[0].cad_blocks();
     assert_eq!(blocks.len(), 1);
@@ -628,7 +800,9 @@ fn a_block_the_floor_already_has_is_renamed_replaced_or_reused() {
     // One name decided on its own.
     let mut p = Project::new("t");
     apply_converted(&mut p, 0, &c, BlockConflict::AutoName, &BTreeMap::new());
-    let per: BTreeMap<String, BlockConflict> = [("CHAIR".to_string(), BlockConflict::Replace)].into_iter().collect();
+    let per: BTreeMap<String, BlockConflict> = [("CHAIR".to_string(), BlockConflict::Replace)]
+        .into_iter()
+        .collect();
     let rep = apply_converted(&mut p, 0, &c, BlockConflict::AutoName, &per);
     assert_eq!(rep.replaced_blocks, 1);
 }

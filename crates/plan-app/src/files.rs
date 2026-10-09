@@ -1071,6 +1071,15 @@ impl PlanApp {
     /// The safe save: archive the file being replaced, write a temporary file
     /// and rename it over the plan.
     pub(crate) fn write_to(&mut self, path: PathBuf) -> bool {
+        // A NaN or infinity cannot be read back (QA-23) and a stale id counter
+        // would hand out ids in use (QA-22): repair both before writing.
+        let bad_numbers = self.cx.project.sanitize();
+        self.cx.project.repair_ids();
+        debug_assert!(
+            self.cx.project.next_id() > self.cx.project.highest_id(),
+            "{:?}",
+            self.cx.project.validate_ids()
+        );
         let json = match self.cx.project.to_json() {
             Ok(j) => j,
             Err(e) => {
@@ -1095,7 +1104,12 @@ impl PlanApp {
         app_info::push_recent(&path);
         self.path = Some(path.clone());
         self.files.mark_saved(&self.cx);
-        self.cx.status = format!("Saved {}{archive_note}", path.display());
+        let repaired = if bad_numbers > 0 {
+            format!(" ({bad_numbers} invalid numbers were saved as 0)")
+        } else {
+            String::new()
+        };
+        self.cx.status = format!("Saved {}{archive_note}{repaired}", path.display());
         true
     }
 

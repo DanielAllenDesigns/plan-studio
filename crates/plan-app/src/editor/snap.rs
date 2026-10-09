@@ -697,10 +697,10 @@ pub fn snap(raw: Point, q: &SnapQuery, s: &SnapSettings) -> SnapResult {
 /// plan draws dimmed under the active floor, on the layers whose Ref box is
 /// on. Empty when Reference Display is off.
 pub fn reference_segments(cx: &super::EditorContext) -> Vec<(Point, Point)> {
-    crate::dialogs::reference_display::reference_walls(cx)
-        .iter()
-        .map(|w| (w.start, w.end))
-        .collect()
+    // Every Reference Display row (other plan files too, through their
+    // offset and angle) and the construction lines: the infinite ones as very
+    // long segments (`plan_core::construction::infinite_segment`).
+    super::ref_overlay::snap_segments(cx)
 }
 
 /// [`snap`] that also snaps to the reference floor (R-65): the ends and the
@@ -753,6 +753,22 @@ pub fn snap_with_reference(
             return SnapResult {
                 point,
                 kind: SnapKind::Intersection,
+                source: None,
+            };
+        }
+    }
+    // A construction line is infinite (CAD-62): the point on it nearest the
+    // cursor, unless a stronger snap already applied.
+    if s.on_object && matches!(base.kind, SnapKind::Angle | SnapKind::Grid | SnapKind::Free) {
+        let on: Vec<Point> = reference
+            .iter()
+            .filter(|(a, b)| plan_core::construction::is_infinite_segment(*a, *b))
+            .map(|(a, b)| project_on_segment(raw, *a, *b).1)
+            .collect();
+        if let Some(point) = nearest_of(on) {
+            return SnapResult {
+                point,
+                kind: SnapKind::OnObject,
                 source: None,
             };
         }

@@ -113,7 +113,8 @@ impl Nurbs<'_> {
         }
         let spans = (n - degree).max(1);
         let steps = (spans * per_span.max(2)).min(8192);
-        let rational = self.weights.len() == n && self.weights.iter().any(|w| (w - 1.0).abs() > 1e-12);
+        let rational =
+            self.weights.len() == n && self.weights.iter().any(|w| (w - 1.0).abs() > 1e-12);
         (0..=steps)
             .map(|k| {
                 let t = lo + (hi - lo) * k as f64 / steps as f64;
@@ -216,12 +217,16 @@ impl Xf {
     }
 
     pub fn rotate(&self, v: Point) -> Point {
-        Point::new(v.x * self.cos - v.y * self.sin, v.x * self.sin + v.y * self.cos)
+        Point::new(
+            v.x * self.cos - v.y * self.sin,
+            v.x * self.sin + v.y * self.cos,
+        )
     }
 
     pub fn point(&self, p: Point) -> Point {
         let d = p.sub(self.base);
-        self.pos.add(self.rotate(Point::new(d.x * self.sx, d.y * self.sy)))
+        self.pos
+            .add(self.rotate(Point::new(d.x * self.sx, d.y * self.sy)))
     }
 
     /// A direction vector (no translation).
@@ -232,7 +237,9 @@ impl Xf {
     /// Angle (degrees) of a direction after scale and rotation.
     pub fn angle(&self, deg: f64) -> f64 {
         let r = deg.to_radians();
-        self.vector(Point::new(r.cos(), r.sin())).angle().to_degrees()
+        self.vector(Point::new(r.cos(), r.sin()))
+            .angle()
+            .to_degrees()
     }
 
     pub fn mirrored(&self) -> bool {
@@ -274,13 +281,21 @@ mod tests {
 
     #[test]
     fn a_semicircle_bulge_is_a_true_arc() {
-        let pts = sample_polyline(&[Point::new(0.0, 0.0), Point::new(10.0, 0.0)], &[1.0, 0.0], false);
+        let pts = sample_polyline(
+            &[Point::new(0.0, 0.0), Point::new(10.0, 0.0)],
+            &[1.0, 0.0],
+            false,
+        );
         assert_eq!(pts.len(), 17);
         for p in &pts {
             assert!((p.dist(Point::new(5.0, 0.0)) - 5.0).abs() < 1e-9);
         }
         assert!(pts[8].y < -4.9);
-        let cw = sample_polyline(&[Point::new(0.0, 0.0), Point::new(10.0, 0.0)], &[-1.0, 0.0], false);
+        let cw = sample_polyline(
+            &[Point::new(0.0, 0.0), Point::new(10.0, 0.0)],
+            &[-1.0, 0.0],
+            false,
+        );
         assert!(cw[8].y > 4.9);
     }
 
@@ -288,7 +303,11 @@ mod tests {
     fn a_quadratic_bezier_nurbs_hits_its_midpoint() {
         // Degree 2, three control points, clamped knots: the curve at t = 0.5
         // is (P0 + 2 P1 + P2) / 4.
-        let ctrl = [Point::new(0.0, 0.0), Point::new(10.0, 20.0), Point::new(20.0, 0.0)];
+        let ctrl = [
+            Point::new(0.0, 0.0),
+            Point::new(10.0, 20.0),
+            Point::new(20.0, 0.0),
+        ];
         let n = Nurbs {
             degree: 2,
             knots: &[0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
@@ -305,7 +324,11 @@ mod tests {
     #[test]
     fn a_rational_quarter_circle_is_exact() {
         let w = std::f64::consts::FRAC_1_SQRT_2;
-        let ctrl = [Point::new(10.0, 0.0), Point::new(10.0, 10.0), Point::new(0.0, 10.0)];
+        let ctrl = [
+            Point::new(10.0, 0.0),
+            Point::new(10.0, 10.0),
+            Point::new(0.0, 10.0),
+        ];
         let n = Nurbs {
             degree: 2,
             knots: &[0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
@@ -340,7 +363,13 @@ mod tests {
     fn ellipse_samples_stay_on_the_curve() {
         let (t0, t1) = ellipse_range(0.0, 0.0);
         assert!((t1 - t0 - TAU).abs() < 1e-12);
-        let pts = ellipse_points(Point::new(1.0, 2.0), Point::new(10.0, 0.0), Point::new(0.0, 5.0), t0, t1);
+        let pts = ellipse_points(
+            Point::new(1.0, 2.0),
+            Point::new(10.0, 0.0),
+            Point::new(0.0, 5.0),
+            t0,
+            t1,
+        );
         for p in &pts {
             let q = p.sub(Point::new(1.0, 2.0));
             assert!(((q.x / 10.0).powi(2) + (q.y / 5.0).powi(2) - 1.0).abs() < 1e-9);
@@ -349,7 +378,12 @@ mod tests {
 
     #[test]
     fn the_transform_scales_rotates_and_moves() {
-        let xf = Xf::new(Point::new(1.0, 1.0), Point::new(100.0, 0.0), (2.0, 2.0), 90.0);
+        let xf = Xf::new(
+            Point::new(1.0, 1.0),
+            Point::new(100.0, 0.0),
+            (2.0, 2.0),
+            90.0,
+        );
         assert!(xf.point(Point::new(2.0, 1.0)).dist(Point::new(100.0, 2.0)) < 1e-9);
         assert!((xf.angle(0.0) - 90.0).abs() < 1e-9);
         assert!(xf.uniform() && !xf.mirrored());

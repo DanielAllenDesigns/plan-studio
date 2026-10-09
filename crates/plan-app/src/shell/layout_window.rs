@@ -2921,17 +2921,29 @@ pub fn page_list(project: &Project) -> Vec<(usize, String, bool)> {
     else {
         return Vec::new();
     };
-    pages
+    let fields: Vec<(String, bool, u32)> = pages
         .iter()
-        .enumerate()
-        .map(|(i, p)| {
-            let n = p.get("number").and_then(|n| n.as_u64()).unwrap_or(0);
-            let title = p.get("title").and_then(|t| t.as_str()).unwrap_or("");
+        .map(|p| {
+            let n = p.get("number").and_then(|n| n.as_u64()).unwrap_or(0) as u32;
+            let label = p.get("label").and_then(|t| t.as_str()).unwrap_or("");
             let template = p
                 .get("template_page")
                 .and_then(|t| t.as_bool())
                 .unwrap_or(false);
-            (i, format!("A-{n}  {title}"), template)
+            (label.to_string(), template, n)
+        })
+        .collect();
+    // The labels follow the pages: a `#` takes the next number among the
+    // pages with the same label.
+    let labels = plan_layout::resolve_labels(fields.iter().map(|(l, t, n)| (l.as_str(), *t, *n)));
+    pages
+        .iter()
+        .zip(labels)
+        .zip(&fields)
+        .enumerate()
+        .map(|(i, ((p, label), (_, template, _)))| {
+            let title = p.get("title").and_then(|t| t.as_str()).unwrap_or("");
+            (i, format!("{label}  {title}"), *template)
         })
         .collect()
 }
@@ -4202,7 +4214,7 @@ impl LayoutView {
     }
 
     /// The click that places a pending Send to Layout.
-    fn place_at(&mut self, cx: &mut EditorContext, x: f64, y: f64) {
+    pub(crate) fn place_at(&mut self, cx: &mut EditorContext, x: f64, y: f64) {
         let Some(p) = self.placing.take() else { return };
         if matches!(p.source, BoxSource::PageTable | BoxSource::RevisionTable) {
             cx.status = if self.place_table(&mut cx.project, p.source, x, y) {
@@ -6513,14 +6525,15 @@ mod tests {
     }
 
     #[test]
-    fn page_table_renames_and_flags_templates() {
+    fn page_information_renames_and_flags_templates() {
         let (mut v, mut p) = view_with_layout();
-        let mut rows = v.page_rows();
-        assert_eq!(rows.len(), 2);
-        rows[1].title = "Main Level".into();
-        assert!(v.apply_page_table(&mut p, &rows));
+        let mut d = v.page_info_dialog(&p).unwrap();
+        assert_eq!(d.entries().len(), 2);
+        d.select(1);
+        d.info_mut().unwrap().title = "Main Level".into();
+        assert_eq!(v.apply_page_info(&mut p, &d), Ok(true));
         assert_eq!(v.layout().unwrap().pages[1].title, "Main Level");
-        assert!(!v.apply_page_table(&mut p, &rows));
+        assert_eq!(v.apply_page_info(&mut p, &d), Ok(false));
         assert_eq!(page_list(&p)[1].1, "A-1  Main Level");
         assert!(page_list(&p)[0].2, "page 0 is the template");
     }
@@ -6686,9 +6699,9 @@ mod tests {
         let mut v = LayoutView::default();
         v.create(&mut cx.project, None);
         v.run(&mut cx, LayoutCommand::ShowLayout, None);
-        v.run(&mut cx, LayoutCommand::PageSpecification, None);
-        assert!(v.dialogs.page_spec.is_some());
-        v.dialogs.page_spec = None;
+        v.run(&mut cx, LayoutCommand::PageInformation, None);
+        assert!(v.dialogs.page_info.is_some());
+        v.dialogs.page_info = None;
         v.run(&mut cx, LayoutCommand::CustomizeSheetSizes, None);
         assert!(v.dialogs.sheet_sizes.is_some());
         v.dialogs.sheet_sizes = None;
@@ -6824,9 +6837,9 @@ mod tests {
         v.run(&mut cx, LayoutCommand::ShowLayout, None);
         v.run(&mut cx, LayoutCommand::InsertPageAfter, None);
         let second = v.page;
-        let mut spec = v.page_spec().unwrap();
-        spec.sheet = Some(plan_layout::SheetChoice::Standard(SheetSize::ArchE));
-        assert_eq!(v.apply_page_spec(&mut cx.project, second, &spec), Ok(true));
+        let mut d = v.page_info_dialog(&cx.project).unwrap();
+        d.sheet_mut().unwrap().sheet = Some(plan_layout::SheetChoice::Standard(SheetSize::ArchE));
+        assert_eq!(v.apply_page_info(&mut cx.project, &d), Ok(true));
         assert_eq!(v.sheet_of(second), (48.0, 36.0));
         assert_eq!(v.sheet_of(1), (24.0, 18.0));
         // Going to the other page refits the window to its sheet.
@@ -7522,6 +7535,13 @@ mod tests {
             clouds: vec![],
             size_override_in: None,
             no_title_block: false,
+            label: String::new(),
+            description: String::new(),
+            comments: String::new(),
+            in_layout_table: true,
+            template: None,
+            revisions: vec![],
+            baked: None,
         };
         assert_eq!(
             box_at(&page, 5.0, 7.5),

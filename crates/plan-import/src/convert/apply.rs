@@ -73,7 +73,12 @@ pub fn add_objects(
     let mut existing: Vec<(String, Id)> = project
         .floors
         .get(floor)
-        .map(|f| f.cad_blocks().into_iter().map(|b| (b.name, b.group)).collect())
+        .map(|f| {
+            f.cad_blocks()
+                .into_iter()
+                .map(|b| (b.name, b.group))
+                .collect()
+        })
         .unwrap_or_default();
     let mut skip = vec![false; conv.blocks.len()];
     let mut names: Vec<String> = conv.blocks.iter().map(|b| b.name.clone()).collect();
@@ -147,7 +152,9 @@ pub fn add_objects(
     }
 
     for o in &conv.objects {
-        if o.block.is_some_and(|b| skip.get(b).copied().unwrap_or(false)) {
+        if o.block
+            .is_some_and(|b| skip.get(b).copied().unwrap_or(false))
+        {
             rep.ids.push(0);
             continue;
         }
@@ -170,14 +177,24 @@ pub fn add_objects(
 /// drawing into one when `conv.drawing_block` is set). Hatch lines drawn for
 /// an object (its fill's `lines`) join its block. A block of one object stays
 /// a loose object. Returns how many blocks were made.
-pub fn make_blocks(project: &mut Project, floor: usize, conv: &Converted, rep: &mut ApplyReport) -> usize {
+pub fn make_blocks(
+    project: &mut Project,
+    floor: usize,
+    conv: &Converted,
+    rep: &mut ApplyReport,
+) -> usize {
     let members_of = |project: &Project, ids: &[Id]| -> Vec<Id> {
         let mut out = Vec::new();
         for id in ids {
             out.push(*id);
             if let Some(f) = project.floors.get(floor) {
                 if let Some(fill) = f.cad_attrs(*id).and_then(|a| a.fill) {
-                    out.extend(fill.lines.iter().copied().filter(|l| f.cad.iter().any(|c| c.id == *l)));
+                    out.extend(
+                        fill.lines
+                            .iter()
+                            .copied()
+                            .filter(|l| f.cad.iter().any(|c| c.id == *l)),
+                    );
                 }
             }
         }
@@ -187,7 +204,10 @@ pub fn make_blocks(project: &mut Project, floor: usize, conv: &Converted, rep: &
     if let Some(name) = &conv.drawing_block {
         let ids: Vec<Id> = rep.ids.iter().copied().filter(|i| *i != 0).collect();
         let members = members_of(project, &ids);
-        if project.make_cad_block(floor, &members, Some(name)).is_some() {
+        if project
+            .make_cad_block(floor, &members, Some(name))
+            .is_some()
+        {
             made += 1;
         }
     } else {

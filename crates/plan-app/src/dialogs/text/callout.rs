@@ -4,16 +4,14 @@
 //! <Saved Default>") and the one the Callout tool opens when clicked.
 
 use super::annot::{
-    color_row, draw_preview, insert_menu, line_look_rows, line_style_page, link_lines,
-    lock_check, text_style_page, transparency_row, AnnotDialog, Env, Macros, Mode,
+    color_row, draw_preview, insert_menu, line_look_rows, line_style_page, link_lines, lock_check,
+    text_style_page, transparency_row, AnnotDialog, Env, Macros, Mode,
 };
 use crate::dialogs::{on, row, section, Fields, Outcome, SpecDialog, SpecPages, Tab};
 use crate::editor::EditorContext;
 use eframe::egui::{self, Painter, Rect, Ui};
-use plan_core::callout::{
-    callout_with_caution, ArrowSize, Callout, CalloutShape, LineAlign, Vars,
-};
 use plan_core::cad::ArrowStyle;
+use plan_core::callout::{callout_with_caution, ArrowSize, Callout, CalloutShape, LineAlign, Vars};
 use plan_core::Id;
 
 pub const CALLOUT_TABS: &[Tab] = &[
@@ -221,7 +219,11 @@ impl CalloutForm {
         });
         row(ui, "Text Style", |ui| {
             let mut m = t.style.is_none();
-            let matches = if below { "Match Text Above" } else { "Match Callout" };
+            let matches = if below {
+                "Match Text Above"
+            } else {
+                "Match Callout"
+            };
             if ui.checkbox(&mut m, matches).changed() {
                 t.style = if m { None } else { styles.first().cloned() };
             }
@@ -276,9 +278,26 @@ impl CalloutForm {
                 "deg_callout_sec_rel",
                 &mut c.section.rel_angle,
             );
-            ui.checkbox(&mut c.section.auto_adjust_text, "Auto Adjust Text Direction");
-            Self::line_text(ui, "callout_above", "Text Above Line", &mut c.section.above, &styles, false);
-            Self::line_text(ui, "callout_belowline", "Text Below Line", &mut c.section.below, &styles, true);
+            ui.checkbox(
+                &mut c.section.auto_adjust_text,
+                "Auto Adjust Text Direction",
+            );
+            Self::line_text(
+                ui,
+                "callout_above",
+                "Text Above Line",
+                &mut c.section.above,
+                &styles,
+                false,
+            );
+            Self::line_text(
+                ui,
+                "callout_belowline",
+                "Text Below Line",
+                &mut c.section.below,
+                &styles,
+                true,
+            );
         });
         section(ui, "Callout Arrows");
         row(ui, "Size", |ui| {

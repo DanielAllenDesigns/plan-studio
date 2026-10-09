@@ -233,8 +233,8 @@ fn layout_slots() -> Vec<Slot> {
         layout_item("default_settings", "Page Setup", L::PageSetup),
         layout_item(
             "default_settings",
-            "Page Specification",
-            L::PageSpecification,
+            "Page Information",
+            L::PageInformation,
         ),
         layout_item("drawing_sheet", "Customize Sheet Sizes", L::CustomizeSheetSizes),
         layout_item("file_new", "New Layout File", L::NewLayoutFile),

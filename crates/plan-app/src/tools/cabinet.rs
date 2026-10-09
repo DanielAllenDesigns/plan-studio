@@ -1862,8 +1862,8 @@ impl CabinetTool {
     }
 }
 
-/// Is the floor's cabinet list readable? (A foreign entry would make edits
-/// refuse rather than drop it.)
+/// Is every record of the floor's cabinet list readable? (A foreign record is
+/// kept untouched by every cabinet edit.)
 pub fn cabinets_readable(floor: &Floor) -> bool {
     floor.cabinets_as::<Cabinet>().is_ok()
 }

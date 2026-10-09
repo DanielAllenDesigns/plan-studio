@@ -10,10 +10,10 @@ use crate::editor::{handles, ObjectRef};
 use crate::shell::layout_window::{self as lw, LayoutView};
 use crate::tools::text::TextMode;
 use crate::tools::ToolId;
+use plan_core::cad::CadItem;
 use plan_core::callout::{
     handle, AnnotRef, Callout, CalloutShape, Marker, MarkerKind, ViewKind, ViewLink,
 };
-use plan_core::cad::CadItem;
 use plan_core::geometry::Point;
 use plan_core::Id;
 use plan_docs::MasterList;
@@ -112,7 +112,13 @@ fn each_tool_opens_its_specification_with_chiefs_tabs_and_places_in_one_undo_ste
         (
             TextMode::Note,
             "Note Specification",
-            vec!["Note", "Line Style", "Text Style", "Object Information", "Schedule"],
+            vec![
+                "Note",
+                "Line Style",
+                "Text Style",
+                "Object Information",
+                "Schedule",
+            ],
         ),
     ];
     for (mode, title, tabs) in cases {
@@ -305,7 +311,10 @@ fn a_linked_callout_shows_the_camera_label_and_the_sheet_after_send_to_layout() 
         .find(|p| p.sources.iter().any(|(k, _)| k == "Camera"))
         .expect("the camera's page")
         .label();
-    assert_eq!(shown, vec!["1".to_string(), page.clone(), "Section A".to_string()]);
+    assert_eq!(
+        shown,
+        vec!["1".to_string(), page.clone(), "Section A".to_string()]
+    );
     // And it prints on the plan's layout page (the callout draws in a box).
     v.send(
         &mut sim.app.cx.project,
@@ -408,13 +417,19 @@ fn markers_of_each_type_place_with_their_own_shapes() {
     sim.app.cx.refresh();
     let m = &sim.app.cx.floor().annots.markers;
     assert_eq!(m.len(), 4);
-    assert!(m[0].items.len() > m[2].items.len(), "a Level Line has a line and texts");
+    assert!(
+        m[0].items.len() > m[2].items.len(),
+        "a Level Line has a line and texts"
+    );
     // A marker has Move/Resize/Extend/Rotate-style handles.
     let h = m[0].items[0];
     sim.app.cx.selection.items = group(&sim, h);
     let hs = handles::handles_for(&sim.app.cx, sim.app.cx.px_per_in);
     assert_eq!(hs.len(), 3);
-    assert!(matches!(sim.app.cx.floor().annot_of(h), Some(AnnotRef::Marker(0))));
+    assert!(matches!(
+        sim.app.cx.floor().annot_of(h),
+        Some(AnnotRef::Marker(0))
+    ));
 }
 
 #[test]
@@ -428,12 +443,22 @@ fn text_defaults_reach_new_text_and_the_defaults_dialogs_are_titled_with_the_sav
     sim.key(crate::tools::KeyEvent::key(eframe::egui::Key::Enter));
     let id = sim.app.cx.floor().cad.last().unwrap().id;
     assert_eq!(
-        sim.app.cx.floor().cad_attrs(id).unwrap().text_style.as_deref(),
+        sim.app
+            .cx
+            .floor()
+            .cad_attrs(id)
+            .unwrap()
+            .text_style
+            .as_deref(),
         Some("Room Label Style")
     );
     for k in DefaultsKind::ALL {
         let d = open(&sim.app.cx, k);
-        assert_eq!(d.title(), format!("{} Defaults - Default", k.name()), "{k:?}");
+        assert_eq!(
+            d.title(),
+            format!("{} Defaults - Default", k.name()),
+            "{k:?}"
+        );
         assert!(!d.tab_names().is_empty());
     }
 }

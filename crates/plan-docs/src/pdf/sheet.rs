@@ -718,6 +718,13 @@ fn draw_dimension_ends(
                 doc.line(p.0 - tick, p.1 - tick, p.0 + tick, p.1 + tick, pen * 1.5);
             }
         }
+        DimArrow::Slash => {
+            // A long drafting slash, steeper than the tick.
+            let (sx, sy) = (size * 0.35, size * 0.6);
+            for p in [pa, pb] {
+                doc.line(p.0 - sx, p.1 - sy, p.0 + sx, p.1 + sy, pen * 1.5);
+            }
+        }
         DimArrow::Dot => {
             let r = size * 0.25;
             for p in [pa, pb] {

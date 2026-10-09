@@ -302,6 +302,20 @@ impl PlanApp {
             Action::Custom(id) if dialogs::property_manager::is_command(id) => {
                 dialogs::property_manager::run_command(&mut self.cx, id);
             }
+            // File > Print: Drawing Sheet Setup, Scale to Fit, Center Sheet,
+            // Clear Printer Info, Customize Sheet Sizes; View > Watermark and
+            // its defaults.
+            Action::Custom(id) if dialogs::drawing_sheet::is_command(id) => {
+                dialogs::drawing_sheet::run_command(&mut self.cx, id);
+            }
+            Action::Custom(id) if dialogs::watermark::is_command(id) => {
+                dialogs::watermark::run_command(&mut self.cx, id);
+            }
+            // Customize Sheet Sizes is program-wide: one list for every plan
+            // and layout, wherever the command comes from.
+            Action::Layout(shell::layout_window::LayoutCommand::CustomizeSheetSizes) => {
+                dialogs::drawing_sheet::open_customize();
+            }
             // Zoom, Reverse Plan, Rotate Plan View, tiling and tabs.
             Action::Custom(id) if shell::view_commands::is_command(id) => self.view_command(id),
             // Edit > Replace Fonts opens the Text Styles list (Replace Fonts section).
@@ -1260,7 +1274,18 @@ impl PlanApp {
         self.auto_scroll(ctx);
         // The rubber-band Zoom (Window > Zoom) takes the pointer while armed.
         let zooming = self.shell_views.zoom_armed;
-        if !zooming {
+        // The Drawing Sheet is an object: its border moves it, its corners
+        // resize it (File > Print, View > Drawing Sheet).
+        let sheet_took = !zooming
+            && !self.has_dialog()
+            && dialogs::drawing_sheet::pointer(
+                ctx,
+                &resp,
+                &mut self.cx,
+                &self.camera,
+                self.tools.active_id().base() == ToolId::Select,
+            );
+        if !zooming && !sheet_took {
             self.dispatch_pointer(ctx, &resp);
         }
         if resp.hovered() && !zooming {
@@ -1274,7 +1299,12 @@ impl PlanApp {
         }
 
         self.cx.refresh();
+        // The editor's sheet follows the Drawing Sheet Setup; the Print dialog
+        // reads the active view's setup and what is on screen.
+        dialogs::drawing_sheet::sync(&mut self.cx, &self.camera);
         render::draw_plan(&self.cx, &painter, &self.camera);
+        // The Watermark, the printable-area border and the sheet's handles.
+        dialogs::drawing_sheet::paint_overlays(&self.cx, &painter, &self.camera);
         self.tools
             .active()
             .draw_overlay(&self.cx, &painter, &self.camera);
@@ -1814,6 +1844,7 @@ impl eframe::App for PlanApp {
         }
         dialogs::exchange::show_all(ctx, &mut self.cx);
         dialogs::underlay::show_all(ctx, &mut self.cx);
+        dialogs::drawing_sheet::show_all(ctx, &mut self.cx);
         tools::materials::show_windows(ctx, &mut self.cx);
         dialogs::spell_check::show_all(ctx, &mut self.cx);
         let mut pref_actions = Vec::new();

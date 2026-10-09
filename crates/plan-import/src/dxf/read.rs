@@ -82,7 +82,9 @@ pub(super) fn parse_f64(s: &str) -> Option<f64> {
 
 fn parse_i(s: &str) -> Option<i32> {
     let t = s.trim();
-    t.parse().ok().or_else(|| t.parse::<f64>().ok().map(|f| f as i32))
+    t.parse()
+        .ok()
+        .or_else(|| t.parse::<f64>().ok().map(|f| f as i32))
 }
 
 /// Group pairs into records at each `0` code; `EOF` ends the file.
@@ -214,7 +216,11 @@ fn read_header(section: &Rec<'_>, d: &mut DxfDrawing) {
 
 fn true_color(v: i32) -> DxfColor {
     let u = v as u32;
-    DxfColor::Rgb([((u >> 16) & 255) as u8, ((u >> 8) & 255) as u8, (u & 255) as u8])
+    DxfColor::Rgb([
+        ((u >> 16) & 255) as u8,
+        ((u >> 8) & 255) as u8,
+        (u & 255) as u8,
+    ])
 }
 
 fn read_tables(body: &[Rec<'_>], d: &mut DxfDrawing) {
@@ -307,7 +313,11 @@ fn read_blocks(body: &[Rec<'_>], d: &mut DxfDrawing, skipped: &mut Skipped) {
         let flags = head.int(70).unwrap_or(0);
         let xref = if flags & (4 | 8) != 0 {
             let path = head.get(1).map_or("", str::trim);
-            if path.is_empty() { name.clone() } else { path.to_string() }
+            if path.is_empty() {
+                name.clone()
+            } else {
+                path.to_string()
+            }
         } else {
             String::new()
         };
@@ -630,7 +640,11 @@ fn polyface(vertices: &[Rec<'_>]) -> Vec<DxfKind> {
 fn ellipse(r: &Rec<'_>) -> DxfKind {
     let u = r.point(11);
     let ratio = r.f(40).unwrap_or(1.0);
-    let sign = if r.f(230).unwrap_or(1.0) < 0.0 { -1.0 } else { 1.0 };
+    let sign = if r.f(230).unwrap_or(1.0) < 0.0 {
+        -1.0
+    } else {
+        1.0
+    };
     let (t0, t1) = ellipse_range(r.f(41).unwrap_or(0.0), r.f(42).unwrap_or(TAU));
     DxfKind::Ellipse {
         center: r.point(10),
@@ -680,7 +694,10 @@ fn text_entity(r: &Rec<'_>, attrib: bool) -> DxfText {
     let mut angle_deg = r.f(50).unwrap_or(0.0);
     let text = clean_text(r.get(1).unwrap_or(""));
     // ATTRIB and ATTDEF carry the vertical justification in 74.
-    let (hj, vj) = (r.int(72).unwrap_or(0), r.int(if attrib { 74 } else { 73 }).unwrap_or(0));
+    let (hj, vj) = (
+        r.int(72).unwrap_or(0),
+        r.int(if attrib { 74 } else { 73 }).unwrap_or(0),
+    );
     let p10 = r.point(10);
     let p11 = if r.has(11) { r.point(11) } else { p10 };
     let (h, v, mut pos) = match (hj, vj) {
@@ -1012,7 +1029,9 @@ fn take_codes<'a>(p: &'a [Pair<'a>], i: &mut usize, allowed: &[i32]) -> Vec<(i32
 }
 
 fn code_f(v: &[(i32, &str)], code: i32) -> Option<f64> {
-    v.iter().find(|(c, _)| *c == code).and_then(|(_, s)| parse_f64(s))
+    v.iter()
+        .find(|(c, _)| *c == code)
+        .and_then(|(_, s)| parse_f64(s))
 }
 
 fn hatch_edge_path(p: &[Pair<'_>], i: &mut usize) -> Vec<Point> {
@@ -1041,7 +1060,10 @@ fn hatch_edge_path(p: &[Pair<'_>], i: &mut usize) -> Vec<Point> {
                 let v = take_codes(p, i, &[10, 20, 40, 50, 51, 73]);
                 let c = Point::new(code_f(&v, 10).unwrap_or(0.0), code_f(&v, 20).unwrap_or(0.0));
                 let rad = code_f(&v, 40).unwrap_or(0.0);
-                let (a0, a1) = (code_f(&v, 50).unwrap_or(0.0), code_f(&v, 51).unwrap_or(360.0));
+                let (a0, a1) = (
+                    code_f(&v, 50).unwrap_or(0.0),
+                    code_f(&v, 51).unwrap_or(360.0),
+                );
                 let ccw = code_f(&v, 73).unwrap_or(1.0) != 0.0;
                 let u = Point::new(rad, 0.0);
                 let w = Point::new(0.0, rad);
@@ -1058,9 +1080,13 @@ fn hatch_edge_path(p: &[Pair<'_>], i: &mut usize) -> Vec<Point> {
             3 => {
                 let v = take_codes(p, i, &[10, 20, 11, 21, 40, 50, 51, 73]);
                 let c = Point::new(code_f(&v, 10).unwrap_or(0.0), code_f(&v, 20).unwrap_or(0.0));
-                let major = Point::new(code_f(&v, 11).unwrap_or(1.0), code_f(&v, 21).unwrap_or(0.0));
+                let major =
+                    Point::new(code_f(&v, 11).unwrap_or(1.0), code_f(&v, 21).unwrap_or(0.0));
                 let ratio = code_f(&v, 40).unwrap_or(1.0);
-                let (a0, a1) = (code_f(&v, 50).unwrap_or(0.0), code_f(&v, 51).unwrap_or(360.0));
+                let (a0, a1) = (
+                    code_f(&v, 50).unwrap_or(0.0),
+                    code_f(&v, 51).unwrap_or(360.0),
+                );
                 let ccw = code_f(&v, 73).unwrap_or(1.0) != 0.0;
                 let minor = major.perp().scale(ratio);
                 if ccw {
@@ -1107,7 +1133,10 @@ fn hatch_spline_edge(p: &[Pair<'_>], i: &mut usize) -> Vec<Point> {
         let (Some((10, x)), Some((20, y))) = (p.get(*i), p.get(*i + 1)) else {
             break;
         };
-        control.push(Point::new(parse_f64(x).unwrap_or(0.0), parse_f64(y).unwrap_or(0.0)));
+        control.push(Point::new(
+            parse_f64(x).unwrap_or(0.0),
+            parse_f64(y).unwrap_or(0.0),
+        ));
         *i += 2;
         if rational {
             if let Some((42, w)) = p.get(*i) {
@@ -1140,7 +1169,10 @@ fn append_edge(chain: &mut Vec<Point>, mut edge: Vec<Point>) {
     }
     if let Some(&last) = chain.last() {
         // Edges may run either way round the loop.
-        if edge.first().is_some_and(|f| f.dist(last) > edge.last().map_or(f64::MAX, |l| l.dist(last))) {
+        if edge
+            .first()
+            .is_some_and(|f| f.dist(last) > edge.last().map_or(f64::MAX, |l| l.dist(last)))
+        {
             edge.reverse();
         }
         if edge[0].dist(last) < 1e-6 * (1.0 + last.length()) {

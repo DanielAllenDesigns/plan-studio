@@ -774,10 +774,13 @@ pub fn stair_meshes(project: &Project) -> Vec<Mesh> {
     for floor in &project.floors {
         for mut obj in crate::editor::stairs_view::load(floor) {
             obj.stair.floor_elevation = floor.elevation;
-            for (part, mut m) in plan_stairs::tagged_meshes(&obj.stair) {
+            for (part, mut m) in crate::editor::stairs_view::part_meshes(&obj, floor.elevation) {
                 m.material = match part {
                     StairPart::Tread | StairPart::Landing | StairPart::Ramp => Material::Framing,
-                    StairPart::Riser | StairPart::Stringer | StairPart::Handrail => Material::Trim,
+                    StairPart::Riser
+                    | StairPart::Stringer
+                    | StairPart::Handrail
+                    | StairPart::Runner => Material::Trim,
                 };
                 out.push(m);
             }

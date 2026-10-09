@@ -1029,6 +1029,16 @@ pub fn stairs() -> Flyout {
             ),
             st("landing", K::Landing, "\u{2303}\u{2325}\u{21E7}\u{2318}G"),
             st("ramp", K::Ramp, "\u{2303}\u{2325}\u{21E7}\u{2318}H"),
+            item(
+                "ramp",
+                K::CurvedRamp.name(),
+                Action::SetTool(ToolId::StairsVariant(K::CurvedRamp)),
+            ),
+            item(
+                "stairs",
+                K::ToDeck.name(),
+                Action::SetTool(ToolId::StairsVariant(K::ToDeck)),
+            ),
         ],
     )
 }
@@ -1536,6 +1546,11 @@ pub fn lines() -> Flyout {
             cad_item("line", C::InputLine),
             cad_item("arrow_line", C::LineArrow),
             cad_item("polyline", C::Polyline),
+            item(
+                "line",
+                "Construction Line",
+                Action::SetTool(ToolId::ConstructionLine),
+            ),
         ],
     )
 }
@@ -2336,7 +2351,12 @@ fn view_slots() -> Vec<Slot> {
         Slot::Button(item(
             "reference_display",
             "Reference Display Options",
-            Action::ReferenceDisplayOptions,
+            Action::Custom(crate::dialogs::reference_display::CHANGE),
+        )),
+        Slot::Button(item(
+            "reference_display",
+            "Swap Floor/Reference",
+            Action::Custom(crate::dialogs::reference_display::SWAP),
         )),
         flag_toggle("crosshairs", "Crosshairs", ViewFlag::Crosshairs),
         Slot::Toggle(with_hotkey(

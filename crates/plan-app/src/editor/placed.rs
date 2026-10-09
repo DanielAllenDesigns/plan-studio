@@ -83,22 +83,38 @@ pub fn cabinet_by_id(floor: &Floor, id: Id) -> Option<Cabinet> {
     load_cabinets(floor).into_iter().find(|c| c.id == id)
 }
 
-/// Runs `f` on the typed cabinet list and stores the result. Refuses (returns
-/// `None`) when some stored entry does not parse, so nothing is ever lost.
+/// The floor's cabinets split into the ones this build reads and the raw
+/// records it cannot (a newer build's kind), which every edit writes back
+/// untouched (QA-29).
+fn split_cabinets(floor: &Floor) -> (Vec<Cabinet>, Vec<serde_json::Value>) {
+    let (good, bad) = plan_core::foreign::read_each::<Cabinet>(&floor.cabinets);
+    (good, bad.into_iter().map(|(_, v)| v).collect())
+}
+
+/// Stores `list` followed by the `raw` records that could not be read.
+fn store_cabinets(floor: &mut Floor, list: &[Cabinet], raw: Vec<serde_json::Value>) -> bool {
+    if floor.set_cabinets(list).is_err() {
+        return false;
+    }
+    floor.cabinets.extend(raw);
+    true
+}
+
+/// Runs `f` on the typed cabinet list and stores the result; records this
+/// build cannot read stay as they are. `None` only when the list cannot be
+/// written.
 fn edit_cabinets<R>(
     project: &mut Project,
     floor: usize,
     f: impl FnOnce(&mut Vec<Cabinet>) -> R,
 ) -> Option<R> {
-    let mut list = project.floors[floor].cabinets_as::<Cabinet>().ok()?;
+    let (mut list, raw) = split_cabinets(&project.floors[floor]);
     let r = f(&mut list);
-    project.floors[floor].set_cabinets(&list).ok()?;
-    Some(r)
+    store_cabinets(&mut project.floors[floor], &list, raw).then_some(r)
 }
 
 /// Adds a cabinet under a fresh id.
 pub fn add_cabinet(project: &mut Project, floor: usize, mut cab: Cabinet) -> Option<Id> {
-    project.floors[floor].cabinets_as::<Cabinet>().ok()?;
     let id = project.alloc_id();
     cab.id = id;
     edit_cabinets(project, floor, |v| v.push(cab))?;
@@ -1382,9 +1398,7 @@ pub fn rejoin_countertops(cx: &mut EditorContext) -> usize {
     if cx.layers().is_locked("Cabinets, Base") {
         return 0;
     }
-    let Ok(stored) = cx.project.floors[fl].cabinets_as::<Cabinet>() else {
-        return 0;
-    };
+    let (stored, raw) = split_cabinets(&cx.project.floors[fl]);
     let mut cabs = stored.clone();
     // Take every generated top apart.
     let old_tops: Vec<Cabinet> = cabs
@@ -1442,7 +1456,7 @@ pub fn rejoin_countertops(cx: &mut EditorContext) -> usize {
     if sorted(&cabs) == sorted(&stored) {
         return count;
     }
-    if cx.project.floors[fl].set_cabinets(&cabs).is_err() {
+    if !store_cabinets(&mut cx.project.floors[fl], &cabs, raw) {
         return 0;
     }
     let project = &cx.project;
@@ -1456,11 +1470,9 @@ pub fn rejoin_countertops(cx: &mut EditorContext) -> usize {
 /// caller has begun. Returns how many changed.
 pub fn refresh_backsplashes(cx: &mut EditorContext) -> usize {
     let fl = cx.floor;
-    let Ok(mut cabs) = cx.project.floors[fl].cabinets_as::<Cabinet>() else {
-        return 0;
-    };
+    let (mut cabs, raw) = split_cabinets(&cx.project.floors[fl]);
     let n = plan_cabinets::fit_full_height_backsplashes(&mut cabs);
-    if n > 0 && cx.project.floors[fl].set_cabinets(&cabs).is_ok() {
+    if n > 0 && store_cabinets(&mut cx.project.floors[fl], &cabs, raw) {
         cx.mark_dirty();
         return n;
     }

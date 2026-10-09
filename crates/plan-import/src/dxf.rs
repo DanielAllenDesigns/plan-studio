@@ -19,10 +19,10 @@ pub mod aci;
 pub mod geom;
 pub mod model;
 mod read;
-pub mod text;
-pub mod tokens;
 #[cfg(test)]
 mod tests;
+pub mod text;
+pub mod tokens;
 
 pub use model::*;
 

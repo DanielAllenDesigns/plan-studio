@@ -96,7 +96,10 @@ impl Walker<'_> {
                 None
             };
             for l in leaves {
-                self.out.items.push(Flat { entity: l, inst: tag });
+                self.out.items.push(Flat {
+                    entity: l,
+                    inst: tag,
+                });
             }
         }
     }
@@ -115,7 +118,10 @@ impl Walker<'_> {
                 if self.opts.dims_as_objects && linear_dimension(dim).is_some() {
                     return vec![e.clone()];
                 }
-                if !dim.block.is_empty() && d.block(&dim.block).is_some() && depth < MAX_INSERT_DEPTH {
+                if !dim.block.is_empty()
+                    && d.block(&dim.block).is_some()
+                    && depth < MAX_INSERT_DEPTH
+                {
                     // The anonymous block is drawn at the origin of the
                     // dimension's own frame.
                     let ins = DxfInsert {
@@ -170,7 +176,10 @@ impl Walker<'_> {
         let spin = Xf::new(Point::ZERO, Point::ZERO, (1.0, 1.0), ins.rotation_deg);
         for row in 0..rows {
             for col in 0..cols {
-                let step = Point::new(f64::from(col) * ins.col_spacing, f64::from(row) * ins.row_spacing);
+                let step = Point::new(
+                    f64::from(col) * ins.col_spacing,
+                    f64::from(row) * ins.row_spacing,
+                );
                 let pos = ins.pos.add(spin.rotate(step));
                 let xf = Xf::new(def.base, pos, ins.scale, ins.rotation_deg);
                 for c in &children {
@@ -209,12 +218,16 @@ impl Walker<'_> {
         }
         if p.weight == WEIGHT_BY_BLOCK {
             p.weight = match ins.weight {
-                WEIGHT_BY_LAYER => self.d.layer(&ins.layer).map_or(WEIGHT_DEFAULT, |l| l.weight),
+                WEIGHT_BY_LAYER => self
+                    .d
+                    .layer(&ins.layer)
+                    .map_or(WEIGHT_DEFAULT, |l| l.weight),
                 other => other,
             };
         }
         if p.linetype.eq_ignore_ascii_case("BYBLOCK") {
-            p.linetype = if ins.linetype.is_empty() || ins.linetype.eq_ignore_ascii_case("BYLAYER") {
+            p.linetype = if ins.linetype.is_empty() || ins.linetype.eq_ignore_ascii_case("BYLAYER")
+            {
                 self.d
                     .layer(&ins.layer)
                     .map_or(String::new(), |l| l.linetype.clone())
@@ -293,7 +306,8 @@ pub fn xform(xf: &Xf, e: &DxfEntity, _base: Point) -> DxfEntity {
                     end_deg,
                 }
             } else {
-                let (t0, t1) = crate::dxf::geom::ellipse_range(start_deg.to_radians(), end_deg.to_radians());
+                let (t0, t1) =
+                    crate::dxf::geom::ellipse_range(start_deg.to_radians(), end_deg.to_radians());
                 DxfKind::Ellipse {
                     center: xf.point(*center),
                     u: xf.vector(Point::new(*radius, 0.0)),
@@ -303,7 +317,13 @@ pub fn xform(xf: &Xf, e: &DxfEntity, _base: Point) -> DxfEntity {
                 }
             }
         }
-        DxfKind::Ellipse { center, u, v, t0, t1 } => DxfKind::Ellipse {
+        DxfKind::Ellipse {
+            center,
+            u,
+            v,
+            t0,
+            t1,
+        } => DxfKind::Ellipse {
             center: xf.point(*center),
             u: xf.vector(*u),
             v: xf.vector(*v),
@@ -344,7 +364,9 @@ pub fn xform(xf: &Xf, e: &DxfEntity, _base: Point) -> DxfEntity {
             points: points.iter().map(|p| xf.point(*p)).collect(),
             filled: *filled,
         },
-        DxfKind::Marker { pos } => DxfKind::Marker { pos: xf.point(*pos) },
+        DxfKind::Marker { pos } => DxfKind::Marker {
+            pos: xf.point(*pos),
+        },
         DxfKind::Text(t) => {
             let mut t = (**t).clone();
             t.pos = xf.point(t.pos);

@@ -5,10 +5,10 @@
 //! reads them back with [`Project::note_rows`], numbered per Note Type in
 //! draw order, so deleting a note renumbers the ones after it.
 
+use crate::cad::CadItem;
 use crate::callout::{
     callout_with_caution, marker_items, note_items, AnnotRef, Callout, Marker, Note, Vars,
 };
-use crate::cad::CadItem;
 use crate::geometry::Point;
 use crate::model::{Id, Project};
 use crate::schedules::{Schedule, ScheduleKind, ScheduleLayer};

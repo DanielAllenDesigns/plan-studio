@@ -12,6 +12,11 @@ use plan_docs::{Scale, SheetSize};
 pub struct SheetSetup {
     pub size: SheetSize,
     pub scale: Scale,
+    /// Drawing Sheet Setup (round 16): the sheet in hundredths of an inch,
+    /// `(width, height)`, when it is not exactly `size` landscape: a custom
+    /// size or a sheet turned upright. Kept with the `size` it was made for;
+    /// choosing another size elsewhere drops it.
+    pub paper_cin: Option<(SheetSize, (u32, u32))>,
 }
 
 impl Default for SheetSetup {
@@ -20,16 +25,28 @@ impl Default for SheetSetup {
         Self {
             size: SheetSize::ArchD,
             scale: Scale::QuarterInch,
+            paper_cin: None,
         }
     }
 }
 
 impl SheetSetup {
+    /// The sheet on paper, `(width, height)` inches, as the Drawing Sheet
+    /// Setup left it.
+    pub fn paper_inches(&self) -> (f64, f64) {
+        match self.paper_cin {
+            Some((size, (w, h))) if size == self.size => {
+                (f64::from(w) / 100.0, f64::from(h) / 100.0)
+            }
+            _ => self.size.inches(),
+        }
+    }
+
     /// The sheet on the ground, `(width, height)` in plan inches: paper
     /// inches divided by the scale (1/4" = 1' puts 48 plan inches on each
     /// paper inch).
     pub fn world_size(&self) -> (f64, f64) {
-        let (w, h) = self.size.inches();
+        let (w, h) = self.paper_inches();
         let plan_in_per_paper_in = 12.0 / self.scale.inches_per_foot();
         (w * plan_in_per_paper_in, h * plan_in_per_paper_in)
     }
@@ -45,7 +62,19 @@ impl SheetSetup {
 
     /// `ARCH D (24 x 36)  1/4" = 1'-0"`.
     pub fn caption(&self) -> String {
-        format!("{}  {}", self.size.label(), self.scale.label())
+        match self.paper_cin {
+            Some((size, (w, h))) if size == self.size => {
+                let side = |v: u32| {
+                    if v % 100 == 0 {
+                        format!("{}", v / 100)
+                    } else {
+                        format!("{}", f64::from(v) / 100.0)
+                    }
+                };
+                format!("{} x {} in  {}", side(w), side(h), self.scale.label())
+            }
+            _ => format!("{}  {}", self.size.label(), self.scale.label()),
+        }
     }
 }
 
@@ -78,6 +107,10 @@ pub fn preview_color_label(c: plan_layout::PrintColor) -> &'static str {
 /// The center of the floor's walls (the middle of their bounding box), or
 /// the origin when there are none.
 pub fn plan_center(floor: &Floor) -> Point {
+    // Center Sheet / dragging the sheet put it elsewhere for this floor.
+    if let Some(c) = floor.sheet_center {
+        return c;
+    }
     let mut pts = floor.walls.iter().flat_map(|w| w.footprint());
     let Some(first) = pts.next() else {
         return Point::ZERO;
@@ -102,6 +135,7 @@ mod tests {
         let s = SheetSetup {
             size: SheetSize::Letter,
             scale: Scale::EighthInch,
+            ..SheetSetup::default()
         };
         assert_eq!(s.world_size(), (11.0 * 96.0, 8.5 * 96.0));
     }

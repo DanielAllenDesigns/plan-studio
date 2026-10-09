@@ -48,8 +48,7 @@ fn near(a: Point, x: f64, y: f64) -> bool {
 
 #[test]
 fn a_whole_file_reads_header_tables_blocks_and_entities() {
-    let src = dxf(
-        "0 SECTION
+    let src = dxf("0 SECTION
 2 HEADER
 9 $ACADVER
 1 AC1027
@@ -149,55 +148,84 @@ fn a_whole_file_reads_header_tables_blocks_and_entities() {
 11 1000
 21 0
 0 ENDSEC
-0 EOF",
-    );
+0 EOF");
     let d = both(&src);
     assert_eq!(d.version, "AC1027");
     assert_eq!(d.units, DxfUnits::Millimeters);
     assert!(d.metric);
     assert_eq!(d.dim_scale, 50.0);
-    assert_eq!(d.extents, Some((Point::new(0.0, 0.0), Point::new(5000.0, 3000.0))));
+    assert_eq!(
+        d.extents,
+        Some((Point::new(0.0, 0.0), Point::new(5000.0, 3000.0)))
+    );
     assert_eq!(d.layers.len(), 3);
     let wall = d.layer("a-wall").unwrap();
-    assert_eq!((wall.color, wall.weight, wall.visible), (DxfColor::Aci(1), 50, true));
+    assert_eq!(
+        (wall.color, wall.weight, wall.visible),
+        (DxfColor::Aci(1), 50, true)
+    );
     let hidden = d.layer("A-HIDDEN").unwrap();
-    assert_eq!((hidden.color, hidden.visible, hidden.linetype.as_str()), (DxfColor::Aci(3), false, "DASHED"));
+    assert_eq!(
+        (hidden.color, hidden.visible, hidden.linetype.as_str()),
+        (DxfColor::Aci(3), false, "DASHED")
+    );
     let frozen = d.layer("A-FROZEN").unwrap();
     assert!(frozen.frozen && !frozen.visible && !frozen.plot);
     assert_eq!(frozen.color, DxfColor::Rgb([255, 0, 0]));
     assert_eq!(d.linetypes.len(), 2);
     assert_eq!(d.linetype("dashed").unwrap().pattern, vec![0.5, -0.25]);
     let st = d.text_style("NOTES").unwrap();
-    assert_eq!((st.font.as_str(), st.width_factor, st.oblique_deg), ("arial.ttf", 0.8, 15.0));
+    assert_eq!(
+        (st.font.as_str(), st.width_factor, st.oblique_deg),
+        ("arial.ttf", 0.8, 15.0)
+    );
     let ds = d.dim_style("PLAN");
     assert_eq!((ds.scale, ds.arrow, ds.text_height), (48.0, 0.125, 0.1));
     // A style the table lacks gets the header's values.
     assert_eq!(d.dim_style("nope").scale, 50.0);
     let b = d.block("chair").unwrap();
-    assert_eq!((b.base, b.entities.len(), b.anonymous), (Point::new(1.0, 1.0), 1, false));
+    assert_eq!(
+        (b.base, b.entities.len(), b.anonymous),
+        (Point::new(1.0, 1.0), 1, false)
+    );
     assert_eq!(d.entities.len(), 1);
 }
 
 #[test]
 fn lines_circles_arcs_and_ellipses() {
-    let d = both(&ents(
-        "0 LINE\n8 A\n10 1\n20 2\n30 9\n11 3\n21 4\n31 9",
-    ));
-    assert!(matches!(only(&d).kind, DxfKind::Line { a, b } if near(a, 1.0, 2.0) && near(b, 3.0, 4.0)));
+    let d = both(&ents("0 LINE\n8 A\n10 1\n20 2\n30 9\n11 3\n21 4\n31 9"));
+    assert!(
+        matches!(only(&d).kind, DxfKind::Line { a, b } if near(a, 1.0, 2.0) && near(b, 3.0, 4.0))
+    );
     assert_eq!(only(&d).props.layer, "A");
 
     let d = both(&ents("0 CIRCLE\n8 0\n10 5\n20 6\n40 7"));
-    assert!(matches!(only(&d).kind, DxfKind::Circle { center, radius } if near(center, 5.0, 6.0) && radius == 7.0));
+    assert!(
+        matches!(only(&d).kind, DxfKind::Circle { center, radius } if near(center, 5.0, 6.0) && radius == 7.0)
+    );
 
     let d = both(&ents("0 ARC\n8 0\n10 0\n20 0\n40 30\n50 0\n51 90"));
-    assert!(matches!(only(&d).kind, DxfKind::Arc { radius, start_deg, end_deg, .. } if (radius, start_deg, end_deg) == (30.0, 0.0, 90.0)));
+    assert!(
+        matches!(only(&d).kind, DxfKind::Arc { radius, start_deg, end_deg, .. } if (radius, start_deg, end_deg) == (30.0, 0.0, 90.0))
+    );
 
     // An ellipse: major axis 10 along x, ratio 0.5, a half sweep.
-    let d = both(&ents("0 ELLIPSE\n8 0\n10 1\n20 1\n30 0\n11 10\n21 0\n31 0\n40 0.5\n41 0\n42 3.141592653589793"));
+    let d = both(&ents(
+        "0 ELLIPSE\n8 0\n10 1\n20 1\n30 0\n11 10\n21 0\n31 0\n40 0.5\n41 0\n42 3.141592653589793",
+    ));
     match &only(&d).kind {
-        DxfKind::Ellipse { center, u, v, t0, t1 } => {
+        DxfKind::Ellipse {
+            center,
+            u,
+            v,
+            t0,
+            t1,
+        } => {
             assert!(near(*center, 1.0, 1.0) && near(*u, 10.0, 0.0) && near(*v, 0.0, 5.0));
-            assert_eq!((*t0, (*t1 - std::f64::consts::PI).abs() < 1e-12), (0.0, true));
+            assert_eq!(
+                (*t0, (*t1 - std::f64::consts::PI).abs() < 1e-12),
+                (0.0, true)
+            );
         }
         other => panic!("{other:?}"),
     }
@@ -205,9 +233,16 @@ fn lines_circles_arcs_and_ellipses() {
 
 #[test]
 fn a_down_extrusion_mirrors_the_x_axis() {
-    let d = both(&ents("0 ARC\n8 0\n10 5\n20 0\n40 3\n50 0\n51 90\n210 0\n220 0\n230 -1"));
+    let d = both(&ents(
+        "0 ARC\n8 0\n10 5\n20 0\n40 3\n50 0\n51 90\n210 0\n220 0\n230 -1",
+    ));
     match &only(&d).kind {
-        DxfKind::Arc { center, start_deg, end_deg, .. } => {
+        DxfKind::Arc {
+            center,
+            start_deg,
+            end_deg,
+            ..
+        } => {
             assert!(near(*center, -5.0, 0.0));
             assert_eq!((*start_deg, *end_deg), (90.0, 180.0));
         }
@@ -221,7 +256,11 @@ fn polylines_keep_bulges_closed_flags_and_old_vertex_lists() {
         "0 LWPOLYLINE\n8 W\n90 3\n70 1\n10 0\n20 0\n42 1\n10 100\n20 0\n10 100\n20 100",
     ));
     match &only(&d).kind {
-        DxfKind::Polyline { points, closed, bulges } => {
+        DxfKind::Polyline {
+            points,
+            closed,
+            bulges,
+        } => {
             assert_eq!(points.len(), 3);
             assert!(*closed);
             assert_eq!(bulges, &vec![1.0, 0.0, 0.0]);
@@ -232,7 +271,11 @@ fn polylines_keep_bulges_closed_flags_and_old_vertex_lists() {
         "0 POLYLINE\n8 P\n66 1\n70 1\n0 VERTEX\n8 P\n10 0\n20 0\n0 VERTEX\n8 P\n10 10\n20 0\n42 0.5\n0 VERTEX\n8 P\n10 10\n20 10\n0 SEQEND\n8 P",
     ));
     match &only(&d).kind {
-        DxfKind::Polyline { points, closed, bulges } => {
+        DxfKind::Polyline {
+            points,
+            closed,
+            bulges,
+        } => {
             assert_eq!(points.len(), 3);
             assert!(*closed);
             assert_eq!(bulges, &vec![0.0, 0.5, 0.0]);
@@ -260,7 +303,9 @@ fn a_polyface_mesh_gives_a_face_per_record_and_a_3d_mesh_is_skipped() {
     assert_eq!(d.entities.len(), 2);
     assert!(matches!(&d.entities[0].kind, DxfKind::Face { points, .. } if points.len() == 4));
     assert!(matches!(&d.entities[1].kind, DxfKind::Face { points, .. } if points.len() == 3));
-    let d = both(&ents("0 POLYLINE\n8 M\n66 1\n70 16\n0 VERTEX\n10 0\n20 0\n0 SEQEND"));
+    let d = both(&ents(
+        "0 POLYLINE\n8 M\n66 1\n70 16\n0 VERTEX\n10 0\n20 0\n0 SEQEND",
+    ));
     assert!(d.entities.is_empty());
     assert_eq!(d.skipped, vec![("POLYLINE (3D mesh)".to_string(), 1)]);
 }
@@ -272,12 +317,31 @@ fn splines_keep_knots_weights_and_control_or_fit_points() {
          10 0\n20 0\n10 10\n20 20\n10 20\n20 0",
     ));
     match &only(&d).kind {
-        DxfKind::Spline { degree, closed, knots, control, fit, weights } => {
-            assert_eq!((*degree, *closed, knots.len(), control.len(), fit.len(), weights.len()), (2, false, 6, 3, 0, 0));
+        DxfKind::Spline {
+            degree,
+            closed,
+            knots,
+            control,
+            fit,
+            weights,
+        } => {
+            assert_eq!(
+                (
+                    *degree,
+                    *closed,
+                    knots.len(),
+                    control.len(),
+                    fit.len(),
+                    weights.len()
+                ),
+                (2, false, 6, 3, 0, 0)
+            );
         }
         other => panic!("{other:?}"),
     }
-    let d = both(&ents("0 SPLINE\n8 S\n70 1\n71 3\n74 3\n11 0\n21 0\n11 5\n21 5\n11 10\n21 0"));
+    let d = both(&ents(
+        "0 SPLINE\n8 S\n70 1\n71 3\n74 3\n11 0\n21 0\n11 5\n21 5\n11 10\n21 0",
+    ));
     assert!(matches!(&only(&d).kind, DxfKind::Spline { closed: true, fit, .. } if fit.len() == 3));
     let d = both(&ents("0 SPLINE\n8 S\n70 0\n71 3"));
     assert!(d.entities.is_empty());
@@ -286,7 +350,9 @@ fn splines_keep_knots_weights_and_control_or_fit_points() {
 
 #[test]
 fn solids_and_three_d_faces_come_out_in_outline_order() {
-    let d = both(&ents("0 SOLID\n8 0\n10 0\n20 0\n11 10\n21 0\n12 0\n22 10\n13 10\n23 10"));
+    let d = both(&ents(
+        "0 SOLID\n8 0\n10 0\n20 0\n11 10\n21 0\n12 0\n22 10\n13 10\n23 10",
+    ));
     match &only(&d).kind {
         DxfKind::Face { points, filled } => {
             assert!(*filled);
@@ -333,7 +399,10 @@ fn a_hatch_reads_polyline_and_edge_boundaries_and_the_pattern() {
             let pts = &h.loops[0].points;
             assert!(pts.len() > 10, "{}", pts.len());
             // The arc's samples sit on the circle of radius 10.
-            let on_arc = pts.iter().filter(|p| (p.length() - 10.0).abs() < 1e-6 && p.y > 0.1).count();
+            let on_arc = pts
+                .iter()
+                .filter(|p| (p.length() - 10.0).abs() < 1e-6 && p.y > 0.1)
+                .count();
             assert!(on_arc > 5);
         }
         other => panic!("{other:?}"),
@@ -346,22 +415,35 @@ fn a_hatch_reads_polyline_and_edge_boundaries_and_the_pattern() {
 
 #[test]
 fn text_alignment_styles_and_codes() {
-    let d = both(&ents("0 TEXT\n8 T\n10 5\n20 6\n40 2.5\n1 Kitchen %%d\n50 30\n7 NOTES\n41 0.8"));
+    let d = both(&ents(
+        "0 TEXT\n8 T\n10 5\n20 6\n40 2.5\n1 Kitchen %%d\n50 30\n7 NOTES\n41 0.8",
+    ));
     match &only(&d).kind {
         DxfKind::Text(t) => {
             assert_eq!(t.text, "Kitchen \u{b0}");
             assert!(near(t.pos, 5.0, 6.0));
-            assert_eq!((t.h, t.v, t.height, t.angle_deg), (HJust::Left, VJust::Baseline, 2.5, 30.0));
+            assert_eq!(
+                (t.h, t.v, t.height, t.angle_deg),
+                (HJust::Left, VJust::Baseline, 2.5, 30.0)
+            );
             assert_eq!((t.style.as_str(), t.width_factor), ("NOTES", 0.8));
         }
         other => panic!("{other:?}"),
     }
     // Centered text is anchored on the second point.
-    let d = both(&ents("0 TEXT\n8 T\n10 0\n20 0\n11 50\n21 60\n40 4\n1 Hi\n72 1\n73 2"));
-    assert!(matches!(&only(&d).kind, DxfKind::Text(t) if t.h == HJust::Center && t.v == VJust::Middle && near(t.pos, 50.0, 60.0)));
+    let d = both(&ents(
+        "0 TEXT\n8 T\n10 0\n20 0\n11 50\n21 60\n40 4\n1 Hi\n72 1\n73 2",
+    ));
+    assert!(
+        matches!(&only(&d).kind, DxfKind::Text(t) if t.h == HJust::Center && t.v == VJust::Middle && near(t.pos, 50.0, 60.0))
+    );
     // Aligned text runs along its two points.
-    let d = both(&ents("0 TEXT\n8 T\n10 0\n20 0\n11 10\n21 10\n40 4\n1 Hi\n72 3"));
-    assert!(matches!(&only(&d).kind, DxfKind::Text(t) if (t.angle_deg - 45.0).abs() < 1e-9 && near(t.pos, 0.0, 0.0)));
+    let d = both(&ents(
+        "0 TEXT\n8 T\n10 0\n20 0\n11 10\n21 10\n40 4\n1 Hi\n72 3",
+    ));
+    assert!(
+        matches!(&only(&d).kind, DxfKind::Text(t) if (t.angle_deg - 45.0).abs() < 1e-9 && near(t.pos, 0.0, 0.0))
+    );
     // MTEXT: attachment, formatting, a reference width, split into chunks.
     let d = both(&ents(
         "0 MTEXT\n8 T\n10 7\n20 8\n40 3\n41 60\n71 5\n3 {\\fArial|b1;Line one}\n1 \\Pline two\n7 NOTES",
@@ -370,13 +452,18 @@ fn text_alignment_styles_and_codes() {
         DxfKind::Text(t) => {
             assert!(t.mtext);
             assert_eq!(t.text, "Line one\nline two");
-            assert_eq!((t.h, t.v, t.wrap_width), (HJust::Center, VJust::Middle, 60.0));
+            assert_eq!(
+                (t.h, t.v, t.wrap_width),
+                (HJust::Center, VJust::Middle, 60.0)
+            );
             assert!(t.runs[0].bold && !t.runs[1].bold);
         }
         other => panic!("{other:?}"),
     }
     // The x-axis direction beats the rotation angle.
-    let d = both(&ents("0 MTEXT\n8 T\n10 0\n20 0\n40 3\n1 Up\n11 0\n21 1\n50 0"));
+    let d = both(&ents(
+        "0 MTEXT\n8 T\n10 0\n20 0\n40 3\n1 Up\n11 0\n21 1\n50 0",
+    ));
     assert!(matches!(&only(&d).kind, DxfKind::Text(t) if (t.angle_deg - 90.0).abs() < 1e-9));
 }
 
@@ -387,7 +474,10 @@ fn dimensions_keep_their_definition_points_and_block() {
     ));
     match &only(&d).kind {
         DxfKind::Dimension(m) => {
-            assert_eq!((m.dtype, m.block.as_str(), m.style.as_str(), m.measurement), (0, "*D1", "PLAN", Some(100.0)));
+            assert_eq!(
+                (m.dtype, m.block.as_str(), m.style.as_str(), m.measurement),
+                (0, "*D1", "PLAN", Some(100.0))
+            );
             assert!(near(m.def_pt, 50.0, 20.0) && near(m.p13, 0.0, 0.0) && near(m.p14, 100.0, 0.0));
         }
         other => panic!("{other:?}"),
@@ -406,18 +496,31 @@ fn inserts_carry_attributes_arrays_and_flips() {
     ));
     match &only(&d).kind {
         DxfKind::Insert(i) => {
-            assert_eq!((i.block.as_str(), i.scale, i.rotation_deg), ("chair", (2.0, 2.0), 90.0));
+            assert_eq!(
+                (i.block.as_str(), i.scale, i.rotation_deg),
+                ("chair", (2.0, 2.0), 90.0)
+            );
             assert_eq!(i.attribs.len(), 2);
-            assert!(matches!(&i.attribs[0].kind, DxfKind::Text(t) if t.text == "A-12" && t.tag == "TAG" && !t.invisible));
+            assert!(
+                matches!(&i.attribs[0].kind, DxfKind::Text(t) if t.text == "A-12" && t.tag == "TAG" && !t.invisible)
+            );
             assert!(matches!(&i.attribs[1].kind, DxfKind::Text(t) if t.invisible));
         }
         other => panic!("{other:?}"),
     }
-    let d = both(&ents("0 INSERT\n8 F\n2 B\n10 0\n20 0\n70 3\n71 2\n44 10\n45 20"));
-    assert!(matches!(&only(&d).kind, DxfKind::Insert(i) if (i.columns, i.rows, i.col_spacing, i.row_spacing) == (3, 2, 10.0, 20.0)));
+    let d = both(&ents(
+        "0 INSERT\n8 F\n2 B\n10 0\n20 0\n70 3\n71 2\n44 10\n45 20",
+    ));
+    assert!(
+        matches!(&only(&d).kind, DxfKind::Insert(i) if (i.columns, i.rows, i.col_spacing, i.row_spacing) == (3, 2, 10.0, 20.0))
+    );
     // A down extrusion turns into a mirror: rotation 180 - a, y scale flipped.
-    let d = both(&ents("0 INSERT\n8 F\n2 B\n10 4\n20 5\n50 30\n210 0\n220 0\n230 -1"));
-    assert!(matches!(&only(&d).kind, DxfKind::Insert(i) if near(i.pos, -4.0, 5.0) && i.rotation_deg == 150.0 && i.scale == (1.0, -1.0)));
+    let d = both(&ents(
+        "0 INSERT\n8 F\n2 B\n10 4\n20 5\n50 30\n210 0\n220 0\n230 -1",
+    ));
+    assert!(
+        matches!(&only(&d).kind, DxfKind::Insert(i) if near(i.pos, -4.0, 5.0) && i.rotation_deg == 150.0 && i.scale == (1.0, -1.0))
+    );
 }
 
 #[test]
@@ -426,10 +529,14 @@ fn attdef_points_and_leaders() {
         "0 SECTION\n2 BLOCKS\n0 BLOCK\n2 TAGGED\n10 0\n20 0\n0 ATTDEF\n8 0\n10 0\n20 0\n40 2\n1 default\n2 NAME\n3 Name?\n70 0\n0 ENDBLK\n0 ENDSEC\n0 EOF",
     ));
     let b = d.block("tagged").unwrap();
-    assert!(matches!(&b.entities[0].kind, DxfKind::Text(t) if t.attdef && t.tag == "NAME" && t.text == "default"));
+    assert!(
+        matches!(&b.entities[0].kind, DxfKind::Text(t) if t.attdef && t.tag == "NAME" && t.text == "default")
+    );
     let d = both(&ents("0 POINT\n8 P\n10 3\n20 4\n30 5"));
     assert!(matches!(only(&d).kind, DxfKind::Marker { pos } if near(pos, 3.0, 4.0)));
-    let d = both(&ents("0 LEADER\n8 L\n71 1\n76 3\n10 0\n20 0\n10 10\n20 10\n10 20\n20 10"));
+    let d = both(&ents(
+        "0 LEADER\n8 L\n71 1\n76 3\n10 0\n20 0\n10 10\n20 10\n10 20\n20 10",
+    ));
     assert!(matches!(&only(&d).kind, DxfKind::Leader { points, arrow: true } if points.len() == 3));
     // MULTILEADER: leader lines and the text inside the context data.
     let d = both(&ents(
@@ -460,7 +567,10 @@ fn entity_colours_weights_and_visibility() {
     assert_eq!(d.entities.len(), 3);
     assert_eq!(d.paper_entities.len(), 1);
     let p = &d.entities[0].props;
-    assert_eq!((p.color, p.weight, p.linetype.as_str()), (DxfColor::Aci(5), 35, "HIDDEN"));
+    assert_eq!(
+        (p.color, p.weight, p.linetype.as_str()),
+        (DxfColor::Aci(5), 35, "HIDDEN")
+    );
     assert_eq!(d.entities[1].props.color, DxfColor::ByBlock);
     assert_eq!(d.entities[2].props.color, DxfColor::Rgb([0, 0, 255]));
     assert_eq!(d.entities[2].props.weight, WEIGHT_BY_LAYER);
@@ -468,8 +578,7 @@ fn entity_colours_weights_and_visibility() {
 
 #[test]
 fn blocks_xrefs_and_paper_space() {
-    let src = dxf(
-        "0 SECTION
+    let src = dxf("0 SECTION
 2 BLOCKS
 0 BLOCK
 8 0
@@ -513,10 +622,13 @@ fn blocks_xrefs_and_paper_space() {
 21 0
 0 ENDBLK
 0 ENDSEC
-0 EOF",
-    );
+0 EOF");
     let d = both(&src);
-    assert_eq!(d.paper_entities.len(), 1, "only the first page of paper space");
+    assert_eq!(
+        d.paper_entities.len(),
+        1,
+        "only the first page of paper space"
+    );
     assert!(d.paper_entities[0].props.paper);
     assert_eq!(d.xrefs, vec!["C:\\refs\\site.dwg".to_string()]);
     assert!(d.block("SITE").unwrap().entities.is_empty());
@@ -531,7 +643,11 @@ fn files_the_old_reader_tolerated_still_read() {
     assert_eq!(d.entities.len(), 1);
     assert_eq!(d.units, DxfUnits::Unitless);
     // Padded codes and CRLF.
-    let crlf = ["  0", "SECTION", "  2", "ENTITIES", "  0", "CIRCLE", "  8", "Round", " 10", "1.5", " 20", "2.5", " 40", "3.0", "  0", "ENDSEC", "  0", "EOF", ""].join("\r\n");
+    let crlf = [
+        "  0", "SECTION", "  2", "ENTITIES", "  0", "CIRCLE", "  8", "Round", " 10", "1.5", " 20",
+        "2.5", " 40", "3.0", "  0", "ENDSEC", "  0", "EOF", "",
+    ]
+    .join("\r\n");
     let d = parse_dxf(&crlf).unwrap();
     assert!(matches!(&d.entities[0].kind, DxfKind::Circle { radius, .. } if *radius == 3.0));
     // A section that lost its ENDSEC.
@@ -542,14 +658,26 @@ fn files_the_old_reader_tolerated_still_read() {
 #[test]
 fn what_is_not_dxf_is_refused_and_dwg_gets_guidance() {
     assert_eq!(parse_dxf("hello world"), Err(crate::ImportError::NotDxf));
-    assert_eq!(parse_dxf("AutoCAD Binary DXF\r\n"), Err(crate::ImportError::BinaryDxf));
-    assert_eq!(parse_dxf_bytes(b"hello world"), Err(crate::ImportError::NotDxf));
+    assert_eq!(
+        parse_dxf("AutoCAD Binary DXF\r\n"),
+        Err(crate::ImportError::BinaryDxf)
+    );
+    assert_eq!(
+        parse_dxf_bytes(b"hello world"),
+        Err(crate::ImportError::NotDxf)
+    );
     let mut dwg = b"AC1027".to_vec();
     dwg.extend_from_slice(&[0, 0, 0, 0, 0, 0x0f, 1, 2, 3]);
     let e = parse_dxf_bytes(&dwg).unwrap_err();
     assert_eq!(e, crate::ImportError::Dwg("AC1027".into()));
     let msg = e.to_string();
-    assert!(msg.contains("DWG") && msg.contains("2013") && msg.contains("Save As") && msg.contains("DXF"), "{msg}");
+    assert!(
+        msg.contains("DWG")
+            && msg.contains("2013")
+            && msg.contains("Save As")
+            && msg.contains("DXF"),
+        "{msg}"
+    );
     assert_eq!(dwg_version(b"AC1009\0\0\0"), Some("AC1009".to_string()));
     assert_eq!(dwg_version(b"  0\nSECTION"), None);
     assert_eq!(release_name("AC1032"), "2018");

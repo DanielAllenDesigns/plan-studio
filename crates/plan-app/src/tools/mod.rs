@@ -17,6 +17,7 @@ pub mod cabinet;
 pub mod cad;
 pub mod cad_ops;
 pub mod camera;
+pub mod construction_line;
 pub mod details;
 pub mod dimension;
 pub mod electrical;
@@ -116,6 +117,10 @@ pub enum ToolId {
     PainterVariant(painters::PainterMode),
     /// Tools > Materials List > Materials List Polyline.
     MaterialsPolyline,
+    /// CAD > Line > Construction Line.
+    ConstructionLine,
+    /// Tools > Floor/Reference Display > Edit Reference Document Offset.
+    ReferenceOffset,
 }
 
 impl ToolId {
@@ -357,6 +362,8 @@ pub fn registry() -> Vec<Box<dyn Tool>> {
         Box::new(fireplace::FireplaceTool::default()),
         Box::new(painters::PaintersTool::default()),
         Box::new(materials_list_polyline::MaterialsListPolylineTool::default()),
+        Box::new(construction_line::ConstructionLineTool::default()),
+        Box::new(construction_line::ReferenceOffsetTool::default()),
     ]
 }
 
@@ -390,6 +397,11 @@ impl ToolSet {
 
     /// Runs the active tool's per-frame hook.
     pub fn frame(&mut self, cx: &mut EditorContext, ctx: &egui::Context) {
+        // The construction line and reference dialogs open from menus and
+        // edit buttons whichever tool is active.
+        crate::dialogs::construction_line::host_frame(cx, ctx);
+        crate::dialogs::construction_order::host_frame(cx, ctx);
+        crate::dialogs::reference_display::host_frame(cx, ctx);
         self.tools[self.active].frame(cx, ctx);
     }
 
@@ -471,6 +483,8 @@ mod tests {
             ToolId::Fireplace,
             ToolId::Painter,
             ToolId::MaterialsPolyline,
+            ToolId::ConstructionLine,
+            ToolId::ReferenceOffset,
         ] {
             assert_eq!(ids.iter().filter(|i| i.same_tool(id)).count(), 1, "{id:?}");
         }

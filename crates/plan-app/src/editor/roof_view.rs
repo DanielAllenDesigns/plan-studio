@@ -1307,7 +1307,21 @@ pub fn load(floor: &Floor) -> RoofSet {
     set
 }
 
-/// Writes `set` back as the floor's roof, replacing what was stored.
+/// Does [`load`] understand roof record `v`? Records it does not are opaque
+/// and pass through [`store`] untouched.
+fn readable(v: &Value) -> bool {
+    match v.get("kind").and_then(Value::as_str) {
+        Some("plane") => RoofPlaneRecord::from_json(v).is_some(),
+        Some("ceiling") => CeilingRecord::from_json(v).is_some(),
+        Some("dormer") => DormerRecord::from_json(v).is_some(),
+        Some("face") => field!(v, "polygon3d", Vec<[f64; 3]>).is_some_and(|p| p.len() >= 3),
+        Some("settings") => true,
+        _ => false,
+    }
+}
+
+/// Writes `set` back as the floor's roof, replacing what was stored. Records
+/// this build cannot read stay as they are.
 pub fn store(project: &mut Project, fi: usize, set: &mut RoofSet) {
     let mut items: Vec<Value> = set.planes.iter().map(RoofPlaneRecord::to_json).collect();
     items.extend(set.ceilings.iter().map(CeilingRecord::to_json));
@@ -1320,6 +1334,15 @@ pub fn store(project: &mut Project, fi: usize, set: &mut RoofSet) {
     if let Some(s) = &set.settings {
         items.push(s.to_json());
     }
+    // A record this build cannot read (a newer build's kind) is written back
+    // untouched after the edited ones (QA-29).
+    items.extend(
+        project.floors[fi]
+            .roofs
+            .iter()
+            .filter(|v| !readable(v))
+            .cloned(),
+    );
     if !set.ceilings.is_empty() {
         project
             .layers

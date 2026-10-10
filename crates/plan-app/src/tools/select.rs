@@ -1767,6 +1767,9 @@ impl Tool for SelectTool {
             return res;
         }
         if let Some(op) = Self::handle_op(cx, p.world, tol) {
+            if let Op::Camera(id, CamHandle::Break(i)) = op {
+                crate::editor::camera_edit::select_break(id, i);
+            }
             self.drag = Drag::Armed {
                 op,
                 start: p.world,

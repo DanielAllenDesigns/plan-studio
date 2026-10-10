@@ -553,3 +553,46 @@ fn a_saved_overview_has_a_plan_symbol_that_places_its_view() {
     });
     assert_eq!(c.overview_pose(), c.view.pose);
 }
+
+#[test]
+fn add_break_and_make_parallel_work_from_the_edit_buttons_of_a_selected_section() {
+    use crate::editor::{camera_edit, EditActionKind, ObjectRef};
+    let labels = |sim: &Sim| -> Vec<&'static str> {
+        sim.app
+            .cx
+            .selection_edit_actions()
+            .into_iter()
+            .filter_map(|a| match a.kind {
+                EditActionKind::Custom { label, .. } => Some(label),
+                _ => None,
+            })
+            .collect()
+    };
+    let mut sim = Sim::new();
+    let id = section(&mut sim);
+    sim.app.cx.selection.items = vec![ObjectRef::Camera(id)];
+    let l = labels(&sim);
+    assert!(l.contains(&"Add Break"), "{l:?}");
+    assert!(!l.contains(&"Make Parallel"), "no break handle yet: {l:?}");
+    sim.app.cx.run_custom(camera_edit::ADD_BREAK);
+    assert_eq!(camera(&sim, id).view.clip.plane.breaks.len(), 1);
+    assert_eq!(sim.app.cx.undo_label(), Some("Add Break"));
+    // The new break is the selected handle: Make Parallel / Perpendicular work.
+    let l = labels(&sim);
+    assert!(l.contains(&"Make Parallel") && l.contains(&"Make Perpendicular"));
+    sim.app.cx.run_custom(camera_edit::MAKE_PERPENDICULAR);
+    let off = camera(&sim, id).view.clip.plane.offsets.clone();
+    assert!((off[1] - off[0]).abs() > 1e-6, "a step was made: {off:?}");
+    sim.app.cx.run_custom(camera_edit::MAKE_PARALLEL);
+    let off = camera(&sim, id).view.clip.plane.offsets.clone();
+    assert!((off[1] - off[0]).abs() < 1e-9, "flattened again: {off:?}");
+    sim.undo();
+    assert!(
+        (camera(&sim, id).view.clip.plane.offsets[1] - camera(&sim, id).view.clip.plane.offsets[0])
+            .abs()
+            > 1e-6
+    );
+    // A second section is not selected: no break buttons for other objects.
+    sim.app.cx.selection.items.clear();
+    assert!(!labels(&sim).contains(&"Add Break"));
+}

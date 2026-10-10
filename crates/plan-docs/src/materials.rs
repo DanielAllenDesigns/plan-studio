@@ -14,6 +14,12 @@
 //!   (`ceil(length / 16) + 1`, plus 2 kings and 2 trimmers for every opening)
 //!   and plates (bottom plate plus doubled top plate). Exterior walls are 2x6,
 //!   interior walls 2x4. Wall sheathing sheets are framing too.
+//! * **Wall components**: a wall whose type (Wall Specification > Components)
+//!   has layers beyond the structural one counts each layer's face area:
+//!   sheathing and drywall in 4x8 sheets, siding, stucco, brick or stone in
+//!   Siding, insulation in Framing, other layers in Interior Finishes; an air
+//!   space is not a purchase. Such walls skip the formula's siding, sheathing
+//!   and drywall.
 //! * **Roofing**: the stored roof planes' true sloped area in square feet and
 //!   in squares (100 sq ft), shingle bundles (3 per square), drip edge along
 //!   the eaves and gutters where a plane has them.
@@ -30,16 +36,10 @@
 //! prices). [`materials_report`] adds the master list's waste per category
 //! (counts round up to whole units) and unit prices.
 
-use crate::schedule::{push_csv_row, room_name};
-use crate::schedule_kinds::entries;
-use plan_cabinets::{auto_label, Cabinet};
-use plan_core::foundation::FoundationLayer;
-use plan_core::schedules::ScheduleKind;
+use crate::schedule::push_csv_row;
 use plan_core::units::fmt_ft_in;
-use plan_core::{detect_rooms, OpeningKind, Project, Room, WallKind};
-use plan_electrical::ElectricalLayer;
-use plan_framing::{FramingMember, MaterialList, Member};
-use serde::{Deserialize, Serialize};
+use plan_core::{Project, Room};
+use plan_framing::{FramingMember, Member};
 use std::collections::BTreeMap;
 
 /// Square feet in a 4x8 sheet.
@@ -124,137 +124,13 @@ pub enum MaterialsScope {
     AllFloors,
 }
 
-// --------------------------------------------------------------- master list --
+pub use crate::master_list::{MasterItem, MasterList};
 
-/// One priced entry of the master list.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct MasterItem {
-    /// `Category|item`, as in [`MaterialLine::key`].
-    pub key: String,
-    pub unit: String,
-    pub unit_price: f64,
-    #[serde(default)]
-    pub supplier: String,
-}
-
-/// Prices, waste factors and stock lengths behind the Materials List: the
-/// Master List, kept per user in `~/.plan-studio/master-list.json`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct MasterList {
-    /// Waste per category, percent.
-    pub waste: BTreeMap<String, f64>,
-    /// Lumber stock lengths, feet, shortest first.
-    pub stock_lengths_ft: Vec<u32>,
-    pub items: Vec<MasterItem>,
-}
-
-impl Default for MasterList {
-    /// Waste of 10% on framing, roofing, siding and interior finishes, 5% on
-    /// foundation concrete, none elsewhere; lumber in 8, 10, 12, 14 and 16
-    /// foot lengths; no prices (an unpriced row shows no price).
-    fn default() -> Self {
-        let waste = [
-            ("Foundation", 5.0),
-            ("Framing", 10.0),
-            ("Roofing", 10.0),
-            ("Siding", 10.0),
-            ("Interior Finishes", 10.0),
-        ]
-        .into_iter()
-        .map(|(c, w)| (c.to_string(), w))
-        .collect();
-        Self {
-            waste,
-            stock_lengths_ft: vec![8, 10, 12, 14, 16],
-            items: Vec::new(),
-        }
-    }
-}
-
-impl MasterList {
-    /// A list with no waste at all (the plain take-off).
-    pub fn without_waste() -> Self {
-        Self {
-            waste: BTreeMap::new(),
-            ..Self::default()
-        }
-    }
-
-    /// Waste for `category`, percent.
-    pub fn waste_for(&self, category: &str) -> f64 {
-        self.waste.get(category).copied().unwrap_or(0.0)
-    }
-
-    /// The entry for `key`.
-    pub fn item(&self, key: &str) -> Option<&MasterItem> {
-        self.items.iter().find(|i| i.key == key)
-    }
-
-    /// The unit price of `key`, if it is priced (a price of 0 is "not set").
-    pub fn price_of(&self, key: &str) -> Option<f64> {
-        self.item(key).map(|i| i.unit_price).filter(|p| *p > 0.0)
-    }
-
-    /// Sets the price of `key` (adds the entry when it is new).
-    pub fn set_price(&mut self, key: &str, unit: &str, unit_price: f64) {
-        match self.items.iter_mut().find(|i| i.key == key) {
-            Some(i) => i.unit_price = unit_price,
-            None => self.items.push(MasterItem {
-                key: key.to_string(),
-                unit: unit.to_string(),
-                unit_price,
-                supplier: String::new(),
-            }),
-        }
-    }
-
-    /// The stock length that holds a piece of `inches`: the shortest stock
-    /// length that is long enough, else the longest (the piece is then
-    /// spliced; see [`stock_pieces`](Self::stock_pieces)).
-    pub fn stock_length_ft(&self, inches: f64) -> u32 {
-        let feet = inches / 12.0 - 1e-6;
-        self.stock_lengths_ft
-            .iter()
-            .copied()
-            .find(|l| f64::from(*l) >= feet)
-            .or_else(|| self.stock_lengths_ft.last().copied())
-            .unwrap_or(16)
-    }
-
-    /// `(stock length in feet, pieces)` that supply one cut of `inches`.
-    pub fn stock_pieces(&self, inches: f64) -> (u32, u32) {
-        let l = self.stock_length_ft(inches);
-        let pieces = (inches / 12.0 / f64::from(l) - 1e-6).ceil().max(1.0) as u32;
-        (l, pieces)
-    }
-
-    /// The list as JSON text.
-    pub fn to_json(&self) -> String {
-        serde_json::to_string_pretty(self).unwrap_or_default()
-    }
-
-    /// A list from JSON text; `None` when it does not parse.
-    pub fn from_json(text: &str) -> Option<Self> {
-        serde_json::from_str(text).ok()
-    }
-
-    /// Reads the list at `path`; the default list when the file is missing
-    /// or unreadable.
-    pub fn load(path: &std::path::Path) -> Self {
-        std::fs::read_to_string(path)
-            .ok()
-            .and_then(|t| Self::from_json(&t))
-            .unwrap_or_default()
-    }
-
-    /// Writes the list to `path`, making its folder first.
-    pub fn save(&self, path: &std::path::Path) -> std::io::Result<()> {
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        std::fs::write(path, self.to_json())
-    }
-}
+pub mod engine;
+pub mod export;
+pub mod list;
+#[cfg(test)]
+mod list_tests;
 
 // ----------------------------------------------------------------- take-off --
 
@@ -273,15 +149,56 @@ fn size_text(k: SizeKey) -> String {
     )
 }
 
-/// Running totals over the floors of a scope.
-#[derive(Default)]
-struct Takeoff {
-    studs: [f64; 2],
-    plate_lf: [f64; 2],
-    drywall_sq_ft: f64,
-    exterior_sq_ft: f64,
-    doors: BTreeMap<SizeKey, f64>,
-    windows: BTreeMap<SizeKey, f64>,
+/// What one non-structural layer of a wall type becomes in the list.
+#[derive(Debug, Clone, PartialEq)]
+enum Component {
+    /// Left out: air spaces and layers with no material.
+    Skip,
+    Sheathing,
+    Drywall,
+    /// The layer named "Siding": merged with the formula's siding row.
+    Siding,
+    /// Any other layer, listed by its own name in a category.
+    Other(&'static str),
+}
+
+/// Reads a wall-type layer (Wall Specification > Components) as a material
+/// row: sheathing and drywall count in 4x8 sheets, exterior finishes
+/// (siding, stucco, brick, stone...) in Siding, insulation in Framing, and
+/// anything else among the Interior Finishes.
+fn component_of(name: &str, material: &str) -> Component {
+    let n = name.to_lowercase();
+    let m = material.to_lowercase();
+    let has = |words: &[&str]| words.iter().any(|w| n.contains(w) || m.contains(w));
+    if n.contains("air space")
+        || (m == "air" && n.contains("air"))
+        || (n.is_empty() && m.is_empty())
+    {
+        Component::Skip
+    } else if has(&["sheath"]) {
+        Component::Sheathing
+    } else if has(&["drywall", "gypsum", "plaster", "gwb"]) {
+        Component::Drywall
+    } else if n.trim() == "siding" {
+        Component::Siding
+    } else if has(&[
+        "siding", "stucco", "brick", "stone", "veneer", "cladding", "shingle", "hardie", "cement",
+    ]) {
+        Component::Other("Siding")
+    } else if has(&["insul"]) {
+        Component::Other("Framing")
+    } else {
+        Component::Other("Interior Finishes")
+    }
+}
+
+/// The wall type of `w` when it has layers beyond the structural one.
+fn layered_type<'a>(
+    project: &'a Project,
+    w: &plan_core::Wall,
+) -> Option<&'a plan_core::WallTypeDef> {
+    let def = project.wall_type_def(w.wall_type.as_deref()?)?;
+    def.layers.iter().any(|l| !l.is_main).then_some(def)
 }
 
 fn floor_range(project: &Project, scope: MaterialsScope) -> std::ops::Range<usize> {
@@ -309,35 +226,6 @@ fn framing_members(f: &plan_core::Floor) -> (Vec<Member>, Vec<FramingMember>) {
     (auto, manual)
 }
 
-/// Roof planes stored on a floor: `(true area sq in, eave length in, gutters)`.
-fn roof_planes(f: &plan_core::Floor) -> Vec<(f64, f64, bool)> {
-    f.roofs
-        .iter()
-        .filter(|v| v.get("kind").and_then(|k| k.as_str()) == Some("plane"))
-        .filter_map(|v| {
-            let poly: Vec<[f64; 3]> = serde_json::from_value(v.get("polygon3d")?.clone()).ok()?;
-            if poly.len() < 3 {
-                return None;
-            }
-            // Newell vector: half its length is the true area.
-            let mut s = [0.0; 3];
-            for i in 0..poly.len() {
-                let (c, d) = (poly[i], poly[(i + 1) % poly.len()]);
-                s[0] += (c[1] - d[1]) * (c[2] + d[2]);
-                s[1] += (c[2] - d[2]) * (c[0] + d[0]);
-                s[2] += (c[0] - d[0]) * (c[1] + d[1]);
-            }
-            let area = (s[0] * s[0] + s[1] * s[1] + s[2] * s[2]).sqrt() * 0.5;
-            let eave = {
-                let (a, b) = (poly[0], poly[1]);
-                ((a[0] - b[0]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
-            };
-            let gutters = v.get("gutters").and_then(|g| g.as_bool()).unwrap_or(false);
-            Some((area, eave, gutters))
-        })
-        .collect()
-}
-
 /// The net take-off of `scope`, before waste and prices. `active_rooms`
 /// supplies the detected rooms of one floor (others are detected here).
 fn take_off(
@@ -346,417 +234,26 @@ fn take_off(
     active_rooms: Option<(usize, &[Room])>,
     master: &MasterList,
 ) -> Vec<MaterialLine> {
-    let range = floor_range(project, scope);
-    let multi = range.len() > 1;
-    let mut t = Takeoff::default();
-    let mut out: Vec<MaterialLine> = Vec::new();
-    let mut room_lines: Vec<MaterialLine> = Vec::new();
-    let mut framing_auto: Vec<Member> = Vec::new();
-    let mut framing_manual: Vec<FramingMember> = Vec::new();
-
-    for fi in range.clone() {
-        let f = &project.floors[fi];
-        let (auto, manual) = framing_members(f);
-        let framed = !auto.is_empty() || !manual.is_empty();
-        framing_auto.extend(auto);
-        framing_manual.extend(manual);
-
-        for w in &f.walls {
-            let len = w.length();
-            let openings: Vec<_> = f.openings_on(w.id).collect();
-            let k = usize::from(w.kind == WallKind::Interior);
-            if !framed {
-                t.studs[k] += (len / STUD_SPACING).ceil() + 1.0 + 4.0 * openings.len() as f64;
-                t.plate_lf[k] += len / 12.0 * 3.0;
-            }
-            let opening_sq_ft: f64 = openings.iter().map(|o| o.width * o.height / 144.0).sum();
-            let net = (len * w.height / 144.0 - opening_sq_ft).max(0.0);
-            match w.kind {
-                WallKind::Exterior => {
-                    t.exterior_sq_ft += net;
-                    t.drywall_sq_ft += net;
-                }
-                WallKind::Interior => t.drywall_sq_ft += 2.0 * net,
-            }
-            for o in openings {
-                let key = size_key(o.width, o.height);
-                let map = match o.kind {
-                    OpeningKind::Door => &mut t.doors,
-                    OpeningKind::Window => &mut t.windows,
-                };
-                *map.entry(key).or_insert(0.0) += 1.0;
-            }
-        }
-
-        let detected;
-        let rooms: &[Room] = match active_rooms {
-            Some((a, r)) if a == fi => r,
-            _ => {
-                detected = detect_rooms(&f.walls, 1.0);
-                &detected
-            }
-        };
-        for r in rooms {
-            let name = room_name(f, r);
-            let name = if multi {
-                format!("{} - {name}", f.name)
-            } else {
-                name
-            };
-            let area = r.area_sq_ft();
-            room_lines.push(MaterialLine::new(
-                "Interior Finishes",
-                "Flooring",
-                format!("Flooring - {name}"),
-                "",
-                area.ceil(),
-                "sq ft",
-            ));
-            room_lines.push(MaterialLine::new(
-                "Interior Finishes",
-                "Ceiling drywall 1/2\" 4x8 sheet",
-                format!("Ceiling drywall 1/2\" 4x8 sheet - {name}"),
-                "4x8",
-                (area / SHEET_SQ_FT).ceil(),
-                "sheet",
-            ));
-        }
-    }
-
-    // ---- Foundation ----
-    let (mut slab, mut pad, mut pier) = (0.0, 0.0, 0.0);
-    for fi in range.clone() {
-        let layer = FoundationLayer::load(&project.floors[fi]);
-        let holes: Vec<_> = layer.holes.iter().collect();
-        slab += layer
-            .slabs
-            .iter()
-            .map(|s| s.concrete_cu_yd(&holes))
-            .sum::<f64>();
-        pad += layer.pads.iter().map(|p| p.concrete_cu_yd()).sum::<f64>();
-        pier += layer.piers.iter().map(|p| p.concrete_cu_yd()).sum::<f64>();
-    }
-    for (key, item, v) in [
-        ("Slab concrete", "Slab and footing concrete", slab),
-        ("Pad concrete", "Pad concrete", pad),
-        ("Pier concrete", "Pier concrete", pier),
-    ] {
-        if v > 0.0 {
-            out.push(MaterialLine::new(
-                "Foundation",
-                key,
-                item,
-                "",
-                (v * 100.0).ceil() / 100.0,
-                "cu yd",
-            ));
-        }
-    }
-
-    // ---- Framing ----
-    let names = ["2x6 Stud @ 16\" o.c.", "2x4 Stud @ 16\" o.c."];
-    let stud_keys = ["2x6 stud", "2x4 stud"];
-    let plates = [
-        "2x6 Plate (1 bottom + 2 top)",
-        "2x4 Plate (1 bottom + 2 top)",
-    ];
-    let plate_keys = ["2x6 plate", "2x4 plate"];
-    for k in 0..2 {
-        if t.studs[k] > 0.0 {
-            out.push(MaterialLine::new(
-                "Framing",
-                stud_keys[k],
-                names[k],
-                if k == 0 { "2x6" } else { "2x4" },
-                t.studs[k],
-                "ea",
-            ));
-        }
-    }
-    for k in 0..2 {
-        if t.plate_lf[k] > 0.0 {
-            out.push(MaterialLine::new(
-                "Framing",
-                plate_keys[k],
-                plates[k],
-                if k == 0 { "2x6" } else { "2x4" },
-                t.plate_lf[k].ceil(),
-                "lf",
-            ));
-        }
-    }
-    if !framing_auto.is_empty() || !framing_manual.is_empty() {
-        let list = MaterialList::from_members(&framing_auto, &framing_manual);
-        // (size, stock feet) -> pieces
-        let mut stock: BTreeMap<(String, u32), f64> = BTreeMap::new();
-        for r in &list.rows {
-            let (l, per_cut) = master.stock_pieces(r.length_in);
-            *stock.entry((r.size.clone(), l)).or_default() += f64::from(r.qty * per_cut);
-        }
-        for ((size, l), n) in stock {
-            out.push(MaterialLine::new(
-                "Framing",
-                &format!("{size} lumber"),
-                format!("{size} x {l}' lumber"),
-                &format!("{size} x {l}'"),
-                n,
-                "ea",
-            ));
-        }
-        out.push(MaterialLine::new(
-            "Framing",
-            "board feet",
-            "Framing lumber, board feet",
-            "",
-            list.total_board_feet().ceil(),
-            "bf",
-        ));
-    }
-    if t.exterior_sq_ft > 0.0 {
-        out.push(MaterialLine::new(
-            "Framing",
-            "Wall sheathing 7/16\" OSB 4x8 sheet",
-            "Wall sheathing 7/16\" OSB 4x8 sheet",
-            "4x8",
-            (t.exterior_sq_ft / SHEET_SQ_FT).ceil(),
-            "sheet",
-        ));
-    }
-
-    // ---- Roofing ----
-    let (mut area_in2, mut eave_in, mut gutter_in) = (0.0, 0.0, 0.0);
-    for fi in range.clone() {
-        for (a, e, g) in roof_planes(&project.floors[fi]) {
-            area_in2 += a;
-            eave_in += e;
-            if g {
-                gutter_in += e;
-            }
-        }
-    }
-    if area_in2 > 0.0 {
-        let sq_ft = area_in2 / 144.0;
-        let squares = sq_ft / 100.0;
-        out.push(MaterialLine::new(
-            "Roofing",
-            "Roof area",
-            "Roof area",
-            "",
-            sq_ft.ceil(),
-            "sq ft",
-        ));
-        out.push(MaterialLine::new(
-            "Roofing",
-            "Roofing squares",
-            "Roofing (100 sq ft squares)",
-            "",
-            (squares * 100.0).ceil() / 100.0,
-            "sq",
-        ));
-        out.push(MaterialLine::new(
-            "Roofing",
-            "Shingle bundles",
-            "Shingles (3 bundles per square)",
-            "",
-            (squares * BUNDLES_PER_SQUARE).ceil(),
-            "bundle",
-        ));
-        out.push(MaterialLine::new(
-            "Roofing",
-            "Underlayment",
-            "Roof underlayment",
-            "",
-            (squares * 100.0).ceil() / 100.0,
-            "sq",
-        ));
-        out.push(MaterialLine::new(
-            "Roofing",
-            "Drip edge",
-            "Drip edge along eaves",
-            "",
-            (eave_in / 12.0).ceil(),
-            "lf",
-        ));
-        if gutter_in > 0.0 {
-            out.push(MaterialLine::new(
-                "Roofing",
-                "Gutters",
-                "Gutters",
-                "",
-                (gutter_in / 12.0).ceil(),
-                "lf",
-            ));
-        }
-    }
-
-    // ---- Siding ----
-    if t.exterior_sq_ft > 0.0 {
-        out.push(MaterialLine::new(
-            "Siding",
-            "Siding",
-            "Siding",
-            "",
-            t.exterior_sq_ft.ceil(),
-            "sq ft",
-        ));
-    }
-
-    // ---- Windows, Doors ----
-    for (k, n) in &t.windows {
-        out.push(MaterialLine::new(
-            "Windows",
-            &format!("Window {}", size_text(*k)),
-            format!("Window {}", size_text(*k)),
-            &size_text(*k),
-            *n,
-            "ea",
-        ));
-    }
-    for (k, n) in &t.doors {
-        out.push(MaterialLine::new(
-            "Doors",
-            &format!("Door {}", size_text(*k)),
-            format!("Door {}", size_text(*k)),
-            &size_text(*k),
-            *n,
-            "ea",
-        ));
-    }
-
-    // ---- Cabinets (by label), countertop ----
-    let mut cabinets: BTreeMap<(String, String), f64> = BTreeMap::new();
-    let mut counter_sq_ft = 0.0;
-    for fi in range.clone() {
-        for v in &project.floors[fi].cabinets {
-            let Ok(c) = serde_json::from_value::<Cabinet>(v.clone()) else {
-                continue;
-            };
-            let label = if c.label.trim().is_empty() {
-                auto_label(&c)
-            } else {
-                c.label.clone()
-            };
-            let size = format!(
-                "{} x {} x {}",
-                fmt_ft_in(c.width),
-                fmt_ft_in(c.depth),
-                fmt_ft_in(c.height)
-            );
-            *cabinets.entry((label, size)).or_default() += 1.0;
-            if c.countertop.is_some() {
-                counter_sq_ft += c.width * c.depth / 144.0;
-            }
-        }
-    }
-    for ((label, size), n) in cabinets {
-        out.push(MaterialLine::new(
-            "Cabinets",
-            &format!("Cabinet {label}"),
-            format!("Cabinet {label}"),
-            &size,
-            n,
-            "ea",
-        ));
-    }
-    if counter_sq_ft > 0.0 {
-        out.push(MaterialLine::new(
-            "Cabinets",
-            "Countertop",
-            "Countertop",
-            "",
-            counter_sq_ft.ceil(),
-            "sq ft",
-        ));
-    }
-
-    // ---- Electrical ----
-    let mut devices: BTreeMap<String, f64> = BTreeMap::new();
-    for fi in range.clone() {
-        let Some(v) = project.floors[fi].electrical.as_ref() else {
-            continue;
-        };
-        if let Ok(layer) = serde_json::from_value::<ElectricalLayer>(v.clone()) {
-            for d in &layer.devices {
-                *devices.entry(d.kind.name().to_string()).or_default() += 1.0;
-            }
-        }
-    }
-    for (name, n) in devices {
-        out.push(MaterialLine::new(
-            "Electrical",
-            &name,
-            name.clone(),
-            "",
-            n,
-            "ea",
-        ));
-    }
-
-    // ---- Fixtures, Landscaping ----
-    let listed = |kind: ScheduleKind| -> BTreeMap<(String, String), f64> {
-        let mut m: BTreeMap<(String, String), f64> = BTreeMap::new();
-        for e in entries(project, kind, None) {
-            if range.contains(&e.floor)
-                || (kind == ScheduleKind::Plant && scope == MaterialsScope::AllFloors)
-            {
-                *m.entry((e.name.clone(), e.size.clone())).or_default() += 1.0;
-            }
-        }
-        m
+    let floors: Vec<usize> = floor_range(project, scope).collect();
+    let opts = engine::Options {
+        site_everywhere: scope == MaterialsScope::AllFloors,
+        ..engine::Options::default()
     };
-    for ((name, size), n) in listed(ScheduleKind::Fixture) {
-        out.push(MaterialLine::new(
-            "Fixtures",
-            &name,
-            name.clone(),
-            &size,
-            n,
-            "ea",
-        ));
-    }
-    for ((name, size), n) in listed(ScheduleKind::Plant) {
-        out.push(MaterialLine::new(
-            "Landscaping",
-            &name,
-            name.clone(),
-            &size,
-            n,
-            "ea",
-        ));
-    }
-    // The site's cut and fill (graded pads), in cubic yards.
-    if range.contains(&0) || scope == MaterialsScope::AllFloors {
-        let (cut, fill) = crate::terrain_report::soil_yards(project);
-        for (item, qty) in [
-            ("Soil cut (excavation)", cut),
-            ("Soil fill (backfill)", fill),
-        ] {
-            if qty > 0.0 {
-                out.push(MaterialLine::new(
-                    "Landscaping",
-                    item,
-                    item,
-                    "",
-                    qty,
-                    "cu yd",
-                ));
-            }
-        }
-    }
+    engine::take_off_raw(project, &floors, active_rooms, master, &opts)
+        .into_iter()
+        .map(|r| r.line)
+        .collect()
+}
 
-    // ---- Interior Finishes ----
-    if t.drywall_sq_ft > 0.0 {
-        out.push(MaterialLine::new(
-            "Interior Finishes",
-            "Wall drywall 1/2\" 4x8 sheet",
-            "Wall drywall 1/2\" 4x8 sheet",
-            "4x8",
-            (t.drywall_sq_ft / SHEET_SQ_FT).ceil(),
-            "sheet",
-        ));
-    }
-    out.extend(room_lines);
-    out
+/// The row of a wall-type layer measured in square feet: `Stucco (Sand
+/// Finish)` is priced by the key `<category>|<layer name>`.
+fn layer_line(category: &str, name: &str, material: &str, sq_ft: f64) -> MaterialLine {
+    let item = if material.trim().is_empty() || material.eq_ignore_ascii_case(name) {
+        name.to_string()
+    } else {
+        format!("{name} ({material})")
+    };
+    MaterialLine::new(category, name, item, "", sq_ft.ceil(), "sq ft")
 }
 
 /// Numbers the rows of each category (`FRM-001`) after sorting by category.
@@ -944,7 +441,8 @@ pub fn to_schedule(lines: &[MaterialLine], title: &str) -> crate::schedule::Sche
 mod tests {
     use super::*;
     use crate::test_support::rect_walls;
-    use plan_core::{detect_rooms, Point};
+    use plan_core::foundation::FoundationLayer;
+    use plan_core::{detect_rooms, OpeningKind, Point, WallKind};
     use serde_json::json;
 
     fn qty(lines: &[MaterialLine], item: &str) -> f64 {
@@ -1225,5 +723,66 @@ mod tests {
         assert_eq!(s.columns.len(), 8);
         assert_eq!(s.rows.last().unwrap()[0], "Total");
         assert_eq!(s.rows.last().unwrap()[7], "$18.00");
+    }
+
+    /// A 40' x 30' box of walls of the named type from Daniel's defaults.
+    fn typed_box(ty: &str, kind: WallKind) -> Project {
+        let mut p = Project::new("typed");
+        for t in plan_core::PlanDefaults::chief_x18_daniel().wall_types {
+            p.register_wall_type(t);
+        }
+        let ids = rect_walls(&mut p, 480.0, 360.0, 6.5, kind);
+        for id in ids {
+            let w = p.floors[0].walls.iter_mut().find(|w| w.id == id).unwrap();
+            w.wall_type = Some(ty.to_string());
+        }
+        p
+    }
+
+    #[test]
+    fn a_wall_types_layers_become_quantities() {
+        // 140' of 109 1/8" wall, no openings.
+        let net: f64 = 1_680.0 * 109.125 / 144.0;
+        let l = materials_list(&typed_box("Stucco-6", WallKind::Exterior), 0, &[]);
+        let stucco = l
+            .iter()
+            .find(|l| l.category == "Siding" && l.item.starts_with("Stucco"))
+            .expect("a Stucco row");
+        assert_eq!(stucco.unit, "sq ft");
+        assert_eq!(stucco.quantity, net.ceil());
+        assert!(stucco.item.contains("Sand Finish"), "{}", stucco.item);
+        // The formula's plain Siding row does not appear for a stucco wall.
+        assert!(!l.iter().any(|l| l.item == "Siding"));
+        // Sheathing and drywall come from the type's own layers, once.
+        assert_eq!(
+            qty(&l, "Wall sheathing 7/16\" OSB 4x8 sheet"),
+            (net / 32.0).ceil()
+        );
+        assert_eq!(qty(&l, "Wall drywall 1/2\" 4x8 sheet"), (net / 32.0).ceil());
+    }
+
+    #[test]
+    fn a_siding_wall_merges_with_the_siding_row_and_brick_gets_its_own() {
+        let net: f64 = 1_680.0 * 109.125 / 144.0;
+        let l = materials_list(&typed_box("Siding-6", WallKind::Exterior), 0, &[]);
+        assert_eq!(qty(&l, "Siding"), net.ceil());
+        let l = materials_list(&typed_box("Brick-6", WallKind::Exterior), 0, &[]);
+        let brick = l.iter().find(|l| l.item == "Brick").expect("a Brick row");
+        assert_eq!(brick.category, "Siding");
+        assert_eq!(brick.quantity, net.ceil());
+        // The air space is not a purchase.
+        assert!(!l.iter().any(|l| l.item.contains("Air")), "{l:?}");
+    }
+
+    #[test]
+    fn walls_without_a_type_keep_the_formula() {
+        let mut p = typed_box("Siding-6", WallKind::Exterior);
+        for w in &mut p.floors[0].walls {
+            w.wall_type = None;
+        }
+        let net: f64 = 1_680.0 * 109.125 / 144.0;
+        let l = materials_list(&p, 0, &[]);
+        assert_eq!(qty(&l, "Siding"), net.ceil());
+        assert_eq!(qty(&l, "Wall drywall 1/2\" 4x8 sheet"), (net / 32.0).ceil());
     }
 }

@@ -32,6 +32,13 @@
 //!   Shift snaps to the Editing angle step, 15 degrees by default, C-27),
 //!   Clip distance, and for sections the two line ends. Tab cycles cameras, Delete removes one (C-29), a
 //!   double-click opens the Camera Specification (C-30).
+//! * **Floor Camera**: placed like a Full Camera; its 3D view shows only its
+//!   own floor, clipped at the floor's ceiling. **Glass House** opens the
+//!   overview with the Glass House technique.
+//! * **Wedge handles** (C-25): the two far corners of a Full or Floor
+//!   Camera's view cone change the angle of view, and a diamond a quarter of
+//!   the way along the cone tilts the view ([`WedgeHandle`]). A camera locked
+//!   in its Camera Specification ignores every handle.
 
 use super::{KeyEvent, PointerEvent, Tool, ToolId, ToolResult};
 use crate::editor::{Camera, EditorContext};
@@ -70,12 +77,20 @@ const AUTO_ELEVATION_MARGIN: f64 = 24.0;
 const AUTO_BACK_CLIP: f64 = 60.0;
 /// Radius of a light's symbol in the plan, inches.
 const LIGHT_RADIUS: f64 = 9.0;
+/// Narrowest and widest angle of view a cone handle can set, degrees.
+const MIN_FOV: f64 = 5.0;
+const MAX_FOV: f64 = 170.0;
 
 /// Which camera the tool creates.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum CameraVariant {
     #[default]
     FullCamera,
+    /// Floor Camera: a Full Camera that shows only its own floor, clipped at
+    /// that floor's ceiling.
+    FloorCamera,
+    /// Glass House (see-through walls) overview.
+    GlassHouse,
     /// Perspective Full Overview (C-10).
     FullOverview,
     /// Perspective Floor Overview (C-11).
@@ -104,6 +119,8 @@ impl CameraVariant {
     pub fn label(self) -> &'static str {
         match self {
             CameraVariant::FullCamera => "Full Camera",
+            CameraVariant::FloorCamera => "Floor Camera",
+            CameraVariant::GlassHouse => "Glass House View",
             CameraVariant::FullOverview => "Perspective Full Overview",
             CameraVariant::FloorOverview => "Perspective Floor Overview",
             CameraVariant::DollHouse => "Doll House View",
@@ -135,7 +152,10 @@ impl CameraVariant {
     fn is_overview(self) -> bool {
         matches!(
             self,
-            CameraVariant::FullOverview | CameraVariant::FloorOverview | CameraVariant::DollHouse
+            CameraVariant::FullOverview
+                | CameraVariant::FloorOverview
+                | CameraVariant::DollHouse
+                | CameraVariant::GlassHouse
         )
     }
 }
@@ -301,6 +321,37 @@ pub fn wall_elevation(wall: &Wall, toward: Point, floor: usize, name: &str) -> C
         Some(reach),
     );
     cam
+}
+
+/// A walkthrough along a CAD polyline or line of `floor` (a closed polyline
+/// comes back to its start): each vertex becomes a key frame node. `None`
+/// when `cad_id` is not a polyline or line with two distinct points.
+pub fn walkthrough_from_cad(
+    project: &Project,
+    floor: usize,
+    cad_id: Id,
+    eye_height: f64,
+    name: &str,
+) -> Option<CameraObject> {
+    let obj = project
+        .floors
+        .get(floor)?
+        .cad
+        .iter()
+        .find(|o| o.id == cad_id)?;
+    let mut pts: Vec<Point> = match &obj.item {
+        plan_core::CadItem::Polyline { points, closed } => {
+            let mut v = points.clone();
+            if *closed {
+                v.extend(points.first().copied());
+            }
+            v
+        }
+        plan_core::CadItem::Line { a, b } => vec![*a, *b],
+        _ => return None,
+    };
+    pts.dedup_by(|a, b| a.dist(*b) < 1e-6);
+    (pts.len() >= 2).then(|| CameraObject::walkthrough(pts, eye_height, name, floor))
 }
 
 /// Plan bounds `(min, max)` of every wall of every floor.
@@ -508,6 +559,9 @@ pub fn hit_handle(c: &CameraObject, p: Point, tol: f64) -> Option<CamHandle> {
 
 /// Does `p` touch the camera's symbol (glyph, or the section line)?
 pub fn hit_symbol(c: &CameraObject, p: Point, tol: f64) -> bool {
+    if !c.view.show_in_plan {
+        return false;
+    }
     if c.kind == CameraKind::Walkthrough {
         c.position.dist(p) <= tol + 9.0
             || c.path
@@ -518,6 +572,91 @@ pub fn hit_symbol(c: &CameraObject, p: Point, tol: f64) -> bool {
         dist_to_segment(p, a, b) <= tol
     } else {
         c.position.dist(p) <= tol + 9.0
+    }
+}
+
+// ----- wedge handles: angle of view and tilt (C-25) -----
+
+/// The extra handles on a Full or Floor Camera's view cone.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum WedgeHandle {
+    /// The left far corner of the cone: drag to widen or narrow the angle of
+    /// view.
+    FovLeft,
+    /// The right far corner of the cone.
+    FovRight,
+    /// A diamond on the centre line: drag along it to look up or down.
+    Tilt,
+}
+
+/// How far along the cone the tilt handle sits, as a fraction of its length.
+const TILT_HANDLE_AT: f64 = 0.25;
+/// Degrees of tilt per cone length of travel of the tilt handle: its full
+/// range (85 degrees either way) spans the first half of the cone.
+const TILT_DEG_PER_LENGTH: f64 = 340.0;
+
+/// Do the wedge handles apply to this camera?
+pub fn has_wedge(c: &CameraObject) -> bool {
+    c.kind.is_eye_level()
+}
+
+fn cone_length(c: &CameraObject) -> f64 {
+    c.clip_distance.unwrap_or(DEFAULT_CONE_LENGTH)
+}
+
+/// The wedge handles of `c` with their plan positions (none for cameras
+/// without a view cone).
+pub fn wedge_handles_of(c: &CameraObject) -> Vec<(WedgeHandle, Point)> {
+    if !has_wedge(c) {
+        return Vec::new();
+    }
+    let cone = c.cone_points();
+    let rest = c.position + c.direction() * (cone_length(c) * TILT_HANDLE_AT);
+    // The tilt handle slides along the centre line with the tilt.
+    let slide = c.view.tilt_deg / TILT_DEG_PER_LENGTH * cone_length(c);
+    vec![
+        (WedgeHandle::FovLeft, cone[1]),
+        (WedgeHandle::FovRight, cone[2]),
+        (WedgeHandle::Tilt, rest + c.direction() * slide),
+    ]
+}
+
+/// The wedge handle of `c` within `tol` of `p`.
+pub fn hit_wedge(c: &CameraObject, p: Point, tol: f64) -> Option<WedgeHandle> {
+    wedge_handles_of(c)
+        .into_iter()
+        .filter(|(_, at)| at.dist(p) <= tol)
+        .min_by(|a, b| a.1.dist(p).total_cmp(&b.1.dist(p)))
+        .map(|(h, _)| h)
+}
+
+/// Drags wedge handle `h` of `c` to the plan point `to`: a cone corner sets
+/// the angle of view to twice the angle between the view direction and the
+/// pointer (5 to 170 degrees); the tilt handle sets the tilt from how far
+/// along the view direction it was dragged (limited to the tilt range). A
+/// locked camera ignores it.
+pub fn apply_wedge(c: &mut CameraObject, h: WedgeHandle, to: Point) {
+    if c.view.locked || !has_wedge(c) {
+        return;
+    }
+    let v = to - c.position;
+    match h {
+        WedgeHandle::FovLeft | WedgeHandle::FovRight => {
+            if v.length() < 1e-6 {
+                return;
+            }
+            let along = v.dot(c.direction());
+            let across = v.dot(c.direction().perp()).abs();
+            let half = across.atan2(along.max(1e-6)).to_degrees();
+            c.fov_deg = (half * 2.0).clamp(MIN_FOV, MAX_FOV);
+        }
+        WedgeHandle::Tilt => {
+            let travel = v.dot(c.direction()) / cone_length(c) - TILT_HANDLE_AT;
+            c.view.tilt_deg = (travel * TILT_DEG_PER_LENGTH).clamp(
+                -plan_core::camera_view::MAX_TILT_DEG,
+                plan_core::camera_view::MAX_TILT_DEG,
+            );
+        }
     }
 }
 
@@ -535,6 +674,9 @@ pub fn apply_handle(c: &mut CameraObject, h: CamHandle, to: Point, snap_angle: b
 
 /// [`apply_handle`] with the angle step to round a direction to, if any.
 pub fn apply_handle_with(c: &mut CameraObject, h: CamHandle, to: Point, snap_deg: Option<f64>) {
+    if c.view.locked {
+        return;
+    }
     upgrade_section(c);
     match h {
         CamHandle::Move => {
@@ -596,6 +738,8 @@ struct Placing {
 struct Editing {
     id: Id,
     handle: CamHandle,
+    /// A wedge handle (angle of view, tilt) is being dragged instead.
+    wedge: Option<WedgeHandle>,
     /// The undo step has been taken (the pointer actually moved).
     began: bool,
 }
@@ -675,6 +819,19 @@ impl CameraTool {
         true
     }
 
+    /// May camera `id` be edited: its layer is not locked and the camera is
+    /// not locked in its Camera Specification?
+    fn can_edit(&self, cx: &mut EditorContext, id: Id) -> bool {
+        if !self.layer_ok(cx) {
+            return false;
+        }
+        if cx.project.camera(id).is_some_and(|c| c.view.locked) {
+            cx.status = "This camera is locked (Camera Specification)".into();
+            return false;
+        }
+        true
+    }
+
     fn unique_name(&self, cx: &EditorContext, base: &str) -> String {
         let mut n = cx.project.cameras.len() + 1;
         loop {
@@ -738,9 +895,14 @@ impl CameraTool {
         } else {
             (to - at).angle().to_degrees()
         };
-        let name = self.unique_name(cx, "Camera");
+        let (kind, base) = if self.variant == CameraVariant::FloorCamera {
+            (CameraKind::FloorCamera, "Floor Camera")
+        } else {
+            (CameraKind::FullCamera, "Camera")
+        };
+        let name = self.unique_name(cx, base);
         let defaults = camera_defaults();
-        let mut cam = CameraObject::new(CameraKind::FullCamera, at, dir, name, cx.floor);
+        let mut cam = CameraObject::new(kind, at, dir, name, cx.floor);
         cam.eye_height = defaults.eye_height;
         cam.fov_deg = defaults.fov_deg;
         self.add_camera(cx, cam)
@@ -942,7 +1104,11 @@ impl CameraTool {
             CameraVariant::DollHouse => (plan_view3d::CameraMode::DollHouse, None),
             _ => (plan_view3d::CameraMode::Orbit, None),
         };
-        self.outbox.post(ViewRequest::Mode { mode, floor });
+        if self.variant == CameraVariant::GlassHouse {
+            self.outbox.post(ViewRequest::GlassHouse);
+        } else {
+            self.outbox.post(ViewRequest::Mode { mode, floor });
+        }
         cx.status = format!("{} opened", self.variant.label());
         ToolResult {
             switch_to: Some(ToolId::Select),
@@ -964,6 +1130,9 @@ impl Tool for CameraTool {
         match self.variant {
             CameraVariant::FullCamera => {
                 "Full Camera: press at the eye, drag to aim, release to open the view".into()
+            }
+            CameraVariant::FloorCamera => {
+                "Floor Camera: press at the eye, drag to aim; the view shows this floor only".into()
             }
             v if v.is_overview() => format!("{}: click in the plan to open the view", v.label()),
             CameraVariant::WallElevation => {
@@ -1021,10 +1190,28 @@ impl Tool for CameraTool {
             .filter(|c| c.floor == cx.floor)
             .and_then(|c| hit_handle(c, p.world, cx.pick_tol()).map(|h| (c.id, h)));
         if let Some((id, handle)) = handle {
-            if self.layer_ok(cx) {
+            if self.can_edit(cx, id) {
                 self.editing = Some(Editing {
                     id,
                     handle,
+                    wedge: None,
+                    began: false,
+                });
+            }
+            return ToolResult::consumed();
+        }
+        // The wedge handles of the selected camera: angle of view and tilt.
+        let wedge = self
+            .selected
+            .and_then(|id| cx.project.camera(id))
+            .filter(|c| c.floor == cx.floor)
+            .and_then(|c| hit_wedge(c, p.world, cx.pick_tol()).map(|h| (c.id, h)));
+        if let Some((id, h)) = wedge {
+            if self.can_edit(cx, id) {
+                self.editing = Some(Editing {
+                    id,
+                    handle: CamHandle::Aim,
+                    wedge: Some(h),
                     began: false,
                 });
             }
@@ -1032,10 +1219,11 @@ impl Tool for CameraTool {
         }
         if let Some(id) = self.camera_at(cx, p.world) {
             self.select(cx, id);
-            if self.layer_ok(cx) {
+            if self.can_edit(cx, id) {
                 self.editing = Some(Editing {
                     id,
                     handle: CamHandle::Move,
+                    wedge: None,
                     began: false,
                 });
             }
@@ -1103,15 +1291,23 @@ impl Tool for CameraTool {
             return ToolResult::ignored();
         }
         if !ed.began {
-            cx.begin_change(match ed.handle {
-                CamHandle::Move => "Move Camera",
-                CamHandle::Aim => "Rotate Camera",
-                CamHandle::Clip => "Change Camera Clip Distance",
-                CamHandle::EndA | CamHandle::EndB => "Stretch Cross Section",
+            cx.begin_change(match (ed.wedge, ed.handle) {
+                (Some(WedgeHandle::Tilt), _) => "Tilt Camera",
+                (Some(_), _) => "Change Angle of View",
+                (None, CamHandle::Move) => "Move Camera",
+                (None, CamHandle::Aim) => "Rotate Camera",
+                (None, CamHandle::Clip) => "Change Camera Clip Distance",
+                (None, CamHandle::EndA | CamHandle::EndB) => "Stretch Cross Section",
             });
             ed.began = true;
         }
-        let (id, handle) = (ed.id, ed.handle);
+        let (id, handle, wedge) = (ed.id, ed.handle, ed.wedge);
+        if let Some(w) = wedge {
+            let to = p.world;
+            cx.project.update_camera(id, |c| apply_wedge(c, w, to));
+            self.outbox.post(ViewRequest::RefreshCamera(id));
+            return ToolResult::consumed();
+        }
         let to = if handle == CamHandle::Move {
             p.snapped
         } else {
@@ -1563,7 +1759,27 @@ fn polygon(cam: &Camera, pts: &[Point]) -> Vec<Pos2> {
     pts.iter().map(|p| cam.world_to_screen(*p)).collect()
 }
 
+/// The label under a camera symbol (the Label tab), when it is shown in the
+/// plan.
+fn draw_label(painter: &egui::Painter, cam: &Camera, c: &CameraObject) {
+    if !c.view.label.show_in_plan {
+        return;
+    }
+    let at = cam.world_to_screen(c.position) + egui::vec2(0.0, 14.0);
+    painter.text(
+        at,
+        egui::Align2::CENTER_TOP,
+        c.view.label_text(&c.name),
+        egui::FontId::proportional(11.0),
+        CAMERA_BLUE,
+    );
+}
+
 fn draw_one(painter: &egui::Painter, cam: &Camera, c: &CameraObject, selected: bool) {
+    if !c.view.show_in_plan {
+        return;
+    }
+    draw_label(painter, cam, c);
     let line = Stroke::new(if selected { 2.0_f32 } else { 1.2_f32 }, CAMERA_BLUE);
     if c.kind == CameraKind::Walkthrough {
         painter.add(Shape::line(polygon(cam, &c.path), line));
@@ -1669,6 +1885,9 @@ pub fn draw_camera_symbols(
     if c.floor != cx.floor {
         return;
     }
+    if !c.view.show_in_plan {
+        return;
+    }
     for (h, at) in handles_of(c) {
         let s = cam.world_to_screen(at);
         let r = egui::Rect::from_center_size(s, egui::Vec2::splat(9.0));
@@ -1679,6 +1898,35 @@ pub fn draw_camera_symbols(
             cx.palette.selection
         };
         painter.rect_stroke(r, 0.0, Stroke::new(1.5_f32, color), StrokeKind::Inside);
+    }
+    // The cone's corners (angle of view) are round, the tilt handle a diamond.
+    for (h, at) in wedge_handles_of(c) {
+        let s = cam.world_to_screen(at);
+        let color = if c.view.locked {
+            Color32::GRAY
+        } else {
+            cx.palette.selection
+        };
+        match h {
+            WedgeHandle::FovLeft | WedgeHandle::FovRight => {
+                painter.circle_filled(s, 5.0, cx.palette.background);
+                painter.circle_stroke(s, 5.0, Stroke::new(1.5_f32, color));
+            }
+            WedgeHandle::Tilt => {
+                let d = 6.0_f32;
+                let pts = vec![
+                    s + egui::vec2(0.0, -d),
+                    s + egui::vec2(d, 0.0),
+                    s + egui::vec2(0.0, d),
+                    s + egui::vec2(-d, 0.0),
+                ];
+                painter.add(Shape::convex_polygon(
+                    pts,
+                    cx.palette.background,
+                    Stroke::new(1.5_f32, color),
+                ));
+            }
+        }
     }
 }
 
@@ -1720,6 +1968,7 @@ mod tests {
 
     #[test]
     fn full_camera_drag_sets_position_and_direction() {
+        crate::shell::view3d_panel::reset_camera_defaults();
         let (mut cx, mut t, outbox) = setup();
         let res = drag(
             &mut cx,
@@ -2228,6 +2477,7 @@ mod tests {
 
     #[test]
     fn the_walkthrough_tool_draws_a_path_with_node_looks() {
+        crate::shell::view3d_panel::reset_camera_defaults();
         let (mut cx, mut t, outbox) = setup();
         pick(&mut t, CameraVariant::Walkthrough);
         // Click, click-and-drag (aims the second node), then double-click.
@@ -2511,5 +2761,287 @@ mod tests {
             .collect();
         assert!(texts.contains(&"1".to_string()), "{texts:?}");
         assert!(texts.contains(&"A-2".to_string()), "{texts:?}");
+    }
+
+    // ----- wedge handles, lock, Floor Camera, walkthrough from CAD (round 14) -----
+
+    fn placed_full_camera() -> (EditorContext, CameraTool, Outbox, Id) {
+        let (mut cx, mut t, o) = setup();
+        drag(
+            &mut cx,
+            &mut t,
+            Point::new(100.0, 100.0),
+            Point::new(200.0, 100.0),
+        );
+        let id = cx.project.cameras[0].id;
+        o.take();
+        (cx, t, o, id)
+    }
+
+    #[test]
+    fn the_cone_corners_change_the_angle_of_view() {
+        crate::shell::view3d_panel::reset_camera_defaults();
+        let (mut cx, mut t, o, id) = placed_full_camera();
+        let c = cx.project.camera(id).unwrap().clone();
+        assert_eq!(c.fov_deg, DEFAULT_FOV_DEG);
+        let handles = wedge_handles_of(&c);
+        assert_eq!(handles.len(), 3);
+        let corner = handles[0].1;
+        assert_eq!(hit_wedge(&c, corner, 6.0), Some(WedgeHandle::FovLeft));
+        // Drag the left corner out to 45 degrees off the direction (looking +X).
+        let to = Point::new(100.0 + 150.0, 100.0 + 150.0);
+        let down = PointerEvent::at(&cx, corner).with_down(true);
+        t.pointer_down(&mut cx, down);
+        let mv = PointerEvent::at(&cx, to).with_down(true);
+        t.pointer_move(&mut cx, mv);
+        let res = up(&mut cx, &mut t, to);
+        assert_eq!(res.commit.as_deref(), Some("Edit Camera"));
+        let c = cx.project.camera(id).unwrap();
+        assert!((c.fov_deg - 90.0).abs() < 1e-6, "{}", c.fov_deg);
+        assert_eq!(
+            c.position,
+            Point::new(100.0, 100.0),
+            "the camera did not move"
+        );
+        assert_eq!(c.direction_deg, 0.0, "nor turn");
+        assert_eq!(o.take(), vec![ViewRequest::RefreshCamera(id)]);
+        // One undo step restores the old angle.
+        cx.undo();
+        assert_eq!(cx.project.camera(id).unwrap().fov_deg, DEFAULT_FOV_DEG);
+        // The angle stays within 5 to 170 degrees.
+        let mut c = cx.project.camera(id).unwrap().clone();
+        apply_wedge(
+            &mut c,
+            WedgeHandle::FovRight,
+            Point::new(100.0 + 200.0, 100.0 - 1.0),
+        );
+        assert_eq!(c.fov_deg, 5.0);
+        apply_wedge(
+            &mut c,
+            WedgeHandle::FovRight,
+            Point::new(100.0 - 50.0, 100.0 - 50.0),
+        );
+        assert_eq!(c.fov_deg, 170.0);
+    }
+
+    #[test]
+    fn the_tilt_diamond_slides_along_the_view_direction() {
+        let (mut cx, mut t, _o, id) = placed_full_camera();
+        let c = cx.project.camera(id).unwrap().clone();
+        let tilt_at = |c: &CameraObject| {
+            wedge_handles_of(c)
+                .into_iter()
+                .find(|(h, _)| *h == WedgeHandle::Tilt)
+                .unwrap()
+                .1
+        };
+        // At rest it sits a quarter of the way along the cone.
+        let rest = tilt_at(&c);
+        assert!(rest.dist(Point::new(100.0 + 60.0, 100.0)) < 1e-9);
+        assert_eq!(hit_wedge(&c, rest, 6.0), Some(WedgeHandle::Tilt));
+        // Drag it forward by 60": 60 / 240 of the cone length is 85 degrees.
+        let to = Point::new(100.0 + 120.0, 100.0 + 3.0);
+        let down = PointerEvent::at(&cx, rest).with_down(true);
+        t.pointer_down(&mut cx, down);
+        let mv = PointerEvent::at(&cx, to).with_down(true);
+        t.pointer_move(&mut cx, mv);
+        let res = up(&mut cx, &mut t, to);
+        assert_eq!(res.commit.as_deref(), Some("Edit Camera"));
+        let c = cx.project.camera(id).unwrap().clone();
+        assert!((c.view.tilt_deg - 85.0).abs() < 1e-6, "{}", c.view.tilt_deg);
+        // The handle follows the tilt, and looking down moves it back.
+        assert!(tilt_at(&c).dist(Point::new(100.0 + 120.0, 100.0)) < 1e-9);
+        let mut down_cam = c.clone();
+        apply_wedge(
+            &mut down_cam,
+            WedgeHandle::Tilt,
+            Point::new(100.0 + 30.0, 100.0),
+        );
+        assert!((down_cam.view.tilt_deg + 42.5).abs() < 1e-6);
+        apply_wedge(
+            &mut down_cam,
+            WedgeHandle::Tilt,
+            Point::new(100.0 - 500.0, 100.0),
+        );
+        assert_eq!(down_cam.view.tilt_deg, -85.0);
+        cx.undo();
+        assert_eq!(cx.project.camera(id).unwrap().view.tilt_deg, 0.0);
+    }
+
+    #[test]
+    fn a_locked_camera_ignores_every_handle() {
+        let (mut cx, mut t, _o, id) = placed_full_camera();
+        cx.project.update_camera(id, |c| c.view.locked = true);
+        let before = cx.project.camera(id).unwrap().clone();
+        for h in [CamHandle::Move, CamHandle::Aim, CamHandle::Clip] {
+            let mut c = before.clone();
+            apply_handle(&mut c, h, Point::new(500.0, 500.0), false);
+            assert_eq!(c, before, "{h:?}");
+        }
+        for h in [WedgeHandle::FovLeft, WedgeHandle::Tilt] {
+            let mut c = before.clone();
+            apply_wedge(&mut c, h, Point::new(300.0, 300.0));
+            assert_eq!(c, before, "{h:?}");
+        }
+        // The tool does not even start a drag, and says why.
+        let down = PointerEvent::at(&cx, Point::new(101.0, 100.0)).with_down(true);
+        t.pointer_down(&mut cx, down);
+        let mv = PointerEvent::at(&cx, Point::new(300.0, 300.0)).with_down(true);
+        t.pointer_move(&mut cx, mv);
+        let res = up(&mut cx, &mut t, Point::new(300.0, 300.0));
+        assert!(res.commit.is_none());
+        assert_eq!(cx.project.camera(id).unwrap(), &before);
+        assert!(cx.status.contains("locked"));
+    }
+
+    #[test]
+    fn a_camera_hidden_from_the_plan_has_no_symbol_to_hit() {
+        let (mut cx, _t, _o, id) = placed_full_camera();
+        let p = Point::new(100.0, 100.0);
+        assert!(hit_symbol(cx.project.camera(id).unwrap(), p, 3.0));
+        cx.project
+            .update_camera(id, |c| c.view.show_in_plan = false);
+        assert!(!hit_symbol(cx.project.camera(id).unwrap(), p, 3.0));
+    }
+
+    #[test]
+    fn only_eye_level_cameras_have_wedge_handles() {
+        let full = CameraObject::new(CameraKind::FullCamera, Point::ZERO, 0.0, "f", 0);
+        let floor = CameraObject::new(CameraKind::FloorCamera, Point::ZERO, 0.0, "f", 0);
+        let dolls = CameraObject::new(CameraKind::DollHouse, Point::ZERO, 0.0, "d", 0);
+        let walk =
+            CameraObject::walkthrough(vec![Point::ZERO, Point::new(100.0, 0.0)], 66.0, "w", 0);
+        assert_eq!(wedge_handles_of(&full).len(), 3);
+        assert_eq!(wedge_handles_of(&floor).len(), 3);
+        assert!(wedge_handles_of(&dolls).is_empty());
+        assert!(wedge_handles_of(&walk).is_empty());
+    }
+
+    #[test]
+    fn the_floor_camera_variant_places_a_floor_camera() {
+        let (mut cx, mut t, o) = setup();
+        pick(&mut t, CameraVariant::FloorCamera);
+        let res = drag(
+            &mut cx,
+            &mut t,
+            Point::new(100.0, 100.0),
+            Point::new(100.0, 220.0),
+        );
+        assert_eq!(res.commit.as_deref(), Some("Create Camera"));
+        let c = &cx.project.cameras[0];
+        assert_eq!(c.kind, CameraKind::FloorCamera);
+        assert_eq!(c.name, "Floor Camera 1");
+        assert_eq!(o.take(), vec![ViewRequest::ShowCamera(c.id)]);
+        // A Glass House click opens the overview instead of placing anything.
+        pick(&mut t, CameraVariant::GlassHouse);
+        down(&mut cx, &mut t, Point::new(10.0, 10.0));
+        assert_eq!(cx.project.cameras.len(), 1);
+        assert_eq!(o.take(), vec![ViewRequest::GlassHouse]);
+    }
+
+    #[test]
+    fn a_walkthrough_is_made_from_a_cad_polyline_line_or_closed_shape() {
+        let mut p = Project::new("cad");
+        let poly = p.add_cad(
+            0,
+            "CAD, Default",
+            plan_core::CadItem::Polyline {
+                points: vec![
+                    Point::new(0.0, 0.0),
+                    Point::new(100.0, 0.0),
+                    Point::new(100.0, 0.0),
+                    Point::new(100.0, 80.0),
+                ],
+                closed: false,
+            },
+        );
+        let ring = p.add_cad(
+            0,
+            "CAD, Default",
+            plan_core::CadItem::Polyline {
+                points: vec![
+                    Point::new(0.0, 0.0),
+                    Point::new(100.0, 0.0),
+                    Point::new(100.0, 80.0),
+                ],
+                closed: true,
+            },
+        );
+        let line = p.add_cad(
+            0,
+            "CAD, Default",
+            plan_core::CadItem::Line {
+                a: Point::new(0.0, 0.0),
+                b: Point::new(60.0, 0.0),
+            },
+        );
+        let circle = p.add_cad(
+            0,
+            "CAD, Default",
+            plan_core::CadItem::Circle {
+                center: Point::ZERO,
+                radius: 10.0,
+            },
+        );
+        let w = walkthrough_from_cad(&p, 0, poly, 70.0, "Walk").unwrap();
+        assert_eq!(w.kind, CameraKind::Walkthrough);
+        assert_eq!(w.path.len(), 3, "the doubled vertex is dropped");
+        assert_eq!(w.path_nodes.len(), 3);
+        assert!(w.path_nodes.iter().all(|n| n.height == 70.0));
+        assert_eq!(w.position, Point::new(0.0, 0.0));
+        assert!((w.direction_deg).abs() < 1e-9);
+        let r = walkthrough_from_cad(&p, 0, ring, 66.0, "Ring").unwrap();
+        assert_eq!(r.path.len(), 4);
+        assert_eq!(r.path.last(), r.path.first());
+        assert_eq!(
+            walkthrough_from_cad(&p, 0, line, 66.0, "L")
+                .unwrap()
+                .path
+                .len(),
+            2
+        );
+        assert!(walkthrough_from_cad(&p, 0, circle, 66.0, "C").is_none());
+        assert!(walkthrough_from_cad(&p, 0, 9999, 66.0, "none").is_none());
+        assert!(walkthrough_from_cad(&p, 3, poly, 66.0, "floor").is_none());
+    }
+
+    #[test]
+    fn the_selected_camera_draws_its_wedge_handles_and_label_and_a_hidden_one_nothing() {
+        let (mut cx, _t, _o, id) = placed_full_camera();
+        let paint = |cx: &EditorContext, selected: Option<Id>| {
+            let ctx = egui::Context::default();
+            let out = ctx.run(egui::RawInput::default(), |ctx| {
+                let painter = ctx.layer_painter(egui::LayerId::background());
+                draw_camera_symbols(cx, &painter, &Camera::default_view(), selected);
+            });
+            let circles = out
+                .shapes
+                .iter()
+                .filter(|s| matches!(s.shape, Shape::Circle(_)))
+                .count();
+            let texts: Vec<String> = out
+                .shapes
+                .iter()
+                .filter_map(|s| match &s.shape {
+                    Shape::Text(t) => Some(t.galley.text().to_string()),
+                    _ => None,
+                })
+                .collect();
+            (out.shapes.len(), circles, texts)
+        };
+        let (_, plain, texts) = paint(&cx, None);
+        assert!(texts.is_empty());
+        let (_, with_handles, _) = paint(&cx, Some(id));
+        assert!(with_handles >= plain + 2, "two round angle-of-view handles");
+        cx.project.update_camera(id, |c| {
+            c.view.label.show_in_plan = true;
+            c.view.label.text = "Entry".into();
+        });
+        assert!(paint(&cx, None).2.contains(&"Entry".to_string()));
+        cx.project
+            .update_camera(id, |c| c.view.show_in_plan = false);
+        let (shapes, _, texts) = paint(&cx, Some(id));
+        assert_eq!(shapes, 0, "nothing of a camera hidden from the plan");
+        assert!(texts.is_empty());
     }
 }

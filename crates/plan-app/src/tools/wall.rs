@@ -1,8 +1,11 @@
 //! Straight wall tools (W-1..W-20 in `docs/parity/walls.md`).
 //!
 //! * click, click, ... draws a chain: each click after the first ends a wall
-//!   and starts the next at the same point (W-3);
-//! * press-drag-release draws exactly one wall and ends the chain (W-4);
+//!   and starts the next at the same point (W-3); a double click, Esc or
+//!   choosing another tool ends it, a right click does not;
+//! * press-drag-release draws one wall from the press point to the release
+//!   point and the chain goes on from the release point (W-4); a later drag
+//!   draws a wall of its own, from where it was pressed;
 //! * snaps (W-11..W-14), in priority order: the start of the chain's first
 //!   wall (clicking it closes the loop and ends the chain, W-5), another
 //!   wall's endpoint, intersection, midpoint, perpendicular foot, centerline,
@@ -10,10 +13,18 @@
 //!   wall (collinear or perpendicular), the 15 degree angle and the grid;
 //!   Alt suspends every snap (S-74, W-17) and Shift holds the angle snap
 //!   increment (W-18, `editing.angle_snap_deg`) even where angle snaps are off;
+//! * dashed guides show when the pointer lines up with a wall end, midpoint or
+//!   face corner, or sits on a 45 degree direction from the start, and the
+//!   point snaps to them (W-14, `snap::align_to_guides`); Shift holds the
+//!   angle instead;
+//! * the Spacebar reverses the layers of the walls being drawn, so the
+//!   exterior goes to the other side (verify in Chief, DECISIONS);
 //! * after the first click, typing digits fills the length (feet-inches), Tab
 //!   switches to the angle (degrees counter-clockwise from east) and Enter
 //!   draws the wall from the start point at exactly that length and angle
-//!   (W-15, W-16); the readout shows both live;
+//!   (W-15, W-16); the readout shows both live, and the ghost shows the
+//!   corner it makes with the wall before it (and with a wall it ends on)
+//!   re-solved as the length and angle change;
 //! * every wall is connected on commit (`editor::connect::auto_connect`,
 //!   W-31..W-45): corners close exactly, a wall ending near another wall's
 //!   centerline becomes a T that splits the through wall, crossing walls are
@@ -27,7 +38,7 @@
 use super::{KeyEvent, PointerEvent, Tool, ToolId, ToolResult};
 use crate::editor::connect;
 use crate::editor::ops::{make_wall, JOIN_TOL};
-use crate::editor::snap::{self, SnapKind};
+use crate::editor::snap::{self, Guide, GuideKind, SnapKind};
 use crate::editor::typed_input::{angle_deg, TypedField, TypedKey};
 use crate::editor::{render, tempdim, Camera, EditorContext, ObjectRef, SnapResult};
 use crate::toolbar::ViewFlag;
@@ -35,7 +46,7 @@ use eframe::egui::{self, Align2, FontId, Pos2, Shape, Stroke, Vec2};
 use plan_core::geometry::Point;
 use plan_core::walls::MIN_WALL_THICKNESS;
 use plan_core::{
-    detect_rooms, FenceStyle, Id, Layer, PlanDefaults, WallClass, WallCurve, WallKind,
+    detect_rooms, FenceStyle, Id, Layer, PlanDefaults, Wall, WallClass, WallCurve, WallKind,
 };
 
 /// Pixels the pointer must travel between press and release for a drag-draw.
@@ -314,6 +325,26 @@ struct Press {
     screen: Pos2,
     /// The press placed the first point of a new chain.
     started_chain: bool,
+    /// Where a drag from this press starts its wall: the pointer snapped as a
+    /// first point (nothing pending), so a drag is a wall of its own.
+    free_start: Point,
+}
+
+/// The state of the chain a snap is measured against.
+#[derive(Clone, Copy, Default)]
+struct Chain {
+    first: Option<Point>,
+    walls: usize,
+    last_dir: Option<Point>,
+}
+
+/// The ghost wall as it joins its neighbours (live while a length and angle
+/// are typed or the pointer moves): the ghost's own outline and the outlines
+/// of the walls it meets, re-solved with it.
+#[derive(Clone, Debug, Default)]
+pub struct JoinPreview {
+    pub ghost: Vec<Point>,
+    pub neighbours: Vec<Vec<Point>>,
 }
 
 pub struct WallTool {
@@ -331,6 +362,14 @@ pub struct WallTool {
     last_dir: Option<Point>,
     /// The pointer's snapped point; typed values replace its length or angle.
     live_to: Option<Point>,
+    /// Alignment guides of the pointer (W-14).
+    guides: Vec<Guide>,
+    /// Spacebar: the walls drawn have their layers reversed.
+    flipped: bool,
+    /// The ghost joined with its neighbours.
+    joined: Option<JoinPreview>,
+    /// Where the wall of a press-drag in progress starts.
+    drag_from: Option<Point>,
 }
 
 impl Default for WallTool {
@@ -345,6 +384,10 @@ impl Default for WallTool {
             chain_walls: 0,
             last_dir: None,
             live_to: None,
+            guides: Vec::new(),
+            flipped: false,
+            joined: None,
+            drag_from: None,
         }
     }
 }
@@ -355,6 +398,24 @@ impl WallTool {
         self.pending
     }
 
+    #[cfg(test)]
+    /// The ghost wall joined with the walls it meets, as last solved.
+    pub fn join_preview_now(&self) -> Option<&JoinPreview> {
+        self.joined.as_ref()
+    }
+
+    #[cfg(test)]
+    /// The alignment guides the pointer is on.
+    pub fn active_guides(&self) -> &[Guide] {
+        &self.guides
+    }
+
+    #[cfg(test)]
+    /// Whether the Spacebar reversed the layers of the walls being drawn.
+    pub fn layers_reversed(&self) -> bool {
+        self.flipped
+    }
+
     /// Forgets the chain (it closed, was cancelled or the tool left).
     fn end_chain(&mut self, cx: &mut EditorContext) {
         self.arc = None;
@@ -363,7 +424,56 @@ impl WallTool {
         self.chain_walls = 0;
         self.last_dir = None;
         self.live_to = None;
+        self.guides.clear();
+        self.flipped = false;
+        self.joined = None;
+        self.drag_from = None;
         cx.typed_input.disarm();
+    }
+
+    /// The ghost wall `start`..`end` joined with the walls it meets: the
+    /// walls with an end at either point and the wall it ends on (a T). The
+    /// outlines are solved with the real join rules, so the corner it makes
+    /// with the previous wall shows as it will be built (W-16).
+    fn join_preview(&self, cx: &EditorContext, start: Point, end: Point) -> Option<JoinPreview> {
+        if self.variant.curved || start.dist(end) < MIN_LENGTH {
+            return None;
+        }
+        let tol = 0.5;
+        let spec = self.variant.spec(&cx.defaults);
+        let mut walls: Vec<Wall> = Vec::new();
+        let mut touching: Vec<Id> = Vec::new();
+        for w in &cx.floor().walls {
+            let ends = [w.start, w.end];
+            let at_end = ends
+                .iter()
+                .any(|e| e.dist(start) <= tol || e.dist(end) <= tol);
+            let on_body = !w.is_curved()
+                && [start, end]
+                    .iter()
+                    .any(|p| plan_core::geometry::dist_to_segment(*p, w.start, w.end) <= tol);
+            if at_end || on_body {
+                walls.push(w.clone());
+                if at_end {
+                    touching.push(w.id);
+                }
+            }
+        }
+        let mut ghost = make_wall(Id::MAX, start, end, spec.thickness, spec.height, spec.kind);
+        if self.flipped {
+            ghost.exterior_side = ghost.exterior_side.opposite();
+        }
+        walls.push(ghost);
+        let outlines = plan_core::wall_outlines(&walls, tol);
+        let mut out = JoinPreview::default();
+        for o in outlines {
+            if o.wall_id == Id::MAX {
+                out.ghost = o.polygon;
+            } else if touching.contains(&o.wall_id) {
+                out.neighbours.push(o.polygon);
+            }
+        }
+        (out.ghost.len() >= 3).then_some(out)
     }
 
     /// The end point the typed length and angle give, when anything was typed.
@@ -385,6 +495,7 @@ impl WallTool {
         if let Some(to) = to {
             self.hover = Some(to);
             self.update_readout(cx, to);
+            self.joined = self.pending.and_then(|s| self.join_preview(cx, s, to));
         }
     }
 
@@ -410,15 +521,36 @@ impl WallTool {
         ToolResult::committed("Draw Wall")
     }
 
+    /// The chain a snap is measured against.
+    fn chain(&self) -> Chain {
+        Chain {
+            first: self.chain_first,
+            walls: self.chain_walls,
+            last_dir: self.last_dir,
+        }
+    }
+
     /// The snapped end point for the pointer, and whether it closes the loop
     /// (W-5, W-11..W-14).
     fn snap(&self, cx: &EditorContext, p: &PointerEvent) -> (SnapResult, bool) {
+        self.snap_from(cx, p, self.pending, self.chain())
+    }
+
+    /// [`WallTool::snap`] measured from `origin` against `chain`: a drag
+    /// measures from its press point and starts no chain of its own.
+    fn snap_from(
+        &self,
+        cx: &EditorContext,
+        p: &PointerEvent,
+        origin: Option<Point>,
+        chain: Chain,
+    ) -> (SnapResult, bool) {
         let raw = p.world;
         let alt = p.modifiers.alt;
         let tol = cx.snap_tol();
         // Closing the loop on the first wall's start point.
-        if let (Some(first), false) = (self.chain_first, alt) {
-            if self.chain_walls >= 2 && raw.dist(first) <= tol {
+        if let (Some(first), false) = (chain.first, alt) {
+            if chain.walls >= 2 && raw.dist(first) <= tol {
                 let r = SnapResult {
                     point: first,
                     kind: SnapKind::Endpoint,
@@ -429,9 +561,12 @@ impl WallTool {
         }
         // Object snaps: endpoints, intersections, midpoints, perpendicular
         // feet and wall centerlines.
-        let base = cx.snap_at(raw, self.pending, alt, &[]);
-        let Some(start) = self.pending else {
-            return (base, false);
+        let base = cx.snap_at(raw, origin, alt, &[]);
+        let Some(start) = origin else {
+            return (
+                self.aligned(cx, base, raw, None, p.modifiers.shift || alt),
+                false,
+            );
         };
         // Shift holds the angle increment (W-18), over the object snaps.
         if p.modifiers.shift && !alt {
@@ -468,7 +603,7 @@ impl WallTool {
             }
         };
         // The axes through the chain's first point.
-        if let Some(first) = self.chain_first.filter(|f| f.dist(start) > JOIN_TOL) {
+        if let Some(first) = chain.first.filter(|f| f.dist(start) > JOIN_TOL) {
             let dx = (raw.x - first.x).abs();
             let dy = (raw.y - first.y).abs();
             let hit = match (dx <= tol, dy <= tol) {
@@ -488,7 +623,7 @@ impl WallTool {
             }
         }
         // Collinear with, or perpendicular to, the previous wall.
-        if let Some(d) = self.last_dir {
+        if let Some(d) = chain.last_dir {
             let v = raw - start;
             let mut best: Option<(f64, Point, SnapKind)> = None;
             for (dir, kind) in [(d, SnapKind::Angle), (d.perp(), SnapKind::Perpendicular)] {
@@ -509,11 +644,71 @@ impl WallTool {
                 }
             }
         }
-        (base, false)
+        (self.aligned(cx, base, raw, Some(start), false), false)
+    }
+
+    /// `base` pulled onto the alignment guides (W-14): the pointer lined up
+    /// with a wall end, midpoint or face corner in x or y, or on a 45 degree
+    /// direction from `origin`. Object snaps and the Shift angle hold win
+    /// (`hold`: Shift or Alt is down).
+    fn aligned(
+        &self,
+        cx: &EditorContext,
+        base: SnapResult,
+        raw: Point,
+        origin: Option<Point>,
+        hold: bool,
+    ) -> SnapResult {
+        if hold
+            || base.kind.is_object_snap()
+            || !snap::SnapSettings::from_editing(&cx.defaults.editing).object_snaps
+        {
+            return base;
+        }
+        let anchors = snap::alignment_anchors(cx.floor(), cx.layers(), &[]);
+        let tol = cx.snap_tol();
+        let Some(point) = snap::align_to_guides(&anchors, origin, raw, tol, cx.defaults.grid.snap)
+        else {
+            return base;
+        };
+        if origin.is_some_and(|o| point.dist(o) <= JOIN_TOL) {
+            return base;
+        }
+        let aligned = snap::guides_through(&anchors, origin, point, 0.05)
+            .iter()
+            .any(|g| g.kind == GuideKind::Alignment);
+        SnapResult {
+            point,
+            kind: if aligned {
+                SnapKind::Extension
+            } else {
+                SnapKind::Angle
+            },
+            source: None,
+        }
+    }
+
+    /// The guides the point `to` is on (empty with Alt or Shift held).
+    fn guides_at(
+        &self,
+        cx: &EditorContext,
+        from: Option<Point>,
+        to: Point,
+        p: &PointerEvent,
+    ) -> Vec<Guide> {
+        if p.modifiers.alt || p.modifiers.shift {
+            return Vec::new();
+        }
+        let anchors = snap::alignment_anchors(cx.floor(), cx.layers(), &[]);
+        snap::guides_through(&anchors, from, to, 0.05)
     }
 
     fn update_readout(&self, cx: &mut EditorContext, to: Point) {
-        cx.readout = self.pending.map(|s| {
+        self.update_readout_from(cx, self.pending, to);
+    }
+
+    fn update_readout_from(&self, cx: &mut EditorContext, from: Option<Point>, to: Point) {
+        cx.readout = from.map(|s| {
             let ti = &cx.typed_input;
             let (len, ang) = (
                 cx.fmt_dim(s.dist(to)),
@@ -577,6 +772,9 @@ impl WallTool {
                 w.wall_type = Some(spec.wall_type.clone());
             }
             w.curve = curve;
+            if self.flipped {
+                w.exterior_side = w.exterior_side.opposite();
+            }
             w.foundation_height = spec.foundation_height;
             match spec.class.default_layer() {
                 Some(layer) => w.layer = layer.to_string(),
@@ -720,7 +918,7 @@ impl Tool for WallTool {
     }
 
     fn hint(&self) -> String {
-        "Wall: click to place points; type a length, Tab, an angle, Enter; Shift holds the angle; Alt disables snaps; Esc/right-click ends"
+        "Wall: click to place points; type a length, Tab, an angle, Enter; Shift holds the angle; Alt disables snaps; Spacebar reverses the layers; double-click or Esc ends"
             .into()
     }
 
@@ -756,12 +954,26 @@ impl Tool for WallTool {
                 ..ToolResult::default()
             };
         }
-        let (s, _) = self.snap(cx, &p);
+        // A press that moved far enough is a drag: its wall starts where it
+        // was pressed (W-4), whatever chain was going.
+        let dragging = self
+            .press
+            .as_ref()
+            .filter(|pr| p.down && (p.screen - pr.screen).length() >= DRAG_PX)
+            .map(|pr| pr.free_start);
+        self.drag_from = dragging.filter(|f| Some(*f) != self.pending);
+        let (origin, chain) = match self.drag_from {
+            Some(f) => (Some(f), Chain::default()),
+            None => (self.pending, self.chain()),
+        };
+        let (s, _) = self.snap_from(cx, &p, origin, chain);
         self.live_to = Some(s.point);
         let to = self.typed_end(cx).unwrap_or(s.point);
         self.hover = Some(to);
         cx.last_snap = Some(s);
-        self.update_readout(cx, to);
+        self.guides = self.guides_at(cx, origin, to, &p);
+        self.update_readout_from(cx, origin, to);
+        self.joined = origin.and_then(|o| self.join_preview(cx, o, to));
         ToolResult {
             repaint: true,
             ..ToolResult::default()
@@ -784,9 +996,18 @@ impl Tool for WallTool {
         }
         // A click ends whatever was being typed.
         cx.typed_input.clear();
+        // The point a drag from here would start at: the pointer as a first
+        // point, nothing pending.
+        let free_start = if started_chain {
+            s.point
+        } else {
+            let (f, _) = self.snap_from(cx, &p, None, Chain::default());
+            f.point
+        };
         self.press = Some(Press {
             screen: p.screen,
             started_chain,
+            free_start,
         });
         self.update_readout(cx, s.point);
         ToolResult::consumed()
@@ -796,32 +1017,35 @@ impl Tool for WallTool {
         let Some(press) = self.press.take() else {
             return ToolResult::ignored();
         };
+        self.drag_from = None;
+        let dragged = (p.screen - press.screen).length() >= DRAG_PX;
+        if dragged {
+            // Press-drag-release: one wall from the press point to the
+            // release point; the chain goes on from its end (W-4).
+            let start = press.free_start;
+            let (snap, _) = self.snap_from(cx, &p, Some(start), Chain::default());
+            let end = snap.point;
+            self.pending = Some(start);
+            self.chain_first = Some(start);
+            self.chain_walls = 0;
+            self.last_dir = None;
+            if self.variant.curved {
+                return self.start_arc(cx, start, end, false, false);
+            }
+            let Some((_, next, room)) = self.create(cx, start, end, None) else {
+                // Too short: the drag drew nothing and the chain is as before.
+                return ToolResult::consumed();
+            };
+            self.advance_chain(cx, start, end, next, room, false, None);
+            return ToolResult::committed("Draw Wall");
+        }
         let (snap, closing) = self.snap(cx, &p);
         let end = snap.point;
         let Some(start) = self.pending else {
             return ToolResult::ignored();
         };
         if press.started_chain {
-            let dragged = (p.screen - press.screen).length() >= DRAG_PX;
-            if !dragged {
-                return ToolResult::consumed();
-            }
-            // Press-drag-release: one wall, then the chain ends.
-            if self.variant.curved {
-                return self.start_arc(cx, start, end, true, false);
-            }
-            let made = self.create(cx, start, end, None);
-            self.end_chain(cx);
-            cx.readout = None;
-            return match made {
-                Some((_, _, room)) => {
-                    if room {
-                        cx.status = "Room created".into();
-                    }
-                    ToolResult::committed("Draw Wall")
-                }
-                None => ToolResult::consumed(),
-            };
+            return ToolResult::consumed();
         }
         if self.variant.curved {
             return self.start_arc(cx, start, end, false, closing);
@@ -833,7 +1057,43 @@ impl Tool for WallTool {
         ToolResult::committed("Draw Wall")
     }
 
+    /// A double click ends the chain; the wall of its first click is drawn
+    /// and the second adds none (W-3).
+    fn double_click(&mut self, cx: &mut EditorContext, _p: PointerEvent) -> ToolResult {
+        if self.pending.is_none() {
+            return ToolResult::ignored();
+        }
+        self.end_chain(cx);
+        self.press = None;
+        cx.readout = None;
+        ToolResult::consumed()
+    }
+
+    /// A right click keeps the chain going (W-3): it only drops what was
+    /// typed.
+    fn secondary_click(&mut self, cx: &mut EditorContext) -> ToolResult {
+        if self.pending.is_some() && self.arc.is_none() {
+            cx.typed_input.clear();
+            self.refresh_typed(cx);
+        }
+        ToolResult::consumed()
+    }
+
     fn key(&mut self, cx: &mut EditorContext, k: KeyEvent) -> ToolResult {
+        // The Spacebar reverses the layers of the walls being drawn.
+        if self.pending.is_some() && k.text.as_deref() == Some(" ") && !cx.typed_input.has_text() {
+            self.flipped = !self.flipped;
+            cx.status = if self.flipped {
+                "Layers reversed: the exterior is on the other side (Spacebar flips it back)"
+            } else {
+                "Layers back to the usual side"
+            }
+            .into();
+            if let Some(to) = self.live_to {
+                self.joined = self.pending.and_then(|s| self.join_preview(cx, s, to));
+            }
+            return ToolResult::consumed();
+        }
         if self.pending.is_some() && self.arc.is_none() {
             match cx.typed_input.handle(k.key, k.text.as_deref()) {
                 TypedKey::Edited | TypedKey::Cancelled => {
@@ -884,20 +1144,66 @@ impl Tool for WallTool {
             ));
             return;
         }
-        if let Some(start) = self.pending {
+        // Alignment guides (W-14): dashed lines from the wall point or the
+        // start to the pointer.
+        for g in &self.guides {
+            let stroke = match g.kind {
+                GuideKind::Alignment => Stroke::new(1.0_f32, pal.ghost_stroke),
+                GuideKind::Direction => Stroke::new(1.0_f32, pal.ghost_stroke.gamma_multiply(0.7)),
+            };
+            let pts = [cam.world_to_screen(g.from), cam.world_to_screen(g.to)];
+            painter.extend(Shape::dashed_line(&pts, stroke, 6.0, 4.0));
+        }
+        if let Some(start) = self.drag_from.or(self.pending) {
             let len = start.dist(to);
             if len > 0.01 {
-                let ghost = make_wall(0, start, to, spec.thickness, spec.height, spec.kind);
-                let pts = ghost
-                    .footprint()
-                    .iter()
-                    .map(|p| cam.world_to_screen(*p))
-                    .collect();
-                painter.add(Shape::convex_polygon(
-                    pts,
-                    pal.ghost_fill,
-                    Stroke::new(1.0_f32, pal.ghost_stroke),
-                ));
+                let mut ghost = make_wall(0, start, to, spec.thickness, spec.height, spec.kind);
+                if self.flipped {
+                    ghost.exterior_side = ghost.exterior_side.opposite();
+                }
+                // The ghost as it joins its neighbours, and those neighbours
+                // re-solved with it.
+                match &self.joined {
+                    Some(j) => {
+                        let pts: Vec<Pos2> =
+                            j.ghost.iter().map(|p| cam.world_to_screen(*p)).collect();
+                        let stroke = Stroke::new(1.0_f32, pal.ghost_stroke);
+                        if pts.len() == 4 {
+                            painter.add(Shape::convex_polygon(pts, pal.ghost_fill, stroke));
+                        } else {
+                            painter.add(Shape::closed_line(pts, stroke));
+                        }
+                        for n in &j.neighbours {
+                            let pts: Vec<Pos2> =
+                                n.iter().map(|p| cam.world_to_screen(*p)).collect();
+                            painter.add(Shape::closed_line(
+                                pts,
+                                Stroke::new(1.0_f32, pal.ghost_stroke.gamma_multiply(0.8)),
+                            ));
+                        }
+                    }
+                    None => {
+                        let pts = ghost
+                            .footprint()
+                            .iter()
+                            .map(|p| cam.world_to_screen(*p))
+                            .collect();
+                        painter.add(Shape::convex_polygon(
+                            pts,
+                            pal.ghost_fill,
+                            Stroke::new(1.0_f32, pal.ghost_stroke),
+                        ));
+                    }
+                }
+                // The exterior face is drawn heavier, so Spacebar's reversal
+                // shows.
+                let n = ghost
+                    .normal()
+                    .scale(ghost.thickness * 0.5 * ghost.exterior_side.sign());
+                painter.line_segment(
+                    [cam.world_to_screen(start + n), cam.world_to_screen(to + n)],
+                    Stroke::new(3.0_f32, pal.ghost_stroke),
+                );
                 if cx.view_flags.contains(&ViewFlag::TemporaryDimensions) {
                     let mid = Point::lerp(start, to, 0.5)
                         .add(ghost.normal().scale(ghost.thickness * 0.5));
@@ -977,7 +1283,7 @@ mod tests {
     }
 
     #[test]
-    fn drag_draws_one_wall_and_releases() {
+    fn drag_draws_one_wall_and_the_chain_goes_on_from_its_end() {
         let mut cx = new_cx();
         let mut t = WallTool::default();
         let a = PointerEvent::at(&cx, Point::new(0.0, 0.0));
@@ -986,6 +1292,12 @@ mod tests {
         t.pointer_move(&mut cx, b.with_down(true));
         t.pointer_up(&mut cx, b);
         assert_eq!(cx.floor().walls.len(), 1);
+        // W-4: the next wall starts at the release point; Esc ends the chain.
+        assert_eq!(t.pending_start(), Some(Point::new(120.0, 0.0)));
+        click(&mut t, &mut cx, 120.0, 96.0);
+        assert_eq!(cx.floor().walls.len(), 2);
+        assert_eq!(cx.floor().walls[1].start, Point::new(120.0, 0.0));
+        t.key(&mut cx, KeyEvent::escape());
         assert!(t.pending_start().is_none());
     }
 
@@ -1099,6 +1411,9 @@ mod tests {
     fn drag_drawn_rectangle_with_gaps_beyond_the_snap_distance_still_closes() {
         let mut cx = new_cx();
         let mut t = WallTool::default();
+        // The alignment guides would pull these ends onto each other's lines;
+        // this test is about the connect distance alone.
+        cx.defaults.editing.object_snaps = false;
         // Gaps of 6-7" are outside the 5" snap but inside the 7 5/8" connect distance.
         drag(&mut t, &mut cx, (0.0, 0.0), (234.0, 0.0));
         drag(&mut t, &mut cx, (238.0, -5.0), (238.0, 138.0));
@@ -1133,12 +1448,14 @@ mod tests {
         drag(&mut t, &mut cx, (100.0, 120.0), (100.0, 6.0));
         let walls = &cx.floor().walls;
         assert_eq!(walls.len(), 3);
-        assert_eq!(
-            cx.floor().wall(through).unwrap().end,
-            Point::new(100.0, 0.0)
-        );
+        let end = cx.floor().wall(through).unwrap().end;
+        assert!(end.dist(Point::new(100.0, 0.0)) < 1e-9, "{end:?}");
         let stem = walls.iter().find(|w| w.start.y == 120.0).unwrap();
-        assert_eq!(stem.end, Point::new(100.0, 0.0));
+        assert!(
+            stem.end.dist(Point::new(100.0, 0.0)) < 1e-9,
+            "{:?}",
+            stem.end
+        );
     }
 
     #[test]
@@ -1376,14 +1693,15 @@ mod tests {
     }
 
     #[test]
-    fn a_dragged_curved_wall_is_one_wall_then_the_chain_ends() {
+    fn a_dragged_curved_wall_is_one_wall_then_the_chain_goes_on() {
         let mut cx = new_cx();
         let mut t = variant_tool(WallStyle::Exterior, true);
         drag(&mut t, &mut cx, (0.0, 0.0), (120.0, 0.0));
         click(&mut t, &mut cx, 60.0, -20.0);
         let w = &cx.floor().walls[0];
         assert_eq!(w.curve, Some(WallCurve { bulge: -20.0 }));
-        assert!(t.pending_start().is_none());
+        // The chain goes on from the arc's end until Esc.
+        assert_eq!(t.pending_start(), Some(Point::new(120.0, 0.0)));
         // Esc before the third click draws nothing.
         drag(&mut t, &mut cx, (0.0, 100.0), (120.0, 100.0));
         t.key(&mut cx, KeyEvent::escape());
@@ -1601,5 +1919,109 @@ mod tests {
         };
         assert_eq!(start_with(false), Point::new(120.0, 0.0));
         assert_eq!(start_with(true), Point::new(121.3, 2.2));
+    }
+
+    fn existing_wall(cx: &mut EditorContext) {
+        cx.project.add_wall(
+            0,
+            Point::new(0.0, 0.0),
+            Point::new(240.0, 0.0),
+            7.625,
+            109.0,
+            WallKind::Exterior,
+        );
+    }
+
+    #[test]
+    fn dashed_guides_pull_the_pointer_onto_a_wall_end_and_the_45_degree_line() {
+        let mut cx = new_cx();
+        existing_wall(&mut cx);
+        let mut t = WallTool::default();
+        // The first point: 3" off the vertical through the wall's end.
+        click(&mut t, &mut cx, 243.0, 150.0);
+        let start = t.pending_start().unwrap();
+        assert!((start.x - 240.0).abs() < 1e-9, "{start:?}");
+        // Pointer on the horizontal through that start: snaps to the angle,
+        // with a guide when it lines up with the wall's other end.
+        let p = PointerEvent::at(&cx, Point::new(-2.0, 152.0));
+        t.pointer_move(&mut cx, p);
+        let s = cx.last_snap.unwrap();
+        assert!((s.point.x).abs() < 1e-9 || s.point.y == 150.0, "{s:?}");
+        assert!(!t.active_guides().is_empty(), "a guide is drawn");
+        // 45 degrees from the start, 2" off.
+        let p = PointerEvent::at(&cx, Point::new(240.0 - 100.0, 150.0 + 102.0));
+        t.pointer_move(&mut cx, p);
+        let s = cx.last_snap.unwrap();
+        let v = s.point - start;
+        assert!((v.x.abs() - v.y.abs()).abs() < 1e-6, "{v:?}");
+        assert!(t
+            .active_guides()
+            .iter()
+            .any(|g| g.kind == GuideKind::Direction));
+        // Shift holds the angle increment instead: no guides.
+        let shift = Modifiers {
+            shift: true,
+            ..Modifiers::NONE
+        };
+        let p = PointerEvent::at(&cx, Point::new(140.0, 252.0)).with_modifiers(shift);
+        t.pointer_move(&mut cx, p);
+        assert!(t.active_guides().is_empty());
+    }
+
+    #[test]
+    fn a_guide_through_the_midpoint_of_a_wall_pulls_the_start_onto_its_line() {
+        let mut cx = new_cx();
+        existing_wall(&mut cx);
+        let mut t = WallTool::default();
+        click(&mut t, &mut cx, 118.0, 200.0);
+        assert!((t.pending_start().unwrap().x - 120.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn typing_a_length_and_angle_re_solves_the_join_with_the_previous_wall() {
+        let mut cx = new_cx();
+        let mut t = WallTool::default();
+        click(&mut t, &mut cx, 0.0, 0.0);
+        click(&mut t, &mut cx, 120.0, 0.0);
+        key_text(&mut t, &mut cx, "8'");
+        t.key(&mut cx, KeyEvent::key(egui::Key::Tab));
+        key_text(&mut t, &mut cx, "90");
+        let j = t.join_preview_now().expect("the ghost is joined");
+        assert!(j.ghost.len() >= 3);
+        // The wall before it is in the preview, mitered with the ghost.
+        assert_eq!(j.neighbours.len(), 1);
+        let first = j.neighbours[0].clone();
+        // Changing the angle re-solves the corner live.
+        t.key(&mut cx, KeyEvent::key(egui::Key::Backspace));
+        t.key(&mut cx, KeyEvent::key(egui::Key::Backspace));
+        key_text(&mut t, &mut cx, "45");
+        let j2 = t.join_preview_now().expect("still joined");
+        assert_ne!(j2.neighbours[0], first);
+        // Nothing was drawn until Enter.
+        assert_eq!(cx.floor().walls.len(), 1);
+        t.key(&mut cx, KeyEvent::key(egui::Key::Enter));
+        assert_eq!(cx.floor().walls.len(), 2);
+        let w = &cx.floor().walls[1];
+        assert!((w.length() - 96.0).abs() < 1e-6);
+        assert!((angle_deg(w.start, w.end) - 45.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_spacebar_reverses_the_layers_of_the_next_walls_and_esc_ends_the_chain() {
+        let mut cx = new_cx();
+        let mut t = WallTool::default();
+        click(&mut t, &mut cx, 0.0, 0.0);
+        click(&mut t, &mut cx, 120.0, 0.0);
+        let plain = cx.floor().walls[0].exterior_side;
+        t.key(&mut cx, KeyEvent::text(" "));
+        assert!(t.layers_reversed());
+        click(&mut t, &mut cx, 120.0, 96.0);
+        assert_eq!(cx.floor().walls[1].exterior_side, plain.opposite());
+        // The chain goes on from the last end until Esc.
+        assert_eq!(t.pending_start(), Some(Point::new(120.0, 96.0)));
+        t.key(&mut cx, KeyEvent::escape());
+        assert!(t.pending_start().is_none());
+        assert!(!t.layers_reversed());
+        assert_eq!(cx.floor().walls.len(), 2);
     }
 }

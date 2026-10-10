@@ -9,6 +9,8 @@
 //!   placed in the plan (`plan_core::schedules`): door, window, room, wall,
 //!   cabinet, electrical, framing, fixture, furniture, plant and general.
 //! * [`materials`]: a framing / finish quantity take-off and its CSV export.
+//! * [`rescheck`]: Thermal Envelope Data (.csv) and Export to REScheck (.rxl)
+//!   from the plan's envelope.
 //! * [`terrain_report`]: the terrain's cut/fill table (cubic yards per graded pad and in
 //!   total) and the soil lines of the Materials List.
 //! * [`pdf`]: a PDF 1.4 writer (RGB colour, dashes, clipping, rotated and
@@ -19,12 +21,16 @@
 //! Units follow `plan-core`: lengths are inches. Floors are addressed by
 //! index into `Project::floors`, as in `Project::add_wall`.
 
+pub mod master_list;
 pub mod materials;
 pub mod pdf;
+pub mod props_exchange;
+pub mod rescheck;
 pub mod schedule;
 pub mod schedule_kinds;
 pub mod terrain_report;
 pub mod xlsx;
+pub mod xlsx_read;
 
 pub use materials::{
     fmt_money, materials_list, materials_report, price_keys, row_cells as materials_cells,

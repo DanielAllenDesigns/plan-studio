@@ -119,7 +119,21 @@ fn draw_runs(
     for r in runs {
         let px = (base * r.scale as f32).clamp(6.0, 200.0);
         let color = r.color.map_or(pal.text, rgb);
-        let galley = painter.layout_no_wrap(r.text.clone(), FontId::proportional(px), color);
+        let text = if r.upper {
+            r.text.to_uppercase()
+        } else {
+            r.text.clone()
+        };
+        // A run set in its own font family (Rich Text Edit Bar).
+        let font = match &r.font {
+            Some(f) => crate::fonts::font_id(
+                painter.ctx(),
+                &crate::fonts::spec_named(f, r.bold, r.italic),
+                px,
+            ),
+            None => FontId::proportional(px),
+        };
+        let galley = painter.layout_no_wrap(text, font, color);
         let rect = Align2::LEFT_BOTTOM.anchor_size(Pos2::new(x, at.y), galley.size());
         if r.bold {
             painter.galley(rect.min + Vec2::new(0.7, 0.0), galley.clone(), color);
@@ -127,6 +141,13 @@ fn draw_runs(
         painter.galley(rect.min, galley.clone(), color);
         if r.underline {
             let y = rect.max.y - 1.0;
+            painter.line_segment(
+                [Pos2::new(rect.min.x, y), Pos2::new(rect.max.x, y)],
+                Stroke::new(1.0_f32, color),
+            );
+        }
+        if r.strike {
+            let y = rect.center().y;
             painter.line_segment(
                 [Pos2::new(rect.min.x, y), Pos2::new(rect.max.x, y)],
                 Stroke::new(1.0_f32, color),

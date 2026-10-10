@@ -39,6 +39,7 @@ mod view;
 
 pub use dims::{DimKind, DimOptions, ElevDim};
 pub use drawing::{Drawing, EdgeKind, Line2, LineWeight, Region, RegionKind};
+pub use hatch::{poche_hatch_lines, without_poche, DEFAULT_HATCH_SCALE, MAX_POCHE_LINES};
 pub use labels::{annotate, annotate_view, annotate_with, AnnotateOptions};
 pub use mlabels::{interior_point, material_label};
 pub use projection::{Projection, ViewDir};
@@ -81,6 +82,11 @@ pub struct Options {
     /// Add material hatches to the face regions as Light [`EdgeKind::Hatch`]
     /// lines (default false: it costs time and adds many segments).
     pub hatch: bool,
+    /// The drawing scale the hatches are made for, paper inches per foot of
+    /// the building (default 0.25: 1/4" = 1'-0"). Patterns that would be
+    /// denser than 1/32" on paper at that scale are coarsened, so a hatch
+    /// drawn for a 1/8" sheet is not the one drawn for a 1/2" detail.
+    pub hatch_scale: f64,
     /// Sections only: draw geometry at most this far beyond the cut plane,
     /// inches (Chief's back-clipped cross section). `None` draws everything.
     pub section_depth: Option<f64>,
@@ -101,6 +107,7 @@ impl Default for Options {
             cull_backfaces: true,
             regions: true,
             hatch: false,
+            hatch_scale: DEFAULT_HATCH_SCALE,
             section_depth: None,
             shadows: None,
             depth_weights: false,

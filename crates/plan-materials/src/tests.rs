@@ -356,3 +356,184 @@ fn room_light_hangs_below_ceiling() {
     assert_eq!(l.position, [120.0, 96.0, 84.0]);
     assert!(l.on);
 }
+
+// ----- round 14: Material Specification -----
+
+#[test]
+fn a_class_sets_typical_values_and_holds_the_surface_in_its_range() {
+    let mut d = MaterialDef::new("M", &["Custom"], [10, 20, 30]);
+    assert_eq!(d.class, MaterialClass::General);
+    assert_eq!(d.surface().roughness, 0.8);
+    d.set_class(MaterialClass::Mirror);
+    let s = d.surface();
+    assert_eq!((s.metallic, s.transparency), (1.0, 0.0));
+    assert!(s.roughness <= 0.05);
+    // Sliders moved after the class was picked cannot break the class.
+    d.roughness = 0.9;
+    d.metallic = 0.0;
+    d.transparency = 0.7;
+    let s = d.surface();
+    assert!(s.metallic == 1.0 && s.roughness <= 0.05 && s.transparency == 0.0);
+    d.set_class(MaterialClass::Glass);
+    assert!(d.surface().transparency >= 0.5 && d.rgba_f32()[3] <= 0.5);
+    d.set_class(MaterialClass::Emissive);
+    assert!(d.surface().emissive >= 0.3);
+    d.set_class(MaterialClass::Plastic);
+    d.metallic = 0.9;
+    assert_eq!(d.surface().metallic, 0.0);
+    d.set_class(MaterialClass::Metal);
+    d.metallic = 0.1;
+    assert!(d.surface().metallic >= 0.8);
+    d.set_class(MaterialClass::Transparent);
+    d.transparency = 0.0;
+    assert!(d.surface().transparency >= 0.2);
+    for c in MaterialClass::ALL {
+        assert_eq!(MaterialClass::from_name(c.name()), Some(c));
+        let t = c.typical();
+        for v in [t.roughness, t.metallic, t.transparency, t.emissive] {
+            assert!((0.0..=1.0).contains(&v));
+        }
+    }
+    assert_eq!(MaterialClass::from_name("nope"), None);
+}
+
+#[test]
+fn glass_and_metal_library_entries_carry_their_class() {
+    let lib = core_library();
+    assert_eq!(lib.find("Clear Glass").unwrap().class, MaterialClass::Glass);
+    assert_eq!(lib.find("Chrome").unwrap().class, MaterialClass::Metal);
+    assert!(lib.find("Chrome").unwrap().surface().metallic >= 0.8);
+    assert_eq!(
+        scene_material(lib.find("Chrome").unwrap()),
+        plan_3d::Material::Metal
+    );
+    let mut mirror = MaterialDef::new("Mirror", &["Glass"], [200, 200, 210]);
+    mirror.set_class(MaterialClass::Mirror);
+    assert_eq!(scene_material(&mirror), plan_3d::Material::Metal);
+}
+
+#[test]
+fn the_new_fields_round_trip_and_old_files_get_defaults() {
+    let mut d = MaterialDef::new("Slate", &["Flooring"], [60, 60, 70]);
+    d.pattern_scale = 2.0;
+    d.pattern_angle = 30.0;
+    d.texture_offset_in = (3.0, -2.0);
+    d.texture_angle_deg = 45.0;
+    d.blend_color = Some([9, 9, 9]);
+    d.blend_amount = 0.25;
+    d.manufacturer = "Acme".into();
+    d.supplier = "Depot".into();
+    d.price = 4.5;
+    d.unit = PriceUnit::SqM;
+    d.set_class(MaterialClass::Plastic);
+    let mut lib = MaterialLibrary::default();
+    lib.add(d.clone());
+    let back = MaterialLibrary::from_json(&lib.to_json().unwrap()).unwrap();
+    assert_eq!(back.find("Slate"), Some(&d));
+    // A library written before this round has none of the fields.
+    let mut v = serde_json::to_value(&lib).unwrap();
+    let o = v["materials"][0].as_object_mut().unwrap();
+    for k in [
+        "class",
+        "pattern_scale",
+        "pattern_angle",
+        "texture_offset_in",
+        "texture_angle_deg",
+        "blend_color",
+        "blend_amount",
+        "manufacturer",
+        "supplier",
+        "price",
+        "unit",
+    ] {
+        o.remove(k);
+    }
+    let old: MaterialLibrary = serde_json::from_value(v).unwrap();
+    let m = &old.materials[0];
+    assert_eq!(m.class, MaterialClass::General);
+    assert_eq!((m.pattern_scale, m.pattern_angle), (1.0, 0.0));
+    assert_eq!(m.unit, PriceUnit::SqFt);
+    assert_eq!(m.price, 0.0);
+}
+
+#[test]
+fn prices_come_from_the_quote_or_the_older_cost() {
+    let mut d = MaterialDef::new("P", &["Custom"], [0; 3]).with_cost(2.0, "C");
+    assert_eq!(
+        (d.quoted_price(), d.price_per_sq_ft()),
+        ((2.0, PriceUnit::SqFt), 2.0)
+    );
+    d.price = 18.0;
+    d.unit = PriceUnit::SqYd;
+    assert_eq!(d.quoted_price(), (18.0, PriceUnit::SqYd));
+    assert!((d.price_per_sq_ft() - 2.0).abs() < 1e-9);
+    d.unit = PriceUnit::Each;
+    assert_eq!(d.price_per_sq_ft(), 0.0);
+}
+
+#[test]
+fn pattern_scale_and_angle_change_the_hatch() {
+    let r = rect(96.0, 48.0);
+    let base = pattern_strokes(&Pattern::brick(), r, 0.25);
+    let mut d = MaterialDef::new("B", &["Masonry"], [150, 70, 50]).with_pattern(Pattern::brick());
+    assert_eq!(
+        d.hatch_strokes(r, 0.25),
+        base,
+        "scale 1, angle 0 is the plain pattern"
+    );
+    d.pattern_scale = 2.0;
+    let big = d.hatch_strokes(r, 0.25);
+    assert!(big.len() < base.len(), "bigger bricks, fewer joints");
+    assert_eq!(
+        Pattern::brick().scaled(2.0),
+        Pattern::Brick {
+            length: 16.0,
+            height: 4.5
+        }
+    );
+    // Line sets turn in place and stay inside the rectangle.
+    let mut lines = MaterialDef::new("L", &["Custom"], [0; 3]).with_pattern(Pattern::Lines {
+        angle_deg: 0.0,
+        spacing: 6.0,
+    });
+    assert!(lines
+        .hatch_strokes(r, 0.25)
+        .iter()
+        .all(|(a, b)| (a.y - b.y).abs() < 1e-9));
+    lines.pattern_angle = 90.0;
+    let up = lines.hatch_strokes(r, 0.25);
+    assert!(!up.is_empty() && up.iter().all(|(a, b)| (a.x - b.x).abs() < 1e-6));
+    assert!(up
+        .iter()
+        .all(|(a, b)| inside(*a, 96.0, 48.0) && inside(*b, 96.0, 48.0)));
+    // A turned brick pattern is clipped by the caller; after clipping it
+    // fills the polygon and differs from the unturned one.
+    d.pattern_scale = 1.0;
+    d.pattern_angle = 30.0;
+    let poly = [
+        Point::new(0.0, 0.0),
+        Point::new(96.0, 0.0),
+        Point::new(96.0, 48.0),
+        Point::new(0.0, 48.0),
+    ];
+    let clipped = clip_strokes_to_polygon(&d.hatch_strokes(r, 0.25), &poly);
+    assert!(!clipped.is_empty());
+    assert!(clipped
+        .iter()
+        .all(|(a, b)| inside(*a, 96.0, 48.0) && inside(*b, 96.0, 48.0)));
+    assert_ne!(clipped, clip_strokes_to_polygon(&base, &poly));
+    // Nothing to scale in the stipple patterns; bad factors change nothing.
+    assert_eq!(Pattern::Concrete.scaled(3.0), Pattern::Concrete);
+    assert_eq!(Pattern::brick().scaled(-1.0), Pattern::brick());
+}
+
+#[test]
+fn paint_modes_and_scopes_have_distinct_labels() {
+    let modes: HashSet<&str> = PaintMode::ALL.iter().map(|m| m.label()).collect();
+    assert_eq!(modes.len(), 6);
+    assert!(modes.contains("Blend Colors") && modes.contains("Component"));
+    assert!(PaintMode::Plan.is_wide() && !PaintMode::Object.is_wide());
+    let scopes: HashSet<&str> = PaintScope::ALL.iter().map(|m| m.label()).collect();
+    assert_eq!(scopes.len(), 3);
+    assert_eq!(PaintMode::default(), PaintMode::Object);
+}

@@ -125,10 +125,29 @@ pub(crate) struct RoomLevels {
     pub has_floor: bool,
     /// Build the ceiling platform over the room (R-30, Deck and Porch).
     pub has_ceiling: bool,
+    /// Thickness of the ceiling platform's structure alone (inside
+    /// `ceiling_thickness`), inches.
+    pub ceiling_platform: f64,
+    /// Zero for a room whose platforms are the plain single blocks; else a
+    /// stamp of its layered Floor/Ceiling Structure and Finish definitions
+    /// (Round 16), so rooms with different layers get their own meshes.
+    pub layer_sig: u64,
 }
 
 /// The levels of `room` on `floor`.
+///
+/// * The ceiling platform hangs above the finished ceiling: the slab runs
+///   from the finished ceiling up through the ceiling finish layers (R-27) -
+///   or up to the Rough Ceiling height when the room has one (R-25) - and
+///   the platform itself.
+/// * On a foundation floor built with a basement the ceiling is the
+///   underside of the first floor's platform (the floor's ceiling structure
+///   thickness), and the floor's `ceiling_height` reaches the first floor's
+///   finished level (R-18).
+/// * A room with the Monolithic Slab Foundation flag has a floor platform of
+///   the slab's thickness (R-31).
 pub(crate) fn room_levels(floor: &plan_core::Floor, room: &plan_core::Room) -> RoomLevels {
+    use plan_core::assemblies::{resolve, AssemblyKind};
     let named = room.name_entry(&floor.room_names);
     let misc = named.and_then(|n| n.misc.as_ref());
     let layered = |layers: Option<&Vec<plan_core::extras::StructureLayer>>| {
@@ -136,19 +155,249 @@ pub(crate) fn room_levels(floor: &plan_core::Floor, room: &plan_core::Room) -> R
             .filter(|l| !l.is_empty())
             .map(|l| plan_core::extras::structure_thickness(l))
     };
+    // The layered definitions (Round 16): the room's own, the floor's, the
+    // plan-wide one the floor follows. A platform that has none is the
+    // single block it always was.
+    let def = |k: AssemblyKind| resolve(k, &floor.settings, misc);
+    let (fs, ff) = (
+        def(AssemblyKind::FloorStructure),
+        def(AssemblyKind::FloorFinish),
+    );
+    let (cs, cf) = (
+        def(AssemblyKind::CeilingStructure),
+        def(AssemblyKind::CeilingFinish),
+    );
+    let any_layered = fs.is_layered() || ff.is_layered() || cs.is_layered() || cf.is_layered();
+    let layer_sig = if any_layered {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        format!(
+            "{:?}|{:?}|{:?}|{:?}",
+            fs.assembly, ff.assembly, cs.assembly, cf.assembly
+        )
+        .hash(&mut h);
+        h.finish().max(1)
+    } else {
+        0
+    };
+    let floor_offset = named.map_or(0.0, |n| n.floor_height_offset);
+    let platform_above = if floor.kind == plan_core::FloorKind::Foundation {
+        floor.settings.ceiling_structure_thickness.max(0.0)
+    } else {
+        0.0
+    };
+    let ceiling_height = named.and_then(|n| n.ceiling_height).unwrap_or_else(|| {
+        if platform_above > 0.0 {
+            (floor.ceiling_height - platform_above - floor_offset).max(1.0)
+        } else {
+            floor.ceiling_height
+        }
+    });
+    let own_ceiling = if cs.is_layered() {
+        Some(cs.assembly.total_thickness().max(0.5))
+    } else {
+        layered(misc.map(|m| &m.ceiling_structure))
+    };
+    // A dropped ceiling hangs its finished ceiling below the Ceiling Height
+    // by the plenum and framing of its Ceiling Finish; the platform and the
+    // wall tops stay where they were.
+    let drop = if cf.is_layered() {
+        cf.assembly.drop()
+    } else {
+        0.0
+    };
+    let (gap, platform) = match own_ceiling {
+        None if platform_above > 0.0 => (0.0, (platform_above - SLAB_THICKNESS).max(0.5)),
+        own => {
+            let finish = if cf.is_layered() {
+                cf.assembly.surface_thickness()
+            } else {
+                misc.map_or(floor.settings.ceiling_finish_thickness, |m| {
+                    m.ceiling_finish_thickness
+                })
+            }
+            .max(0.0);
+            let rough = named
+                .and_then(|n| n.rough_ceiling)
+                .map_or(finish, |r| (r - ceiling_height).max(finish));
+            (rough, own.unwrap_or(SLAB_THICKNESS))
+        }
+    };
+    let monolithic = named.and_then(|n| n.monolithic_slab);
     RoomLevels {
-        floor_offset: named.map_or(0.0, |n| n.floor_height_offset),
-        ceiling_height: named
-            .and_then(|n| n.ceiling_height)
-            .unwrap_or(floor.ceiling_height),
-        floor_finish: misc.map_or(floor.settings.floor_finish_thickness, |m| {
-            m.floor_finish_thickness
-        }),
-        floor_thickness: layered(misc.map(|m| &m.floor_structure)).unwrap_or(SLAB_THICKNESS),
-        ceiling_thickness: layered(misc.map(|m| &m.ceiling_structure)).unwrap_or(SLAB_THICKNESS),
+        floor_offset,
+        ceiling_height: ceiling_height - drop,
+        floor_finish: if ff.is_layered() {
+            ff.assembly.total_thickness()
+        } else {
+            misc.map_or(floor.settings.floor_finish_thickness, |m| {
+                m.floor_finish_thickness
+            })
+        },
+        floor_thickness: monolithic
+            .map(|s| s.thickness.max(0.5))
+            .or_else(|| {
+                fs.is_layered()
+                    .then(|| fs.assembly.total_thickness().max(0.5))
+            })
+            .or_else(|| layered(misc.map(|m| &m.floor_structure)))
+            .unwrap_or(SLAB_THICKNESS),
+        ceiling_thickness: drop + gap + platform,
         has_floor: named.is_none_or(|n| n.has_floor),
         has_ceiling: named.is_none_or(|n| n.has_ceiling),
+        ceiling_platform: platform,
+        layer_sig,
     }
+}
+
+/// One horizontal slice of a platform, scene elevations in inches.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Band {
+    pub material: Material,
+    pub y0: f64,
+    pub y1: f64,
+}
+
+/// The layer slices of a room's floor and ceiling platforms (Round 16).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub(crate) struct PlatformBands {
+    pub floor: Vec<Band>,
+    pub ceiling: Vec<Band>,
+}
+
+/// The material a layer is drawn in: the name's own keyword if it has one,
+/// else by role (framing and sheathing are lumber, a plain layer in a finish
+/// is a bedding such as backerboard or mortar, a finish layer is the surface
+/// the platform already is).
+fn layer_material(
+    layer: &plan_core::assemblies::AssemblyLayer,
+    finish_kind: bool,
+    plain: Material,
+) -> Material {
+    use plan_core::assemblies::LayerRole;
+    let n = layer.material.to_ascii_lowercase();
+    if ["backer", "mortar", "thinset", "cement board", "grout"]
+        .iter()
+        .any(|k| n.contains(k))
+    {
+        return Material::Concrete;
+    }
+    if plain == Material::Ceiling
+        && ["drywall", "gypsum", "plaster"]
+            .iter()
+            .any(|k| n.contains(k))
+    {
+        return Material::Ceiling;
+    }
+    let by_role = match layer.role {
+        LayerRole::Framing | LayerRole::Sheathing => Material::Framing,
+        LayerRole::Standard if finish_kind => Material::Concrete,
+        LayerRole::Standard => Material::Framing,
+        LayerRole::Finish | LayerRole::Cladding | LayerRole::AirGap => plain,
+    };
+    crate::details::material_of(&layer.material, by_role)
+}
+
+/// The slices of a stack from `top` downward, the first layer highest. An
+/// air gap takes its space but is not drawn.
+fn stack_down(
+    a: &plan_core::assemblies::Assembly,
+    top: f64,
+    finish_kind: bool,
+    plain: Material,
+) -> Vec<Band> {
+    a.spans_down(top)
+        .into_iter()
+        .filter(|s| s.layer.is_solid() && s.y1 - s.y0 > 1e-6)
+        .map(|s| Band {
+            material: layer_material(s.layer, finish_kind, plain),
+            y0: s.y0,
+            y1: s.y1,
+        })
+        .collect()
+}
+
+/// The layer slices of `room`'s platforms when it has layered definitions
+/// (`levels.layer_sig != 0`): the floor structure from the platform datum
+/// down and the floor finish above it; the ceiling finish below the ceiling
+/// platform (a dropped ceiling's plenum and framing hang from it), a solid
+/// filler up to a rough ceiling, and the ceiling structure on top. A platform
+/// without a definition stays one block of its legacy thickness.
+pub(crate) fn platform_bands(
+    floor: &plan_core::Floor,
+    room: &plan_core::Room,
+    levels: &RoomLevels,
+) -> Option<PlatformBands> {
+    use plan_core::assemblies::{resolve, AssemblyKind};
+    if levels.layer_sig == 0 {
+        return None;
+    }
+    let named = room.name_entry(&floor.room_names);
+    let misc = named.and_then(|n| n.misc.as_ref());
+    let def = |k: AssemblyKind| resolve(k, &floor.settings, misc);
+    let datum = floor.elevation + levels.floor_offset;
+    // Floor: finish above the datum, structure below it.
+    let mut fl = Vec::new();
+    let ff = def(AssemblyKind::FloorFinish);
+    if ff.is_layered() {
+        fl.extend(stack_down(
+            &ff.assembly,
+            datum + ff.assembly.total_thickness(),
+            true,
+            Material::Floor,
+        ));
+    } else if levels.floor_finish > 1e-6 {
+        fl.push(Band {
+            material: Material::Floor,
+            y0: datum,
+            y1: datum + levels.floor_finish,
+        });
+    }
+    let fs = def(AssemblyKind::FloorStructure);
+    if fs.is_layered() && named.is_none_or(|n| n.monolithic_slab.is_none()) {
+        fl.extend(stack_down(&fs.assembly, datum, false, Material::Floor));
+    } else {
+        fl.push(Band {
+            material: Material::Floor,
+            y0: datum - levels.floor_thickness,
+            y1: datum,
+        });
+    }
+    // Ceiling.
+    let bottom = datum + levels.ceiling_height;
+    let top = bottom + levels.ceiling_thickness;
+    let platform_bottom = top - levels.ceiling_platform;
+    let mut ce = Vec::new();
+    let cf = def(AssemblyKind::CeilingFinish);
+    let finish_top = if cf.is_layered() {
+        let t = bottom + cf.assembly.total_thickness();
+        ce.extend(stack_down(&cf.assembly, t, true, Material::Ceiling));
+        t
+    } else {
+        // The older finish: the solid block up to the platform.
+        bottom
+    };
+    if platform_bottom - finish_top > 1e-6 {
+        ce.push(Band {
+            material: Material::Ceiling,
+            y0: finish_top,
+            y1: platform_bottom,
+        });
+    }
+    let cs = def(AssemblyKind::CeilingStructure);
+    if cs.is_layered() {
+        ce.extend(stack_down(&cs.assembly, top, false, Material::Ceiling));
+    } else {
+        ce.push(Band {
+            material: Material::Ceiling,
+            y0: platform_bottom,
+            y1: top,
+        });
+    }
+    Some(PlatformBands {
+        floor: fl,
+        ceiling: ce,
+    })
 }
 
 /// Top of the ceiling platform of `room` on `floor`, scene elevation: where
@@ -165,7 +414,7 @@ pub fn room_ceiling_top(floor: &plan_core::Floor, room: &plan_core::Room) -> f64
 /// gets them that deep below the datum. They stop at garage doors.
 /// `thickness` is the foundation wall type's (the wall's own when unknown).
 /// One mesh per run, tagged with its wall.
-pub(crate) fn stem_walls(
+fn stem_only(
     floor: &plan_core::Floor,
     room: &plan_core::Room,
     levels: &RoomLevels,
@@ -175,9 +424,16 @@ pub(crate) fn stem_walls(
     use crate::frame::Frame;
     use plan_core::geometry::dist_to_segment;
     use plan_core::{OpeningStyle, WallKind};
+    // A Stem Wall height, or the thickened edge of a Monolithic Slab (R-31).
     let explicit = room
         .name_entry(&floor.room_names)
-        .and_then(|n| n.stem_wall_height)
+        .and_then(|n| {
+            let slab = n.monolithic_slab.map(|s| s.stem_height);
+            match (n.stem_wall_height, slab) {
+                (Some(a), Some(b)) => Some(a.max(b)),
+                (a, b) => a.or(b),
+            }
+        })
         .filter(|h| *h > 0.5);
     let dropped = levels.floor_offset < -0.5;
     let datum = floor.elevation;
@@ -254,9 +510,457 @@ pub(crate) fn stem_walls(
     out
 }
 
+/// Everything a room adds beside its platforms and stem walls: the stem
+/// walls themselves (R-26, R-31), the footings under foundation walls
+/// (R-61), the base, chair rail and crown moldings of its Moldings tab
+/// (R-34) and the floor, ceiling and wall surfaces of its Materials tab
+/// (R-36). One mesh per run or surface.
+pub(crate) fn stem_walls(
+    floor: &plan_core::Floor,
+    room: &plan_core::Room,
+    levels: &RoomLevels,
+    thickness: Option<f64>,
+) -> Vec<Mesh> {
+    let mut out = stem_only(floor, room, levels, thickness);
+    out.extend(footings(floor, room));
+    out.extend(room_moldings(floor, room, levels));
+    out.extend(room_surfaces(floor, room, levels));
+    out
+}
+
+/// Footings under the foundation walls of a Walls with Footings foundation
+/// (R-61): a concrete box under each wall run of the room, as wide and deep
+/// as the Build Foundation dialog said.
+fn footings(floor: &plan_core::Floor, room: &plan_core::Room) -> Vec<Mesh> {
+    use crate::builder::MeshSet;
+    use crate::frame::Frame;
+    use plan_core::floors::FoundationKind;
+    use plan_core::geometry::dist_to_segment;
+    let Some(build) = floor.settings.foundation else {
+        return Vec::new();
+    };
+    if floor.kind != plan_core::FloorKind::Foundation
+        || !matches!(build.kind, FoundationKind::StemWall { .. })
+        || build.footing_width <= 0.0
+        || build.footing_depth <= 0.0
+        || room.polygon.len() < 3
+    {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let n = room.polygon.len();
+    for i in 0..n {
+        let (p, q) = (room.polygon[i], room.polygon[(i + 1) % n]);
+        let len = p.dist(q);
+        if len < 1.0 {
+            continue;
+        }
+        let dir = q.sub(p).normalized();
+        let mid = Point::lerp(p, q, 0.5);
+        let Some(wall) = floor.walls.iter().find(|w| {
+            w.is_foundation()
+                && !w.is_curved()
+                && w.length() > 1e-6
+                && dist_to_segment(mid, w.start, w.end) <= w.thickness * 0.5 + 1.0
+                && w.direction().cross(dir).abs() < 0.02
+        }) else {
+            continue;
+        };
+        let mut synthetic = wall.clone();
+        synthetic.start = p;
+        synthetic.end = q;
+        synthetic.bottom_offset = 0.0;
+        let base = floor.elevation + wall.bottom_offset;
+        let frame = Frame::new(&synthetic, base - build.footing_depth);
+        let half = build.footing_width * 0.5;
+        let mut set = MeshSet::default();
+        frame.cuboid(
+            set.material(Material::Concrete),
+            (0.0, len),
+            (-half, half),
+            (0.0, build.footing_depth),
+        );
+        out.extend(set.finish(Some(wall.id)));
+    }
+    out
+}
+
+fn scene_point(p: Point, y: f64) -> [f32; 3] {
+    [p.x as f32, y as f32, (-p.y) as f32]
+}
+
+/// The molding runs of a room's Moldings tab, swept along the interior
+/// surfaces with the miters of [`crate::details::molding_mesh`] (R-34).
+/// Base sits on the finished floor, a chair rail 32" up, crown hangs from the
+/// finished ceiling; each stops at doors and openings that reach into its
+/// height.
+fn room_moldings(
+    floor: &plan_core::Floor,
+    room: &plan_core::Room,
+    levels: &RoomLevels,
+) -> Vec<Mesh> {
+    use plan_core::details::{MoldingLine, MoldingProfile};
+    use plan_core::extras::MoldingKind;
+    use plan_core::rooms::{molding_def, molding_defs, molding_span};
+    let Some(named) = room.name_entry(&floor.room_names) else {
+        return Vec::new();
+    };
+    let on_floor = levels.floor_offset + levels.floor_finish;
+    let ceiling = levels.ceiling_height - levels.floor_finish;
+    let mut out = Vec::new();
+    for m in &named.moldings {
+        if m.profile.trim().is_empty() || (m.kind == MoldingKind::Crown && !levels.has_ceiling) {
+            continue;
+        }
+        let Some(def) = molding_def(&m.profile).or_else(|| molding_defs(m.kind).first().copied())
+        else {
+            continue;
+        };
+        let height = if m.height > 0.0 {
+            m.height
+        } else {
+            def.height()
+        };
+        let (lo, hi) = molding_span(m.kind, height, ceiling);
+        for run in room.molding_runs(floor, on_floor + lo, on_floor + hi) {
+            let line = MoldingLine {
+                polyline: run,
+                profile: MoldingProfile::Custom(def.points()),
+                height,
+                width: def.projection(),
+                elevation: floor.elevation + on_floor + lo,
+                ..MoldingLine::default()
+            };
+            out.extend(crate::details::molding_mesh(&line, 0.0));
+        }
+    }
+    out
+}
+
+/// A surface material named in the Materials tab: `None` when it is empty or
+/// is what the surface is already built of.
+fn surface_material(name: &str, plain: Material) -> Option<Material> {
+    let n = name.trim();
+    if n.is_empty() {
+        return None;
+    }
+    let m = crate::details::material_of(n, plain);
+    (m != plain).then_some(m)
+}
+
+/// Which surface of a room a plate is (R-36): the role a Room-mode paint
+/// names, whatever the name is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RoomSurface {
+    Floor,
+    Ceiling,
+    Walls,
+}
+
+/// The object id of a room's surface plate. It is not a plan object: the high
+/// bit is set, and the rest hashes the floor, the room and the role, so the
+/// app can find the plates a room named itself and paint them with the exact
+/// library material ([`room_surface_names`]).
+pub fn room_surface_id(floor: &plan_core::Floor, room: &plan_core::Room, role: RoomSurface) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut eat = |bytes: &[u8]| {
+        for b in bytes {
+            h ^= u64::from(*b);
+            h = h.wrapping_mul(0x0100_0000_01b3);
+        }
+    };
+    eat(&floor.elevation.to_bits().to_le_bytes());
+    eat(floor.name.as_bytes());
+    eat(room.label.as_bytes());
+    eat(&((room.centroid.x * 8.0).round() as i64).to_le_bytes());
+    eat(&((room.centroid.y * 8.0).round() as i64).to_le_bytes());
+    eat(&[role as u8]);
+    h | (1 << 63)
+}
+
+/// The material name `room` itself gives to `role` (not the floor's default),
+/// if any.
+fn own_name(floor: &plan_core::Floor, room: &plan_core::Room, role: RoomSurface) -> Option<String> {
+    let n = room.name_entry(&floor.room_names)?;
+    let name = match role {
+        RoomSurface::Floor => n.floor_finish.as_deref(),
+        RoomSurface::Ceiling => n.ceiling_finish.as_deref(),
+        RoomSurface::Walls => n.misc.as_ref().map(|m| m.wall_covering.as_str()),
+    }?;
+    (!name.trim().is_empty()).then(|| name.to_string())
+}
+
+/// Every room surface plate of `project` whose material the room names itself
+/// (what the Material Painter's Room mode writes): its object id and the
+/// library name. The plates carry that id, so the app recolors them with the
+/// exact material, texture and class instead of the keyword guess.
+pub fn room_surface_names(project: &plan_core::Project) -> Vec<(u64, RoomSurface, String)> {
+    let mut out = Vec::new();
+    for floor in &project.floors {
+        if floor.room_names.is_empty() {
+            continue;
+        }
+        for room in plan_core::detect_rooms(&floor.walls, super::ROOM_TOLERANCE) {
+            for role in [RoomSurface::Floor, RoomSurface::Ceiling, RoomSurface::Walls] {
+                if let Some(name) = own_name(floor, &room, role) {
+                    out.push((room_surface_id(floor, &room, role), role, name));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Thin plates of the surface materials a room names for its floor, ceiling
+/// and walls (R-36), lying on the platform tops, the ceiling underside and the
+/// interior wall faces. A surface without a name of its own takes the floor's
+/// default (Floor Defaults).
+fn room_surfaces(
+    floor: &plan_core::Floor,
+    room: &plan_core::Room,
+    levels: &RoomLevels,
+) -> Vec<Mesh> {
+    use crate::builder::MeshBuilder;
+    use plan_core::foundation::PlatformKind;
+    const PLATE: f64 = 0.06;
+    let named = room.name_entry(&floor.room_names);
+    let pick = |own: Option<&str>, fallback: &str| -> String {
+        own.filter(|s| !s.trim().is_empty())
+            .unwrap_or(fallback)
+            .to_string()
+    };
+    let floor_name = pick(
+        named.and_then(|n| n.floor_finish.as_deref()),
+        &floor.settings.floor_material,
+    );
+    let ceiling_name = pick(
+        named.and_then(|n| n.ceiling_finish.as_deref()),
+        &floor.settings.ceiling_material,
+    );
+    let wall_name = pick(
+        named
+            .and_then(|n| n.misc.as_ref())
+            .map(|m| m.wall_covering.as_str()),
+        &floor.settings.wall_material,
+    );
+    let mut out = Vec::new();
+    let y_top = floor.elevation + levels.floor_offset + levels.floor_finish;
+    let y_ceiling = floor.elevation + levels.floor_offset + levels.ceiling_height;
+    // A surface the room names itself always gets its plate, tagged with its
+    // role's id: a library name the keyword table does not know ("Walnut")
+    // still shows once the app paints the plate with the exact material.
+    let role_material = |role: RoomSurface, name: &str, plain: Material| -> Option<Material> {
+        surface_material(name, plain).or_else(|| own_name(floor, room, role).map(|_| plain))
+    };
+    let tag = |role: RoomSurface, meshes: Vec<Mesh>| -> Vec<Mesh> {
+        if own_name(floor, room, role).is_none() {
+            return meshes;
+        }
+        let id = room_surface_id(floor, room, role);
+        meshes
+            .into_iter()
+            .map(|mut m| {
+                m.object_id = Some(id);
+                m
+            })
+            .collect()
+    };
+    if levels.has_floor {
+        if let Some(mat) = role_material(RoomSurface::Floor, &floor_name, Material::Floor) {
+            let mut cut = crate::foundation::platform_holes(floor, PlatformKind::Floor);
+            cut.extend(room.holes.iter().cloned());
+            out.extend(tag(
+                RoomSurface::Floor,
+                crate::foundation::build_platform(
+                    mat,
+                    std::slice::from_ref(room),
+                    &cut,
+                    y_top,
+                    y_top + PLATE,
+                    None,
+                )
+                .into_iter()
+                .collect(),
+            ));
+        }
+    }
+    if levels.has_ceiling {
+        if let Some(mat) = role_material(RoomSurface::Ceiling, &ceiling_name, Material::Ceiling) {
+            let mut cut = crate::foundation::platform_holes(floor, PlatformKind::Ceiling);
+            cut.extend(room.holes.iter().cloned());
+            out.extend(tag(
+                RoomSurface::Ceiling,
+                crate::foundation::build_platform(
+                    mat,
+                    std::slice::from_ref(room),
+                    &cut,
+                    y_ceiling - PLATE,
+                    y_ceiling,
+                    None,
+                )
+                .into_iter()
+                .collect(),
+            ));
+        }
+    }
+    if let Some(mat) = role_material(RoomSurface::Walls, &wall_name, Material::WallInterior) {
+        let poly = if room.inner_polygon.len() >= 3 {
+            &room.inner_polygon
+        } else {
+            &room.polygon
+        };
+        let mut mesh = MeshBuilder::new(mat);
+        let n = poly.len();
+        for i in 0..n {
+            let (p, q) = (poly[i], poly[(i + 1) % n]);
+            let len = p.dist(q);
+            if len < 1.0 {
+                continue;
+            }
+            let dir = q.sub(p).normalized();
+            let into = dir.perp();
+            let lift = into * PLATE;
+            let normal = [into.x as f32, 0.0, (-into.y) as f32];
+            let mut panel = |a: f64, b: f64, y0: f64, y1: f64| {
+                if b - a < 0.25 || y1 - y0 < 0.25 {
+                    return;
+                }
+                let (pa, pb) = (p + dir * a + lift, p + dir * b + lift);
+                mesh.quad(
+                    [
+                        scene_point(pa, y0),
+                        scene_point(pb, y0),
+                        scene_point(pb, y1),
+                        scene_point(pa, y1),
+                    ],
+                    [
+                        [(a / IN_PER_FT) as f32, (y0 / IN_PER_FT) as f32],
+                        [(b / IN_PER_FT) as f32, (y0 / IN_PER_FT) as f32],
+                        [(b / IN_PER_FT) as f32, (y1 / IN_PER_FT) as f32],
+                        [(a / IN_PER_FT) as f32, (y1 / IN_PER_FT) as f32],
+                    ],
+                    normal,
+                );
+            };
+            let mut cursor = 0.0;
+            for o in plan_core::rooms::edge_openings(floor, p, q) {
+                let (from, to) = (o.from.max(0.0), o.to.min(len));
+                if to <= from {
+                    continue;
+                }
+                panel(cursor, from, y_top, y_ceiling);
+                panel(from, to, y_top, floor.elevation + o.sill);
+                panel(from, to, floor.elevation + o.head, y_ceiling);
+                cursor = cursor.max(to);
+            }
+            panel(cursor, len, y_top, y_ceiling);
+        }
+        if !mesh.is_empty() {
+            out.extend(tag(RoomSurface::Walls, vec![mesh.finish(None)]));
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn box_room(floor: &mut plan_core::Floor) -> plan_core::Room {
+        use plan_core::{Wall, WallKind};
+        let c = [
+            Point::new(0.0, 0.0),
+            Point::new(120.0, 0.0),
+            Point::new(120.0, 96.0),
+            Point::new(0.0, 96.0),
+        ];
+        for i in 0..4 {
+            floor.walls.push(Wall {
+                id: i as u64 + 1,
+                ..Wall::new(c[i], c[(i + 1) % 4], 6.0, 108.0, WallKind::Exterior)
+            });
+        }
+        plan_core::detect_rooms(&floor.walls, 0.5).remove(0)
+    }
+
+    #[test]
+    fn surface_materials_skip_what_the_surface_already_is() {
+        assert_eq!(surface_material("", Material::Floor), None);
+        assert_eq!(surface_material("  ", Material::Floor), None);
+        assert_eq!(surface_material("Oak Hardwood", Material::Floor), None);
+        assert_eq!(
+            surface_material("Ceramic Tile", Material::Floor),
+            Some(Material::Stone)
+        );
+        assert_eq!(
+            surface_material("Painted Drywall", Material::WallInterior),
+            None
+        );
+        assert_eq!(
+            surface_material("Brick", Material::WallInterior),
+            Some(Material::Brick)
+        );
+        for n in plan_core::rooms::FLOOR_SURFACES {
+            let _ = surface_material(n, Material::Floor);
+        }
+    }
+
+    #[test]
+    fn levels_add_the_finish_the_rough_ceiling_and_the_slab_flag() {
+        let mut floor = plan_core::Floor::new("1st", 0.0);
+        floor.ceiling_height = 108.0;
+        let room = box_room(&mut floor);
+        // An unnamed room: 5/8" ceiling finish and a 1" platform above the
+        // finished ceiling.
+        let l = room_levels(&floor, &room);
+        assert_eq!(l.ceiling_height, 108.0);
+        assert!((l.ceiling_thickness - (0.625 + SLAB_THICKNESS)).abs() < 1e-9);
+        assert_eq!(l.floor_thickness, SLAB_THICKNESS);
+        // A rough ceiling above the finish sets the gap.
+        let mut n = plan_core::RoomName::new(Point::new(60.0, 48.0), "Den", "Den");
+        n.rough_ceiling = Some(120.0);
+        floor.room_names = vec![n.clone()];
+        let l = room_levels(&floor, &room);
+        assert!((l.ceiling_thickness - (12.0 + SLAB_THICKNESS)).abs() < 1e-9);
+        // One below the finish layers is no lower than them.
+        floor.room_names[0].rough_ceiling = Some(100.0);
+        let l = room_levels(&floor, &room);
+        assert!((l.ceiling_thickness - (0.625 + SLAB_THICKNESS)).abs() < 1e-9);
+        // The slab flag sets the floor platform and its edge depth.
+        floor.room_names[0].rough_ceiling = None;
+        floor.room_names[0].monolithic_slab = Some(plan_core::rooms::RoomSlab {
+            thickness: 6.0,
+            stem_height: 14.0,
+        });
+        let l = room_levels(&floor, &room);
+        assert_eq!(l.floor_thickness, 6.0);
+        let stem = stem_only(&floor, &room, &l, None);
+        assert_eq!(stem.len(), 4, "a run of stem wall under each exterior wall");
+        let (lo, _) = stem[0].bounds().unwrap();
+        assert!((f64::from(lo[1]) + 14.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn a_foundation_floor_takes_its_ceiling_from_the_platform_above() {
+        let mut floor = plan_core::Floor::new("Foundation", -108.0);
+        floor.kind = plan_core::FloorKind::Foundation;
+        floor.ceiling_height = 108.0;
+        floor.settings.ceiling_structure_thickness = 10.25;
+        let room = box_room(&mut floor);
+        let l = room_levels(&floor, &room);
+        assert!((l.ceiling_height - (108.0 - 10.25)).abs() < 1e-9);
+        assert!((l.ceiling_thickness - (10.25 - SLAB_THICKNESS)).abs() < 1e-9);
+        // The ceiling top is the underside of the first floor's slab (1" below
+        // its finished level at 0).
+        assert!((room_ceiling_top(&floor, &room) + SLAB_THICKNESS).abs() < 1e-9);
+        // A basement slab's offset is taken off the clear height.
+        let mut n = plan_core::RoomName::new(Point::new(60.0, 48.0), "Basement", "Basement");
+        n.floor_height_offset = 4.0;
+        floor.room_names = vec![n];
+        let l = room_levels(&floor, &room);
+        assert!((l.ceiling_height - (108.0 - 10.25 - 4.0)).abs() < 1e-9);
+        assert!((room_ceiling_top(&floor, &room) + SLAB_THICKNESS).abs() < 1e-9);
+    }
 
     #[test]
     fn flat_square_slab_is_a_closed_box() {
@@ -298,6 +1002,149 @@ mod tests {
         assert_eq!(
             slab_from_polygon(&tilted[..2], 4.0, Material::Roof).triangle_count(),
             0
+        );
+    }
+
+    fn layer(
+        name: &str,
+        role: plan_core::assemblies::LayerRole,
+        t: f64,
+    ) -> plan_core::assemblies::AssemblyLayer {
+        plan_core::assemblies::AssemblyLayer::new(name, role, t)
+    }
+
+    #[test]
+    fn a_two_layer_floor_stacks_its_layers_down_from_the_platform_datum() {
+        use plan_core::assemblies::{Assembly, AssemblyKind, AssemblySlot, LayerRole};
+        let mut floor = plan_core::Floor::new("1st", 0.0);
+        floor.ceiling_height = 108.0;
+        let room = box_room(&mut floor);
+        // Nothing layered: no bands, the old single blocks.
+        let plain = room_levels(&floor, &room);
+        assert_eq!(plain.layer_sig, 0);
+        assert!(platform_bands(&floor, &room, &plain).is_none());
+        // 3/4 OSB over a 2x12 is a 12 in platform; tile over backerboard
+        // is a 7/8 in finish.
+        floor.settings.platform.set(
+            AssemblyKind::FloorStructure,
+            AssemblySlot::Own(Assembly::new(vec![
+                layer("3/4 OSB", LayerRole::Sheathing, 0.75),
+                layer("2x12", LayerRole::Framing, 11.25),
+            ])),
+        );
+        floor.settings.platform.set(
+            AssemblyKind::FloorFinish,
+            AssemblySlot::Own(Assembly::new(vec![
+                layer("Ceramic Tile", LayerRole::Finish, 0.375),
+                layer("Backerboard", LayerRole::Standard, 0.5),
+            ])),
+        );
+        let l = room_levels(&floor, &room);
+        assert_ne!(l.layer_sig, 0);
+        assert_eq!(l.floor_thickness, 12.0);
+        assert!((l.floor_finish - 0.875).abs() < 1e-9);
+        let b = platform_bands(&floor, &room, &l).unwrap();
+        let spans: Vec<(f64, f64)> = b.floor.iter().map(|x| (x.y0, x.y1)).collect();
+        assert_eq!(
+            spans,
+            vec![(0.5, 0.875), (0.0, 0.5), (-0.75, 0.0), (-12.0, -0.75)],
+            "tile, backer, subfloor, joist from the top down"
+        );
+        assert_eq!(b.floor[0].material, Material::Stone);
+        assert_eq!(b.floor[1].material, Material::Concrete);
+        assert_eq!(b.floor[3].material, Material::Framing);
+        // The top is the finished floor the surfaces and the stairs use.
+        assert_eq!(b.floor[0].y1, l.floor_offset + l.floor_finish);
+    }
+
+    #[test]
+    fn a_dropped_ceiling_lowers_the_finished_ceiling_and_nothing_else() {
+        use plan_core::assemblies::{Assembly, AssemblyKind, AssemblySlot, LayerRole};
+        let mut floor = plan_core::Floor::new("1st", 0.0);
+        floor.ceiling_height = 108.0;
+        let room = box_room(&mut floor);
+        let before = room_levels(&floor, &room);
+        let top_before = room_ceiling_top(&floor, &room);
+        floor.settings.platform.set(
+            AssemblyKind::CeilingFinish,
+            AssemblySlot::Own(Assembly::new(vec![
+                layer("Plenum", LayerRole::AirGap, 11.125),
+                layer("Hat Channel", LayerRole::Framing, 0.875),
+                layer("Drywall", LayerRole::Finish, 0.5),
+            ])),
+        );
+        let l = room_levels(&floor, &room);
+        assert_eq!(
+            l.ceiling_height,
+            108.0 - 12.0,
+            "the finished ceiling hangs 12 in lower"
+        );
+        // Same top as a 1/2 in finish under the same platform: wall tops and
+        // the platform stay put.
+        assert!((room_ceiling_top(&floor, &room) - (top_before - 0.625 + 0.5)).abs() < 1e-9);
+        assert_eq!(before.ceiling_height, 108.0);
+        let b = platform_bands(&floor, &room, &l).unwrap();
+        let spans: Vec<(f64, f64)> = b.ceiling.iter().map(|x| (x.y0, x.y1)).collect();
+        // Drywall at the finished ceiling, the hat channel above it, the
+        // plenum (an air gap) not drawn, then the 1 in platform.
+        assert_eq!(spans, vec![(96.5, 97.375), (96.0, 96.5), (108.5, 109.5)]);
+    }
+
+    #[test]
+    fn a_rough_ceiling_keeps_a_solid_filler_between_a_layered_finish_and_the_platform() {
+        use plan_core::assemblies::{Assembly, AssemblyKind, AssemblySlot, LayerRole};
+        let mut floor = plan_core::Floor::new("1st", 0.0);
+        floor.ceiling_height = 108.0;
+        let room = box_room(&mut floor);
+        let mut n = plan_core::RoomName::new(Point::new(60.0, 48.0), "Den", "Den");
+        n.rough_ceiling = Some(120.0);
+        floor.room_names = vec![n];
+        floor.settings.platform.set(
+            AssemblyKind::CeilingFinish,
+            AssemblySlot::Own(Assembly::new(vec![layer(
+                "Drywall",
+                LayerRole::Finish,
+                0.5,
+            )])),
+        );
+        let l = room_levels(&floor, &room);
+        let b = platform_bands(&floor, &room, &l).unwrap();
+        let spans: Vec<(f64, f64)> = b.ceiling.iter().map(|x| (x.y0, x.y1)).collect();
+        assert_eq!(spans, vec![(108.0, 108.5), (108.5, 120.0), (120.0, 121.0)]);
+    }
+
+    #[test]
+    fn a_surface_the_room_names_gets_a_tagged_plate_whatever_the_name() {
+        let mut floor = plan_core::Floor::new("1st", 0.0);
+        let room = box_room(&mut floor);
+        let levels = room_levels(&floor, &room);
+        // Nothing named: no plate.
+        let plain = room_surfaces(&floor, &room, &levels);
+        assert!(plain.iter().all(|m| m.object_id.is_none()));
+        // "Walnut" is no keyword of the table, but the room names it itself.
+        let mut n = plan_core::RoomName::new(Point::new(60.0, 48.0), "Den", "Den");
+        n.floor_finish = Some("Walnut".into());
+        floor.room_names = vec![n];
+        let tagged: Vec<_> = room_surfaces(&floor, &room, &levels)
+            .into_iter()
+            .filter(|m| m.object_id.is_some())
+            .collect();
+        assert_eq!(tagged.len(), 1);
+        let id = room_surface_id(&floor, &room, RoomSurface::Floor);
+        assert_eq!(tagged[0].object_id, Some(id));
+        assert_ne!(
+            id,
+            room_surface_id(&floor, &room, RoomSurface::Ceiling),
+            "each role has its own id"
+        );
+        assert!(id >> 63 == 1, "never a plan object id");
+        let mut p = plan_core::Project::new("t");
+        p.floors[0] = floor;
+        let names = room_surface_names(&p);
+        assert_eq!(names.len(), 1);
+        assert_eq!(
+            (names[0].0, names[0].1, names[0].2.as_str()),
+            (id, RoomSurface::Floor, "Walnut")
         );
     }
 }

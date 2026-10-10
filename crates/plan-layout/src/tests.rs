@@ -476,6 +476,7 @@ fn vertical_dim_house() -> Project {
             hide_ext: [false, false],
             auto_group: Default::default(),
             text_style: None,
+            look: Default::default(),
         },
     );
     p
@@ -1139,4 +1140,49 @@ fn printed_size_text_prints_the_same_size_at_any_box_scale() {
             "{scale:?} dimension"
         );
     }
+}
+
+#[test]
+fn text_boxes_and_dimension_looks_reach_the_layout_page() {
+    use plan_core::cad::{CadAttrs, CadItem};
+    use plan_core::dimension::{DimArrow, DimOverrides};
+    use plan_core::text_box::TextBox;
+    let mut p = vertical_dim_house();
+    let id = p.add_cad(
+        0,
+        "Text",
+        CadItem::Text {
+            pos: Point::new(100.0, 100.0),
+            text: "alpha beta gamma delta".into(),
+            height: 4.0,
+            angle: 0.0,
+        },
+    );
+    let l = default_construction_set(&p, 1);
+    let base = text_of(&render_pdf(&l, &LayoutRenderContext::new(&p)));
+    assert!(base.contains("(alpha beta gamma delta) Tj"), "one line");
+    p.set_cad_attrs(
+        0,
+        CadAttrs {
+            text_box: TextBox {
+                width: 4.0 * 0.6 * 11.0,
+                border: true,
+                background: Some([250, 240, 200]),
+                ..TextBox::default()
+            },
+            ..CadAttrs::new(id)
+        },
+    );
+    let boxed = text_of(&render_pdf(&l, &LayoutRenderContext::new(&p)));
+    assert!(boxed.contains("(alpha beta) Tj") && boxed.contains("(gamma delta) Tj"));
+    assert!(!boxed.contains("(alpha beta gamma delta) Tj"));
+    // The fill color of the box reaches the page.
+    assert!(boxed.contains("0.98 0.941 0.784 rg"), "box fill");
+    // An arrow of its own replaces the tick.
+    p.floors[0].dimensions[0].look = DimOverrides {
+        arrow: Some(DimArrow::Arrow),
+        ..DimOverrides::default()
+    };
+    let arrowed = text_of(&render_pdf(&l, &LayoutRenderContext::new(&p)));
+    assert_ne!(arrowed, boxed);
 }

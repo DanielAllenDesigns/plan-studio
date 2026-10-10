@@ -7,10 +7,10 @@
 //! is split into panels at the web nodes; top chords run from the overhang
 //! tail to the apex in one piece.
 
-use crate::lumber::{Lumber, TWO_BY_FOUR};
-use crate::manual::OrientedBox;
-use crate::member::{add, cross, scale, Vec3};
-use plan_core::Point;
+use crate::lumber::{Lumber, TWO_BY_FOUR, TWO_BY_THICKNESS};
+use crate::manual::{FramingMember, MemberKind as ManualKind, OrientedBox};
+use crate::member::{add, cross, scale, Member, MemberKind, Vec3};
+use plan_core::{Id, Point};
 use serde::{Deserialize, Serialize};
 
 const EPS: f64 = 1e-6;
@@ -24,17 +24,23 @@ pub enum TrussType {
     Scissor,
     Attic,
     Mono,
+    /// Six bottom chord panels, a "W" web on each side of the king post.
+    DoubleFink,
+    /// Eight bottom chord panels with verticals and diagonals.
+    DoubleHowe,
 }
 
 impl TrussType {
     pub fn name(&self) -> &'static str {
         match self {
+            TrussType::DoubleFink => "Double Fink",
             TrussType::Fink => "Fink",
             TrussType::Howe => "Howe",
             TrussType::KingPost => "King post",
             TrussType::Scissor => "Scissor",
             TrussType::Attic => "Attic",
             TrussType::Mono => "Mono",
+            TrussType::DoubleHowe => "Double Howe",
         }
     }
 }
@@ -57,7 +63,39 @@ impl TrussRole {
     }
 }
 
+fn yes() -> bool {
+    true
+}
+
+fn default_block_spacing() -> f64 {
+    24.0
+}
+
+fn default_web_thickness() -> f64 {
+    TWO_BY_THICKNESS
+}
+
+fn default_drop() -> f64 {
+    7.25
+}
+
+fn default_flat_depth() -> f64 {
+    12.0
+}
+
+fn default_stud_spacing() -> f64 {
+    16.0
+}
+
+/// How high an Energy Heel raises the heel node above the bearing plane,
+/// inches (the manual asks for a roof raised at least 7" off the plates).
+pub const ENERGY_HEEL_RAISE: f64 = 7.0;
+
 /// Inputs for [`Truss::generate`]. Lengths are inches.
+///
+/// The fields after `attic_width` are the Roof Truss and Floor/Ceiling Truss
+/// Specification dialogs (manual pp. 955 to 962); each has a serde default,
+/// so plans saved before them read as they were.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TrussSpec {
     pub kind: TrussType,
@@ -73,12 +111,91 @@ pub struct TrussSpec {
     pub overhang: f64,
     /// Plies side by side (1 for a common truss, 2-4 for a girder).
     pub plies: u32,
+    /// The top chord, and the bottom chord too while `bottom_chord_depth` is 0.
     pub chord: Lumber,
     pub web: Lumber,
     /// Scissor bottom chord pitch (rise per 12). `0.0` selects half the top pitch.
     pub bottom_pitch: f64,
     /// Attic room width. `0.0` selects half the span.
     pub attic_width: f64,
+    /// Bottom Chord depth when it differs from the top chord's; `0.0` uses
+    /// the top chord's.
+    #[serde(default)]
+    pub bottom_chord_depth: f64,
+    /// Maximum Horizontal Span along the top chord between supports; `0.0`
+    /// leaves the webbing of `kind`. A smaller span refines the webbing
+    /// (King post, Fink, Howe, Double Fink, Double Howe).
+    #[serde(default)]
+    pub max_span_top: f64,
+    /// Maximum Horizontal Span along the bottom chord.
+    #[serde(default)]
+    pub max_span_bottom: f64,
+    /// Horizontal Blocking between the verticals of an End Truss.
+    #[serde(default)]
+    pub horizontal_blocking: bool,
+    /// Vertical spacing of the horizontal blocking, centre to centre.
+    #[serde(default = "default_block_spacing")]
+    pub block_spacing: f64,
+    /// Rollout Offset: bottom of the truss to the lowest blocking member.
+    #[serde(default)]
+    pub rollout_offset: f64,
+    /// Rollout Offset "Automatic": the Vertical Spacing is the offset.
+    #[serde(default = "yes")]
+    pub rollout_auto: bool,
+    /// Require Kingpost: a vertical web from the apex to the bottom chord.
+    #[serde(default)]
+    pub require_kingpost: bool,
+    /// End Truss: vertical members at the wall stud spacing replace the webbing.
+    #[serde(default)]
+    pub end_truss: bool,
+    /// Stud spacing of an End Truss's verticals.
+    #[serde(default = "default_stud_spacing")]
+    pub stud_spacing: f64,
+    /// Energy Heel: a raised heel with a vertical member over the wall.
+    #[serde(default)]
+    pub energy_heel: bool,
+    /// Drop Hip Truss: the top is lowered by `drop_depth` so common rafters
+    /// and hip ridges pass over it.
+    #[serde(default)]
+    pub drop_hip: bool,
+    /// How far a Drop Hip Truss lowers its top (the rafter depth).
+    #[serde(default = "default_drop")]
+    pub drop_depth: f64,
+    /// Reduced Gable: no overhang, the top lowered by a chord depth so
+    /// lookouts pass over the truss.
+    #[serde(default)]
+    pub reduced_gable: bool,
+    /// Sloping Flat Truss: parallel chords inside the roof structure,
+    /// `flat_depth` deep.
+    #[serde(default)]
+    pub sloping_flat: bool,
+    /// Structure depth of a Sloping Flat Truss, and the overall depth of a
+    /// floor or ceiling truss.
+    #[serde(default = "default_flat_depth")]
+    pub flat_depth: f64,
+    /// Lock Truss Envelope and Webbing: a moved or copied truss keeps its shape.
+    #[serde(default)]
+    pub locked: bool,
+    /// Use Special Snapping (unchecked by editing the ends with the handles).
+    #[serde(default = "yes")]
+    pub special_snapping: bool,
+    /// Calculate Chords/Webbing in Materials List: the chords and webs are
+    /// counted as pieces; unchecked the truss is one object.
+    #[serde(default = "yes")]
+    pub calc_chords: bool,
+    /// Floor/Ceiling trusses: Vertical Supports.
+    #[serde(default)]
+    pub vertical_supports: bool,
+    /// Floor/Ceiling trusses: thickness of the webbing.
+    #[serde(default = "default_web_thickness")]
+    pub web_thickness: f64,
+    /// Show Multi-Ply Lines of a girder.
+    #[serde(default)]
+    pub show_ply_lines: bool,
+    /// Force Truss Rebuild: asked in the specification dialog and acted on
+    /// when it is accepted; never saved.
+    #[serde(skip)]
+    pub force_rebuild: bool,
 }
 
 impl TrussSpec {
@@ -95,12 +212,88 @@ impl TrussSpec {
             web: TWO_BY_FOUR,
             bottom_pitch: 0.0,
             attic_width: 0.0,
+            bottom_chord_depth: 0.0,
+            max_span_top: 0.0,
+            max_span_bottom: 0.0,
+            horizontal_blocking: false,
+            block_spacing: default_block_spacing(),
+            rollout_offset: 0.0,
+            rollout_auto: true,
+            require_kingpost: false,
+            end_truss: false,
+            stud_spacing: default_stud_spacing(),
+            energy_heel: false,
+            drop_hip: false,
+            drop_depth: default_drop(),
+            reduced_gable: false,
+            sloping_flat: false,
+            flat_depth: default_flat_depth(),
+            locked: false,
+            special_snapping: true,
+            calc_chords: true,
+            vertical_supports: false,
+            web_thickness: default_web_thickness(),
+            show_ply_lines: false,
+            force_rebuild: false,
         }
     }
 
     /// Total thickness of all plies.
     pub fn thickness(&self) -> f64 {
         f64::from(self.plies.max(1)) * self.chord.thickness
+    }
+
+    /// The bottom chord's lumber: the top chord's unless a Bottom Chord depth
+    /// is set.
+    pub fn bottom_lumber(&self) -> Lumber {
+        if self.bottom_chord_depth > 0.0 {
+            Lumber {
+                thickness: self.chord.thickness,
+                depth: self.bottom_chord_depth,
+            }
+        } else {
+            self.chord
+        }
+    }
+
+    /// The webbing family the Maximum Horizontal Spans lead to: `kind`, or a
+    /// finer family of the same line (King post, Fink, Howe, Double Fink,
+    /// Double Howe) when `kind`'s panels are longer than a maximum span.
+    /// Scissor, Attic and Mono trusses keep their own webbing.
+    pub fn resolved_kind(&self) -> TrussType {
+        const LADDER: [TrussType; 5] = [
+            TrussType::KingPost,
+            TrussType::Fink,
+            TrussType::Howe,
+            TrussType::DoubleFink,
+            TrussType::DoubleHowe,
+        ];
+        let Some(start) = LADDER.iter().position(|k| *k == self.kind) else {
+            return self.kind;
+        };
+        if self.max_span_top <= 0.0 && self.max_span_bottom <= 0.0 {
+            return self.kind;
+        }
+        let w = self.span;
+        // Longest horizontal panel along the bottom and top chord of each family.
+        let panels = |k: TrussType| -> (f64, f64) {
+            match k {
+                TrussType::KingPost => (w / 2.0, w / 2.0),
+                TrussType::Fink => (w / 3.0, w / 4.0),
+                TrussType::Howe => (w / 4.0, w / 4.0),
+                TrussType::DoubleFink => (w / 6.0, w / 6.0),
+                _ => (w / 8.0, w / 8.0),
+            }
+        };
+        LADDER[start..]
+            .iter()
+            .copied()
+            .find(|k| {
+                let (b, t) = panels(*k);
+                (self.max_span_bottom <= 0.0 || b <= self.max_span_bottom + 1e-9)
+                    && (self.max_span_top <= 0.0 || t <= self.max_span_top + 1e-9)
+            })
+            .unwrap_or(TrussType::DoubleHowe)
     }
 }
 
@@ -236,19 +429,70 @@ fn seg(role: TrussRole, lumber: Lumber, a: (f64, f64), b: (f64, f64)) -> TrussMe
     }
 }
 
-/// Heel node height: the larger of the requested height and the bottom chord's
-/// centreline height.
-fn heel_node(spec: &TrussSpec) -> f64 {
-    spec.heel_height.max(spec.chord.depth / 2.0)
+/// The numbers every part of a truss is built from, after the directives
+/// (energy heel, drop hip, reduced gable, sloping flat) are applied.
+struct Shape {
+    w: f64,
+    /// Rise per inch of run of the top chord (after a lowered top).
+    m: f64,
+    /// Heel node height above the bearing plane.
+    yh: f64,
+    /// Overhang of the top chord.
+    ov: f64,
+    /// Half the bottom chord depth: the bottom chord centreline height.
+    bc: f64,
+    /// Centre-to-centre gap of a sloping flat truss's chords.
+    gap: f64,
+}
+
+fn shape(spec: &TrussSpec) -> Shape {
+    let w = spec.span;
+    let bc = spec.bottom_lumber().depth / 2.0;
+    let mut yh = spec.heel_height.max(bc);
+    if spec.energy_heel {
+        yh = yh.max(ENERGY_HEEL_RAISE);
+    }
+    let gap = (spec.flat_depth - spec.chord.depth / 2.0 - bc).max(1.0);
+    if spec.sloping_flat {
+        yh = yh.max(bc + gap);
+    }
+    let m0 = spec.pitch.max(0.0) / 12.0;
+    let lower = if spec.reduced_gable {
+        spec.chord.depth
+    } else if spec.drop_hip {
+        spec.drop_depth
+    } else {
+        0.0
+    };
+    // The apex drops by `lower`, never by more than 80% of the rise.
+    let rise = m0 * w / 2.0;
+    let lower = lower.min(rise * 0.8).max(0.0);
+    let m = if w > 0.0 {
+        (rise - lower) / (w / 2.0)
+    } else {
+        m0
+    };
+    Shape {
+        w,
+        m,
+        yh,
+        ov: if spec.reduced_gable {
+            0.0
+        } else {
+            spec.overhang.max(0.0)
+        },
+        bc,
+        gap,
+    }
 }
 
 fn build(spec: &TrussSpec) -> Vec<TrussMember2> {
-    let w = spec.span;
-    let m = spec.pitch / 12.0;
-    let bc = spec.chord.depth / 2.0;
-    let yh = heel_node(spec);
-    let ov = spec.overhang.max(0.0);
-    let (chord, web) = (spec.chord, spec.web);
+    let Shape {
+        w, m, yh, ov, bc, ..
+    } = shape(spec);
+    let chord = spec.chord;
+    let bottom = spec.bottom_lumber();
+    let web = spec.web;
     // Top chord centreline height at distance x from the nearer bearing.
     let top = |x: f64| yh + m * x;
     // Height of the top chord at span position x for a double-slope truss.
@@ -275,16 +519,42 @@ fn build(spec: &TrussSpec) -> Vec<TrussMember2> {
         for p in xs.windows(2) {
             out.push(seg(
                 TrussRole::BottomChord,
-                chord,
+                bottom,
                 (p[0], y(p[0])),
                 (p[1], y(p[1])),
             ));
         }
     };
     let flat = |_: f64| bc;
+    let kind = if spec.sloping_flat {
+        None
+    } else {
+        Some(spec.resolved_kind())
+    };
 
-    match spec.kind {
-        TrussType::Fink => {
+    match kind {
+        None => {
+            // Parallel chords `gap` apart, verticals and alternating diagonals.
+            let g = shape(spec).gap;
+            let yb = |x: f64| top_at(x) - g;
+            top_chords(&mut out);
+            let xs: Vec<f64> = (0..=8).map(|i| w * f64::from(i) / 8.0).collect();
+            panels(&mut out, &xs, &yb);
+            for i in 1..=8usize {
+                let (a, b) = (xs[i - 1], xs[i]);
+                if i < 8 {
+                    out.push(seg(TrussRole::Web, web, (b, yb(b)), (b, top_at(b))));
+                }
+                // Diagonals lean toward the middle.
+                if b <= w / 2.0 + 1e-9 {
+                    out.push(seg(TrussRole::Web, web, (a, yb(a)), (b, top_at(b))));
+                } else {
+                    out.push(seg(TrussRole::Web, web, (b, yb(b)), (a, top_at(a))));
+                }
+            }
+            heel_webs(&mut out, true, true);
+        }
+        Some(TrussType::Fink) => {
             top_chords(&mut out);
             panels(&mut out, &[0.0, w / 3.0, 2.0 * w / 3.0, w], &flat);
             for (bx, tx) in [(w / 3.0, w / 4.0), (2.0 * w / 3.0, 3.0 * w / 4.0)] {
@@ -293,7 +563,7 @@ fn build(spec: &TrussSpec) -> Vec<TrussMember2> {
             }
             heel_webs(&mut out, true, true);
         }
-        TrussType::Howe => {
+        Some(TrussType::Howe) => {
             top_chords(&mut out);
             panels(&mut out, &[0.0, w / 4.0, w / 2.0, 3.0 * w / 4.0, w], &flat);
             for tx in [w / 4.0, 3.0 * w / 4.0] {
@@ -303,13 +573,57 @@ fn build(spec: &TrussSpec) -> Vec<TrussMember2> {
             out.push(seg(TrussRole::Web, web, (w / 2.0, bc), apex));
             heel_webs(&mut out, true, true);
         }
-        TrussType::KingPost => {
+        Some(TrussType::DoubleFink) => {
+            top_chords(&mut out);
+            let xs: Vec<f64> = (0..=6).map(|i| w * f64::from(i) / 6.0).collect();
+            panels(&mut out, &xs, &flat);
+            // Top chord nodes of the left half; the right half mirrors them.
+            let tl = [w / 12.0, w / 4.0, 5.0 * w / 12.0];
+            for (i, bx) in [w / 6.0, w / 3.0].into_iter().enumerate() {
+                for (tx, mx) in [(tl[i], w - tl[i]), (tl[i + 1], w - tl[i + 1])] {
+                    // Mirror of the bottom node w - bx: bottom 5w/6 and 2w/3.
+                    out.push(seg(TrussRole::Web, web, (bx, bc), (tx, top_at(tx))));
+                    out.push(seg(TrussRole::Web, web, (w - bx, bc), (mx, top_at(mx))));
+                }
+            }
+            out.push(seg(
+                TrussRole::Web,
+                web,
+                (w / 2.0, bc),
+                (tl[2], top_at(tl[2])),
+            ));
+            out.push(seg(
+                TrussRole::Web,
+                web,
+                (w / 2.0, bc),
+                (w - tl[2], top_at(tl[2])),
+            ));
+            out.push(seg(TrussRole::Web, web, (w / 2.0, bc), apex));
+            heel_webs(&mut out, true, true);
+        }
+        Some(TrussType::DoubleHowe) => {
+            top_chords(&mut out);
+            let xs: Vec<f64> = (0..=8).map(|i| w * f64::from(i) / 8.0).collect();
+            panels(&mut out, &xs, &flat);
+            for i in 1..=3 {
+                let (l, r) = (w * f64::from(i) / 8.0, w - w * f64::from(i) / 8.0);
+                out.push(seg(TrussRole::Web, web, (l, bc), (l, top_at(l))));
+                out.push(seg(TrussRole::Web, web, (r, bc), (r, top_at(r))));
+                // Diagonals from the next bottom node toward the middle up to this top node.
+                let (nl, nr) = (w * f64::from(i + 1) / 8.0, w - w * f64::from(i + 1) / 8.0);
+                out.push(seg(TrussRole::Web, web, (nl, bc), (l, top_at(l))));
+                out.push(seg(TrussRole::Web, web, (nr, bc), (r, top_at(r))));
+            }
+            out.push(seg(TrussRole::Web, web, (w / 2.0, bc), apex));
+            heel_webs(&mut out, true, true);
+        }
+        Some(TrussType::KingPost) => {
             top_chords(&mut out);
             panels(&mut out, &[0.0, w / 2.0, w], &flat);
             out.push(seg(TrussRole::Web, web, (w / 2.0, bc), apex));
             heel_webs(&mut out, true, true);
         }
-        TrussType::Scissor => {
+        Some(TrussType::Scissor) => {
             let bp = if spec.bottom_pitch > 0.0 {
                 spec.bottom_pitch
             } else {
@@ -327,7 +641,7 @@ fn build(spec: &TrussSpec) -> Vec<TrussMember2> {
             }
             heel_webs(&mut out, true, true);
         }
-        TrussType::Attic => {
+        Some(TrussType::Attic) => {
             let aw = if spec.attic_width > 0.0 {
                 spec.attic_width
             } else {
@@ -346,13 +660,13 @@ fn build(spec: &TrussSpec) -> Vec<TrussMember2> {
                 out.push(seg(TrussRole::Web, web, (kx, bc), (kx, yk)));
                 out.push(seg(TrussRole::Web, web, (hx, bc), (kx, yk)));
             }
-            out.push(seg(TrussRole::BottomChord, chord, (xk, yk), (w - xk, yk)));
+            out.push(seg(TrussRole::BottomChord, bottom, (xk, yk), (w - xk, yk)));
             if apex.1 - yk > 6.0 {
                 out.push(seg(TrussRole::Web, web, (w / 2.0, yk), apex));
             }
             heel_webs(&mut out, true, true);
         }
-        TrussType::Mono => {
+        Some(TrussType::Mono) => {
             let hi = (w, top(w));
             out.push(seg(TrussRole::TopChord, chord, (-ov, yh - m * ov), hi));
             panels(&mut out, &[0.0, w / 3.0, 2.0 * w / 3.0, w], &flat);
@@ -366,14 +680,83 @@ fn build(spec: &TrussSpec) -> Vec<TrussMember2> {
             heel_webs(&mut out, true, false);
         }
     }
+
+    if spec.end_truss {
+        end_truss_webbing(spec, &mut out, &top_at);
+    } else if spec.require_kingpost {
+        let has_post = out.iter().any(|t| {
+            t.role == TrussRole::Web
+                && (t.a.x - w / 2.0).abs() < 1e-6
+                && (t.b.x - w / 2.0).abs() < 1e-6
+        });
+        if !has_post && spec.kind != TrussType::Mono {
+            // The bottom chord node under the apex.
+            let yb = out
+                .iter()
+                .filter(|t| t.role == TrussRole::BottomChord)
+                .flat_map(|t| [t.a, t.b])
+                .find(|p| (p.x - w / 2.0).abs() < 1e-6)
+                .map_or(bc, |p| p.y);
+            out.push(seg(TrussRole::Web, web, (w / 2.0, yb), apex));
+        }
+    }
+    if spec.horizontal_blocking {
+        horizontal_blocking(spec, &mut out, &top_at);
+    }
     out
 }
 
+/// End Truss: the webbing is replaced by verticals at the wall stud spacing
+/// and the bottom chord runs in one piece.
+fn end_truss_webbing(spec: &TrussSpec, out: &mut Vec<TrussMember2>, top_at: &dyn Fn(f64) -> f64) {
+    let (w, bc) = (spec.span, spec.bottom_lumber().depth / 2.0);
+    out.retain(|t| t.role == TrussRole::TopChord);
+    out.push(seg(
+        TrussRole::BottomChord,
+        spec.bottom_lumber(),
+        (0.0, bc),
+        (w, bc),
+    ));
+    let step = spec.stud_spacing.max(spec.web.thickness * 2.0);
+    let mut x = step;
+    while x < w - spec.web.thickness {
+        out.push(seg(TrussRole::Web, spec.web, (x, bc), (x, top_at(x))));
+        x += step;
+    }
+}
+
+/// Horizontal members between the verticals of an End Truss (or any truss with
+/// verticals), every `block_spacing` up from the rollout offset.
+fn horizontal_blocking(spec: &TrussSpec, out: &mut Vec<TrussMember2>, top_at: &dyn Fn(f64) -> f64) {
+    let mut xs: Vec<f64> = out
+        .iter()
+        .filter(|t| {
+            t.role == TrussRole::Web && (t.a.x - t.b.x).abs() < 1e-6 && t.a.y.min(t.b.y) < 20.0
+        })
+        .map(|t| t.a.x)
+        .collect();
+    xs.sort_by(f64::total_cmp);
+    xs.dedup_by(|a, b| (*a - *b).abs() < 1e-6);
+    let spacing = spec.block_spacing.max(6.0);
+    let first = if spec.rollout_auto || spec.rollout_offset <= 0.0 {
+        spacing
+    } else {
+        spec.rollout_offset
+    };
+    let t2 = spec.web.depth / 2.0;
+    for pair in xs.windows(2) {
+        let (a, b) = (pair[0], pair[1]);
+        let ceiling = top_at(a).min(top_at(b)) - spec.chord.depth / 2.0 - t2;
+        let mut y = first;
+        while y < ceiling {
+            out.push(seg(TrussRole::Web, spec.web, (a, y), (b, y)));
+            y += spacing;
+        }
+    }
+}
+
 fn envelope(spec: &TrussSpec, valid: bool) -> TrussEnvelope {
-    let w = spec.span;
-    let m = spec.pitch.max(0.0) / 12.0;
-    let yh = heel_node(spec);
-    let ov = spec.overhang.max(0.0);
+    let Shape { w, m, yh, ov, .. } = shape(spec);
     let half = spec.chord.depth / 2.0;
     let theta = m.atan();
     let (sin, cos) = (theta.sin(), theta.cos());
@@ -433,6 +816,271 @@ fn envelope(spec: &TrussSpec, valid: bool) -> TrussEnvelope {
         thickness: spec.thickness(),
         outline,
     }
+}
+
+// ===================================================================
+// Truss configurations, labels and the schedule
+// ===================================================================
+
+/// One distinct truss configuration in the plan: the trusses that share a
+/// label, one diagram and one Truss Detail drawing (manual p. 943, 944).
+#[derive(Debug, Clone, PartialEq)]
+pub struct TrussConfig {
+    /// `TR-1` for a roof truss, `FTR-1` for a floor or ceiling truss: the
+    /// number is the order the configuration first appeared.
+    pub label: String,
+    /// A floor or ceiling truss.
+    pub floor: bool,
+    /// How many trusses share the configuration.
+    pub count: usize,
+    pub span: f64,
+    /// The inputs of a drawn or laid-out truss; `None` for the trusses the
+    /// roof framing made.
+    pub spec: Option<TrussSpec>,
+    /// The diagram: chords and webs in the truss plane.
+    pub members: Vec<TrussMember2>,
+    /// Ids of the manual or laid-out members that have this configuration.
+    pub ids: Vec<Id>,
+}
+
+impl TrussConfig {
+    /// Overall width of the diagram, inches (the span plus overhangs).
+    pub fn overall_width(&self) -> f64 {
+        let (lo, hi) = self
+            .members
+            .iter()
+            .flat_map(|m| [m.a.x, m.b.x])
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), x| {
+                (lo.min(x), hi.max(x))
+            });
+        if lo.is_finite() {
+            hi - lo
+        } else {
+            self.span
+        }
+    }
+
+    /// Height of the diagram above the bearing plane, inches.
+    pub fn height(&self) -> f64 {
+        self.members
+            .iter()
+            .flat_map(|m| [m.a.y, m.b.y])
+            .fold(0.0, f64::max)
+    }
+}
+
+fn sixteenth(v: f64) -> f64 {
+    (v * 16.0).round() / 16.0
+}
+
+/// The configuration a manual truss member belongs to: floor/ceiling or roof
+/// side and its spec with the span set to the member's length (rounded to
+/// 1/16"). `None` for members that are not trusses.
+pub fn config_of(m: &FramingMember) -> Option<(bool, TrussSpec)> {
+    let mut spec = m.truss.clone()?;
+    if !m.kind.is_truss() {
+        return None;
+    }
+    spec.span = sixteenth(m.plan_length());
+    spec.plies = m.plies.max(1);
+    Some((m.kind == ManualKind::FloorCeilingTruss, spec))
+}
+
+/// The 2D diagram of one truss the roof framing made: its members' centre
+/// lines in the truss plane (x along the span from the bottom chord's start).
+fn auto_diagram(group: &[&Member]) -> Vec<TrussMember2> {
+    let Some(base) = group
+        .iter()
+        .find(|m| m.kind == MemberKind::TrussBottomChord)
+        .or_else(|| group.first())
+    else {
+        return Vec::new();
+    };
+    let o = base.transform.origin;
+    let ax = base.transform.axis_x;
+    let h = (ax[0].hypot(ax[2])).max(1e-9);
+    let s = [ax[0] / h, ax[2] / h];
+    let to = |p: Vec3| Point::new((p[0] - o[0]) * s[0] + (p[2] - o[2]) * s[1], p[1] - o[1]);
+    group
+        .iter()
+        .map(|m| {
+            let a = m.transform.origin;
+            let b = add(a, scale(m.transform.axis_x, m.length));
+            TrussMember2 {
+                role: match m.kind {
+                    MemberKind::TrussTopChord => TrussRole::TopChord,
+                    MemberKind::TrussBottomChord => TrussRole::BottomChord,
+                    _ => TrussRole::Web,
+                },
+                lumber: m.lumber,
+                a: to(a),
+                b: to(b),
+            }
+        })
+        .collect()
+}
+
+/// A key that is equal for two diagrams that draw the same truss.
+fn diagram_key(d: &[TrussMember2]) -> Vec<(u8, i64, i64, i64, i64)> {
+    let q = |v: f64| (v * 10.0).round() as i64;
+    let mut v: Vec<(u8, i64, i64, i64, i64)> = d
+        .iter()
+        .map(|m| {
+            let (a, b) = if (m.a.x, m.a.y) <= (m.b.x, m.b.y) {
+                (m.a, m.b)
+            } else {
+                (m.b, m.a)
+            };
+            (m.role as u8, q(a.x), q(a.y), q(b.x), q(b.y))
+        })
+        .collect();
+    v.sort_unstable();
+    v
+}
+
+/// Every distinct truss configuration of a plan, in the order each first
+/// appears: the manual and laid-out trusses of `manual` (in the order given:
+/// the order they were created), then the trusses the roof framing made
+/// (`auto`, grouped by the truss number tagged on their labels). Roof and
+/// girder trusses are `TR-n`, floor and ceiling trusses `FTR-n`, each
+/// numbered from 1. Trusses that share a configuration share a label.
+#[allow(clippy::type_complexity)]
+pub fn truss_configs(manual: &[FramingMember], auto: &[Member]) -> Vec<TrussConfig> {
+    let mut out: Vec<TrussConfig> = Vec::new();
+    let mut keys: Vec<(bool, Option<TrussSpec>, Vec<(u8, i64, i64, i64, i64)>)> = Vec::new();
+    let (mut roofs, mut floors) = (0, 0);
+    let mut label_for = |floor: bool| {
+        if floor {
+            floors += 1;
+            format!("FTR-{floors}")
+        } else {
+            roofs += 1;
+            format!("TR-{roofs}")
+        }
+    };
+    for m in manual {
+        let Some((floor, spec)) = config_of(m) else {
+            continue;
+        };
+        if let Some(i) = keys
+            .iter()
+            .position(|(f, s, _)| *f == floor && s.as_ref() == Some(&spec))
+        {
+            out[i].count += 1;
+            out[i].ids.push(m.id);
+            continue;
+        }
+        let truss = Truss::generate(&spec);
+        out.push(TrussConfig {
+            label: label_for(floor),
+            floor,
+            count: 1,
+            span: spec.span,
+            members: truss.members,
+            spec: Some(spec.clone()),
+            ids: vec![m.id],
+        });
+        keys.push((floor, Some(spec), Vec::new()));
+    }
+    // The roof framing's own trusses, one group per tagged number.
+    let mut groups: Vec<(u32, Vec<&Member>)> = Vec::new();
+    for m in auto {
+        let Some(n) = crate::roof::truss_id(m) else {
+            continue;
+        };
+        match groups.iter_mut().find(|(g, _)| *g == n) {
+            Some((_, v)) => v.push(m),
+            None => groups.push((n, vec![m])),
+        }
+    }
+    for (_, g) in groups {
+        let diagram = auto_diagram(&g);
+        let key = diagram_key(&diagram);
+        if let Some(i) = keys
+            .iter()
+            .position(|(f, s, k)| !*f && s.is_none() && *k == key)
+        {
+            out[i].count += 1;
+            continue;
+        }
+        let span = diagram
+            .iter()
+            .filter(|m| m.role == TrussRole::BottomChord)
+            .flat_map(|m| [m.a.x, m.b.x])
+            .fold(0.0, f64::max);
+        out.push(TrussConfig {
+            label: label_for(false),
+            floor: false,
+            count: 1,
+            span,
+            spec: None,
+            members: diagram,
+            ids: Vec::new(),
+        });
+        keys.push((false, None, key));
+    }
+    out
+}
+
+/// The automatic label of every truss member in `manual`, by id.
+pub fn truss_labels(manual: &[FramingMember], auto: &[Member]) -> Vec<(Id, String)> {
+    truss_configs(manual, auto)
+        .into_iter()
+        .flat_map(|c| c.ids.into_iter().map(move |id| (id, c.label.clone())))
+        .collect()
+}
+
+/// One row of the framing schedule for a truss configuration.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TrussRow {
+    pub label: String,
+    pub quantity: usize,
+    /// Roof, girder or floor/ceiling truss, with the webbing: `Fink roof truss`.
+    pub description: String,
+    pub span: f64,
+    pub pitch: f64,
+    pub plies: u32,
+    /// Nominal sizes of the chords and the webbing: `2x4 / 2x4 / 2x4`.
+    pub members: String,
+    pub overhang: f64,
+}
+
+/// The truss rows of the framing schedule, one per configuration.
+pub fn truss_schedule(manual: &[FramingMember], auto: &[Member]) -> Vec<TrussRow> {
+    truss_configs(manual, auto)
+        .into_iter()
+        .map(|c| match &c.spec {
+            Some(s) => TrussRow {
+                description: format!(
+                    "{} {} truss",
+                    s.resolved_kind().name(),
+                    if c.floor { "floor/ceiling" } else { "roof" }
+                ),
+                span: c.span,
+                pitch: s.pitch,
+                plies: s.plies,
+                members: format!(
+                    "{} / {} / {}",
+                    s.chord.nominal_name(),
+                    s.bottom_lumber().nominal_name(),
+                    s.web.nominal_name()
+                ),
+                overhang: s.overhang,
+                label: c.label,
+                quantity: c.count,
+            },
+            None => TrussRow {
+                description: "Fink roof truss".to_string(),
+                span: c.span,
+                pitch: 0.0,
+                plies: 1,
+                members: "2x4 / 2x4 / 2x4".to_string(),
+                overhang: 0.0,
+                label: c.label,
+                quantity: c.count,
+            },
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -549,5 +1197,250 @@ mod tests {
             assert!((b.axes[2][0].abs() - 1.0).abs() < 1e-9);
             assert!(b.center[1] >= 96.0);
         }
+    }
+
+    // ----- Round 16: spans, directives, labels -----
+
+    fn count(t: &Truss, r: TrussRole) -> usize {
+        t.members.iter().filter(|m| m.role == r).count()
+    }
+
+    fn mirrored(t: &Truss, w: f64) -> bool {
+        let nodes = t.web_nodes();
+        nodes.iter().all(|p| {
+            nodes
+                .iter()
+                .any(|q| (q.x - (w - p.x)).abs() < 1e-6 && (q.y - p.y).abs() < 1e-6)
+        })
+    }
+
+    #[test]
+    fn a_maximum_horizontal_span_refines_the_webbing() {
+        let mut spec = TrussSpec::new(TrussType::Fink, 288.0, 6.0);
+        assert_eq!(spec.resolved_kind(), TrussType::Fink);
+        // Fink panels are 96" along the bottom chord: a 60" maximum needs a double Fink.
+        spec.max_span_bottom = 60.0;
+        assert_eq!(spec.resolved_kind(), TrussType::DoubleFink);
+        let t = Truss::generate(&spec);
+        assert_eq!(count(&t, TrussRole::BottomChord), 6);
+        assert_eq!(count(&t, TrussRole::TopChord), 2);
+        assert!(mirrored(&t, 288.0));
+        assert!(t.members.iter().all(|m| m.length() > 1.0));
+        // 40" needs eight panels.
+        spec.max_span_bottom = 40.0;
+        assert_eq!(spec.resolved_kind(), TrussType::DoubleHowe);
+        let t = Truss::generate(&spec);
+        assert_eq!(count(&t, TrussRole::BottomChord), 8);
+        assert!(mirrored(&t, 288.0));
+        // A top chord maximum alone does it too, and never coarsens a type.
+        let mut top = TrussSpec::new(TrussType::Howe, 288.0, 6.0);
+        top.max_span_top = 200.0;
+        assert_eq!(top.resolved_kind(), TrussType::Howe);
+        top.max_span_top = 50.0;
+        assert_eq!(top.resolved_kind(), TrussType::DoubleFink);
+        // Scissor and Mono keep their own webbing.
+        let mut sc = TrussSpec::new(TrussType::Scissor, 288.0, 8.0);
+        sc.max_span_bottom = 30.0;
+        assert_eq!(sc.resolved_kind(), TrussType::Scissor);
+    }
+
+    #[test]
+    fn the_new_webbing_types_are_connected_and_symmetric() {
+        for kind in [TrussType::DoubleFink, TrussType::DoubleHowe] {
+            let t = Truss::generate(&TrussSpec::new(kind, 360.0, 8.0));
+            assert!(t.members.len() > 15, "{kind:?}");
+            assert!(t.envelope.area() > 0.0);
+            assert!(mirrored(&t, 360.0), "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn require_kingpost_adds_a_vertical_web_where_there_is_none() {
+        // A Fink has no vertical post; the king post type already has one.
+        let mut f = TrussSpec::new(TrussType::Fink, 288.0, 6.0);
+        let before = Truss::generate(&f).members.len();
+        f.require_kingpost = true;
+        let t = Truss::generate(&f);
+        assert_eq!(t.members.len(), before + 1);
+        assert!(t.members.iter().any(|m| m.role == TrussRole::Web
+            && (m.a.x - 144.0).abs() < 1e-6
+            && (m.b.x - 144.0).abs() < 1e-6));
+        let mut k = TrussSpec::new(TrussType::KingPost, 288.0, 6.0);
+        let kp = Truss::generate(&k).members.len();
+        k.require_kingpost = true;
+        assert_eq!(Truss::generate(&k).members.len(), kp);
+    }
+
+    #[test]
+    fn an_end_truss_has_verticals_at_the_stud_spacing_and_takes_blocking() {
+        let mut spec = TrussSpec::new(TrussType::Fink, 288.0, 6.0);
+        spec.end_truss = true;
+        let t = Truss::generate(&spec);
+        assert_eq!(count(&t, TrussRole::BottomChord), 1);
+        let verticals: Vec<_> = t
+            .members
+            .iter()
+            .filter(|m| m.role == TrussRole::Web)
+            .collect();
+        // 16" o.c. across 288": 17 interior studs.
+        assert_eq!(verticals.len(), 17);
+        assert!(verticals.iter().all(|m| (m.a.x - m.b.x).abs() < 1e-9));
+        spec.horizontal_blocking = true;
+        spec.block_spacing = 24.0;
+        let blocked = Truss::generate(&spec);
+        assert!(blocked.members.len() > t.members.len());
+        // Rows start one spacing up (Automatic rollout) and are horizontal.
+        let rows: Vec<_> = blocked
+            .members
+            .iter()
+            .filter(|m| m.role == TrussRole::Web && (m.a.y - m.b.y).abs() < 1e-9)
+            .collect();
+        assert!(!rows.is_empty());
+        assert!(rows.iter().all(|m| (m.a.y % 24.0).abs() < 1e-9));
+        // A manual rollout offset moves the first row.
+        spec.rollout_auto = false;
+        spec.rollout_offset = 10.0;
+        let offset = Truss::generate(&spec);
+        assert!(offset.members.iter().any(|m| m.role == TrussRole::Web
+            && (m.a.y - 10.0).abs() < 1e-9
+            && (m.a.y - m.b.y).abs() < 1e-9));
+    }
+
+    #[test]
+    fn reduced_gable_and_drop_hip_lower_the_top_and_energy_heel_raises_the_heel() {
+        let plain = Truss::generate(&TrussSpec::new(TrussType::Fink, 288.0, 6.0));
+        let mut g = TrussSpec::new(TrussType::Fink, 288.0, 6.0);
+        g.reduced_gable = true;
+        let gable = Truss::generate(&g);
+        assert!(gable.envelope.peak_height < plain.envelope.peak_height);
+        assert!(gable.envelope.overall_width < plain.envelope.overall_width);
+        assert!((gable.envelope.max_x - gable.envelope.min_x - 288.0).abs() < 4.0);
+        let mut d = TrussSpec::new(TrussType::Fink, 288.0, 6.0);
+        d.drop_hip = true;
+        let drop = Truss::generate(&d);
+        assert!((plain.envelope.peak_height - drop.envelope.peak_height - 7.25).abs() < 1.0);
+        let mut e = TrussSpec::new(TrussType::Fink, 288.0, 6.0);
+        e.energy_heel = true;
+        let heel = Truss::generate(&e);
+        assert!(heel.envelope.heel_height >= ENERGY_HEEL_RAISE - 1e-9);
+        // The vertical heel members appear over the walls.
+        assert_eq!(heel.members.len(), plain.members.len() + 2);
+    }
+
+    #[test]
+    fn a_sloping_flat_truss_has_parallel_chords_and_a_bottom_chord_depth_can_differ() {
+        let mut s = TrussSpec::new(TrussType::Fink, 288.0, 6.0);
+        s.sloping_flat = true;
+        s.flat_depth = 12.0;
+        let t = Truss::generate(&s);
+        let bottoms: Vec<_> = t
+            .members
+            .iter()
+            .filter(|m| m.role == TrussRole::BottomChord)
+            .collect();
+        assert_eq!(bottoms.len(), 8);
+        // The bottom chord climbs with the roof: it is not flat.
+        assert!(bottoms.iter().any(|m| (m.a.y - m.b.y).abs() > 1.0));
+        assert!(mirrored(&t, 288.0));
+        let mut b = TrussSpec::new(TrussType::Fink, 288.0, 6.0);
+        b.bottom_chord_depth = 5.5;
+        let t = Truss::generate(&b);
+        let bottom = t
+            .members
+            .iter()
+            .find(|m| m.role == TrussRole::BottomChord)
+            .unwrap();
+        assert!((bottom.lumber.depth - 5.5).abs() < 1e-9);
+        let top = t
+            .members
+            .iter()
+            .find(|m| m.role == TrussRole::TopChord)
+            .unwrap();
+        assert!((top.lumber.depth - 3.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn old_truss_specs_read_with_the_new_fields_at_their_defaults() {
+        let json = r#"{"kind":"Fink","span":288.0,"pitch":6.0,"heel_height":0.0,"overhang":12.0,"plies":1,
+            "chord":{"thickness":1.5,"depth":3.5},"web":{"thickness":1.5,"depth":3.5},
+            "bottom_pitch":0.0,"attic_width":0.0}"#;
+        let spec: TrussSpec = serde_json::from_str(json).unwrap();
+        assert_eq!(spec, TrussSpec::new(TrussType::Fink, 288.0, 6.0));
+        assert!(spec.special_snapping && spec.calc_chords && spec.rollout_auto);
+        let back: TrussSpec = serde_json::from_str(&serde_json::to_string(&spec).unwrap()).unwrap();
+        assert_eq!(back, spec);
+    }
+
+    fn roof_truss(id: Id, span: f64, at_y: f64) -> FramingMember {
+        let mut m = FramingMember::new(
+            id,
+            ManualKind::RoofTruss,
+            Point::new(0.0, at_y),
+            Point::new(span, at_y),
+        );
+        m.truss = Some(TrussSpec::new(TrussType::Fink, span, 6.0));
+        m
+    }
+
+    #[test]
+    fn three_identical_trusses_share_one_label_and_a_different_one_gets_the_next() {
+        let members = vec![
+            roof_truss(1, 288.0, 0.0),
+            roof_truss(2, 288.0, 24.0),
+            roof_truss(3, 288.0, 48.0),
+            roof_truss(4, 240.0, 72.0),
+            FramingMember::new(
+                5,
+                ManualKind::FloorCeilingTruss,
+                Point::new(0.0, 0.0),
+                Point::new(200.0, 0.0),
+            ),
+            FramingMember::new(
+                6,
+                ManualKind::FloorCeilingTruss,
+                Point::new(0.0, 16.0),
+                Point::new(200.0, 16.0),
+            ),
+            FramingMember::new(
+                7,
+                ManualKind::Joist,
+                Point::new(0.0, 16.0),
+                Point::new(200.0, 16.0),
+            ),
+        ];
+        let configs = truss_configs(&members, &[]);
+        assert_eq!(configs.len(), 3);
+        assert_eq!((configs[0].label.as_str(), configs[0].count), ("TR-1", 3));
+        assert_eq!((configs[1].label.as_str(), configs[1].count), ("TR-2", 1));
+        assert_eq!((configs[2].label.as_str(), configs[2].count), ("FTR-1", 2));
+        assert!(configs[2].floor && !configs[0].floor);
+        assert_eq!(configs[0].ids, vec![1, 2, 3]);
+        let labels = truss_labels(&members, &[]);
+        assert_eq!(labels.len(), 6);
+        assert!(labels.iter().filter(|(_, l)| l == "TR-1").count() == 3);
+        // A ply makes a different configuration; a joist is not a truss.
+        let mut girder = roof_truss(8, 288.0, 96.0);
+        girder.plies = 3;
+        let mut all = members.clone();
+        all.push(girder);
+        assert_eq!(truss_configs(&all, &[]).len(), 4);
+    }
+
+    #[test]
+    fn the_truss_schedule_has_one_row_per_configuration_with_its_quantity() {
+        let members = vec![
+            roof_truss(1, 288.0, 0.0),
+            roof_truss(2, 288.0, 24.0),
+            roof_truss(3, 240.0, 48.0),
+        ];
+        let rows = truss_schedule(&members, &[]);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].label, "TR-1");
+        assert_eq!(rows[0].quantity, 2);
+        assert_eq!(rows[0].description, "Fink roof truss");
+        assert!((rows[0].span - 288.0).abs() < 1e-9);
+        assert_eq!(rows[0].members, "2x4 / 2x4 / 2x4");
+        assert_eq!(rows[1].label, "TR-2");
+        assert_eq!(rows[1].quantity, 1);
     }
 }

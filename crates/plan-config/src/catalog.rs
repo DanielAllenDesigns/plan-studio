@@ -138,6 +138,18 @@ impl CommandCatalog {
         self.ids.get(id).map(|(n, s)| (n.as_str(), *s))
     }
 
+    /// Every id that carries `name`, lowest number first.
+    pub fn ids_for_name(&self, name: &str) -> Vec<&str> {
+        let mut out: Vec<&str> = self
+            .ids
+            .iter()
+            .filter(|(_, (n, _))| n == name)
+            .map(|(id, _)| id.as_str())
+            .collect();
+        out.sort_by_key(|id| (id.parse::<u64>().unwrap_or(u64::MAX), id.to_string()));
+        out
+    }
+
     /// Distinct names whose documented default hotkey equals `keys`.
     pub fn default_names_for(&self, keys: &[KeyChord]) -> Vec<&str> {
         let mut out: Vec<&str> = Vec::new();

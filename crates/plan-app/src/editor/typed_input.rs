@@ -46,6 +46,13 @@ impl TypedInput {
         self.armed = true;
     }
 
+    /// Like [`arm`](Self::arm), but the digits go to the angle first: a drag
+    /// that turns something (Rotate) asks for degrees, not a length (S-28).
+    pub fn arm_angle(&mut self) {
+        self.armed = true;
+        self.field = TypedField::Angle;
+    }
+
     /// The drawing or drag ended: forget everything.
     pub fn disarm(&mut self) {
         *self = Self::default();
@@ -260,6 +267,21 @@ mod tests {
         assert_eq!(angle_deg(o, Point::new(10.0, 164.0)), 90.0);
         assert_eq!(angle_deg(o, Point::new(154.0, 20.0)), 0.0);
         assert_eq!(angle_deg(o, Point::new(10.0, -124.0)), 270.0);
+    }
+
+    #[test]
+    fn a_rotate_drag_arms_the_angle_field_first() {
+        let mut t = TypedInput::default();
+        t.arm_angle();
+        assert!(t.is_armed());
+        assert_eq!(t.field(), TypedField::Angle);
+        typed(&mut t, "45");
+        assert_eq!(t.angle(), Some(45.0));
+        assert_eq!(t.length(), None);
+        // Tab hops to the length, Enter commits.
+        assert_eq!(t.handle(Some(Key::Tab), None), TypedKey::Edited);
+        assert_eq!(t.field(), TypedField::Length);
+        assert_eq!(t.handle(Some(Key::Enter), None), TypedKey::Commit);
     }
 
     #[test]

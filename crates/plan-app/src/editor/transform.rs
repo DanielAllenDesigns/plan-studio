@@ -79,6 +79,13 @@ pub fn object_points(cx: &EditorContext, o: ObjectRef) -> Vec<Point> {
             .find(id)
             .and_then(|r| details_view::vertices(cx, r))
             .unwrap_or_default(),
+        ObjectRef::Solid(id) => super::solids_view::outline_points(f, id),
+        ObjectRef::Block(id) => f
+            .blocks
+            .flat_members(id)
+            .into_iter()
+            .flat_map(|m| object_points(cx, ObjectRef::from_group_ref(m)))
+            .collect(),
         ObjectRef::Schedule(id) => super::schedule_view::extents(cx)
             .into_iter()
             .filter(|(i, _, _)| *i == id)
@@ -185,8 +192,7 @@ pub fn translate_objects(cx: &mut EditorContext, items: &[ObjectRef], d: Point) 
                     .iter_mut()
                     .find(|x| x.id == id)
                 {
-                    dim.start = dim.start + d;
-                    dim.end = dim.end + d;
+                    dim.translate(d);
                 }
             }
             ObjectRef::Cad(id) | ObjectRef::Text(id) => {
@@ -333,6 +339,24 @@ pub fn apply_xform(cx: &mut EditorContext, items: &[ObjectRef], x: &Xform) -> Re
             | ObjectRef::Text(_)
             | ObjectRef::Symbol(_)
             | ObjectRef::Camera(_) => {}
+            // A compound 3D solid turns, mirrors and scales as one mesh.
+            ObjectRef::Solid(id) => {
+                if let Some(c) = cx.project.floors[fl].solid_layer.compound_mut(id) {
+                    c.xform(x);
+                    rep.changed += 1;
+                }
+            }
+            // A 3D solid primitive carries its position, turn and size.
+            ObjectRef::Detail(id) => {
+                let mut layer = details_view::load(cx);
+                if let Some(s) = layer.solids.iter_mut().find(|s| s.id == id) {
+                    plan_core::solids::xform_solid(s, x);
+                    details_view::save(&mut cx.project, fl, &layer);
+                    rep.changed += 1;
+                } else {
+                    rep.skip(*o);
+                }
+            }
             other => rep.skip(other),
         }
     }
@@ -829,7 +853,7 @@ pub fn mode() -> Option<Mode> {
 }
 
 pub fn mode_active() -> bool {
-    MODE.with(|m| m.borrow().is_some())
+    MODE.with(|m| m.borrow().is_some()) || crate::tools::cad_ops::active()
 }
 
 /// Starts `mode`, replacing any other, with its hint in the status bar.
@@ -853,7 +877,7 @@ pub fn begin_mode(cx: &mut EditorContext, mode: Mode) {
 
 /// Ends the mode without doing anything. Returns whether there was one.
 pub fn cancel_mode(cx: &mut EditorContext) -> bool {
-    let had = MODE.with(|m| m.borrow_mut().take()).is_some();
+    let had = MODE.with(|m| m.borrow_mut().take()).is_some() | crate::tools::cad_ops::cancel(cx);
     if had {
         cx.status.clear();
     }
@@ -862,6 +886,7 @@ pub fn cancel_mode(cx: &mut EditorContext) -> bool {
 
 /// The pointer moved: a hanging paste follows it.
 pub fn mode_pointer_move(p: &PointerEvent) {
+    crate::tools::cad_ops::pointer_move(p);
     MODE.with(|m| {
         if let Some(Mode::Paste { at, .. }) = m.borrow_mut().as_mut() {
             *at = Some(p.snapped);
@@ -907,6 +932,9 @@ fn reference_line(cx: &EditorContext, at: Point) -> Option<(Point, Point)> {
 
 /// A click while a mode is active. `None`: no mode, the tool handles it.
 pub fn mode_pointer_down(cx: &mut EditorContext, p: &PointerEvent) -> Option<ToolResult> {
+    if let Some(res) = crate::tools::cad_ops::pointer_down(cx, p) {
+        return Some(res);
+    }
     let mode = mode()?;
     let end = |cx: &mut EditorContext| {
         MODE.with(|m| *m.borrow_mut() = None);
@@ -1049,6 +1077,7 @@ pub fn mode_escape(cx: &mut EditorContext) -> bool {
 /// Draws what the mode shows: the pasted objects' outline at the pointer, or
 /// the rubber band of a Point to Point Move.
 pub fn draw_mode_overlay(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
+    crate::tools::cad_ops::draw_overlay(cx, painter, cam);
     let Some(mode) = mode() else {
         return;
     };

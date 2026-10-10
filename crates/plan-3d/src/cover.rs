@@ -585,6 +585,10 @@ impl RoofCover {
     pub fn new(project: &Project, input: Vec<FloorRoofInput>, detail: RoofDetail) -> Self {
         let mut floors = Vec::with_capacity(project.floors.len());
         let mut butts = Vec::new();
+        // The wings of a lower floor (RF-9) have no roof settings of their
+        // own: they are drawn with the detail of the floor that was built.
+        let shared_detail = input.iter().find_map(|i| i.detail);
+        let shared_types = input.iter().find_map(|i| i.types.clone());
         let mut input = input.into_iter();
         for fi in 0..project.floors.len() {
             let inp = input.next().unwrap_or_default();
@@ -592,7 +596,7 @@ impl RoofCover {
                 floors.push(FloorCover::default());
                 continue;
             }
-            let floor_detail = inp.detail.unwrap_or(detail);
+            let floor_detail = inp.detail.or(shared_detail).unwrap_or(detail);
             let tall = tall_walls(project, fi);
             let mut eaves = Vec::new();
             let mut attic = Vec::new();
@@ -605,7 +609,12 @@ impl RoofCover {
             }
             let roofs = eaves
                 .iter()
-                .filter_map(|e| Surface::roof_underside(&e.plane, floor_detail.thickness))
+                .filter_map(|e| {
+                    Surface::roof_underside(
+                        &e.plane,
+                        e.opts.thickness.unwrap_or(floor_detail.thickness),
+                    )
+                })
                 .collect();
             let ceilings = inp.ceilings.iter().map(Surface::ceiling).collect();
             floors.push(FloorCover {
@@ -614,7 +623,10 @@ impl RoofCover {
                 tops,
                 ceilings,
                 detail: floor_detail,
-                types: inp.types.unwrap_or_default(),
+                types: inp
+                    .types
+                    .or_else(|| shared_types.clone())
+                    .unwrap_or_default(),
                 attic,
                 gable_edges: inp.gable_edges,
             });

@@ -85,6 +85,26 @@ impl LumberSize {
         LumberSize::Dim { thickness, depth }
     }
 
+    /// Nominal thickness: the "2" of a 2x10, the width rounded for an engineered beam.
+    pub fn nominal_thickness(&self) -> u32 {
+        match *self {
+            LumberSize::Dim { thickness, .. } => thickness,
+            LumberSize::Glulam { width, .. } | LumberSize::Lvl { width, .. } => {
+                width.round().max(1.0) as u32
+            }
+        }
+    }
+
+    /// Nominal depth: the "10" of a 2x10, the depth rounded for an engineered beam.
+    pub fn nominal_depth(&self) -> u32 {
+        match *self {
+            LumberSize::Dim { depth, .. } => depth,
+            LumberSize::Glulam { depth, .. } | LumberSize::Lvl { depth, .. } => {
+                depth.round().max(1.0) as u32
+            }
+        }
+    }
+
     /// Actual section width (the smaller, "thickness" side).
     pub fn width(&self) -> f64 {
         match *self {
@@ -366,6 +386,71 @@ impl OrientedBox {
     }
 }
 
+/// The Rotate option of a framing member in a wall (manual p. 929): which
+/// way the member lies in the wall's framing layer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum FlatTo {
+    /// The thickness spans the depth of the framing layer.
+    #[default]
+    None,
+    /// Turned 90 degrees and aligned with the inside of the framing layer.
+    Inside,
+    /// Turned 90 degrees and aligned with the outside of the framing layer.
+    Outside,
+}
+
+impl FlatTo {
+    pub const ALL: [FlatTo; 3] = [FlatTo::None, FlatTo::Inside, FlatTo::Outside];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            FlatTo::None => "None",
+            FlatTo::Inside => "Flat to Inside",
+            FlatTo::Outside => "Flat to Outside",
+        }
+    }
+}
+
+/// The shape of a decorative end profile (manual p. 930).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum EndShape {
+    #[default]
+    Square,
+    /// The two edges of the end cut off at 45 degrees.
+    Chamfer,
+    /// The end rounded off over its full depth.
+    Round,
+    /// The end cut away on a slope on its top edge.
+    Taper,
+}
+
+impl EndShape {
+    pub const ALL: [EndShape; 4] = [
+        EndShape::Square,
+        EndShape::Chamfer,
+        EndShape::Round,
+        EndShape::Taper,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            EndShape::Square => "Square",
+            EndShape::Chamfer => "Chamfer",
+            EndShape::Round => "Round",
+            EndShape::Taper => "Taper",
+        }
+    }
+}
+
+/// The End Profile of one end of a joist, beam, rafter or General Framing
+/// member: a shape and how far it cuts in.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct EndProfile {
+    pub shape: EndShape,
+    /// How far along the member the profile reaches, inches.
+    pub size: f64,
+}
+
 /// A manually placed framing member.
 ///
 /// * Linear members run `start` -> `end` in plan; `rise` raises the end above
@@ -403,6 +488,65 @@ pub struct FramingMember {
     pub footing_spec: FootingSpec,
     pub label: String,
     pub layer_name: String,
+    /// Bearing Beam (floor/ceiling beams): joists run across it and lap or
+    /// butt over it, or hang on its sides when it stands 1" above them.
+    #[serde(default)]
+    pub bearing_beam: bool,
+    /// Rotate: Flat to Inside or Outside of a wall's framing layer.
+    #[serde(default)]
+    pub flat: FlatTo,
+    /// Show Cross: a post (or vertical member) draws as a cross box in plan.
+    #[serde(default = "yes")]
+    pub show_cross: bool,
+    /// Counted as treated lumber in schedules and the Materials List.
+    #[serde(default)]
+    pub treated: bool,
+    /// Show Multi-Ply Lines between the plies of a beam or post.
+    #[serde(default)]
+    pub show_ply_lines: bool,
+    /// End Profile at the start and at the end.
+    #[serde(default)]
+    pub end_profile: [EndProfile; 2],
+    /// A label the user typed (Label panel); empty uses the automatic label.
+    #[serde(default)]
+    pub custom_label: String,
+    /// The fill in plan view (Fill Style panel); `None` follows the layer.
+    #[serde(default)]
+    pub fill: Option<plan_core::fill_styles::FillStyle>,
+    /// The fill in a Wall Detail (Fill Style panel).
+    #[serde(default)]
+    pub detail_fill: Option<plan_core::fill_styles::FillStyle>,
+    /// This end of the member was joined to another member with Join and Lap
+    /// Ends (`Lap`) or Join and Mitre Ends (`Mitre`): start, end.
+    #[serde(default)]
+    pub joint: [JoinKind; 2],
+    /// The Default Framing Member this member was given by Apply Framing
+    /// Default Properties (empty: none).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub member_def: String,
+    /// Its Framing Type, by name (empty: the type of its Role's default).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub framing_type: String,
+    /// Its Role when it is not the Role of its kind (lists only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<crate::catalog::Role>,
+}
+
+fn yes() -> bool {
+    true
+}
+
+/// How an end of a horizontal member was joined to another (manual p. 926).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum JoinKind {
+    #[default]
+    Free,
+    /// The member butts against the other, which laps over its end.
+    Butt,
+    /// The other member laps this one's end.
+    Lap,
+    /// Both ends are cut to the angle between them.
+    Mitre,
 }
 
 impl FramingMember {
@@ -438,6 +582,19 @@ impl FramingMember {
             footing_spec: FootingSpec::default(),
             label: String::new(),
             layer_name: "Framing".into(),
+            bearing_beam: false,
+            flat: FlatTo::None,
+            show_cross: true,
+            treated: false,
+            show_ply_lines: false,
+            end_profile: [EndProfile::default(); 2],
+            custom_label: String::new(),
+            fill: None,
+            detail_fill: None,
+            joint: [JoinKind::Free; 2],
+            member_def: String::new(),
+            framing_type: String::new(),
+            role: None,
         };
         m.label = m.default_label();
         m
@@ -460,6 +617,124 @@ impl FramingMember {
 
     fn default_label(&self) -> String {
         format!("{} {}", self.lumber.name(), self.kind.name())
+    }
+
+    /// Whether the member can be broken or joined: a straight horizontal or
+    /// sloping piece, not a post or a truss.
+    pub fn is_linear(&self) -> bool {
+        self.kind.is_physical()
+            && !self.kind.is_vertical()
+            && !self.kind.is_truss()
+            && self.plan_length() > 1e-6
+    }
+
+    /// Add Break (manual p. 290): the member cut in two at `at` (projected onto
+    /// the member's line, at least 1" from each end). The first piece keeps
+    /// this member's start, the second ends where this one does and gets
+    /// `new_id`; the rise is shared out in proportion to length. `None` for a
+    /// member that is not linear or a break too near an end.
+    pub fn break_at(&self, at: Point, new_id: Id) -> Option<(FramingMember, FramingMember)> {
+        if !self.is_linear() {
+            return None;
+        }
+        let run = self.plan_length();
+        let dir = (self.end - self.start).normalized();
+        let s = (at - self.start).dot(dir);
+        if s < 1.0 || s > run - 1.0 {
+            return None;
+        }
+        let cut = self.start + dir * s;
+        let rise_at = self.rise * s / run;
+        let mut a = self.clone();
+        a.end = cut;
+        a.rise = rise_at;
+        a.joint[1] = JoinKind::Free;
+        let mut b = self.clone();
+        b.id = new_id;
+        b.start = cut;
+        b.elevation_bottom += rise_at;
+        b.rise = self.rise - rise_at;
+        b.joint[0] = JoinKind::Free;
+        Some((a, b))
+    }
+
+    /// The point where this member's line meets `other`'s, in plan; `None`
+    /// for parallel members.
+    pub fn crossing(&self, other: &FramingMember) -> Option<Point> {
+        let (d1, d2) = (self.end - self.start, other.end - other.start);
+        let den = d1.cross(d2);
+        if den.abs() < 1e-9 {
+            return None;
+        }
+        let t = (other.start - self.start).cross(d2) / den;
+        Some(self.start + d1 * t)
+    }
+
+    /// Join and Lap Ends (manual p. 926): this member butts against `other`,
+    /// which laps over its end. The end of this member nearest the crossing
+    /// stops at the near face of `other`; `other` is extended, if need be, to
+    /// cover the end. Returns false for parallel or non-linear members.
+    pub fn join_lap(&mut self, other: &mut FramingMember) -> bool {
+        if !self.is_linear() || !other.is_linear() {
+            return false;
+        }
+        let Some(x) = self.crossing(other) else {
+            return false;
+        };
+        let at_end = self.end.dist(x) < self.start.dist(x);
+        let dir = (self.end - self.start).normalized();
+        // Stop short of the other member's near face.
+        let back = other.width / 2.0;
+        let to = if at_end {
+            x - dir * back
+        } else {
+            x + dir * back
+        };
+        if at_end {
+            self.end = to;
+            self.joint[1] = JoinKind::Butt;
+        } else {
+            self.start = to;
+            self.joint[0] = JoinKind::Butt;
+        }
+        // The other member must reach across this one's width.
+        let od = (other.end - other.start).normalized();
+        let reach = self.width / 2.0;
+        let (ps, pe) = ((x - other.start).dot(od), (x - other.end).dot(od));
+        if ps < reach {
+            other.start = other.start - od * (reach - ps);
+            other.joint[0] = JoinKind::Lap;
+        } else if -pe < reach {
+            other.end = other.end + od * (reach + pe);
+            other.joint[1] = JoinKind::Lap;
+        } else if ps.abs() <= pe.abs() {
+            other.joint[0] = JoinKind::Lap;
+        } else {
+            other.joint[1] = JoinKind::Lap;
+        }
+        true
+    }
+
+    /// Join and Mitre Ends: both members' nearest ends are brought to the
+    /// crossing of their centre lines and marked mitred. Returns false for
+    /// parallel or non-linear members.
+    pub fn join_mitre(&mut self, other: &mut FramingMember) -> bool {
+        if !self.is_linear() || !other.is_linear() {
+            return false;
+        }
+        let Some(x) = self.crossing(other) else {
+            return false;
+        };
+        for m in [&mut *self, &mut *other] {
+            if m.end.dist(x) < m.start.dist(x) {
+                m.end = x;
+                m.joint[1] = JoinKind::Mitre;
+            } else {
+                m.start = x;
+                m.joint[0] = JoinKind::Mitre;
+            }
+        }
+        true
     }
 
     /// Horizontal length from `start` to `end`.
@@ -1060,5 +1335,103 @@ mod tests {
         let both = combined_takeoff(&[auto], &[t]);
         assert!((both.board_feet - (to.board_feet + 16.0 / 3.0)).abs() < 1e-6);
         assert_eq!(both.linear_feet_by_size.len(), 1);
+    }
+
+    // ----- Round 16: break, joins -----
+
+    #[test]
+    fn add_break_cuts_a_member_in_two_and_shares_the_rise() {
+        let mut m = joist(1, 120.0);
+        m.rise = 12.0;
+        m.elevation_bottom = 100.0;
+        let (a, b) = m.break_at(Point::new(30.0, 5.0), 9).unwrap();
+        assert_eq!(a.id, 1);
+        assert_eq!(b.id, 9);
+        assert!((a.plan_length() - 30.0).abs() < 1e-9);
+        assert!((b.plan_length() - 90.0).abs() < 1e-9);
+        assert!((a.end.x - b.start.x).abs() < 1e-9 && (a.end.y - 16.0).abs() < 1e-9);
+        assert!((a.rise - 3.0).abs() < 1e-9 && (b.rise - 9.0).abs() < 1e-9);
+        assert!((b.elevation_bottom - 103.0).abs() < 1e-9);
+        // Too near an end, or not a linear member.
+        assert!(m.break_at(Point::new(0.5, 0.0), 9).is_none());
+        let post = FramingMember::new(2, MemberKind::Post, Point::ZERO, Point::ZERO);
+        assert!(post.break_at(Point::ZERO, 9).is_none());
+    }
+
+    #[test]
+    fn join_and_lap_butts_the_first_member_against_the_second() {
+        let mut a = joist(1, 100.0);
+        // The second member crosses the first's end at x = 98 and is long enough.
+        let mut b = FramingMember::new(
+            2,
+            MemberKind::Joist,
+            Point::new(98.0, -50.0),
+            Point::new(98.0, 50.0),
+        );
+        assert!(a.join_lap(&mut b));
+        // `a` stops at b's near face (half its width short of the crossing).
+        assert!(
+            (a.end.x - (98.0 - b.width / 2.0)).abs() < 1e-9,
+            "{}",
+            a.end.x
+        );
+        assert_eq!(a.joint[1], JoinKind::Butt);
+        // `b` laps over the end of `a` and keeps its length: it already covers it.
+        assert!(b.joint.contains(&JoinKind::Lap));
+        assert!((b.plan_length() - 100.0).abs() < 1e-9);
+        // Parallel members cannot be joined.
+        let mut c = joist(3, 50.0);
+        let mut d = joist(4, 50.0);
+        d.start.y = 10.0;
+        d.end.y = 10.0;
+        assert!(!c.join_lap(&mut d));
+        assert!(!c.join_mitre(&mut d));
+    }
+
+    #[test]
+    fn join_and_mitre_brings_both_ends_to_the_crossing() {
+        let mut a = FramingMember::new(
+            1,
+            MemberKind::GeneralFraming,
+            Point::new(0.0, 0.0),
+            Point::new(90.0, 0.0),
+        );
+        let mut b = FramingMember::new(
+            2,
+            MemberKind::GeneralFraming,
+            Point::new(100.0, 10.0),
+            Point::new(100.0, 90.0),
+        );
+        assert!(a.join_mitre(&mut b));
+        assert!((a.end.x - 100.0).abs() < 1e-9 && a.end.y.abs() < 1e-9);
+        assert!((b.start.y).abs() < 1e-9 && (b.start.x - 100.0).abs() < 1e-9);
+        assert_eq!(a.joint[1], JoinKind::Mitre);
+        assert_eq!(b.joint[0], JoinKind::Mitre);
+    }
+
+    #[test]
+    fn old_members_read_with_the_new_options_off() {
+        let m = joist(1, 100.0);
+        let mut v = serde_json::to_value(&m).unwrap();
+        let o = v.as_object_mut().unwrap();
+        for k in [
+            "bearing_beam",
+            "flat",
+            "show_cross",
+            "treated",
+            "show_ply_lines",
+            "end_profile",
+            "custom_label",
+            "fill",
+            "detail_fill",
+            "joint",
+        ] {
+            o.remove(k);
+        }
+        let back: FramingMember = serde_json::from_value(v).unwrap();
+        assert_eq!(back, m);
+        assert!(back.show_cross && !back.bearing_beam && back.flat == FlatTo::None);
+        assert_eq!(FlatTo::ALL.len(), 3);
+        assert_eq!(EndShape::ALL.len(), 4);
     }
 }

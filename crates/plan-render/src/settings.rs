@@ -20,6 +20,17 @@ pub enum Technique {
     Ambient,
 }
 
+/// How camera rays are generated.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Projection {
+    /// The usual perspective camera with the camera's field of view.
+    #[default]
+    Perspective,
+    /// A full 360 x 180 degree panorama (equirectangular), 2:1 pictures;
+    /// the field of view and the lens are ignored.
+    Equirectangular,
+}
+
 /// Parameters of one render.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -56,6 +67,8 @@ pub struct RenderSettings {
     /// Report a coarse blocky preview (one sample per 4 x 4 block) through the
     /// progressive callback before the first full pass.
     pub preview_blocks: bool,
+    /// Camera projection: perspective, or a 360 degree panorama.
+    pub projection: Projection,
 }
 
 impl RenderSettings {
@@ -96,6 +109,7 @@ impl Default for RenderSettings {
             textures: true,
             next_event: true,
             preview_blocks: false,
+            projection: Projection::Perspective,
         }
     }
 }

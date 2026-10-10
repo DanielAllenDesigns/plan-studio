@@ -19,6 +19,8 @@ pub const LAYER_TEXT: &str = "Text";
 pub const LAYER_TITLE_BLOCK: &str = "Title Block";
 /// Revision clouds and their tags.
 pub const LAYER_REVISION_CLOUDS: &str = "Revision Clouds";
+/// The labels under layout boxes (and their callout or marker shapes).
+pub const LAYER_BOX_LABELS: &str = "Layout Box Labels";
 
 /// Pen weight of the title block's own lines at weight 1.0 (points); the
 /// Title Block layer's weight scales the drawn pens by `weight / this`.
@@ -62,6 +64,7 @@ impl Default for LayoutLayers {
         Self {
             layers: vec![
                 LayoutLayer::new(LAYER_BOX_BORDERS, 0.75),
+                LayoutLayer::new(LAYER_BOX_LABELS, 0.5),
                 LayoutLayer::new(LAYER_CAD, 0.5),
                 LayoutLayer::new(LAYER_TEXT, 0.5),
                 LayoutLayer::new(LAYER_TITLE_BLOCK, TITLE_BLOCK_BASE_PT),
@@ -72,6 +75,21 @@ impl Default for LayoutLayers {
 }
 
 impl LayoutLayers {
+    /// Adds the layers of the default set that this set (read from an older
+    /// layout) does not have, shown and at their default weights. Returns
+    /// whether any was added.
+    pub fn complete(&mut self) -> bool {
+        let mut added = false;
+        for (i, l) in LayoutLayers::default().layers.into_iter().enumerate() {
+            if self.get(&l.name).is_none() {
+                let at = i.min(self.layers.len());
+                self.layers.insert(at, l);
+                added = true;
+            }
+        }
+        added
+    }
+
     pub fn get(&self, name: &str) -> Option<&LayoutLayer> {
         self.layers.iter().find(|l| l.name == name)
     }
@@ -157,13 +175,14 @@ mod tests {
     }
 
     #[test]
-    fn the_default_set_has_the_five_layers_all_shown() {
+    fn the_default_set_has_the_six_layers_all_shown() {
         let l = LayoutLayers::default();
         let names: Vec<&str> = l.layers.iter().map(|l| l.name.as_str()).collect();
         assert_eq!(
             names,
             [
                 "Layout Box Borders",
+                "Layout Box Labels",
                 "Layout CAD",
                 "Text",
                 "Title Block",
@@ -173,6 +192,20 @@ mod tests {
         assert!(l.layers.iter().all(|l| l.display));
         assert_eq!(l.weight_pt(LAYER_BOX_BORDERS), 0.75);
         assert_eq!(l.weight_pt(LAYER_CAD), 0.5);
+    }
+
+    #[test]
+    fn an_older_layer_set_gains_the_label_layer() {
+        let mut old = LayoutLayers::default();
+        old.layers.retain(|l| l.name != LAYER_BOX_LABELS);
+        old.set_weight(LAYER_CAD, 2.0);
+        assert!(old.get(LAYER_BOX_LABELS).is_none());
+        assert!(old.complete());
+        assert_eq!(old.layers.len(), 6);
+        assert!(old.is_visible(LAYER_BOX_LABELS));
+        // Nothing of the old set changed, and a complete set stays as it is.
+        assert_eq!(old.weight_pt(LAYER_CAD), 2.0);
+        assert!(!old.complete());
     }
 
     #[test]

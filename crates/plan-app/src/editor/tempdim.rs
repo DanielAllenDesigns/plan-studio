@@ -1,6 +1,19 @@
-//! Temporary dimensions (S-56..S-64): shown for the selected wall or opening,
-//! never saved. Clicking a value turns it into an edit field; Enter applies it
-//! by moving the selected object (the referenced object stays fixed, S-60).
+//! Temporary dimensions (S-56..S-64): shown for the selected wall, opening,
+//! cabinet or CAD object, never saved. Clicking a value turns it into an edit
+//! field; Enter applies it by moving the selected object (the referenced
+//! object stays fixed, S-60).
+//!
+//! CAD objects (S-58): a line shows its length and angle, a box (a closed
+//! rectangle) its width and height, a circle its radius and diameter and an
+//! arc its radius. Typing a value resizes the object: a line keeps its start
+//! and turns or stretches its end, a box keeps its lower left corner, a circle
+//! its center.
+//!
+//! A padlock beside a measuring value locks it (S-63): the temporary
+//! dimension becomes a permanent manual dimension on the Dimensions layer,
+//! tied to the objects it measures, so it follows them and its number can be
+//! typed into later (the Dimension tool's value edit). Clicking the padlock
+//! again takes that dimension away.
 
 use super::ops;
 use super::selection::{ObjectRef, Selection};
@@ -8,6 +21,7 @@ use super::{Camera, EditorContext};
 use crate::theme::Palette;
 use eframe::egui::{self, FontId, Rect, Shape, Stroke, Vec2};
 use plan_cabinets::Cabinet;
+use plan_core::cad::CadItem;
 use plan_core::geometry::Point;
 use plan_core::units::parse_ft_in;
 use plan_core::{DimFormat, Floor, Opening, OpeningLocate, Wall, WallEnd, WallLocate};
@@ -101,6 +115,10 @@ pub enum TempDimKind {
     /// in the Wall Specification's Curved Wall section.
     WallRadius,
     WallArcLength,
+    /// The wall's thickness from face to face (W-28). Typing resizes it about
+    /// the reference line the wall keeps fixed (Resize About), so the face
+    /// that is not being dimensioned stays where it is.
+    WallThickness,
     /// Cabinet: its width (typing resizes it, the left end staying put).
     CabinetWidth,
     /// Cabinet: from its left end to the nearest wall or cabinet, measured
@@ -113,6 +131,63 @@ pub enum TempDimKind {
     CabinetToOpeningLeft,
     /// Cabinet: from its right end to the near jamb of an opening.
     CabinetToOpeningRight,
+    /// CAD line: its length (the start stays, the end moves along the line).
+    CadLength,
+    /// CAD line: its angle in degrees counter-clockwise from east (the end
+    /// turns about the start).
+    CadAngle,
+    /// CAD box: its width (the lower left corner stays).
+    CadWidth,
+    /// CAD box: its height.
+    CadHeight,
+    /// CAD box: the gap from its right side to the nearest parallel wall face
+    /// or CAD box side (typing slides the box, S-58).
+    CadToRight,
+    /// CAD box: the gap from its left side.
+    CadToLeft,
+    /// CAD box: the gap from its top side.
+    CadAbove,
+    /// CAD box: the gap from its bottom side.
+    CadBelow,
+    /// CAD circle or arc: its radius (the center stays).
+    CadRadius,
+    /// CAD circle: its diameter.
+    CadDiameter,
+}
+
+impl TempDimKind {
+    /// Does this dimension measure a distance between two things? Angles,
+    /// radii and arc lengths are labels only, and a mulled unit's width is
+    /// read only, so none of those can be locked.
+    pub fn lockable(self) -> bool {
+        !matches!(
+            self,
+            TempDimKind::WallAngle
+                | TempDimKind::WallRadius
+                | TempDimKind::WallArcLength
+                | TempDimKind::WallThickness
+                | TempDimKind::OpeningUnitWidth
+                | TempDimKind::CadAngle
+                | TempDimKind::CadRadius
+                | TempDimKind::CadDiameter
+        )
+    }
+
+    /// Is the value degrees rather than inches?
+    pub fn is_angle(self) -> bool {
+        matches!(self, TempDimKind::WallAngle | TempDimKind::CadAngle)
+    }
+
+    /// Drawn as a label only, with no dimension line.
+    fn label_only(self) -> bool {
+        matches!(
+            self,
+            TempDimKind::WallAngle
+                | TempDimKind::WallRadius
+                | TempDimKind::WallArcLength
+                | TempDimKind::CadAngle
+        )
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -129,6 +204,9 @@ pub struct TempDim {
     /// inches plus screen pixels along the segment's left normal.
     pub offset_in: f64,
     pub offset_px: f32,
+    /// The permanent dimension that holds this value locked (S-63), set when
+    /// the dimensions are computed.
+    pub locked: Option<u64>,
 }
 
 impl TempDim {
@@ -175,13 +253,37 @@ impl TempDims {
                         .extend(cabinet_temp_dims(floor, &c, ObjectRef::Cabinet(id), loc));
                 }
             }
+            Some(ObjectRef::Cad(id)) => cad_dims(floor, id, &mut self.dims),
             _ => {}
+        }
+        for d in &mut self.dims {
+            d.locked = locked_dimension(floor, d);
         }
     }
 
     pub fn clear(&mut self) {
         self.dims.clear();
         self.editing = None;
+    }
+
+    /// Is dimension `index` locked into a permanent dimension?
+    pub fn is_locked(&self, index: usize) -> bool {
+        self.dims.get(index).is_some_and(|d| d.locked.is_some())
+    }
+
+    /// The padlock beside dimension `index`'s value, in plan coordinates.
+    pub fn lock_pos(&self, index: usize, scale: f64) -> Option<Point> {
+        let d = self.dims.get(index)?;
+        let at = d.label_pos(scale);
+        Some(Point::new(at.x, at.y + LOCK_DY_PX / scale.max(1e-6)))
+    }
+
+    /// The padlock under `p`, if any: only lockable dimensions have one.
+    pub fn hit_lock(&self, p: Point, scale: f64) -> Option<usize> {
+        let r = LOCK_RADIUS_PX / scale.max(1e-6);
+        (0..self.dims.len()).find(|&i| {
+            self.dims[i].kind.lockable() && self.lock_pos(i, scale).is_some_and(|q| q.dist(p) <= r)
+        })
     }
 
     /// The value label near `p`, if any.
@@ -246,6 +348,364 @@ impl TempDims {
 
 /// Walls shorter than this show no angle dimension (it would sit on the handles).
 const ANGLE_MIN_WALL: f64 = 48.0;
+/// The padlock sits this many pixels above the value and is this big.
+const LOCK_DY_PX: f64 = 22.0;
+const LOCK_RADIUS_PX: f64 = 8.0;
+
+/// The temporary dimensions of a CAD object (S-58).
+fn cad_dims(floor: &Floor, id: u64, out: &mut Vec<TempDim>) {
+    let Some(c) = floor.cad.iter().find(|c| c.id == id) else {
+        return;
+    };
+    let target = ObjectRef::Cad(id);
+    let mut push = |kind, a: Point, b: Point, value: f64, axis: Point, offset_px: f32| {
+        out.push(TempDim {
+            kind,
+            a,
+            b,
+            value,
+            axis,
+            target,
+            offset_in: 0.0,
+            offset_px,
+            locked: None,
+        });
+    };
+    match &c.item {
+        CadItem::Line { a, b } => {
+            let len = a.dist(*b);
+            if len < 1e-6 {
+                return;
+            }
+            let u = b.sub(*a).scale(1.0 / len);
+            push(TempDimKind::CadLength, *a, *b, len, u, -14.0);
+            // The angle sits a quarter of the way along, on the left.
+            let at = a.add(u.scale(len * 0.25));
+            push(
+                TempDimKind::CadAngle,
+                at,
+                at.add(u),
+                super::typed_input::angle_deg(*a, *b),
+                u.perp(),
+                16.0,
+            );
+        }
+        CadItem::Circle { center, radius } => {
+            let e = Point::new(1.0, 0.0);
+            push(
+                TempDimKind::CadRadius,
+                *center,
+                Point::new(center.x + radius, center.y),
+                *radius,
+                e,
+                -14.0,
+            );
+            push(
+                TempDimKind::CadDiameter,
+                Point::new(center.x - radius, center.y),
+                Point::new(center.x + radius, center.y),
+                radius * 2.0,
+                e,
+                16.0,
+            );
+        }
+        CadItem::Arc {
+            center,
+            radius,
+            start_angle,
+            ..
+        } => {
+            let to = Point::new(
+                center.x + radius * start_angle.cos(),
+                center.y + radius * start_angle.sin(),
+            );
+            let u = to.sub(*center).normalized();
+            push(TempDimKind::CadRadius, *center, to, *radius, u, -14.0);
+        }
+        CadItem::Polyline {
+            points,
+            closed: true,
+        } => {
+            if let Some((lo, hi)) = box_bounds(points) {
+                push(
+                    TempDimKind::CadWidth,
+                    lo,
+                    Point::new(hi.x, lo.y),
+                    hi.x - lo.x,
+                    Point::new(1.0, 0.0),
+                    -14.0,
+                );
+                push(
+                    TempDimKind::CadHeight,
+                    Point::new(hi.x, lo.y),
+                    hi,
+                    hi.y - lo.y,
+                    Point::new(0.0, 1.0),
+                    -14.0,
+                );
+                box_offsets(floor, id, lo, hi, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// A face that a CAD box's side can face across a gap: a wall face or the
+/// side of another CAD box. `vertical` faces stand at `x = at`, horizontal
+/// ones at `y = at`; `from..to` is the stretch along the face.
+struct Face {
+    vertical: bool,
+    at: f64,
+    from: f64,
+    to: f64,
+}
+
+fn faces_near(floor: &Floor, skip: u64) -> Vec<Face> {
+    let mut v = Vec::new();
+    for w in floor.walls.iter().filter(|w| !w.flags.no_locate) {
+        let (a, b) = (w.start, w.end);
+        let h = w.thickness * 0.5;
+        if (a.y - b.y).abs() < 1e-6 {
+            let (from, to) = (a.x.min(b.x), a.x.max(b.x));
+            for off in [-h, h] {
+                v.push(Face {
+                    vertical: false,
+                    at: a.y + off,
+                    from,
+                    to,
+                });
+            }
+        } else if (a.x - b.x).abs() < 1e-6 {
+            let (from, to) = (a.y.min(b.y), a.y.max(b.y));
+            for off in [-h, h] {
+                v.push(Face {
+                    vertical: true,
+                    at: a.x + off,
+                    from,
+                    to,
+                });
+            }
+        }
+    }
+    for c in floor.cad.iter().filter(|c| c.id != skip) {
+        if let CadItem::Polyline {
+            points,
+            closed: true,
+        } = &c.item
+        {
+            if let Some((lo, hi)) = box_bounds(points) {
+                v.push(Face {
+                    vertical: true,
+                    at: lo.x,
+                    from: lo.y,
+                    to: hi.y,
+                });
+                v.push(Face {
+                    vertical: true,
+                    at: hi.x,
+                    from: lo.y,
+                    to: hi.y,
+                });
+                v.push(Face {
+                    vertical: false,
+                    at: lo.y,
+                    from: lo.x,
+                    to: hi.x,
+                });
+                v.push(Face {
+                    vertical: false,
+                    at: hi.y,
+                    from: lo.x,
+                    to: hi.x,
+                });
+            }
+        }
+    }
+    v
+}
+
+/// The offsets from a CAD box to the nearest parallel objects on each side
+/// (S-58): the gap to the nearest wall face or CAD box side that faces the
+/// side and overlaps it. Typing a gap slides the box.
+fn box_offsets(floor: &Floor, id: u64, lo: Point, hi: Point, out: &mut Vec<TempDim>) {
+    let faces = faces_near(floor, id);
+    let target = ObjectRef::Cad(id);
+    let overlap = |f: &Face, a: f64, b: f64| f.from < b - 1e-6 && f.to > a + 1e-6;
+    let mid = Point::new((lo.x + hi.x) * 0.5, (lo.y + hi.y) * 0.5);
+    let mut push = |kind, a: Point, b: Point, value: f64, axis: Point, px: f32| {
+        out.push(TempDim {
+            kind,
+            a,
+            b,
+            value,
+            axis,
+            target,
+            offset_in: 0.0,
+            offset_px: px,
+            locked: None,
+        });
+    };
+    // Right: the nearest vertical face at or beyond the right side.
+    let right = faces
+        .iter()
+        .filter(|f| f.vertical && f.at >= hi.x + 1e-6 && overlap(f, lo.y, hi.y))
+        .min_by(|a, b| a.at.total_cmp(&b.at));
+    if let Some(f) = right {
+        push(
+            TempDimKind::CadToRight,
+            Point::new(hi.x, mid.y),
+            Point::new(f.at, mid.y),
+            f.at - hi.x,
+            Point::new(-1.0, 0.0),
+            14.0,
+        );
+    }
+    let left = faces
+        .iter()
+        .filter(|f| f.vertical && f.at <= lo.x - 1e-6 && overlap(f, lo.y, hi.y))
+        .max_by(|a, b| a.at.total_cmp(&b.at));
+    if let Some(f) = left {
+        push(
+            TempDimKind::CadToLeft,
+            Point::new(f.at, mid.y),
+            Point::new(lo.x, mid.y),
+            lo.x - f.at,
+            Point::new(1.0, 0.0),
+            14.0,
+        );
+    }
+    let above = faces
+        .iter()
+        .filter(|f| !f.vertical && f.at >= hi.y + 1e-6 && overlap(f, lo.x, hi.x))
+        .min_by(|a, b| a.at.total_cmp(&b.at));
+    if let Some(f) = above {
+        push(
+            TempDimKind::CadAbove,
+            Point::new(mid.x, hi.y),
+            Point::new(mid.x, f.at),
+            f.at - hi.y,
+            Point::new(0.0, -1.0),
+            14.0,
+        );
+    }
+    let below = faces
+        .iter()
+        .filter(|f| !f.vertical && f.at <= lo.y - 1e-6 && overlap(f, lo.x, hi.x))
+        .max_by(|a, b| a.at.total_cmp(&b.at));
+    if let Some(f) = below {
+        push(
+            TempDimKind::CadBelow,
+            Point::new(mid.x, f.at),
+            Point::new(mid.x, lo.y),
+            lo.y - f.at,
+            Point::new(0.0, 1.0),
+            14.0,
+        );
+    }
+}
+
+/// The corners `(lower left, upper right)` of a closed polyline that is an
+/// axis-aligned rectangle (a CAD box), else `None`.
+fn box_bounds(points: &[Point]) -> Option<(Point, Point)> {
+    if points.len() != 4 {
+        return None;
+    }
+    let tol = 1e-6;
+    for i in 0..4 {
+        let (p, q) = (points[i], points[(i + 1) % 4]);
+        if (p.x - q.x).abs() > tol && (p.y - q.y).abs() > tol {
+            return None;
+        }
+    }
+    let lo = Point::new(
+        points.iter().map(|p| p.x).fold(f64::INFINITY, f64::min),
+        points.iter().map(|p| p.y).fold(f64::INFINITY, f64::min),
+    );
+    let hi = Point::new(
+        points.iter().map(|p| p.x).fold(f64::NEG_INFINITY, f64::max),
+        points.iter().map(|p| p.y).fold(f64::NEG_INFINITY, f64::max),
+    );
+    ((hi.x - lo.x) > tol && (hi.y - lo.y) > tol).then_some((lo, hi))
+}
+
+/// The permanent dimension that measures exactly `d`'s segment (a locked
+/// temporary dimension, S-63).
+pub fn locked_dimension(floor: &Floor, d: &TempDim) -> Option<u64> {
+    if !d.kind.lockable() {
+        return None;
+    }
+    let same = |p: Point, q: Point| p.dist(q) < 0.01;
+    floor
+        .dimensions
+        .iter()
+        .find(|m| {
+            m.kind == plan_core::DimensionKind::Manual
+                && ((same(m.start, d.a) && same(m.end, d.b))
+                    || (same(m.start, d.b) && same(m.end, d.a)))
+        })
+        .map(|m| m.id)
+}
+
+/// The objects the ends of `d` measure from or to, when the selected object
+/// is one of them (an opening's jamb, a cabinet's end): they tie the permanent
+/// dimension to that object rather than to the wall it stands in.
+fn lock_hints(d: &TempDim) -> [Option<plan_core::dim_assoc::DimHint>; 2] {
+    use plan_core::dim_assoc::{AnchorTarget, DimHint};
+    let hint = |p: Point| match d.target {
+        ObjectRef::Opening(id) => Some(DimHint {
+            target: AnchorTarget::Opening,
+            id,
+            point: p,
+        }),
+        ObjectRef::Cabinet(id) if id != 0 => Some(DimHint {
+            target: AnchorTarget::Cabinet,
+            id,
+            point: p,
+        }),
+        _ => None,
+    };
+    match d.kind {
+        TempDimKind::OpeningWidth | TempDimKind::CabinetWidth => [hint(d.a), hint(d.b)],
+        TempDimKind::OpeningToStart => [None, hint(d.b)],
+        TempDimKind::OpeningToEnd => [hint(d.a), None],
+        _ => [None, None],
+    }
+}
+
+/// Locks temporary dimension `index` into a permanent manual dimension, or
+/// takes the locked dimension away again (S-63). One undo step; returns its
+/// label.
+pub fn toggle_lock(cx: &mut EditorContext, index: usize) -> Result<&'static str, String> {
+    let Some(d) = cx.temp.dims.get(index).copied() else {
+        return Err("That dimension is gone".into());
+    };
+    if !d.kind.lockable() {
+        return Err("Only a measured distance can be locked".into());
+    }
+    let fl = cx.floor;
+    if cx.layers().is_locked("Dimensions, Manual") {
+        return Err("The layer \"Dimensions, Manual\" is locked".into());
+    }
+    if let Some(id) = locked_dimension(cx.floor(), &d) {
+        cx.begin_change("Unlock Dimension");
+        cx.project.remove_dimension(fl, id);
+        cx.mark_dirty();
+        return Ok("Unlock Dimension");
+    }
+    let offset = d.offset_in + f64::from(d.offset_px) / cx.px_per_in.max(1e-6);
+    let mut dim = plan_core::Dimension::new(0, plan_core::DimensionKind::Manual, d.a, d.b, offset);
+    let style = cx.defaults.dimensions.text_style.clone();
+    if !style.is_empty() {
+        dim.text_style = Some(style);
+    }
+    cx.begin_change("Lock Dimension");
+    let id = cx.project.add_dimension(fl, dim);
+    // Its ends stay tied to the walls and openings they lie on, and the end
+    // that is the selected object stays tied to it.
+    cx.project.floors[fl].attach_dimension_hinted(id, lock_hints(&d));
+    cx.mark_dirty();
+    Ok("Lock Dimension")
+}
 
 fn wall_dims(floor: &Floor, id: u64, out: &mut Vec<TempDim>, loc: &TempLocate) {
     let Some(s) = floor.wall(id) else { return };
@@ -313,6 +773,7 @@ fn wall_dims(floor: &Floor, id: u64, out: &mut Vec<TempDim>, loc: &TempLocate) {
                 target: ObjectRef::Wall(id),
                 offset_in: 0.0,
                 offset_px: 0.0,
+                locked: None,
             });
         }
     }
@@ -325,6 +786,7 @@ fn wall_dims(floor: &Floor, id: u64, out: &mut Vec<TempDim>, loc: &TempLocate) {
         target: ObjectRef::Wall(id),
         offset_in: -s.thickness * 0.5,
         offset_px: -14.0,
+        locked: None,
     });
     // A curved wall reads its radius and arc length at the middle of the arc,
     // on the side it bulges toward; the length above is its chord (W-64, W-74).
@@ -343,6 +805,7 @@ fn wall_dims(floor: &Floor, id: u64, out: &mut Vec<TempDim>, loc: &TempLocate) {
                 target: ObjectRef::Wall(id),
                 offset_in: s.thickness * 0.5,
                 offset_px: extra,
+                locked: None,
             });
         }
     }
@@ -359,6 +822,24 @@ fn wall_dims(floor: &Floor, id: u64, out: &mut Vec<TempDim>, loc: &TempLocate) {
             target: ObjectRef::Wall(id),
             offset_in: s.thickness * 0.5,
             offset_px: 16.0,
+            locked: None,
+        });
+    }
+    // The thickness across the wall, three quarters of the way along (a short
+    // wall or an arc shows none, W-28).
+    if len >= ANGLE_MIN_WALL && !s.is_curved() {
+        let at = s.start + u * (len * 0.75);
+        let a = at - n * (s.thickness * 0.5);
+        out.push(TempDim {
+            kind: TempDimKind::WallThickness,
+            a,
+            b: a + n * s.thickness,
+            value: s.thickness,
+            axis: n,
+            target: ObjectRef::Wall(id),
+            offset_in: 0.0,
+            offset_px: 14.0,
+            locked: None,
         });
     }
 }
@@ -443,6 +924,7 @@ pub fn opening_temp_dims(
         target,
         offset_in: -w.thickness * 0.5,
         offset_px: -OPENING_DIM_PX,
+        locked: None,
     });
     if !members.is_empty() {
         out.push(TempDim {
@@ -454,6 +936,7 @@ pub fn opening_temp_dims(
             target,
             offset_in: -w.thickness * 0.5,
             offset_px: -OPENING_DIM_PX * 1.6,
+            locked: None,
         });
     }
     out.push(TempDim {
@@ -465,6 +948,7 @@ pub fn opening_temp_dims(
         target,
         offset_in: w.thickness * 0.5,
         offset_px: OPENING_DIM_PX,
+        locked: None,
     });
     out.push(TempDim {
         kind: TempDimKind::OpeningToEnd,
@@ -475,6 +959,7 @@ pub fn opening_temp_dims(
         target,
         offset_in: w.thickness * 0.5,
         offset_px: OPENING_DIM_PX,
+        locked: None,
     });
     out
 }
@@ -511,6 +996,7 @@ pub fn cabinet_temp_dims(
         target,
         offset_in: 0.0,
         offset_px: CABINET_DIM_PX,
+        locked: None,
     }];
     // Walls and the cabinets at the same height are what stops a cabinet.
     let mut obstacles: Vec<Vec<Point>> = floor
@@ -552,8 +1038,8 @@ pub fn cabinet_temp_dims(
             continue;
         }
         for o in floor.openings.iter().filter(|o| o.wall_id == w.id) {
-            let sa = w.point_at(o.start_offset()).sub(cab.position).dot(u);
-            let sb = w.point_at(o.end_offset()).sub(cab.position).dot(u);
+            let sa = w.point_along(o.start_offset()).sub(cab.position).dot(u);
+            let sb = w.point_along(o.end_offset()).sub(cab.position).dot(u);
             let (lo, hi) = (sa.min(sb), sa.max(sb));
             if hi <= 1e-6 {
                 let g = -hi;
@@ -577,6 +1063,7 @@ pub fn cabinet_temp_dims(
             target,
             offset_in: 0.0,
             offset_px: px,
+            locked: None,
         });
     };
     if let Some(g) = left_gap {
@@ -617,7 +1104,7 @@ pub fn cabinet_temp_dims(
 /// Applies `value` (inches) to `dim`: moves the selected object so the
 /// dimension reads `value`. One undo step. Returns the undo label.
 pub fn apply(cx: &mut EditorContext, dim: &TempDim, value: f64) -> Result<&'static str, String> {
-    if value < 0.0 && dim.kind != TempDimKind::WallAngle {
+    if value < 0.0 && !dim.kind.is_angle() {
         return Err("A dimension cannot be negative".into());
     }
     let fl = cx.floor;
@@ -630,11 +1117,34 @@ pub fn apply(cx: &mut EditorContext, dim: &TempDim, value: f64) -> Result<&'stat
             if value < 1.0 {
                 return Err("A wall must be at least 1\" long".into());
             }
+            // A length too short for the wall's openings is held at the
+            // shortest that still hosts them, with a warning (W-85).
+            let value = super::wall_edit::clamp_length(cx, id, value);
             cx.begin_change("Change Wall Length");
             let to = w.start + w.direction() * value;
             ops::move_wall_end_joined(&mut cx.project, fl, id, WallEnd::End, to);
             cx.mark_dirty();
             Ok("Change Wall Length")
+        }
+        (TempDimKind::WallThickness, ObjectRef::Wall(id)) => {
+            let Some(w) = cx.floor().wall(id).cloned() else {
+                return Err("Wall not found".into());
+            };
+            let least = super::wall_edit::min_thickness(cx, &w);
+            if value < least - 1e-9 {
+                return Err(format!(
+                    "Thickness cannot be less than {} (the layers of the wall type)",
+                    cx.fmt_dim(least)
+                ));
+            }
+            cx.begin_change("Change Wall Thickness");
+            if cx.project.set_wall_thickness_about(fl, id, value) {
+                cx.mark_dirty();
+                Ok("Change Wall Thickness")
+            } else {
+                cx.cancel_change();
+                Err("A wall must be at least 1/8\" thick".into())
+            }
         }
         (TempDimKind::WallAngle, ObjectRef::Wall(id)) => {
             let Some(w) = cx.floor().wall(id).cloned() else {
@@ -719,8 +1229,135 @@ pub fn apply(cx: &mut EditorContext, dim: &TempDim, value: f64) -> Result<&'stat
                 Err("The plan's cabinets could not be read".into())
             }
         }
+        (
+            TempDimKind::CadToRight
+            | TempDimKind::CadToLeft
+            | TempDimKind::CadAbove
+            | TempDimKind::CadBelow,
+            ObjectRef::Cad(id),
+        ) => {
+            // Typing a gap slides the box along the axis that grows it.
+            if value < 0.0 {
+                return Err("A gap cannot be negative".into());
+            }
+            if !cx.check_unlocked(ObjectRef::Cad(id)) {
+                return Err("That object is on a locked layer".into());
+            }
+            cx.begin_change("Move Box");
+            if let Some(c) = cx.project.floors[fl].cad.iter_mut().find(|c| c.id == id) {
+                ops::translate_cad(&mut c.item, dim.axis * change);
+            }
+            cx.mark_dirty();
+            Ok("Move Box")
+        }
+        (
+            TempDimKind::CadLength
+            | TempDimKind::CadAngle
+            | TempDimKind::CadWidth
+            | TempDimKind::CadHeight
+            | TempDimKind::CadRadius
+            | TempDimKind::CadDiameter,
+            ObjectRef::Cad(id),
+        ) => apply_cad(cx, id, dim.kind, value),
         _ => Err("This dimension cannot be edited".into()),
     }
+}
+
+/// Resizes CAD object `id` so the dimension `kind` reads `value` (S-58).
+fn apply_cad(
+    cx: &mut EditorContext,
+    id: u64,
+    kind: TempDimKind,
+    value: f64,
+) -> Result<&'static str, String> {
+    if kind != TempDimKind::CadAngle && value < 0.5 {
+        return Err("A CAD object must be at least 1/2\" across".into());
+    }
+    let fl = cx.floor;
+    let Some(item) = cx
+        .floor()
+        .cad
+        .iter()
+        .find(|c| c.id == id)
+        .map(|c| c.item.clone())
+    else {
+        return Err("Object not found".into());
+    };
+    let (label, new) = match (kind, item) {
+        (TempDimKind::CadLength, CadItem::Line { a, b }) => {
+            let u = b.sub(a).normalized();
+            (
+                "Change Line Length",
+                CadItem::Line {
+                    a,
+                    b: a.add(u.scale(value)),
+                },
+            )
+        }
+        (TempDimKind::CadAngle, CadItem::Line { a, b }) => (
+            "Change Line Angle",
+            CadItem::Line {
+                a,
+                b: super::typed_input::polar(a, a.dist(b), value.rem_euclid(360.0)),
+            },
+        ),
+        (TempDimKind::CadRadius, CadItem::Circle { center, .. }) => (
+            "Change Radius",
+            CadItem::Circle {
+                center,
+                radius: value,
+            },
+        ),
+        (TempDimKind::CadDiameter, CadItem::Circle { center, .. }) => (
+            "Change Radius",
+            CadItem::Circle {
+                center,
+                radius: value * 0.5,
+            },
+        ),
+        (
+            TempDimKind::CadRadius,
+            CadItem::Arc {
+                center,
+                start_angle,
+                end_angle,
+                ..
+            },
+        ) => (
+            "Change Radius",
+            CadItem::Arc {
+                center,
+                radius: value,
+                start_angle,
+                end_angle,
+            },
+        ),
+        (TempDimKind::CadWidth | TempDimKind::CadHeight, CadItem::Polyline { points, closed }) => {
+            let Some((lo, hi)) = box_bounds(&points) else {
+                return Err("This dimension cannot be edited".into());
+            };
+            let (sx, sy) = if kind == TempDimKind::CadWidth {
+                (value / (hi.x - lo.x), 1.0)
+            } else {
+                (1.0, value / (hi.y - lo.y))
+            };
+            let points = points
+                .iter()
+                .map(|p| Point::new(lo.x + (p.x - lo.x) * sx, lo.y + (p.y - lo.y) * sy))
+                .collect();
+            ("Resize Box", CadItem::Polyline { points, closed })
+        }
+        _ => return Err("This dimension cannot be edited".into()),
+    };
+    if !cx.check_unlocked(ObjectRef::Cad(id)) {
+        return Err("That object is on a locked layer".into());
+    }
+    cx.begin_change(label);
+    if let Some(c) = cx.project.floors[fl].cad.iter_mut().find(|c| c.id == id) {
+        c.item = new;
+    }
+    cx.mark_dirty();
+    Ok(label)
 }
 
 /// Commits the field being typed. Returns the undo label on success.
@@ -732,7 +1369,7 @@ pub fn commit_edit(cx: &mut EditorContext) -> Result<&'static str, String> {
         cx.temp.cancel();
         return Err("That dimension is gone".into());
     };
-    let parsed = if dim.kind == TempDimKind::WallAngle {
+    let parsed = if dim.kind.is_angle() {
         field
             .text
             .trim()
@@ -791,10 +1428,7 @@ pub fn draw(
         let (p, q) = d.line(scale);
         let (sa, sb) = (cam.world_to_screen(p), cam.world_to_screen(q));
         // The angle, radius and arc length are labels only.
-        if !matches!(
-            d.kind,
-            TempDimKind::WallAngle | TempDimKind::WallRadius | TempDimKind::WallArcLength
-        ) {
+        if !d.kind.label_only() {
             painter.line_segment([cam.world_to_screen(d.a), sa], ext);
             painter.line_segment([cam.world_to_screen(d.b), sb], ext);
             painter.line_segment([sa, sb], line);
@@ -807,8 +1441,12 @@ pub fn draw(
         let editing = dims.editing.as_ref().filter(|e| e.index == i);
         let text = match (editing, d.kind) {
             (Some(e), _) => format!("{}|", e.text),
-            (None, TempDimKind::WallAngle) => format!("{:.1}\u{b0}", d.value),
-            (None, TempDimKind::WallRadius) => format!("R {}", fmt.fmt_len(d.value)),
+            (None, TempDimKind::WallAngle | TempDimKind::CadAngle) => {
+                format!("{:.1}\u{b0}", d.value)
+            }
+            (None, TempDimKind::WallRadius | TempDimKind::CadRadius) => {
+                format!("R {}", fmt.fmt_len(d.value))
+            }
             (None, TempDimKind::WallArcLength) => format!("Arc {}", fmt.fmt_len(d.value)),
             (None, _) => fmt.fmt_len(d.value),
         };
@@ -829,7 +1467,36 @@ pub fn draw(
             galley,
             pal.dimension_text,
         );
+        if d.kind.lockable() {
+            if let Some(at) = dims.lock_pos(i, scale) {
+                draw_padlock(painter, cam.world_to_screen(at), dims.is_locked(i), pal);
+            }
+        }
     }
+}
+
+/// The lock glyph beside a value (S-63): closed and filled when the value is
+/// locked into a permanent dimension, open outline otherwise.
+fn draw_padlock(painter: &egui::Painter, c: egui::Pos2, locked: bool, pal: &Palette) {
+    let color = if locked {
+        pal.selection
+    } else {
+        pal.dimension_text.gamma_multiply(0.8)
+    };
+    let stroke = Stroke::new(1.3_f32, color);
+    let body = Rect::from_center_size(c + Vec2::new(0.0, 2.5), Vec2::new(9.0, 6.5));
+    if locked {
+        painter.rect_filled(body, 1.5, color);
+    } else {
+        painter.rect_stroke(body, 1.5, stroke, egui::StrokeKind::Inside);
+    }
+    // The shackle: both legs down when locked, the right leg lifted when not.
+    let (l, r) = (body.left() + 2.0, body.right() - 2.0);
+    let top = body.top() - 4.0;
+    painter.line_segment([egui::pos2(l, body.top()), egui::pos2(l, top)], stroke);
+    painter.line_segment([egui::pos2(l, top), egui::pos2(r, top)], stroke);
+    let foot = if locked { body.top() } else { top + 1.5 };
+    painter.line_segment([egui::pos2(r, top), egui::pos2(r, foot)], stroke);
 }
 
 #[cfg(test)]
@@ -880,7 +1547,8 @@ mod tests {
                 TempDimKind::WallGap,
                 TempDimKind::WallGap,
                 TempDimKind::WallLength,
-                TempDimKind::WallAngle
+                TempDimKind::WallAngle,
+                TempDimKind::WallThickness
             ]
         );
         // 100" centerline spacing minus half of each thickness.
@@ -1008,8 +1676,8 @@ mod tests {
             .iter()
             .find(|d| d.kind == TempDimKind::OpeningToStart)
             .unwrap();
-        assert_eq!(start.a, w.point_at(l.end_offset()));
-        assert_eq!(start.b, w.point_at(m.start_offset()));
+        assert_eq!(start.a, w.point_along(l.end_offset()));
+        assert_eq!(start.b, w.point_along(m.start_offset()));
     }
 
     #[test]

@@ -1,8 +1,9 @@
 //! Source extents: how big a box's content is, in source or paper units.
 
+use crate::boxview::BoxView;
 use crate::model::{BoxSource, ScheduleKind};
 use crate::render::LayoutRenderContext;
-use plan_3d::{build_scene, Scene};
+use plan_3d::{build_scene_with, Scene, SceneOptions};
 use plan_core::{detect_rooms, Floor, Point, Project};
 use plan_docs::{
     door_schedule, room_schedule, wall_schedule, window_schedule, PdfDoc, Scale, Schedule,
@@ -28,16 +29,31 @@ const IMAGE_SIZE_IN: (f64, f64) = (4.0, 3.0);
 /// Line height as a multiple of the text size.
 pub(crate) const LINE_SPACING: f64 = 1.25;
 
-/// The scene for elevations and sections: the caller's, or one built on demand.
+/// The scene for elevations and sections: the caller's, one the context's
+/// builder makes on demand, or the plan's own opening display (casing, jambs,
+/// sills; `SceneOptions::for_project`) built here.
 pub(crate) struct SceneSource<'a> {
     given: Option<&'a Scene>,
+    builder: Option<&'a dyn Fn(&Project) -> Scene>,
     built: OnceCell<Scene>,
 }
 
 impl<'a> SceneSource<'a> {
+    #[cfg(test)]
     pub(crate) fn new(given: Option<&'a Scene>) -> Self {
         Self {
             given,
+            builder: None,
+            built: OnceCell::new(),
+        }
+    }
+
+    /// The scene source of a render context: its scene, else its scene
+    /// builder, else the built-in one.
+    pub(crate) fn for_context(cx: &'a LayoutRenderContext<'_>) -> Self {
+        Self {
+            given: cx.scene,
+            builder: cx.scene_builder.as_deref(),
             built: OnceCell::new(),
         }
     }
@@ -45,7 +61,10 @@ impl<'a> SceneSource<'a> {
     pub(crate) fn get(&self, project: &Project) -> &Scene {
         match self.given {
             Some(s) => s,
-            None => self.built.get_or_init(|| build_scene(project)),
+            None => self.built.get_or_init(|| match self.builder {
+                Some(f) => f(project),
+                None => build_scene_with(project, &SceneOptions::for_project(project)),
+            }),
         }
     }
 }
@@ -119,9 +138,52 @@ pub(crate) fn table_metrics(s: &Schedule) -> TableMetrics {
     }
 }
 
+/// The plan's own Schedule Specification for a standard schedule box: the
+/// first placed schedule of the same kind (door, window, room or wall) and
+/// the floor it sits on.
+fn spec_for(
+    kind: ScheduleKind,
+    project: &Project,
+) -> Option<(usize, plan_core::schedules::Schedule)> {
+    use plan_core::schedules::{ScheduleKind as K, ScheduleLayer};
+    let want = match kind {
+        ScheduleKind::Door => K::Door,
+        ScheduleKind::Window => K::Window,
+        ScheduleKind::Room => K::Room,
+        ScheduleKind::Wall => K::Wall,
+    };
+    project.floors.iter().enumerate().find_map(|(i, f)| {
+        ScheduleLayer::load(f)
+            .schedules
+            .into_iter()
+            .find(|s| s.kind == want)
+            .map(|s| (i, s))
+    })
+}
+
 /// One table for `kind` covering every floor. With several floors the number
 /// column is prefixed with the floor number (`2-D01`).
+///
+/// When the plan has a placed schedule of that kind, the table is built from
+/// its Schedule Specification (the columns shown and their order, headings,
+/// sort, grouping, filter and totals), over all floors, so the schedule on
+/// the sheet reads the way the one in the plan does.
 pub(crate) fn schedule_for(kind: ScheduleKind, cx: &LayoutRenderContext) -> Schedule {
+    if let Some((floor, mut def)) = spec_for(kind, cx.project) {
+        let legacy = standard_schedule_for(kind, cx);
+        def.floor_scope = plan_core::schedules::FloorScope::All;
+        let rooms = cx.rooms_by_floor.get(floor).map(|r| (floor, r.as_slice()));
+        let mut t = plan_docs::schedule_kinds::table(cx.project, &def, floor, rooms);
+        if def.title.trim().is_empty() {
+            t.title = legacy.title;
+        }
+        return t;
+    }
+    standard_schedule_for(kind, cx)
+}
+
+/// The standard columns of `kind`, every floor in one table.
+fn standard_schedule_for(kind: ScheduleKind, cx: &LayoutRenderContext) -> Schedule {
     let floors = cx.project.floors.len();
     let mut out: Option<Schedule> = None;
     for floor in 0..floors {
@@ -155,6 +217,22 @@ pub(crate) fn schedule_for(kind: ScheduleKind, cx: &LayoutRenderContext) -> Sche
         ScheduleKind::Wall => wall_schedule(cx.project, 0),
         ScheduleKind::Room => room_schedule(cx.project, 0, &[]),
     })
+}
+
+/// The table a schedule, placed schedule, Materials List or sheet index box
+/// shows (for Export CSV / Excel); `None` for every other box.
+pub fn box_table(b: &crate::model::LayoutBox, cx: &LayoutRenderContext) -> Option<Schedule> {
+    match &b.source {
+        BoxSource::Schedule { kind } => Some(schedule_for(*kind, cx)),
+        BoxSource::PlacedSchedule { floor, id } => placed_schedule_table(cx, *floor, *id),
+        BoxSource::Materials { floor, category } => {
+            Some(cx.materials_table(*floor, category.as_deref()))
+        }
+        BoxSource::SheetIndex => Some(cx.sheet_index_table()),
+        BoxSource::PageTable => Some(cx.page_table()),
+        BoxSource::RevisionTable => Some(cx.revision_table()),
+        _ => None,
+    }
 }
 
 /// The table of the placed schedule `id` on `floor`, as the plan shows it;
@@ -285,6 +363,18 @@ pub(crate) fn frame_for(
                 h_in: m.height / 72.0,
             }
         }
+        BoxSource::PageTable | BoxSource::RevisionTable => {
+            let t = if matches!(source, BoxSource::PageTable) {
+                cx.page_table()
+            } else {
+                cx.revision_table()
+            };
+            let m = table_metrics(&t);
+            Frame::Paper {
+                w_in: (m.width / 72.0).max(3.0),
+                h_in: m.height / 72.0,
+            }
+        }
         // A 6" x 4.5" image of the 4:3 render.
         BoxSource::Perspective { .. } => Frame::Paper {
             w_in: 6.0,
@@ -299,7 +389,7 @@ pub(crate) fn frame_for(
 /// elevations and sections the projected model with a 12" margin; schedules
 /// the text-measured table (0.25" rows); text its measured lines.
 pub fn source_size_in(source: &BoxSource, scale: Scale, cx: &LayoutRenderContext) -> (f64, f64) {
-    let scenes = SceneSource::new(cx.scene);
+    let scenes = SceneSource::for_context(cx);
     size_of(frame_for(source, cx, &scenes), scale)
 }
 
@@ -310,5 +400,142 @@ pub(crate) fn size_of(frame: Frame, scale: Scale) -> (f64, f64) {
             ((hi.x - lo.x) * k, (hi.y - lo.y) * k)
         }
         Frame::Paper { w_in, h_in } => (w_in, h_in),
+    }
+}
+
+// ------------------------------------------------------------ box views --
+
+/// The floor and layer set a plan box shows: its own, or those of the saved
+/// plan view it is linked to (Link Saved Plan View). A saved view that shows
+/// "whichever floor is current" leaves the box's floor alone. `None` for a
+/// box that is not a plan view or whose floor is gone.
+pub(crate) fn plan_target(
+    source: &BoxSource,
+    view: &BoxView,
+    project: &Project,
+) -> Option<(usize, String)> {
+    let BoxSource::PlanView { floor, layer_set } = source else {
+        return None;
+    };
+    let (mut fl, mut set) = (*floor, layer_set.clone());
+    if let Some(sv) = view
+        .saved_view
+        .as_deref()
+        .and_then(|name| project.plan_view(name))
+    {
+        if let Some(f) = sv.floor {
+            fl = f;
+        }
+        if !sv.layer_set.is_empty() {
+            set = sv.layer_set.clone();
+        }
+    }
+    (fl < project.floors.len()).then_some((fl, set))
+}
+
+/// Everything a floor shows, for Entire Plan/View (Fill Window): the walls
+/// and dimensions, and the CAD on layers that are shown.
+pub(crate) fn fill_window_bounds(project: &Project, f: &Floor) -> Option<(Point, Point)> {
+    let base = plan_bounds(f);
+    let cad = f
+        .cad
+        .iter()
+        .filter(|o| project.layers.is_visible(&o.layer))
+        .map(|o| o.bounds());
+    let mut acc = base;
+    for (a, b) in cad {
+        acc = Some(match acc {
+            None => (a, b),
+            Some((lo, hi)) => (
+                Point::new(lo.x.min(a.x), lo.y.min(a.y)),
+                Point::new(hi.x.max(b.x), hi.y.max(b.y)),
+            ),
+        });
+    }
+    acc
+}
+
+/// [`frame_for`] with what the box remembers about its view: the Current
+/// Screen extent, the saved plan view it follows, Fill Window, and the
+/// picture a semi-dynamic or Plot Lines view keeps.
+pub(crate) fn frame_for_view(
+    source: &BoxSource,
+    view: &BoxView,
+    cx: &LayoutRenderContext,
+    scenes: &SceneSource,
+) -> Frame {
+    let scaled_kind = matches!(
+        source,
+        BoxSource::PlanView { .. }
+            | BoxSource::Elevation { .. }
+            | BoxSource::Section { .. }
+            | BoxSource::Camera { .. }
+            | BoxSource::CadDetail { .. }
+    );
+    if !scaled_kind {
+        return frame_for(source, cx, scenes);
+    }
+    if let Some(e) = view.extent {
+        return Frame::Scaled {
+            lo: Point::new(e[0].min(e[2]), e[1].min(e[3])),
+            hi: Point::new(e[0].max(e[2]), e[1].max(e[3])),
+        };
+    }
+    if let Some(art) = &view.art {
+        if !matches!(
+            source,
+            BoxSource::PlanView { .. } | BoxSource::CadDetail { .. }
+        ) && !art.lines.is_empty()
+        {
+            return pad(art.bounds.0, art.bounds.1, VIEW_MARGIN_IN);
+        }
+    }
+    if let BoxSource::PlanView { .. } = source {
+        let Some((floor, _)) = plan_target(source, view, cx.project) else {
+            return pad(Point::ZERO, Point::new(120.0, 120.0), 0.0);
+        };
+        let f = &cx.project.floors[floor];
+        let bounds = if view.fill_window {
+            fill_window_bounds(cx.project, f)
+        } else {
+            plan_bounds(f)
+        };
+        return match bounds {
+            Some((lo, hi)) => pad(lo, hi, PLAN_MARGIN_IN),
+            None => pad(Point::ZERO, Point::new(120.0, 120.0), 0.0),
+        };
+    }
+    frame_for(source, cx, scenes)
+}
+
+/// Paper size `(width, height)` in inches that `source` needs at `ipf`
+/// paper inches per foot, seen the way `view` says.
+pub fn view_size_in(
+    source: &BoxSource,
+    view: &BoxView,
+    ipf: f64,
+    cx: &LayoutRenderContext,
+) -> (f64, f64) {
+    let scenes = SceneSource::for_context(cx);
+    match frame_for_view(source, view, cx, &scenes) {
+        Frame::Scaled { lo, hi } => {
+            let k = ipf / 12.0;
+            ((hi.x - lo.x) * k, (hi.y - lo.y) * k)
+        }
+        Frame::Paper { w_in, h_in } => (w_in, h_in),
+    }
+}
+
+/// The size of the part of the view a box shows, in inches of the building
+/// (`None` for a source that is drawn at paper size).
+pub fn view_frame_in(
+    source: &BoxSource,
+    view: &BoxView,
+    cx: &LayoutRenderContext,
+) -> Option<(f64, f64)> {
+    let scenes = SceneSource::for_context(cx);
+    match frame_for_view(source, view, cx, &scenes) {
+        Frame::Scaled { lo, hi } => Some((hi.x - lo.x, hi.y - lo.y)),
+        Frame::Paper { .. } => None,
     }
 }

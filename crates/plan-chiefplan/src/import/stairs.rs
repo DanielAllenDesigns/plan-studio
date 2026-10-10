@@ -27,9 +27,37 @@
 //! ```
 //!
 //! The rise anchor is found by shape (a rise, a tread between 6" and 16", a riser
-//! 4" to 10" that divides the rise into a whole number of risers). The landing
-//! height is not stored plainly; the importer gives a landing half of the
-//! rise of the flights on its floor (Low). Railings are not read: the stair
+//! 4" to 10" that divides the rise into a whole number of risers).
+//!
+//! # Stacking (stage 3)
+//!
+//! The same spec block holds where the flight stands, as elevations against
+//! the first-floor datum (0 = the first floor; the foundation stair of the
+//! first floor has negative values, a second-floor stair values from 137.875):
+//!
+//! ```text
+//! R-129  f64  top   elevation of the last tread's surface
+//! R-121  f64  bottom elevation of the first tread's surface
+//! R-113  f64  the bottom again, or 0.875 lower for a flight that starts on
+//!             a floor (the floor's nominal elevation)
+//! ```
+//!
+//! `bottom + treads x riser = top` holds for all 35 flights of 6 projects whose
+//! spec block was readable (4 more flights use a block the search does not
+//! find). A flight that starts on a landing has `bottom` = the previous
+//! flight's top + one riser, so U and L stairs chain exactly: 0.875 to 71.75
+//! (9 treads of 7.875), the landing at 79.625, 79.625 to 126.875 (6 treads),
+//! and the last riser reaches 134.75 = 0.875 + the 133.875 rise. A flight that
+//! starts on a floor has `bottom` = the floor's elevation + 0.875, and the last
+//! riser of a stair reaches the upper floor's elevation + 0.875 (138.75 on a
+//! 137.875 floor): 0.875 = 7/8" is a floor finish offset. Confidence: High
+//! for the relation, Medium for reading 0.875" as a floor finish.
+//!
+//! Plan Studio's `base` is the bottom of the flight above the floor it starts
+//! from: `bottom - 0.875 - floor elevation`, snapped to 0 when under an inch
+//! (a flight that starts on the floor). A landing is at the `base` of the flight
+//! that leaves it. Rail sides are not decoded: the spec block only holds
+//! material-list macros (`=left_bracket_description`) for them, so the stair
 //! sides import as open.
 
 use super::lines::{chain, find_edges, is_closed, polygon_of};
@@ -42,6 +70,12 @@ pub const FLIGHT: u8 = 46;
 pub const LANDING: u8 = 47;
 /// Distance from the rise field back to the width field.
 const WIDTH_BEFORE_RISE: usize = 137;
+/// Distances from the rise field back to the top and bottom elevations.
+const TOP_BEFORE_RISE: usize = 129;
+const BOTTOM_BEFORE_RISE: usize = 121;
+/// The finish offset between a floor's nominal elevation and the surface a
+/// stair starts from or arrives at, inches.
+pub const FLOOR_FINISH: f64 = 0.875;
 /// Where the search for the rise field starts, from the `CD` byte.
 const RISE_SEARCH_FROM: usize = 0x400;
 
@@ -61,6 +95,11 @@ pub struct ChiefFlight {
     /// Floor-to-floor rise of the whole stair.
     pub rise: f64,
     pub riser: f64,
+    /// Elevation of the first tread's surface against the first-floor datum
+    /// (`None` when the block does not satisfy `bottom + treads x riser = top`).
+    pub bottom: Option<f64>,
+    /// Elevation of the last tread's surface.
+    pub top: Option<f64>,
 }
 
 impl ChiefFlight {
@@ -89,13 +128,31 @@ pub fn decode_flight(bytes: &[u8], tree: &ObjectTree, node: usize) -> Option<Chi
         let (Some(rise), Some(tread), Some(riser)) = (v(0), v(8), v(18)) else {
             return false;
         };
-        (6.0..=16.0).contains(&tread)
+        if !((6.0..=16.0).contains(&tread)
             && (4.0..=10.0).contains(&riser)
-            && (10.0..=400.0).contains(&rise)
-            && {
-                let k = rise / riser;
-                (k - k.round()).abs() < 0.02 && k.round() >= 2.0
+            && (10.0..=400.0).contains(&rise))
+        {
+            return false;
+        }
+        // The rise is a whole number of risers, or (stage 3: a flight whose
+        // riser is a preferred value, 6.75" on a 137.875" stair) the stacking
+        // block's top and bottom agree with the riser.
+        let k = rise / riser;
+        if (k - k.round()).abs() < 0.02 && k.round() >= 2.0 {
+            return true;
+        }
+        let n_treads = (line.len / tread).round();
+        let before = |d: usize| o.checked_sub(d).and_then(|p| f64_at(bytes, n.marker + p));
+        match (before(BOTTOM_BEFORE_RISE), before(TOP_BEFORE_RISE)) {
+            (Some(b), Some(t)) => {
+                n_treads >= 1.0
+                    && b.is_finite()
+                    && t.is_finite()
+                    && (-600.0..=1200.0).contains(&b)
+                    && (b + n_treads * riser - t).abs() < 0.05
             }
+            _ => false,
+        }
     })?;
     let at = |k: isize| f64_at(bytes, (n.marker + r).wrapping_add_signed(k));
     let rise = at(0)?;
@@ -110,6 +167,18 @@ pub fn decode_flight(bytes: &[u8], tree: &ObjectTree, node: usize) -> Option<Chi
     if (runs - runs.round()).abs() > 0.06 {
         return None;
     }
+    let before = |k: usize| r.checked_sub(k).and_then(|o| f64_at(bytes, n.marker + o));
+    let (bottom, top) = match (before(BOTTOM_BEFORE_RISE), before(TOP_BEFORE_RISE)) {
+        (Some(b), Some(t))
+            if b.is_finite()
+                && t.is_finite()
+                && (-600.0..=1200.0).contains(&b)
+                && (b + runs.round() * riser - t).abs() < 0.05 =>
+        {
+            (Some(b), Some(t))
+        }
+        _ => (None, None),
+    };
     Some(ChiefFlight {
         node,
         x: line.x,
@@ -121,7 +190,25 @@ pub fn decode_flight(bytes: &[u8], tree: &ObjectTree, node: usize) -> Option<Chi
         tread,
         rise,
         riser,
+        bottom,
+        top,
     })
+}
+
+impl ChiefFlight {
+    /// Height of the flight's bottom above the floor it is drawn on, in Plan
+    /// Studio's frame (`StairParams::base`): 0 for a flight that starts on the
+    /// floor, the landing height for one that starts on a landing. `None`
+    /// when the flight carries no elevations.
+    pub fn base_above(&self, floor_elevation: f64) -> Option<f64> {
+        let b = self.bottom? - FLOOR_FINISH - floor_elevation;
+        Some(if b.abs() < 1.0 { 0.0 } else { b })
+    }
+
+    /// The end of the run (the middle of the top riser line).
+    pub fn end_point(&self) -> (f64, f64) {
+        (self.x + self.dx * self.run, self.y + self.dy * self.run)
+    }
 }
 
 /// The `Floor.stairs` entry of a flight, in the serialized shape of
@@ -143,7 +230,7 @@ pub fn flight_json(f: &ChiefFlight, id: u64, floor_elevation: f64) -> Value {
             "shape": "Straight",
         },
         "floor_elevation": floor_elevation,
-        "base": 0.0,
+        "base": f.base_above(floor_elevation).unwrap_or(0.0),
     })
 }
 
@@ -230,6 +317,121 @@ pub(crate) mod tests {
             put_f64(b, 9085, tread);
             put_f64(b, 9095, riser);
         })
+    }
+
+    /// A flight with the stacking block: `bottom` is the elevation of the
+    /// first tread's surface, the top follows from the tread count.
+    pub fn flight_obj_stacked(
+        line: (f64, f64, f64, f64, f64),
+        width: f64,
+        tread: f64,
+        rise: f64,
+        riser: f64,
+        bottom: f64,
+    ) -> Vec<u8> {
+        let treads = (line.4 / tread).round();
+        sized(FLIGHT, 0, 10000, |b| {
+            put_edge(b, 671, line);
+            put_f64(b, 8940, width);
+            put_f64(b, 9077 - 129, bottom + treads * riser);
+            put_f64(b, 9077 - 121, bottom);
+            put_f64(b, 9077 - 113, bottom - 0.875);
+            put_f64(b, 9077, rise);
+            put_f64(b, 9085, tread);
+            put_f64(b, 9095, riser);
+        })
+    }
+
+    #[test]
+    fn stacked_flights_carry_their_heights_and_base() {
+        // A 9-tread flight from the first floor (0.875 to 71.75) and a 6-tread
+        // flight leaving the landing at 79.625 (to 126.875), risers of 7.875.
+        let a = flight_obj_stacked(
+            (300.0, 100.0, 0.0, 1.0, 94.5),
+            42.0,
+            10.5,
+            133.875,
+            7.875,
+            0.875,
+        );
+        let tree = ObjectTree::build(&a);
+        let fa = decode_flight(&a, &tree, tree.of_kind(FLIGHT, 0).next().unwrap()).unwrap();
+        assert_eq!((fa.bottom, fa.top), (Some(0.875), Some(71.75)));
+        assert_eq!(fa.base_above(0.0), Some(0.0));
+        assert!((fa.end_point().1 - 194.5).abs() < 1e-9);
+        let b = flight_obj_stacked(
+            (300.0, 240.5, 0.0, 1.0, 63.0),
+            42.0,
+            10.5,
+            133.875,
+            7.875,
+            79.625,
+        );
+        let tree = ObjectTree::build(&b);
+        let fb = decode_flight(&b, &tree, tree.of_kind(FLIGHT, 0).next().unwrap()).unwrap();
+        assert_eq!(fb.top, Some(126.875));
+        assert!((fb.base_above(0.0).unwrap() - 78.75).abs() < 1e-9);
+        // Seen from a floor at 137.875 the same flight would be below it.
+        assert!(fb.base_above(137.875).unwrap() < 0.0);
+        let j = flight_json(&fb, 4, 0.0);
+        assert!((j["base"].as_f64().unwrap() - 78.75).abs() < 1e-9);
+        // The foundation stair of the first floor stores negative heights:
+        // a flight that starts 0.875 above the floor at -125.875 has base 0.
+        let c = flight_obj_stacked(
+            (10.0, 10.0, 1.0, 0.0, 105.0),
+            39.0,
+            10.5,
+            125.875,
+            7.8672,
+            -125.0,
+        );
+        let tree = ObjectTree::build(&c);
+        let fc = decode_flight(&c, &tree, tree.of_kind(FLIGHT, 0).next().unwrap()).unwrap();
+        assert_eq!(fc.base_above(-125.875), Some(0.0));
+    }
+
+    #[test]
+    fn a_preferred_riser_flight_is_read_through_its_stacking_block() {
+        // 8 treads of a 6.75" riser on a 137.875" stair: 137.875 / 6.75 is not
+        // a whole number, so only top - bottom = treads x riser identifies the
+        // spec block (4 flights of 3 projects).
+        let obj = flight_obj_stacked(
+            (801.0, 100.61, -1.0, 0.0, 88.0),
+            48.0,
+            11.0,
+            137.875,
+            6.75,
+            0.875,
+        );
+        let tree = ObjectTree::build(&obj);
+        let f = decode_flight(&obj, &tree, tree.of_kind(FLIGHT, 0).next().unwrap()).unwrap();
+        assert_eq!((f.tread, f.riser, f.treads()), (11.0, 6.75, 8));
+        assert_eq!((f.bottom, f.top), (Some(0.875), Some(54.875)));
+        // Without the block the same numbers are no flight.
+        let blank = flight_obj((801.0, 100.61, -1.0, 0.0, 88.0), 48.0, 11.0, 137.875, 6.75);
+        let tree = ObjectTree::build(&blank);
+        assert!(decode_flight(&blank, &tree, tree.of_kind(FLIGHT, 0).next().unwrap()).is_none());
+    }
+
+    #[test]
+    fn heights_that_do_not_chain_are_ignored() {
+        // Bottom + treads x riser must equal the top: a block that does not
+        // satisfy it (another layout read by chance) leaves the flight unstacked.
+        let mut obj = flight_obj_stacked(
+            (300.0, 100.0, 0.0, 1.0, 94.5),
+            42.0,
+            10.5,
+            133.875,
+            7.875,
+            0.875,
+        );
+        let m = obj.iter().position(|&c| c == 0xCD).unwrap();
+        obj[m + 9077 - 129..m + 9077 - 121].copy_from_slice(&5.0f64.to_le_bytes());
+        let tree = ObjectTree::build(&obj);
+        let f = decode_flight(&obj, &tree, tree.of_kind(FLIGHT, 0).next().unwrap()).unwrap();
+        assert_eq!((f.bottom, f.top), (None, None));
+        assert_eq!(f.base_above(0.0), None);
+        assert_eq!(flight_json(&f, 1, 0.0)["base"], 0.0);
     }
 
     #[test]

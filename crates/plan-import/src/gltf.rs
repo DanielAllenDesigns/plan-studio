@@ -456,6 +456,7 @@ impl Walker<'_> {
                 color: material_color(self.root, prim),
                 positions: positions.iter().map(|p| transform_point(m, *p)).collect(),
                 indices,
+                ..ImportedPart::default()
             });
         }
         Ok(())

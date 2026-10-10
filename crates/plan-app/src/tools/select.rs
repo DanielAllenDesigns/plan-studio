@@ -13,9 +13,22 @@
 //!   encloses, right-to-left what it touches;
 //! * clicking a temporary dimension value edits it; Enter moves the object;
 //! * every drag is one undo step, Esc cancels it;
-//! * double-click or Enter opens the specification; Delete deletes.
+//! * double-click or Enter opens the specification; Delete deletes;
+//! * Alt on the press starts a marquee even over an object (S-30), and the
+//!   Marquee Selection setting says whether a marquee encloses, touches or
+//!   follows its direction (S-29);
+//! * Ctrl (or Cmd) held when a drag starts copies the selection and drags the
+//!   copies (S-94); the drag auto-scrolls the view at the edge (S-99);
+//! * digits typed during any move or rotate drag set the distance or angle
+//!   (S-28, S-23);
+//! * Edit Area and Stretch CAD (S-90, S-91) are in [`area`]; the words for the
+//!   status bar and the hover tooltip (S-6, S-98, DW-65) in [`describe`].
+
+pub mod area;
+pub mod describe;
 
 use super::{KeyEvent, PointerEvent, Tool, ToolId, ToolResult};
+use crate::editor::clipboard::Clipboard;
 use crate::editor::handles::{self, hit_handle, HandleKind};
 use crate::editor::ops::{self, cad_center, JOIN_TOL};
 use crate::editor::rooms_edit;
@@ -30,6 +43,7 @@ use crate::editor::{
 use crate::editor::{Camera, EditAction, EditActionKind, EditorContext, EditorRequest, ObjectRef};
 use crate::shell::view3d_panel::{Outbox, ViewRequest};
 use crate::toolbar::ViewFlag;
+use crate::tools::cad::arcs;
 use crate::tools::camera::{self as camera_tool, CamHandle};
 use eframe::egui::{self, Key, Pos2, Rect, Shape, Stroke};
 use plan_core::cad::CadItem;
@@ -56,6 +70,9 @@ enum Op {
     /// Offset of a dimension line.
     DimOffset(Id),
     CadRotate(Id),
+    /// The diamond on an arc edge of a polyline (edge `n`): sets its bulge
+    /// (CAD-22).
+    CadArcBulge(Id, usize),
     /// Line end, polyline vertex or circle radius.
     CadVertex(Id, HandleKind),
     /// Plain translate of the whole selection.
@@ -71,7 +88,11 @@ enum Op {
     Symbol(Id, HandleKind),
     DeviceMove(Id),
     RoofMove(Id),
-    RoofVertex(Id, usize),
+    /// A handle of a roof plane: corner, edge middle, pitch arrow or rotate
+    /// knob (RF-38).
+    RoofHandle(Id, roof_view::PlaneHandle),
+    /// The angle-of-view and tilt handles of a selected camera (C-25).
+    CameraWedge(Id, camera_tool::WedgeHandle),
     /// Corner `n` of a slab, slab hole or platform hole.
     FoundationVertex(Id, usize),
     /// One end (`true`: the second point) of a framing member or layout line.
@@ -97,6 +118,7 @@ impl Op {
             Op::OpeningLabel(_) => "Move Opening Label",
             Op::DimOffset(_) => "Move Dimension",
             Op::CadRotate(_) => "Rotate",
+            Op::CadArcBulge(..) => "Curve Polyline Edge",
             Op::CadVertex(..) => "Reshape",
             Op::Group => "Move Objects",
             Op::GroupRotate(_) => "Rotate Objects",
@@ -105,7 +127,14 @@ impl Op {
             Op::Symbol(..) => "Edit Symbol",
             Op::DeviceMove(_) => "Move Device",
             Op::RoofMove(_) => "Move Roof Plane",
-            Op::RoofVertex(..) => "Reshape Roof Plane",
+            Op::RoofHandle(_, h) => match h {
+                roof_view::PlaneHandle::Vertex(_) => "Reshape Roof Plane",
+                roof_view::PlaneHandle::Edge(_) => "Move Roof Edge",
+                roof_view::PlaneHandle::Pitch => "Change Roof Pitch",
+                roof_view::PlaneHandle::Rotate => "Rotate Roof Plane",
+            },
+            Op::CameraWedge(_, camera_tool::WedgeHandle::Tilt) => "Tilt Camera",
+            Op::CameraWedge(..) => "Change Angle of View",
             Op::FoundationVertex(..) => "Reshape Foundation Object",
             Op::FramingEnd(..) => "Stretch Framing",
             Op::FramingVertex(..) => "Reshape Truss Base",
@@ -122,6 +151,12 @@ struct Active {
     start: Point,
     /// Walls the snap engine ignores (the dragged wall and its joined ones).
     exclude: Vec<Id>,
+    /// A Ctrl/Cmd drag: the copies were made when the drag began and are what
+    /// moves (S-94). `before_copy` is the plan as it stood before them and
+    /// `prev_selection` what was selected, for Esc.
+    copy: bool,
+    before_copy: Option<Project>,
+    prev_selection: Vec<ObjectRef>,
 }
 
 enum Drag {
@@ -161,12 +196,171 @@ fn snap_unit_round(v: f64, unit: f64) -> f64 {
     (v / unit).round() * unit
 }
 
+/// The rounding unit of a move: the grid, except while a distance is being
+/// typed, when the typed number is taken as it is (S-28).
+fn unit(cx: &EditorContext) -> f64 {
+    if cx.typed_input.has_text() {
+        1e-6
+    } else {
+        cx.snap_unit()
+    }
+}
+
+// ----- Marquee Selection (S-29, S-30) -----
+
+/// What a marquee picks (Edit > Marquee Selection).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum MarqueeMode {
+    /// Left to right encloses, right to left touches (Chief's rubber band).
+    #[default]
+    ByDirection,
+    /// Only what lies wholly inside.
+    Enclosing,
+    /// Everything the rectangle touches.
+    Touching,
+}
+
+impl MarqueeMode {
+    pub const ALL: [MarqueeMode; 3] = [
+        MarqueeMode::ByDirection,
+        MarqueeMode::Enclosing,
+        MarqueeMode::Touching,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            MarqueeMode::ByDirection => "By Drag Direction",
+            MarqueeMode::Enclosing => "Enclosing",
+            MarqueeMode::Touching => "Touching",
+        }
+    }
+
+    /// The menu command that picks this mode.
+    pub fn command(self) -> &'static str {
+        match self {
+            MarqueeMode::ByDirection => MARQUEE_DIRECTION,
+            MarqueeMode::Enclosing => MARQUEE_ENCLOSING,
+            MarqueeMode::Touching => MARQUEE_TOUCHING,
+        }
+    }
+
+    /// Does a marquee dragged from `a` to `b` pick what it touches?
+    pub fn crosses(self, a: Point, b: Point) -> bool {
+        match self {
+            MarqueeMode::ByDirection => b.x < a.x,
+            MarqueeMode::Enclosing => false,
+            MarqueeMode::Touching => true,
+        }
+    }
+}
+
+pub const MARQUEE_DIRECTION: &str = "select.marquee.direction";
+pub const MARQUEE_ENCLOSING: &str = "select.marquee.enclosing";
+pub const MARQUEE_TOUCHING: &str = "select.marquee.touching";
+pub const EDIT_AREA: &str = "select.area.edit";
+pub const EDIT_AREA_VISIBLE: &str = "select.area.visible";
+pub const STRETCH_CAD: &str = "select.area.stretch_cad";
+
+thread_local! {
+    static MARQUEE: std::cell::Cell<MarqueeMode> =
+        const { std::cell::Cell::new(MarqueeMode::ByDirection) };
+    /// A drag (move, handle, marquee) is under way: the view scrolls when the
+    /// pointer reaches the edge of the canvas.
+    static DRAGGING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The Marquee Selection setting in force.
+pub fn marquee_mode() -> MarqueeMode {
+    MARQUEE.with(|m| m.get())
+}
+
+/// Sets the Marquee Selection setting (it lasts for the session).
+pub fn set_marquee_mode(m: MarqueeMode) {
+    MARQUEE.with(|c| c.set(m));
+}
+
+/// Is a Select Objects drag in progress? The shell scrolls the view when the
+/// pointer is at the edge of the canvas while this is true (S-99).
+pub fn drag_in_progress() -> bool {
+    DRAGGING.with(|d| d.get())
+}
+
+fn set_dragging(on: bool) {
+    DRAGGING.with(|d| d.set(on));
+}
+
+/// Width of the strip along the canvas edge in which a drag scrolls the view.
+pub const AUTO_SCROLL_MARGIN_PX: f32 = 28.0;
+/// Fastest scroll, pixels per second.
+pub const AUTO_SCROLL_MAX_PX_PER_S: f32 = 900.0;
+
+/// How far to pan the view (pixels, in the direction the content moves) for a
+/// drag whose pointer is at `pos` over the canvas `rect`, after `dt` seconds.
+/// Zero while the pointer is well inside; it grows toward the edge and is
+/// capped past it (S-99).
+pub fn auto_scroll_vector(rect: Rect, pos: Pos2, dt: f32) -> egui::Vec2 {
+    let axis = |lo: f32, hi: f32, v: f32| -> f32 {
+        // Positive: the pointer is `depth` pixels into the low-edge strip.
+        let low = AUTO_SCROLL_MARGIN_PX - (v - lo);
+        let high = AUTO_SCROLL_MARGIN_PX - (hi - v);
+        let speed = |depth: f32| {
+            (depth / AUTO_SCROLL_MARGIN_PX).clamp(0.0, 1.5) / 1.5 * AUTO_SCROLL_MAX_PX_PER_S * dt
+        };
+        if low > 0.0 {
+            speed(low)
+        } else if high > 0.0 {
+            -speed(high)
+        } else {
+            0.0
+        }
+    };
+    egui::vec2(
+        axis(rect.left(), rect.right(), pos.x),
+        axis(rect.top(), rect.bottom(), pos.y),
+    )
+}
+
+/// Does `id` belong to a Select Objects command (Edit Area, Stretch CAD, the
+/// Marquee Selection choices)?
+pub fn is_command(id: &str) -> bool {
+    id.starts_with("select.")
+}
+
+/// Runs one of the commands. True when the Select tool should be the tool
+/// from now on (Edit Area and Stretch CAD wait for a rubber band).
+pub fn run_command(cx: &mut EditorContext, id: &str) -> bool {
+    match id {
+        MARQUEE_DIRECTION => set_marquee_mode(MarqueeMode::ByDirection),
+        MARQUEE_ENCLOSING => set_marquee_mode(MarqueeMode::Enclosing),
+        MARQUEE_TOUCHING => set_marquee_mode(MarqueeMode::Touching),
+        EDIT_AREA => {
+            area::begin(
+                cx,
+                area::AreaKind::Edit {
+                    visible_only: false,
+                },
+            );
+            return true;
+        }
+        EDIT_AREA_VISIBLE => {
+            area::begin(cx, area::AreaKind::Edit { visible_only: true });
+            return true;
+        }
+        STRETCH_CAD => {
+            area::begin(cx, area::AreaKind::StretchCad);
+            return true;
+        }
+        _ => {}
+    }
+    false
+}
+
 // ----- the move operations (shared by drags and arrow-key nudges) -----
 
 /// Moves a wall by `delta`: perpendicular only, or freely with `free`.
 fn move_wall(cx: &mut EditorContext, id: Id, delta: Point, free: bool) {
     let fl = cx.floor;
-    let unit = cx.snap_unit();
+    let unit = unit(cx);
     if free {
         let d = Point::new(
             snap_unit_round(delta.x, unit),
@@ -184,7 +378,7 @@ fn move_wall(cx: &mut EditorContext, id: Id, delta: Point, free: bool) {
 /// Slides an opening along its wall by `delta`.
 fn slide_opening_by(cx: &mut EditorContext, id: Id, delta: Point) {
     let fl = cx.floor;
-    let unit = cx.snap_unit();
+    let unit = unit(cx);
     let Some(o) = cx.floor().openings.iter().find(|o| o.id == id).cloned() else {
         return;
     };
@@ -229,8 +423,15 @@ fn typed_slide_center(cx: &EditorContext, id: Id) -> Option<f64> {
 
 /// Translates every selected object by `delta`.
 fn move_group(cx: &mut EditorContext, items: &[ObjectRef], delta: Point) {
+    move_group_ex(cx, items, delta, true);
+}
+
+/// [`move_group`]; without `followers` the walls move alone (the copies of a
+/// Ctrl-drag sit on top of the walls they were copied from and must not drag
+/// those along).
+fn move_group_ex(cx: &mut EditorContext, items: &[ObjectRef], delta: Point, followers: bool) {
     let fl = cx.floor;
-    let unit = cx.snap_unit();
+    let unit = unit(cx);
     let d = Point::new(
         snap_unit_round(delta.x, unit),
         snap_unit_round(delta.y, unit),
@@ -242,7 +443,13 @@ fn move_group(cx: &mut EditorContext, items: &[ObjectRef], delta: Point) {
             _ => None,
         })
         .collect();
-    ops::translate_walls_with_followers(&mut cx.project, fl, &walls, d);
+    if followers {
+        ops::translate_walls_with_followers(&mut cx.project, fl, &walls, d);
+    } else {
+        for id in &walls {
+            cx.project.translate_wall(fl, *id, d);
+        }
+    }
     cx.translate_extra(items, d);
     for o in items {
         match *o {
@@ -263,8 +470,7 @@ fn move_group(cx: &mut EditorContext, items: &[ObjectRef], delta: Point) {
                     .iter_mut()
                     .find(|x| x.id == id)
                 {
-                    dim.start = dim.start + d;
-                    dim.end = dim.end + d;
+                    dim.translate(d);
                 }
             }
             ObjectRef::Cad(id) | ObjectRef::Text(id) => {
@@ -331,6 +537,74 @@ fn draw_terrain_selection(cx: &EditorContext, painter: &egui::Painter, cam: &Cam
     }
 }
 
+/// The wall a selected door or window sits in, softly outlined while its
+/// temporary dimensions are shown (S-110).
+fn draw_host_walls(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
+    let floor = cx.floor();
+    let stroke = Stroke::new(1.0_f32, cx.palette.selection.gamma_multiply(0.55));
+    let mut done: Vec<Id> = Vec::new();
+    for o in &cx.selection.items {
+        let ObjectRef::Opening(id) = *o else { continue };
+        let Some(host) = floor
+            .openings
+            .iter()
+            .find(|x| x.id == id)
+            .map(|x| x.wall_id)
+        else {
+            continue;
+        };
+        if done.contains(&host) || cx.selection.contains(ObjectRef::Wall(host)) {
+            continue;
+        }
+        done.push(host);
+        if let Some(w) = floor.wall(host) {
+            let pts: Vec<Pos2> = w
+                .footprint()
+                .iter()
+                .map(|p| cam.world_to_screen(*p))
+                .collect();
+            painter.add(Shape::closed_line(pts, stroke));
+        }
+    }
+}
+
+/// The diamonds on the arc edges of a selected polyline (CAD-22).
+fn draw_arc_handles(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
+    let Some(ObjectRef::Cad(id)) = cx.selection.single() else {
+        return;
+    };
+    for (_, apex) in arcs::arc_handles(cx, id) {
+        let c = cam.world_to_screen(apex);
+        let r = 5.0;
+        painter.add(Shape::convex_polygon(
+            vec![
+                c + egui::vec2(0.0, -r),
+                c + egui::vec2(r, 0.0),
+                c + egui::vec2(0.0, r),
+                c + egui::vec2(-r, 0.0),
+            ],
+            cx.palette.selection,
+            Stroke::new(1.0_f32, cx.palette.ghost_stroke),
+        ));
+    }
+}
+
+/// The wall hosting each selected opening (for S-110 tests).
+pub fn host_walls(cx: &EditorContext) -> Vec<Id> {
+    let floor = cx.floor();
+    let mut out: Vec<Id> = Vec::new();
+    for o in &cx.selection.items {
+        if let ObjectRef::Opening(id) = *o {
+            if let Some(x) = floor.openings.iter().find(|x| x.id == id) {
+                if !out.contains(&x.wall_id) {
+                    out.push(x.wall_id);
+                }
+            }
+        }
+    }
+    out
+}
+
 // ----- marquee -----
 
 fn rect_corners(lo: Point, hi: Point) -> [Point; 4] {
@@ -356,10 +630,25 @@ fn poly_touches_rect(poly: &[Point], lo: Point, hi: Point) -> bool {
     })
 }
 
+/// What a marquee dragged from `a` to `b` picks, under the Marquee Selection
+/// setting.
 fn objects_in_rect(cx: &EditorContext, a: Point, b: Point) -> Vec<ObjectRef> {
-    let crossing = b.x < a.x;
+    let crossing = marquee_mode().crosses(a, b);
     let lo = Point::new(a.x.min(b.x), a.y.min(b.y));
     let hi = Point::new(a.x.max(b.x), a.y.max(b.y));
+    objects_in_box(cx, lo, hi, crossing, false)
+}
+
+/// The objects an axis-aligned box encloses (or touches, with `crossing`),
+/// on displayed, unlocked layers; `hidden` also takes those on layers that are
+/// not displayed (Edit Area).
+fn objects_in_box(
+    cx: &EditorContext,
+    lo: Point,
+    hi: Point,
+    crossing: bool,
+    hidden: bool,
+) -> Vec<ObjectRef> {
     let floor = cx.floor();
     let hit = |poly: &[Point]| {
         if crossing {
@@ -369,7 +658,8 @@ fn objects_in_rect(cx: &EditorContext, a: Point, b: Point) -> Vec<ObjectRef> {
         }
     };
     let usable = |o: ObjectRef| {
-        layer_of(floor, o).is_none_or(|l| cx.layers().is_visible(&l) && !cx.layers().is_locked(&l))
+        layer_of(floor, o)
+            .is_none_or(|l| (hidden || cx.layers().is_visible(&l)) && !cx.layers().is_locked(&l))
     };
     let mut out = Vec::new();
     for w in &floor.walls {
@@ -409,8 +699,175 @@ fn objects_in_rect(cx: &EditorContext, a: Point, b: Point) -> Vec<ObjectRef> {
             out.push(r);
         }
     }
+    // The other kinds answer to the displayed layers only.
     out.extend(extra_in_rect(cx, lo, hi, crossing));
     out
+}
+
+// ----- typed input during a drag (S-28, S-23) -----
+
+/// What the digits typed during a drag mean.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum TypedKind {
+    /// Nothing is typed for this drag.
+    No,
+    /// A length (and an angle with Tab): wall ends, openings and every move.
+    Length,
+    /// Degrees: the Rotate handles.
+    Angle,
+}
+
+fn typed_kind(op: Op) -> TypedKind {
+    match op {
+        Op::WallEnd(..)
+        | Op::OpeningSlide(_)
+        | Op::OpeningResize(..)
+        | Op::WallMove(_)
+        | Op::Group
+        | Op::DeviceMove(_)
+        | Op::RoofMove(_)
+        | Op::Stair(_, StairHandleKind::Move)
+        | Op::Cabinet(_, HandleKind::Move)
+        | Op::Symbol(_, HandleKind::Move)
+        | Op::Camera(_, CamHandle::Move) => TypedKind::Length,
+        Op::CadRotate(_) | Op::GroupRotate(_) => TypedKind::Angle,
+        _ => TypedKind::No,
+    }
+}
+
+/// Is this a drag that carries objects (so Ctrl/Cmd makes it a copy)?
+fn is_body_move(op: Op) -> bool {
+    matches!(
+        op,
+        Op::Group
+            | Op::WallMove(_)
+            | Op::DeviceMove(_)
+            | Op::Stair(_, StairHandleKind::Move)
+            | Op::Cabinet(_, HandleKind::Move)
+            | Op::Symbol(_, HandleKind::Move)
+            | Op::Camera(_, CamHandle::Move)
+    )
+}
+
+/// `v` turned by `deg` degrees counter-clockwise.
+fn turned(v: Point, deg: f64) -> Point {
+    let (s, c) = deg.to_radians().sin_cos();
+    Point::new(v.x * c - v.y * s, v.x * s + v.y * c)
+}
+
+/// Where the pointer of a move drag stands for the typed distance (and angle)
+/// when the drag has no temporary-dimension logic of its own.
+pub(super) fn typed_move_target(cx: &EditorContext, start: Point, raw: Point) -> Option<Point> {
+    if !cx.typed_input.has_text() {
+        return None;
+    }
+    tempdim::typed_point(cx, start, raw)
+}
+
+/// Where the pointer of a rotate drag stands for the typed angle: the press
+/// point turned about `center`.
+pub(super) fn typed_rotate_target(
+    cx: &EditorContext,
+    center: Point,
+    start: Point,
+) -> Option<Point> {
+    let deg = tempdim::typed_angle(cx)?;
+    let mut v = start - center;
+    if v.length() < 1e-9 {
+        v = Point::new(10.0, 0.0);
+    }
+    Some(center + turned(v, deg))
+}
+
+/// The pointer event a drag is applied with: the real one, or one whose
+/// position stands for the typed number (with the snaps off, so the number is
+/// taken as typed).
+fn typed_pointer(cx: &EditorContext, a: &Active, p: &PointerEvent) -> Option<PointerEvent> {
+    if !cx.typed_input.has_text() {
+        return None;
+    }
+    let fl = cx.floor;
+    let world = match a.op {
+        // Wall ends and openings read the typed values themselves.
+        Op::WallEnd(..) | Op::OpeningSlide(_) | Op::OpeningResize(..) => return None,
+        Op::GroupRotate(center) => typed_rotate_target(cx, center, a.start)?,
+        Op::CadRotate(id) => {
+            let c = a.original.floors[fl].cad.iter().find(|c| c.id == id)?;
+            typed_rotate_target(cx, cad_center(&c.item), a.start)?
+        }
+        Op::WallMove(id) => {
+            // The wall only goes sideways: the typed length is the distance
+            // across, on the side the pointer is on.
+            let w = a.original.floors[fl].wall(id)?;
+            let n = w.normal();
+            let sign = if (p.world - a.start).dot(n) < 0.0 {
+                -1.0
+            } else {
+                1.0
+            };
+            a.start + n * (sign * tempdim::typed_value(cx)?)
+        }
+        op if typed_kind(op) == TypedKind::Length => typed_move_target(cx, a.start, p.world)?,
+        _ => return None,
+    };
+    let mut e = *p;
+    e.world = world;
+    e.snapped = world;
+    e.modifiers.alt = true;
+    Some(e)
+}
+
+/// The status-bar words while a number is typed into a drag.
+fn typed_readout(cx: &mut EditorContext, a: &Active, world: Point) {
+    use crate::editor::typed_input::{angle_deg, TypedField};
+    if !cx.typed_input.is_armed()
+        || matches!(
+            a.op,
+            Op::WallEnd(..) | Op::OpeningSlide(_) | Op::OpeningResize(..)
+        )
+    {
+        return;
+    }
+    let ti = &cx.typed_input;
+    let on = |f: TypedField| ti.has_text() && ti.field() == f;
+    if typed_kind(a.op) == TypedKind::Angle {
+        let live = format!("{:.1}\u{b0}", {
+            let center = match a.op {
+                Op::GroupRotate(c) => c,
+                Op::CadRotate(id) => a.original.floors[cx.floor]
+                    .cad
+                    .iter()
+                    .find(|c| c.id == id)
+                    .map_or(a.start, |c| cad_center(&c.item)),
+                _ => a.start,
+            };
+            (angle_deg(center, world) - angle_deg(center, a.start)).rem_euclid(360.0)
+        });
+        cx.readout = Some(format!(
+            "Rotate: {}",
+            if on(TypedField::Angle) {
+                format!("{}|", ti.angle_text())
+            } else {
+                live
+            }
+        ));
+        return;
+    }
+    let live_len = cx.fmt_dim(a.start.dist(world));
+    let live_ang = format!("{:.1}\u{b0}", angle_deg(a.start, world));
+    cx.readout = Some(format!(
+        "Distance: {}   Angle: {}",
+        if on(TypedField::Length) {
+            format!("{}|", ti.length_text())
+        } else {
+            live_len
+        },
+        if on(TypedField::Angle) {
+            format!("{}|", ti.angle_text())
+        } else {
+            live_ang
+        },
+    ));
 }
 
 impl SelectTool {
@@ -433,6 +890,10 @@ impl SelectTool {
 
     /// The drag a press at `at` starts on a handle of the selected object.
     fn handle_op(cx: &EditorContext, at: Point, tol: f64) -> Option<Op> {
+        // A selected callout, marker or note (a group) has its own handles.
+        if let Some((id, kind)) = crate::tools::text::annot_handle_at(cx, at, tol) {
+            return Some(Op::CadVertex(id, kind));
+        }
         match cx.selection.single()? {
             ObjectRef::Stair(id) => {
                 let o = stairs_view::find(cx.floor(), id)?;
@@ -440,7 +901,23 @@ impl SelectTool {
                 stairs_view::hit_handle(&hs, at, tol).map(|h| Op::Stair(id, h.kind))
             }
             ObjectRef::Camera(id) => {
-                camera_tool::hit_handle(cx.project.camera(id)?, at, tol).map(|h| Op::Camera(id, h))
+                let c = cx.project.camera(id)?;
+                camera_tool::hit_handle(c, at, tol)
+                    .map(|h| Op::Camera(id, h))
+                    .or_else(|| camera_tool::hit_wedge(c, at, tol).map(|w| Op::CameraWedge(id, w)))
+            }
+            ObjectRef::Cad(id) => {
+                // The bulge diamonds of a polyline with arc edges come first.
+                let arc = arcs::arc_handles(cx, id)
+                    .into_iter()
+                    .find(|(_, apex)| apex.dist(at) <= tol)
+                    .map(|(edge, _)| Op::CadArcBulge(id, edge));
+                arc.or_else(|| {
+                    let hs = handles::handles_for(cx, cx.px_per_in);
+                    hit_handle(&hs, at, tol)
+                        .as_ref()
+                        .and_then(Self::op_for_handle)
+                })
             }
             _ => {
                 let hs = handles::handles_for(cx, cx.px_per_in);
@@ -458,7 +935,8 @@ impl SelectTool {
             (ObjectRef::Symbol(id), k) => Op::Symbol(id, k),
             (ObjectRef::Device(id), HandleKind::Move) => Op::DeviceMove(id),
             (ObjectRef::RoofPlane(id), HandleKind::Move) => Op::RoofMove(id),
-            (ObjectRef::RoofPlane(id), HandleKind::Reshape(i)) => Op::RoofVertex(id, i),
+            (ObjectRef::RoofPlane(id), k) => Op::RoofHandle(id, handles::roof_plane_handle(k)?),
+            (ObjectRef::Camera(id), k) => Op::CameraWedge(id, handles::camera_wedge_handle(k)?),
             (ObjectRef::Foundation(id), HandleKind::Reshape(i)) => Op::FoundationVertex(id, i),
             (ObjectRef::Framing(id), HandleKind::ResizeStart) => Op::FramingEnd(id, false),
             (ObjectRef::Framing(id), HandleKind::ResizeEnd) => Op::FramingEnd(id, true),
@@ -490,18 +968,26 @@ impl SelectTool {
 
     /// Re-applies `a`'s operation for the pointer position, starting from the
     /// original project (so the result never accumulates error).
-    fn apply(&self, cx: &mut EditorContext, a: &Active, p: &PointerEvent) {
+    fn apply(&self, cx: &mut EditorContext, a: &Active, p0: &PointerEvent) {
         cx.project = a.original.clone();
         let fl = cx.floor;
+        // A typed distance or angle stands in for the pointer (S-28).
+        let typed = typed_pointer(cx, a, p0);
+        let p = typed.as_ref().unwrap_or(p0);
+        typed_readout(cx, a, p.world);
         let alt = p.modifiers.alt;
         let total = p.world - a.start;
         // Edit Behaviors (S-65) that replace the plain move or reshape.
         let handled = match a.op {
-            Op::Group => {
+            Op::Group if !a.copy => {
                 let items = cx.selection.items.clone();
                 behaviors::apply_group(cx, &items, a.start, p.world, p.modifiers.shift)
             }
-            Op::CadVertex(id, kind) => behaviors::apply_vertex(cx, id, kind, p.world),
+            // A text's width and height handles size its box (S-25, TXT-3).
+            Op::CadVertex(id, kind) => {
+                behaviors::apply_vertex(cx, id, kind, p.world)
+                    || crate::tools::text::drag_box_handle(cx, id, kind, p.world, alt)
+            }
             _ => false,
         };
         if handled {
@@ -519,7 +1005,7 @@ impl SelectTool {
                 let mid = Point::lerp(w.start, w.end, 0.5);
                 let mut b = (p.world - mid).dot(w.normal());
                 if !alt {
-                    b = snap_unit_round(b, cx.snap_unit());
+                    b = snap_unit_round(b, unit(cx));
                 }
                 let max = w.length() * 0.5;
                 b = b.clamp(-max, max);
@@ -540,12 +1026,19 @@ impl SelectTool {
                 // Shift holds the angle increment; a typed length and angle
                 // replace the pointer's (W-15..W-18).
                 let to = wall_edit::drag_end(cx, fixed, p.world, s.point, p.modifiers.shift, alt);
+                // A typed length too short for the wall's openings is held at
+                // the shortest that hosts them (W-85).
+                let to = if cx.typed_input.has_text() {
+                    wall_edit::clamp_end_for_openings(cx, id, end, to)
+                } else {
+                    to
+                };
                 if to.dist(fixed) >= 1.0 {
                     ops::move_wall_end_joined(&mut cx.project, fl, id, end, to);
                 }
             }
             Op::OpeningSlide(id) => {
-                let unit = cx.snap_unit();
+                let unit = unit(cx);
                 let Some(o) = cx.floor().openings.iter().find(|o| o.id == id).cloned() else {
                     return;
                 };
@@ -579,7 +1072,7 @@ impl SelectTool {
                 }
             }
             Op::OpeningResize(id, jamb) => {
-                let unit = cx.snap_unit();
+                let unit = unit(cx);
                 let Some(o) = cx.floor().openings.iter().find(|o| o.id == id).cloned() else {
                     return;
                 };
@@ -606,15 +1099,9 @@ impl SelectTool {
                 opening_view::drag_label(cx, id, p.world);
             }
             Op::DimOffset(id) => {
-                let unit = cx.snap_unit();
-                if let Some(d) = cx.project.floors[fl]
-                    .dimensions
-                    .iter_mut()
-                    .find(|d| d.id == id)
-                {
-                    let n = d.end.sub(d.start).normalized().perp();
-                    d.offset = snap_unit_round(p.world.sub(d.start).dot(n), unit);
-                }
+                let unit = unit(cx);
+                // The whole string moves its line; a curve sets its distance.
+                cx.project.floors[fl].drag_dimension_line(id, p.world, Some(unit));
             }
             Op::CadRotate(id) => {
                 let Some(c) = a.original.floors[fl].cad.iter().find(|c| c.id == id) else {
@@ -628,6 +1115,13 @@ impl SelectTool {
                 }
                 if let Some(c) = cx.project.floors[fl].cad.iter_mut().find(|c| c.id == id) {
                     ops::rotate_cad(&mut c.item, center, angle);
+                }
+            }
+            Op::CadArcBulge(id, edge) => {
+                if let Some(mut l) = arcs::logical_of(cx, id) {
+                    if l.set_bulge_through(edge, p.world).is_ok() {
+                        arcs::replace_polyline(cx, id, &l);
+                    }
                 }
             }
             Op::CadVertex(id, kind) => {
@@ -650,7 +1144,7 @@ impl SelectTool {
             }
             Op::Group => {
                 let items = cx.selection.items.clone();
-                move_group(cx, &items, behaviors::group_delta(cx, total));
+                move_group_ex(cx, &items, behaviors::group_delta(cx, total), !a.copy);
             }
             Op::GroupRotate(center) => {
                 let mut angle = (p.world - center).angle() - (a.start - center).angle();
@@ -677,15 +1171,42 @@ impl SelectTool {
                     };
                     let mut n = stairs_view::drag_handle(&orig, kind, a.start, to);
                     if kind == StairHandleKind::Move && !alt {
-                        n.stair.origin = snap_to_grid(n.stair.origin, cx.snap_unit());
+                        n.stair.origin = snap_to_grid(n.stair.origin, unit(cx));
                     }
                     stairs_view::update(&mut cx.project, fl, id, |o| *o = n);
                 }
             }
             Op::Cabinet(id, kind) => {
                 if let Some(orig) = placed::cabinet_by_id(&a.original.floors[fl], id) {
-                    let c = crate::tools::cabinet::apply_edit(cx, kind, &orig, a.start, p);
-                    placed::replace_cabinet(&mut cx.project, fl, &c);
+                    use crate::tools::cabinet::{apply_edit_mode, bump_mode, BumpMode};
+                    if kind == HandleKind::Move && bump_mode() == BumpMode::Push {
+                        // Push (Edit > Neighbors): a run the cabinet meets is
+                        // pushed ahead of it; every step starts from the
+                        // cabinets as they were when the drag began.
+                        let before = placed::load_cabinets(&a.original.floors[fl]);
+                        let now = placed::load_cabinets(&cx.project.floors[fl]);
+                        for o in &before {
+                            if now.iter().find(|c| c.id == o.id) != Some(o) {
+                                placed::replace_cabinet(&mut cx.project, fl, o);
+                            }
+                        }
+                        let e = apply_edit_mode(
+                            cx,
+                            BumpMode::Push,
+                            kind,
+                            &orig,
+                            a.start,
+                            p,
+                            Some(before.as_slice()),
+                        );
+                        placed::replace_cabinet(&mut cx.project, fl, &e.cab);
+                        for q in &e.pushed {
+                            placed::replace_cabinet(&mut cx.project, fl, q);
+                        }
+                    } else {
+                        let c = crate::tools::cabinet::apply_edit(cx, kind, &orig, a.start, p);
+                        placed::replace_cabinet(&mut cx.project, fl, &c);
+                    }
                 }
             }
             Op::Symbol(id, kind) => {
@@ -701,7 +1222,7 @@ impl SelectTool {
                 }
             }
             Op::DeviceMove(id) => {
-                let unit = cx.snap_unit();
+                let unit = unit(cx);
                 let mut layer = site_view::load_electrical(&a.original.floors[fl]);
                 if let Some(d) = layer.device_mut(id) {
                     match d.wall_id.and_then(|w| cx.floor().wall(w)).cloned() {
@@ -717,7 +1238,7 @@ impl SelectTool {
                 site_view::save_electrical(&mut cx.project, fl, &layer);
             }
             Op::RoofMove(id) => {
-                let unit = cx.snap_unit();
+                let unit = unit(cx);
                 let mut set = roof_view::load(&a.original.floors[fl]);
                 let d = Point::new(
                     snap_unit_round(total.x, unit),
@@ -727,12 +1248,26 @@ impl SelectTool {
                     roof_view::store(&mut cx.project, fl, &mut set);
                 }
             }
-            Op::RoofVertex(id, i) => {
-                let to = cx.snap_at(p.world, None, alt, &[]).point;
-                let mut set = roof_view::load(&a.original.floors[fl]);
-                if let Some(r) = set.plane_mut(id) {
-                    r.move_vertex(i, to);
-                    roof_view::store(&mut cx.project, fl, &mut set);
+            Op::RoofHandle(id, h) => {
+                // Corners follow the snapped pointer; the pitch arrow, edge
+                // and rotate handles work from the raw one.
+                let to = if matches!(h, roof_view::PlaneHandle::Vertex(_)) {
+                    cx.snap_at(p.world, None, alt, &[]).point
+                } else {
+                    p.world
+                };
+                if let Some(d) =
+                    roof_view::apply_handle_drag(&mut cx.project, fl, id, h, a.start, to)
+                {
+                    cx.readout = Some(d.readout);
+                }
+            }
+            Op::CameraWedge(id, w) => {
+                if let Some(orig) = a.original.camera(id).cloned() {
+                    cx.project.update_camera(id, |c| {
+                        *c = orig.clone();
+                        camera_tool::apply_wedge(c, w, p.world);
+                    });
                 }
             }
             Op::FoundationVertex(id, i) => {
@@ -785,7 +1320,7 @@ impl SelectTool {
             }
             Op::Camera(id, h) => {
                 if let Some(orig) = a.original.camera(id).cloned() {
-                    let unit = cx.snap_unit();
+                    let unit = unit(cx);
                     let to = if h == CamHandle::Move {
                         Point::new(
                             snap_unit_round(orig.position.x + total.x, unit),
@@ -818,7 +1353,8 @@ impl SelectTool {
         cx.mark_dirty();
     }
 
-    fn start_drag(&mut self, cx: &mut EditorContext, op: Op, start: Point) {
+    fn start_drag(&mut self, cx: &mut EditorContext, op: Op, start: Point, copy: bool) {
+        let mut op = op;
         let mut exclude = Vec::new();
         if let Op::WallEnd(id, end) = op {
             exclude.push(id);
@@ -835,23 +1371,44 @@ impl SelectTool {
                 );
             }
         }
-        let label = if matches!(op, Op::Group) {
+        // Ctrl/Cmd: the copies are made now and are what the drag carries
+        // (S-94); one undo step holds the copy and the move.
+        let clip = (copy && is_body_move(op))
+            .then(|| Clipboard::capture(cx))
+            .filter(|c| !c.is_empty());
+        let copy = clip.is_some();
+        let label = if copy {
+            "Copy Objects"
+        } else if matches!(op, Op::Group) {
             behaviors::group_label(cx)
         } else {
             op.label()
         };
         cx.begin_change(label);
-        if matches!(
-            op,
-            Op::WallEnd(..) | Op::OpeningSlide(_) | Op::OpeningResize(..)
-        ) {
-            cx.typed_input.arm();
+        let before_copy = copy.then(|| cx.project.clone());
+        let prev_selection = cx.selection.items.clone();
+        let mut copied = false;
+        if let Some(clip) = clip {
+            let made = clip.paste(cx, Point::ZERO, false);
+            if !made.is_empty() {
+                cx.selection.items = made;
+                op = Op::Group;
+                copied = true;
+            }
+        }
+        match typed_kind(op) {
+            TypedKind::Length => cx.typed_input.arm(),
+            TypedKind::Angle => cx.typed_input.arm_angle(),
+            TypedKind::No => {}
         }
         self.drag = Drag::Active(Box::new(Active {
             op,
             original: cx.project.clone(),
             start,
             exclude,
+            copy: copied,
+            before_copy: copied.then_some(before_copy).flatten(),
+            prev_selection,
         }));
     }
 
@@ -894,17 +1451,20 @@ impl SelectTool {
         cx.last_snap = None;
         cx.mark_dirty();
         // A Replicate drag may hand its move to Transform/Replicate Object.
-        if matches!(a.op, Op::Group) {
+        if matches!(a.op, Op::Group) && !a.copy {
             behaviors::finish_group(cx);
         }
-        if a.original.to_json().ok() == cx.project.to_json().ok() {
+        let reference = a.before_copy.as_ref().unwrap_or(&a.original);
+        if reference.to_json().ok() == cx.project.to_json().ok() {
             cx.cancel_change();
             return ToolResult::consumed();
         }
-        if let Op::Camera(id, _) = a.op {
+        if let Op::Camera(id, _) | Op::CameraWedge(id, _) = a.op {
             Outbox::global().post(ViewRequest::RefreshCamera(id));
         }
-        ToolResult::committed(if matches!(a.op, Op::Group) {
+        ToolResult::committed(if a.copy {
+            "Copy Objects"
+        } else if matches!(a.op, Op::Group) {
             behaviors::group_label(cx)
         } else {
             a.op.label()
@@ -914,7 +1474,12 @@ impl SelectTool {
     fn cancel_drag(&mut self, cx: &mut EditorContext) -> bool {
         match std::mem::replace(&mut self.drag, Drag::None) {
             Drag::Active(a) => {
-                cx.project = a.original;
+                set_dragging(false);
+                // A Ctrl-drag goes back past the copies it made.
+                if a.copy {
+                    cx.selection.items = a.prev_selection;
+                }
+                cx.project = a.before_copy.unwrap_or(a.original);
                 cx.cancel_change();
                 cx.typed_input.disarm();
                 cx.readout = None;
@@ -932,21 +1497,16 @@ impl SelectTool {
             return ToolResult::ignored();
         };
         let hits = hit_test_cx(cx, at, cx.pick_tol());
-        if hits.is_empty() {
-            return ToolResult::ignored();
+        // The Exterior Room comes after the objects under the pointer when
+        // it is just outside an exterior wall (R-106, manual p. 449).
+        match rooms_edit::exterior_cycle(cx, at, &hits, backwards) {
+            rooms_edit::Next::Hit(o) => {
+                select_hit(cx, o);
+                ToolResult::consumed()
+            }
+            rooms_edit::Next::Exterior => ToolResult::consumed(),
+            rooms_edit::Next::Nothing => ToolResult::ignored(),
         }
-        let n = hits.len();
-        let next = match cx
-            .selection
-            .single()
-            .and_then(|s| hits.iter().position(|h| *h == s))
-        {
-            Some(i) if backwards => (i + n - 1) % n,
-            Some(i) => (i + 1) % n,
-            None => 0,
-        };
-        select_hit(cx, hits[next]);
-        ToolResult::consumed()
     }
 
     fn nudge(&mut self, cx: &mut EditorContext, dir: Point, big: bool) -> ToolResult {
@@ -958,17 +1518,21 @@ impl SelectTool {
         if items.iter().any(|o| !cx.check_unlocked(*o)) {
             return ToolResult::consumed();
         }
-        cx.begin_change("Nudge");
-        let before = cx.floor().walls.clone();
-        match cx.selection.single() {
-            Some(ObjectRef::Wall(id)) => move_wall(cx, id, delta, false),
-            Some(ObjectRef::Opening(id)) => slide_opening_by(cx, id, delta),
-            _ => move_group(cx, &items, delta),
-        }
-        let fl = cx.floor;
-        details_view::follow_walls(&mut cx.project, fl, &before);
-        // A nudged distribution record carries its copies along.
-        crate::editor::placed::sync_distributions(cx);
+        // A group: a nudge that moves nothing (a terrain point, say) leaves no
+        // undo step (QA-26).
+        cx.undo_group(|cx| {
+            cx.begin_change("Nudge");
+            let before = cx.floor().walls.clone();
+            match cx.selection.single() {
+                Some(ObjectRef::Wall(id)) => move_wall(cx, id, delta, false),
+                Some(ObjectRef::Opening(id)) => slide_opening_by(cx, id, delta),
+                _ => move_group(cx, &items, delta),
+            }
+            let fl = cx.floor;
+            details_view::follow_walls(&mut cx.project, fl, &before);
+            // A nudged distribution record carries its copies along.
+            crate::editor::placed::sync_distributions(cx);
+        });
         cx.mark_dirty();
         ToolResult::committed("Nudge")
     }
@@ -980,11 +1544,7 @@ impl SelectTool {
         let Drag::Active(a) = &self.drag else {
             return None;
         };
-        if !matches!(
-            a.op,
-            Op::WallEnd(..) | Op::OpeningSlide(_) | Op::OpeningResize(..)
-        ) || !cx.typed_input.is_armed()
-        {
+        if typed_kind(a.op) == TypedKind::No || !cx.typed_input.is_armed() {
             return None;
         }
         let res = cx.typed_input.handle(k.key, k.text.as_deref());
@@ -1038,22 +1598,35 @@ impl Tool for SelectTool {
     }
 
     fn hint(&self) -> String {
-        "Select: click an object; drag to move or marquee; Tab cycles; Delete removes".into()
+        "Select: click an object; drag to move or marquee (Alt starts a marquee over objects, Ctrl/Cmd copies); Tab cycles; Delete removes".into()
     }
 
     fn cursor(&self) -> egui::CursorIcon {
         self.cursor
     }
 
+    fn frame(&mut self, cx: &mut EditorContext, _ctx: &egui::Context) {
+        // A Copy made in another window or file shows up here (S-85).
+        crate::editor::clipboard::poll_file(cx);
+    }
+
     fn deactivate(&mut self, cx: &mut EditorContext) {
         self.cancel_drag(cx);
+        area::cancel(cx);
         transform::cancel_mode(cx);
         wall_edit::cancel_break();
         cx.temp.cancel();
         cx.hover = None;
+        set_dragging(false);
+        // An Edit Behavior lasts only while Select Objects is the tool (S-66).
+        behaviors::reset(cx);
     }
 
     fn pointer_down(&mut self, cx: &mut EditorContext, p: PointerEvent) -> ToolResult {
+        // The rubber band and the region of Edit Area / Stretch CAD.
+        if let Some(res) = area::pointer_down(cx, &p) {
+            return res;
+        }
         // A hanging Paste, Point to Point Move, Reflect, Center or Make
         // Parallel takes the click.
         if let Some(res) = transform::mode_pointer_down(cx, &p) {
@@ -1086,8 +1659,25 @@ impl Tool for SelectTool {
         if rooms_edit::label_pointer_down(cx, p.world) {
             return ToolResult::consumed();
         }
+        // An edge grip of the selected Exterior Room sets the level's default
+        // heights (R-106).
+        if rooms_edit::exterior_drag_down(cx, p.world) {
+            return ToolResult::consumed();
+        }
         self.room_click = None;
         let tol = cx.pick_tol();
+        // The padlock beside a measured value locks it into a permanent
+        // dimension (S-63).
+        if let Some(i) = cx.temp.hit_lock(p.world, cx.px_per_in) {
+            cx.temp.cancel();
+            return match tempdim::toggle_lock(cx, i) {
+                Ok(label) => ToolResult::committed(label),
+                Err(e) => {
+                    cx.status = e;
+                    ToolResult::consumed()
+                }
+            };
+        }
         if let Some(i) = cx.temp.hit_label(p.world, cx.px_per_in) {
             cx.temp.cancel();
             cx.temp.begin_edit(i);
@@ -1095,6 +1685,11 @@ impl Tool for SelectTool {
         }
         cx.temp.cancel();
         let shift = p.modifiers.shift;
+        // An edit handle of a selected schedule (side Resize, Rotate, Resize
+        // Column, Move Row, Move Column, Sort by Column, Wrap).
+        if let Some(res) = crate::tools::schedule::handle_press(cx, p.world) {
+            return res;
+        }
         if let Some(op) = Self::handle_op(cx, p.world, tol) {
             self.drag = Drag::Armed {
                 op,
@@ -1109,8 +1704,14 @@ impl Tool for SelectTool {
             .first()
             .copied()
             .filter(|o| !matches!(o, ObjectRef::Room(_)));
+        // Alt on the press marquees from on top of an object (S-30).
+        let top_hit = top_hit.filter(|_| !p.modifiers.alt);
         if let Some(top) = top_hit {
             rooms_edit::clear_room_selection();
+            // A click on a schedule also picks the row it falls on.
+            if let ObjectRef::Schedule(sid) = top {
+                crate::editor::schedule_view::note_click(cx, sid, p.world);
+            }
             // A click on a group member names the whole group (S-35).
             let members = expand_groups(cx, &[top]);
             if shift {
@@ -1153,6 +1754,9 @@ impl Tool for SelectTool {
     }
 
     fn pointer_move(&mut self, cx: &mut EditorContext, p: PointerEvent) -> ToolResult {
+        if area::pointer_move(cx, &p) {
+            return ToolResult::consumed();
+        }
         transform::mode_pointer_move(&p);
         if p.down && rooms_edit::space_dragging() {
             rooms_edit::space_pointer_move(p.world);
@@ -1160,6 +1764,13 @@ impl Tool for SelectTool {
         }
         if p.down && rooms_edit::label_dragging() {
             rooms_edit::label_pointer_move(cx, p.world);
+            return ToolResult::consumed();
+        }
+        if p.down && rooms_edit::exterior_dragging() {
+            rooms_edit::exterior_drag_move(cx, p.world);
+            return ToolResult::consumed();
+        }
+        if p.down && crate::tools::schedule::handle_move(cx, p.world) {
             return ToolResult::consumed();
         }
         if !p.down {
@@ -1180,7 +1791,8 @@ impl Tool for SelectTool {
                 if items.iter().any(|o| !cx.check_unlocked(*o)) {
                     return ToolResult::consumed();
                 }
-                self.start_drag(cx, op, start);
+                let copy = p.modifiers.ctrl || p.modifiers.command;
+                self.start_drag(cx, op, start, copy);
                 if let Drag::Active(a) = std::mem::replace(&mut self.drag, Drag::None) {
                     self.apply(cx, &a, &p);
                     self.drag = Drag::Active(a);
@@ -1202,15 +1814,33 @@ impl Tool for SelectTool {
             }
             Drag::None => {}
         }
+        // The view scrolls while the pointer sits at the canvas edge (S-99).
+        set_dragging(match &self.drag {
+            Drag::Active(_) => true,
+            Drag::Marquee { screen, .. } => (p.screen - *screen).length() >= DRAG_THRESHOLD_PX,
+            _ => false,
+        });
         ToolResult::consumed()
     }
 
     fn pointer_up(&mut self, cx: &mut EditorContext, p: PointerEvent) -> ToolResult {
+        set_dragging(false);
+        if let Some(res) = area::pointer_up(cx, &p) {
+            return res;
+        }
         if rooms_edit::space_pointer_up() {
             return ToolResult::consumed();
         }
         if rooms_edit::label_pointer_up() {
             return ToolResult::consumed();
+        }
+        match rooms_edit::exterior_drag_up(cx) {
+            Some(true) => return ToolResult::committed("Exterior Room"),
+            Some(false) => return ToolResult::consumed(),
+            None => {}
+        }
+        if let Some(res) = crate::tools::schedule::handle_release(cx, p.world) {
+            return res;
         }
         match std::mem::replace(&mut self.drag, Drag::None) {
             Drag::Active(a) => self.finish(cx, *a),
@@ -1246,6 +1876,9 @@ impl Tool for SelectTool {
                 } else if let Some(room) = self.room_click.take() {
                     // A plain click on empty floor selects the room.
                     rooms_edit::select_room(cx, room);
+                } else if let Some(ext) = rooms_edit::exterior_at(cx, p.world) {
+                    // Just outside an exterior wall: the Exterior Room (R-106).
+                    rooms_edit::select_exterior(cx, ext);
                 }
                 ToolResult::consumed()
             }
@@ -1273,12 +1906,23 @@ impl Tool for SelectTool {
                     rooms_edit::request_room_dialog(cx, room);
                     ToolResult::consumed()
                 }
-                None => ToolResult::ignored(),
+                // Just outside an exterior wall: the Exterior Room's.
+                None => match rooms_edit::exterior_at(cx, p.world) {
+                    Some(ext) => {
+                        rooms_edit::select_exterior(cx, ext);
+                        rooms_edit::request_exterior_dialog(cx, ext);
+                        ToolResult::consumed()
+                    }
+                    None => ToolResult::ignored(),
+                },
             },
         }
     }
 
     fn key(&mut self, cx: &mut EditorContext, k: KeyEvent) -> ToolResult {
+        if let Some(res) = area::key(cx, &k) {
+            return res;
+        }
         if cx.temp.editing.is_some() {
             return self.key_while_editing(cx, &k);
         }
@@ -1297,7 +1941,9 @@ impl Tool for SelectTool {
             if self.cancel_drag(cx) {
                 return ToolResult::consumed();
             }
-            if rooms_edit::selected_room(cx).is_some() {
+            if rooms_edit::selected_room(cx).is_some()
+                || rooms_edit::selected_exterior(cx).is_some()
+            {
                 rooms_edit::clear_room_selection();
                 return ToolResult::consumed();
             }
@@ -1317,6 +1963,11 @@ impl Tool for SelectTool {
         if k.is(Key::Enter) {
             if let (true, Some(room)) = (cx.selection.is_empty(), rooms_edit::selected_room(cx)) {
                 rooms_edit::request_room_dialog(cx, room);
+                return ToolResult::consumed();
+            }
+            if let (true, Some(ext)) = (cx.selection.is_empty(), rooms_edit::selected_exterior(cx))
+            {
+                rooms_edit::request_exterior_dialog(cx, ext);
                 return ToolResult::consumed();
             }
             return match cx.selection.single() {
@@ -1344,7 +1995,7 @@ impl Tool for SelectTool {
         let pal = &cx.palette;
         if let Drag::Marquee { start, current, .. } = &self.drag {
             let r = Rect::from_two_pos(cam.world_to_screen(*start), cam.world_to_screen(*current));
-            let crossing = current.x < start.x;
+            let crossing = marquee_mode().crosses(*start, *current);
             let col = if crossing { pal.hover } else { pal.selection };
             painter.add(Shape::rect_filled(r, 0.0, col.gamma_multiply(0.12)));
             painter.rect_stroke(r, 0.0, Stroke::new(1.0_f32, col), egui::StrokeKind::Inside);
@@ -1353,6 +2004,9 @@ impl Tool for SelectTool {
             tempdim::draw(&cx.temp, painter, cam, pal, &cx.dim_format());
         }
         draw_terrain_selection(cx, painter, cam);
+        draw_host_walls(cx, painter, cam);
+        draw_arc_handles(cx, painter, cam);
+        area::draw_overlay(cx, painter, cam);
         transform::draw_mode_overlay(cx, painter, cam);
         if !transform::mode_active() {
             transform::draw_group_rotate_handle(cx, painter, cam);
@@ -1361,6 +2015,22 @@ impl Tool for SelectTool {
         handles::draw(&hs, painter, cam, pal);
         if let (Drag::Active(_), Some(s)) = (&self.drag, cx.last_snap) {
             crate::editor::render::draw_snap_marker(painter, cam, &s, pal.ghost_stroke);
+        }
+        // The number being typed into the drag, at the pointer (S-28).
+        if let (Drag::Active(_), true, Some(at), Some(text)) = (
+            &self.drag,
+            cx.typed_input.has_text(),
+            cx.cursor_world,
+            cx.readout.as_ref(),
+        ) {
+            let pos = cam.world_to_screen(at) + egui::vec2(14.0, -18.0);
+            painter.text(
+                pos,
+                egui::Align2::LEFT_BOTTOM,
+                text,
+                egui::FontId::proportional(13.0),
+                pal.selection,
+            );
         }
     }
 
@@ -1385,6 +2055,13 @@ impl Tool for SelectTool {
             .any(|o| matches!(o, ObjectRef::Wall(_)))
         {
             v.push(EditAction::new(EditActionKind::FixWallConnections));
+        }
+        if crate::editor::placed::selection_has_closed_polyline(cx) {
+            v.push(EditAction::new(EditActionKind::Custom {
+                id: crate::editor::placed::SOFFIT_FROM_POLYLINE,
+                label: "Convert Polyline to Soffit",
+                icon: "",
+            }));
         }
         v
     }

@@ -23,6 +23,14 @@ Dependency-free CPU path tracer for Chief's "Physically Based" / Ray Trace still
 - Output: `Image { rgba, hdr }`, ACES / Reinhard / Linear tone map, optional bilateral denoise,
   `encode_png` / `write_png` (own PNG writer: stored zlib blocks, Adler-32, CRC-32) and `render_to_file(project, cam, settings, path)`.
 - Scene frame is X right, Y up (inches), Z toward the viewer; `Camera::from_plan` maps plan `y` to `-Z`.
+- Panoramas (round 15): `RenderSettings::projection = Projection::Equirectangular` traces a full 360 x 180 degree
+  picture (`panorama_settings` makes the 2:1 size, `panorama_camera` places the eye); `write_panorama` saves the PNG and a
+  self-contained `.html` viewer (a JPEG data URI plus a small WebGL script). `panorama_direction` / `panorama_position` map
+  picture positions to view directions and back.
+- Video (round 15): `encode_jpeg` is a baseline JPEG encoder (YCbCr 4:4:4, standard Huffman tables) and `AviWriter` streams
+  frames into a Motion-JPEG AVI (`read_avi` parses it back); both are dependency free.
+- Looks (round 15): `stylize(rgba, w, h, Style)` turns a picture into Vector View, Technical Illustration, Line Drawing or
+  Watercolor with a Sobel edge detector and flat shading tiers.
 
 Expected speeds (Apple silicon, release, 4-bounce room scene of ~10 triangles): about 1.5 M paths/s per core,
 roughly 20 M paths/s on 20 threads. A 480x360 image at 64 spp takes ~0.5 s on 20 threads (~7 s on one).

@@ -211,9 +211,25 @@ impl EditorContext {
         self.status = "Duplicated the selection".into();
     }
 
+    /// How many undo steps there are (cancelled steps do not count). A
+    /// dialog host compares it before and after an apply to see whether the
+    /// apply made a step.
+    pub fn undo_depth(&self) -> usize {
+        self.history.depth()
+    }
+
     /// Runs `f`, which may open several undo steps, and leaves them as one
     /// step named `label`.
     pub fn as_one_step(&mut self, label: &str, f: impl FnOnce(&mut Self)) {
+        // Inside an undo group the steps are not pushed until the group ends:
+        // the group's single step takes the label instead.
+        if self.history.group_is_empty() {
+            f(self);
+            if self.history.group_has_change() {
+                self.history.relabel_last(label);
+            }
+            return;
+        }
         let before = self.history.depth();
         f(self);
         let added = self.history.depth().saturating_sub(before);
@@ -393,6 +409,24 @@ impl EditorContext {
             self.status = "Select objects first".into();
             return;
         }
+        // Nothing to do (already so, or a layer the plan lacks): say so and
+        // leave no undo step (QA-26).
+        let needs = |l: &String| {
+            self.project
+                .layers
+                .get(l)
+                .is_some_and(|layer| layer.locked != lock)
+        };
+        if !layers.iter().any(needs) {
+            self.status = if layers.iter().all(|l| self.project.layers.get(l).is_none()) {
+                "These objects are not on a layer that can be locked".into()
+            } else if lock {
+                "Already locked".into()
+            } else {
+                "Nothing is locked".into()
+            };
+            return;
+        }
         self.begin_change(if lock { "Lock" } else { "Unlock" });
         for l in &layers {
             self.project.layers.set_locked(l, lock);
@@ -413,19 +447,31 @@ impl EditorContext {
     /// Send to Layer: moves walls, CAD, text and symbols onto `layer` (the
     /// other kinds live on the layer of their kind). One undo step.
     pub fn send_selection_to_layer(&mut self, layer: &str) -> usize {
+        let items = self.selection.items.clone();
+        self.move_objects_to_layer(&items, layer, "Send to Layer")
+    }
+
+    /// Moves `items` (walls, CAD, text and symbols of the active floor) onto
+    /// `layer` as one undo step called `label`; the Layer Painter calls this
+    /// for every click. Returns how many moved.
+    pub fn move_objects_to_layer(
+        &mut self,
+        items: &[ObjectRef],
+        layer: &str,
+        label: &str,
+    ) -> usize {
         if self.project.layers.get(layer).is_none() {
             self.status = format!("There is no layer named {layer}");
             return 0;
         }
-        let items = self.selection.items.clone();
         if items.iter().any(|o| self.is_object_locked(*o)) {
             self.status = "Those objects are on a locked layer".into();
             return 0;
         }
-        self.begin_change("Send to Layer");
+        self.begin_change(label);
         let fl = self.floor;
         let mut n = 0;
-        for o in &items {
+        for o in items {
             match *o {
                 ObjectRef::Wall(id) => {
                     if let Some(w) = self.project.floors[fl].wall_mut(id) {
@@ -545,6 +591,19 @@ impl EditorContext {
             v.push(custom_button(ids::UNGROUP, "Ungroup"));
         }
         v.push(custom_button(ids::SELECT_SAME, "Select Same Type"));
+        if crate::plan_defaults::can_set_as_default(self) {
+            v.push(custom_button(
+                crate::plan_defaults::SET_AS_DEFAULT,
+                "Set as Default",
+            ));
+        }
+        v.extend(crate::dialogs::materials_list::edit_buttons(self));
+        if crate::tools::painters::can_match(self) {
+            v.push(custom_button(
+                crate::tools::painters::MATCH_PROPERTIES,
+                "Match Properties",
+            ));
+        }
         v.push(custom_button(ids::TRANSFORM, "Transform/Replicate Object"));
         v.push(custom_button(ids::REFLECT, "Reflect About Object"));
         v.push(custom_button(ids::POINT_TO_POINT, "Point to Point Move"));
@@ -644,6 +703,23 @@ impl EditorContext {
         };
         if self.selection.single().is_some() {
             push_first(&mut v, ContextEntry::cmd("Open Object", ids::OPEN));
+        }
+        // A schedule can be exported for editing in Excel and imported back.
+        if matches!(self.selection.single(), Some(ObjectRef::Schedule(_))) {
+            push_first(
+                &mut v,
+                ContextEntry::cmd(
+                    "Export for Editing (XLSX)\u{2026}",
+                    crate::dialogs::property_manager::EXPORT_SELECTED,
+                ),
+            );
+            push_first(
+                &mut v,
+                ContextEntry::cmd(
+                    "Import Property Data (XLSX)\u{2026}",
+                    crate::dialogs::property_manager::IMPORT,
+                ),
+            );
         }
         for a in toolbar {
             let action = match a.kind {
@@ -746,6 +822,10 @@ impl EditorContext {
 
     /// Runs the `edit.*` command `id` (see [`ids`]).
     pub fn run_edit_command(&mut self, id: &str) {
+        self.undo_group(|cx| cx.run_edit_command_ungrouped(id));
+    }
+
+    fn run_edit_command_ungrouped(&mut self, id: &str) {
         match id {
             ids::CUT => self.cut_selection(),
             ids::COPY => self.copy_selection(),

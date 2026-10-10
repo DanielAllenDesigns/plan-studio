@@ -2,8 +2,35 @@
 
 use crate::geometry::Point;
 use crate::model::{Id, Opening, Wall, WallKind};
-use crate::units::{fmt_ft_in_frac, format_length, LengthFormat};
+use crate::units::{fmt_ft_in_frac, format_length, LengthFormat, LengthUnit};
 use serde::{Deserialize, Serialize};
+
+mod geom;
+mod label;
+mod layout;
+mod line;
+mod pole;
+mod seg;
+mod settings;
+
+pub use geom::CurveGeom;
+pub use label::{
+    angle_text, grid_round, indicators, round_to_step, step_inches, DimLabelOptions, LabelParts,
+    SecondFormat, TolMode, Tolerance,
+};
+pub use layout::{upright, LabelLayout, LabelLine, LabelParams, LeaderDefaults};
+pub use line::{
+    migrate_dimension_strings, DimLine, ElevMark, ExtLen, ExtLine, ExtProps, ExtReach, MIN_SEG_LEN,
+};
+pub use pole::{
+    floor_marks, pole_marks, pole_strings, roof_marks, roof_slope_dimensions, section_profile,
+    section_roof_marks, ElevationMark, RoofMark,
+};
+pub use seg::{CurveKind, DimCurve, DimSeg, LeaderStyle};
+pub use settings::{
+    exterior_strings_for, mark_default, DimSetup, DimView, LocateTool, MarkKind, OffsetFrom,
+    PoleMark, PoleSetup, RoundMethod, TempWalls, TextPos, ToolLocate, ToolLocates, LOCATE_MARKS,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DimensionKind {
@@ -41,6 +68,234 @@ pub struct Dimension {
     /// set's (Dimension Defaults, Text Style).
     #[serde(default)]
     pub text_style: Option<String>,
+    /// What this dimension sets itself instead of taking the Dimension
+    /// Defaults' (Dimension Specification: Primary Format and Arrow tabs,
+    /// extension line settings; DIM-31, DIM-39).
+    #[serde(default, skip_serializing_if = "DimOverrides::is_default")]
+    pub look: DimOverrides,
+}
+
+/// The end mark of a dimension line (the Arrow tab).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum DimArrow {
+    /// A short stroke across the line (architectural tick).
+    #[default]
+    Tick,
+    /// An arrowhead; `filled` decides between a solid and an open one.
+    Arrow,
+    Dot,
+    /// A long diagonal stroke across the line (drafting slash).
+    Slash,
+    None,
+}
+
+impl DimArrow {
+    pub const ALL: [DimArrow; 5] = [
+        DimArrow::Tick,
+        DimArrow::Arrow,
+        DimArrow::Dot,
+        DimArrow::Slash,
+        DimArrow::None,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            DimArrow::Tick => "Tick",
+            DimArrow::Arrow => "Arrow",
+            DimArrow::Dot => "Dot",
+            DimArrow::Slash => "Slash",
+            DimArrow::None => "None",
+        }
+    }
+
+    /// The mark a Dimension Defaults arrow style name asks for (Chief's
+    /// names vary; anything unrecognised is the tick).
+    pub fn from_name(name: &str) -> DimArrow {
+        let n = name.to_ascii_lowercase();
+        if n.contains("arrow") {
+            DimArrow::Arrow
+        } else if n.contains("dot") {
+            DimArrow::Dot
+        } else if n.contains("slash") {
+            DimArrow::Slash
+        } else if n == "none" {
+            DimArrow::None
+        } else {
+            DimArrow::Tick
+        }
+    }
+}
+
+/// The settings one dimension keeps of its own. Every field is `None` until
+/// the Dimension Specification sets it; `None` follows the Dimension
+/// Defaults in force.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DimOverrides {
+    // --- Primary Format ---
+    pub units: Option<LengthUnit>,
+    /// Smallest fraction denominator of feet-inches and inches.
+    pub fraction: Option<u32>,
+    /// Decimal places of decimal feet and metric units.
+    pub decimals: Option<u32>,
+    pub unit_indicators: Option<bool>,
+    pub trailing_zeroes: Option<bool>,
+    /// Feet-inches without the zero feet: `6"` rather than `0'-6"`.
+    pub suppress_zero_feet: Option<bool>,
+    // --- Arrow ---
+    pub arrow: Option<DimArrow>,
+    /// Length of the end mark, plan inches.
+    pub arrow_size: Option<f64>,
+    /// Solid arrowhead or dot.
+    pub arrow_filled: Option<bool>,
+    // --- Extension lines ---
+    /// Gap between the measured point and the extension line.
+    pub ext_gap: Option<f64>,
+    /// How far the extension line runs past the dimension line.
+    pub ext_past: Option<f64>,
+    /// A fixed extension line length, measured back from the dimension line
+    /// toward the measured point (0 or `None`: the whole way).
+    pub ext_length: Option<f64>,
+    // --- Secondary Format and tolerance ---
+    /// This dimension's own second format (Secondary Format tab).
+    pub second: Option<SecondFormat>,
+    pub tolerance: Option<Tolerance>,
+    /// Rounded value indicators `(+ or - after, ~ before)`.
+    pub indicators: Option<(bool, bool)>,
+    pub text_pos: Option<TextPos>,
+    // --- Dimension panel (Dimension Line Specification, manual pp. 514 to 515) ---
+    /// The name of the Saved Dimension Default this line inherits from
+    /// (None: the active one).
+    pub inherits: Option<String>,
+    /// The height of the numbers, plan inches (None: the text style's).
+    pub number_height: Option<f64>,
+    /// Display Wall Widths: the segments that measure across one wall show
+    /// (None: yes, except for Interior Dimensions, which set it off).
+    pub wall_widths: Option<bool>,
+    /// Display Gaps Between Cabinet Face Items (elevation views).
+    pub cabinet_gaps: Option<bool>,
+    /// An angular dimension's own angle style `(decimals, degrees-minutes-
+    /// seconds)`; None is Use Default Angle Style.
+    pub angle_style: Option<(u32, bool)>,
+    // --- Layer panel ---
+    /// The layer the line is drawn on (None: the default for its kind).
+    pub layer: Option<String>,
+    // --- Marker Format panel ---
+    /// The number format of an elevation marker's height line (None: Use
+    /// Default Formatting, the primary format).
+    pub marker_format: Option<LengthFormat>,
+    // --- Segment, string, label and curve ---
+    pub seg: DimSeg,
+}
+
+impl DimOverrides {
+    pub fn is_default(&self) -> bool {
+        *self == DimOverrides::default()
+    }
+
+    /// Does the dimension set any part of its number format?
+    pub fn has_format(&self) -> bool {
+        self.units.is_some()
+            || self.fraction.is_some()
+            || self.decimals.is_some()
+            || self.unit_indicators.is_some()
+            || self.trailing_zeroes.is_some()
+            || self.suppress_zero_feet.is_some()
+    }
+
+    /// The number format in force for the dimension: its own settings laid
+    /// over the Dimension Defaults' format `base`.
+    pub fn effective_format(&self, base: &DimFormat) -> LengthFormat {
+        let mut f = base.effective();
+        if let Some(u) = self.units {
+            f.unit = u;
+        }
+        if let Some(d) = self.fraction {
+            f.fraction_denominator = d.max(1);
+        }
+        if let Some(d) = self.decimals {
+            f.decimals = d;
+        }
+        if let Some(i) = self.unit_indicators {
+            f.unit_indicators = i;
+        }
+        if let Some(t) = self.trailing_zeroes {
+            f.trailing_zeroes = t;
+        }
+        f
+    }
+
+    /// `inches` as dimension text: the dimension's own format laid over
+    /// `base` (the Dimension Defaults' format).
+    pub fn format_len(&self, base: &DimFormat, inches: f64) -> String {
+        if !self.has_format() {
+            return base.fmt_len(inches);
+        }
+        let f = self.effective_format(base);
+        let s = format_length(inches, &f);
+        if self.suppress_zero_feet == Some(true) && f.unit == LengthUnit::FeetInches {
+            suppress_zero_feet(&s, f.unit_indicators)
+        } else {
+            s
+        }
+    }
+
+    /// The label options in force: the defaults' with this dimension's own
+    /// second format, tolerance, indicators and text position laid over.
+    pub fn label_options(&self, base: &DimFormat) -> DimLabelOptions {
+        let mut o = base.label;
+        if let Some(s) = self.second {
+            o.second = s;
+        }
+        if let Some(t) = self.tolerance {
+            o.tolerance = t;
+        }
+        if let Some((after, tilde)) = self.indicators {
+            o.plus_minus_after = after;
+            o.tilde_before = tilde;
+        }
+        if let Some(p) = self.text_pos {
+            o.position = p;
+        }
+        o
+    }
+}
+
+/// `0'-6"` as `6"` (and `0-6` as `6` without unit marks).
+pub fn suppress_zero_feet(s: &str, unit_indicators: bool) -> String {
+    let (sign, body) = match s.strip_prefix('-') {
+        Some(b) => ("-", b),
+        None => ("", s),
+    };
+    let prefix = if unit_indicators { "0'-" } else { "0-" };
+    match body.strip_prefix(prefix) {
+        Some(rest) => format!("{sign}{rest}"),
+        None => s.to_string(),
+    }
+}
+
+/// One extension line from the measured point `m` toward the end `e` it
+/// reaches on the dimension line: it starts `gap` off the point, runs `past`
+/// the dimension line, and with `length` set covers only that much back from
+/// the dimension line. `None` when the two coincide.
+pub fn extension_segment(
+    m: Point,
+    e: Point,
+    gap: f64,
+    past: f64,
+    length: Option<f64>,
+) -> Option<(Point, Point)> {
+    let v = e.sub(m);
+    let len = v.length();
+    if len < 1e-6 {
+        return None;
+    }
+    let u = v.scale(1.0 / len);
+    let mut start = if len > gap { gap.max(0.0) } else { 0.0 };
+    if let Some(l) = length.filter(|l| *l > 0.0) {
+        start = start.max(len - l);
+    }
+    Some((m.add(u.scale(start)), e.add(u.scale(past.max(0.0)))))
 }
 
 /// The automatic run a dimension came from.
@@ -189,7 +444,7 @@ impl Default for LocateGroup {
 }
 
 /// How dimension text is formatted.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct DimFormat {
     /// Smallest fraction denominator shown: 8 or 16.
     pub smallest_fraction: u32,
@@ -199,6 +454,9 @@ pub struct DimFormat {
     /// from `smallest_fraction` / `unit_indicators`.
     #[serde(default)]
     pub length: Option<LengthFormat>,
+    /// The second format, tolerance, rounding method and indicators.
+    #[serde(default)]
+    pub label: DimLabelOptions,
 }
 
 impl Default for DimFormat {
@@ -207,11 +465,24 @@ impl Default for DimFormat {
             smallest_fraction: 16,
             unit_indicators: true,
             length: None,
+            label: DimLabelOptions::default(),
         }
     }
 }
 
 impl DimFormat {
+    /// The length format this describes: `length`, else feet-inches at
+    /// `smallest_fraction`.
+    pub fn effective(&self) -> LengthFormat {
+        self.length.unwrap_or(LengthFormat {
+            unit: LengthUnit::FeetInches,
+            fraction_denominator: self.smallest_fraction.max(1),
+            decimals: 2,
+            unit_indicators: self.unit_indicators,
+            trailing_zeroes: false,
+        })
+    }
+
     /// Whole-millimetre dimension text with no unit marks, e.g. `3048`.
     pub fn metric_mm() -> Self {
         Self {
@@ -248,6 +519,7 @@ impl Dimension {
             hide_ext: [false; 2],
             auto_group: AutoGroup::None,
             text_style: None,
+            look: DimOverrides::default(),
         }
     }
 
@@ -285,11 +557,11 @@ impl Dimension {
             .collect()
     }
 
+    /// The label on one line: the number with any additional text, tolerance
+    /// and indicators, and the second format in parentheses
+    /// ([`Dimension::label_parts`] has the lines apart).
     pub fn label(&self, fmt: &DimFormat) -> String {
-        match &self.text_override {
-            Some(t) => t.clone(),
-            None => fmt.fmt_len(self.length()),
-        }
+        self.label_parts(fmt).one_line()
     }
 
     /// Reverse Dimension (DIM-37): the measured points swap ends (with their
@@ -830,11 +1102,11 @@ fn frame_set(
                         found = true;
                         match s.openings {
                             OpeningLocate::Centers => {
-                                breaks.push(along(w.point_at(o.center_offset)));
+                                breaks.push(along(w.point_along(o.center_offset)));
                             }
                             _ => {
-                                breaks.push(along(w.point_at(o.start_offset())));
-                                breaks.push(along(w.point_at(o.end_offset())));
+                                breaks.push(along(w.point_along(o.start_offset())));
+                                breaks.push(along(w.point_along(o.end_offset())));
                             }
                         }
                     }
@@ -1270,6 +1542,7 @@ mod tests {
             smallest_fraction: 8,
             unit_indicators: true,
             length: None,
+            label: DimLabelOptions::default(),
         };
         assert_eq!(eighths.fmt_len(150.07), "12'-6 1/8\"");
         assert_eq!(eighths.fmt_len(150.0), "12'-6\"");
@@ -1277,6 +1550,7 @@ mod tests {
             smallest_fraction: 16,
             unit_indicators: false,
             length: None,
+            label: DimLabelOptions::default(),
         };
         assert_eq!(bare.fmt_len(150.5), "12-6 1/2");
         let mm = DimFormat::metric_mm();
@@ -1901,5 +2175,96 @@ mod tests {
         let back: Dimension = serde_json::from_value(v).unwrap();
         assert_eq!(back.hide_ext, [false, false]);
         assert_eq!(back.auto_group, AutoGroup::None);
+    }
+    #[test]
+    fn a_dimension_follows_the_defaults_until_it_sets_its_own_format() {
+        let fmt = DimFormat::default();
+        let mut d = Dimension::new(
+            1,
+            DimensionKind::Manual,
+            Point::ZERO,
+            Point::new(78.25, 0.0),
+            12.0,
+        );
+        assert_eq!(d.label(&fmt), "6'-6 1/4\"");
+        d.look.fraction = Some(2);
+        assert_eq!(d.label(&fmt), "6'-6 1/2\"");
+        d.look.fraction = None;
+        d.look.unit_indicators = Some(false);
+        assert_eq!(d.label(&fmt), "6-6 1/4");
+        d.look.unit_indicators = Some(true);
+        d.look.units = Some(LengthUnit::Inches);
+        assert_eq!(d.label(&fmt), "78 1/4\"");
+        d.look.units = Some(LengthUnit::DecimalFeet);
+        d.look.decimals = Some(3);
+        assert_eq!(d.label(&fmt), "6.521'");
+        d.look.units = Some(LengthUnit::Millimeters);
+        d.look.decimals = Some(0);
+        d.look.unit_indicators = Some(false);
+        assert_eq!(d.label(&fmt), "1988");
+        // The typed text still wins.
+        d.text_override = Some("EQ".into());
+        assert_eq!(d.label(&fmt), "EQ");
+    }
+
+    #[test]
+    fn zero_feet_can_be_suppressed() {
+        let fmt = DimFormat::default();
+        let mut d = Dimension::new(
+            1,
+            DimensionKind::Manual,
+            Point::ZERO,
+            Point::new(6.5, 0.0),
+            12.0,
+        );
+        assert_eq!(d.label(&fmt), "0'-6 1/2\"");
+        d.look.suppress_zero_feet = Some(true);
+        assert_eq!(d.label(&fmt), "6 1/2\"");
+        d.look.unit_indicators = Some(false);
+        assert_eq!(d.label(&fmt), "6 1/2");
+        // Whole feet keep their feet.
+        d.end = Point::new(30.0, 0.0);
+        d.look.unit_indicators = None;
+        assert_eq!(d.label(&fmt), "2'-6\"");
+        assert_eq!(suppress_zero_feet("-0'-3\"", true), "-3\"");
+        assert_eq!(suppress_zero_feet("1'-3\"", true), "1'-3\"");
+    }
+
+    #[test]
+    fn extension_segments_honor_gap_overshoot_and_a_fixed_length() {
+        let m = Point::new(0.0, 0.0);
+        let e = Point::new(0.0, 24.0);
+        let (a, b) = extension_segment(m, e, 2.0, 3.0, None).unwrap();
+        assert!(a.dist(Point::new(0.0, 2.0)) < 1e-9 && b.dist(Point::new(0.0, 27.0)) < 1e-9);
+        // A fixed length counts back from the dimension line.
+        let (a, b) = extension_segment(m, e, 2.0, 3.0, Some(10.0)).unwrap();
+        assert!(a.dist(Point::new(0.0, 14.0)) < 1e-9 && b.dist(Point::new(0.0, 27.0)) < 1e-9);
+        // A length longer than the run changes nothing.
+        let (a, _) = extension_segment(m, e, 2.0, 0.0, Some(100.0)).unwrap();
+        assert!(a.dist(Point::new(0.0, 2.0)) < 1e-9);
+        assert!(extension_segment(m, m, 2.0, 3.0, None).is_none());
+    }
+
+    #[test]
+    fn overrides_round_trip_and_old_files_load() {
+        let mut d = Dimension::new(
+            1,
+            DimensionKind::Manual,
+            Point::ZERO,
+            Point::new(10.0, 0.0),
+            1.0,
+        );
+        let plain = serde_json::to_string(&d).unwrap();
+        assert!(!plain.contains("look"), "{plain}");
+        d.look.arrow = Some(DimArrow::Arrow);
+        d.look.arrow_filled = Some(true);
+        d.look.ext_length = Some(8.0);
+        let back: Dimension = serde_json::from_str(&serde_json::to_string(&d).unwrap()).unwrap();
+        assert_eq!(back, d);
+        let old: Dimension = serde_json::from_str(&plain).unwrap();
+        assert!(old.look.is_default());
+        assert_eq!(DimArrow::from_name("Filled Arrow"), DimArrow::Arrow);
+        assert_eq!(DimArrow::from_name(""), DimArrow::Tick);
+        assert_eq!(DimArrow::from_name("Dot"), DimArrow::Dot);
     }
 }

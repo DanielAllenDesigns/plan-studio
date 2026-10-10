@@ -16,6 +16,7 @@
 //! ([`edges`]) are plain Rust and unit tested; every OpenGL call is isolated in
 //! the private `gpu` module.
 
+pub mod backdrop;
 pub mod camera;
 pub mod edges;
 pub mod export;
@@ -27,6 +28,7 @@ mod texturing;
 mod viewport;
 pub mod walkthrough;
 
+pub use backdrop::{BackdropImage, Fog, Ground};
 pub use camera::{standard_views, Camera, CameraMode};
 pub use quality::{
     nearest_lights, shadow_map, ssao_kernel, tone_map, Look, LookParams, Quality, ShadowMap,

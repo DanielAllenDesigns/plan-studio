@@ -12,8 +12,10 @@ mod deck;
 mod landing;
 mod layout;
 mod model3d;
+mod options;
 mod plan;
 mod railing;
+mod sections;
 
 use layout::Layout;
 use plan_core::{Id, Point};
@@ -21,13 +23,20 @@ use serde::{Deserialize, Serialize};
 
 pub use deck::{deck_edge_railing, Deck};
 pub use landing::polygon_slab;
-pub use model3d::{meshes, tagged_meshes, StairPart};
+pub use model3d::{meshes, tagged_meshes, tagged_meshes_skipping, StairPart};
+pub use options::{
+    ArrowStyle, BreakStyle, DisplayRule, EdgeRail, Flare, HandrailOptions, PlanOptions,
+    PostProfile, RadiusRef, Runner, Starter, StringerOptions, TopLanding, ViewMode, Walkline,
+};
 pub use plan::{plan_symbol, Stroke};
 pub use railing::{
-    landing_edges, plan_symbol_railing, railing_meshes, railing_segments, stair_railing,
-    stair_railing_geometry, NewelParams, RailSide, RailStyle, RailingGeometry, RailingParams,
-    StairRailingGeometry, GUARD_HEIGHT, MAX_BALUSTER_CLEAR, STAIR_RAIL_HEIGHT,
+    landing_edges, landing_guards, plan_symbol_railing, railing_meshes, railing_segments,
+    stair_half_wall, stair_half_wall_skipping, stair_posts, stair_railing, stair_railing_geometry,
+    stair_railing_skipping, LandingGuard, NewelParams, PostPlacement, PostSkip, RailSide,
+    RailStyle, RailingGeometry, RailingParams, StairPosts, StairRailingGeometry, GUARD_HEIGHT,
+    MAX_BALUSTER_CLEAR, STAIR_RAIL_HEIGHT,
 };
+pub use sections::{complete_break, disconnect, MIN_BREAK_LANDING};
 
 /// Maximum riser height, IRC R311.7.5.1.
 pub const MAX_RISER: f64 = 7.75;
@@ -43,6 +52,9 @@ pub const MIN_HEADROOM: f64 = 80.0;
 const EPS: f64 = 1e-9;
 /// Maximum rise of one ramp run between landings, IBC 1012.2 (30").
 pub const RAMP_MAX_RISE: f64 = 30.0;
+/// The steepest ramp slope code allows, as run per inch of rise (IBC
+/// 1012.2: 1:12).
+pub const RAMP_MIN_SLOPE: f64 = 12.0;
 /// Length of the flat landing between two ramp runs, IBC 1012.6 (60").
 pub const RAMP_LANDING: f64 = 60.0;
 /// Narrowest tread of a curved stair at the inside edge, IRC R311.7.5.2.1 (6").
@@ -134,16 +146,29 @@ pub enum SideKind {
     Railing,
     /// A half-wall with a cap rail.
     HalfWall,
+    /// A wall-mounted handrail only (34" above the nosing line): no guard,
+    /// newels or balusters. The side beside a wall.
+    Handrail,
 }
 
 impl SideKind {
     /// The names of the Stair Specification, in menu order.
-    pub const ALL: [SideKind; 4] = [
+    pub const ALL: [SideKind; 5] = [
         SideKind::None,
         SideKind::Wall,
         SideKind::Railing,
         SideKind::HalfWall,
+        SideKind::Handrail,
     ];
+
+    /// Does this side stop a fall? A railing, a half-wall and a wall do; a
+    /// handrail is for gripping and does not.
+    pub fn is_guard(self) -> bool {
+        matches!(
+            self,
+            SideKind::Railing | SideKind::HalfWall | SideKind::Wall
+        )
+    }
 
     /// Chief's label.
     pub fn name(self) -> &'static str {
@@ -152,7 +177,48 @@ impl SideKind {
             SideKind::Wall => "Wall",
             SideKind::Railing => "Railing",
             SideKind::HalfWall => "Half Wall",
+            SideKind::Handrail => "Handrail",
         }
+    }
+}
+
+/// Which ends of the bottom tread are rounded off (a bullnose starter step).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum Bullnose {
+    /// Square ends (or the flare, if [`StairParams::flare`] is set).
+    #[default]
+    None,
+    /// The left end is a half-round the depth of the tread.
+    Left,
+    /// The right end is a half-round the depth of the tread.
+    Right,
+    /// Both ends.
+    Both,
+}
+
+impl Bullnose {
+    pub const ALL: [Bullnose; 4] = [
+        Bullnose::None,
+        Bullnose::Left,
+        Bullnose::Right,
+        Bullnose::Both,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Bullnose::None => "None",
+            Bullnose::Left => "Left End",
+            Bullnose::Right => "Right End",
+            Bullnose::Both => "Both Ends",
+        }
+    }
+
+    pub fn left(self) -> bool {
+        matches!(self, Bullnose::Left | Bullnose::Both)
+    }
+
+    pub fn right(self) -> bool {
+        matches!(self, Bullnose::Right | Bullnose::Both)
     }
 }
 
@@ -207,11 +273,66 @@ pub struct StairParams {
     /// past the stair on each side in a quarter-ellipse. `0` is a plain
     /// tread. Straight, L, U and winder stairs only.
     pub flare: f64,
+    /// A bullnose bottom tread: the chosen ends are half-rounds of the
+    /// tread's depth (they win over `flare` on that end).
+    pub bullnose: Bullnose,
+    /// Rails, newels and balusters of the left side when they differ from
+    /// [`StairParams::railing`] (Newels/Balusters and Rails tabs, Left side).
+    pub left_railing: Option<RailingParams>,
+    /// The same for the right side.
+    pub right_railing: Option<RailingParams>,
     /// A spiral stair: a [`StairShape::Curved`] stair around a centre pole
     /// (`inner_radius` is the pole's radius) that follows the spiral-stair
     /// code limits (9 1/2" risers, 6 3/4" treads at the walking line, 26"
     /// clear width) and gets a pole in 3D.
     pub spiral: bool,
+    /// U-shaped stairs: the gap between the two flights (0 has them side by
+    /// side).
+    pub u_gap: f64,
+    /// U-shaped stairs: two landings (one at the end of each flight) with the
+    /// turn between them instead of one wide landing.
+    pub split_landing: bool,
+    /// Winders: the narrowest a tread may get where it meets the inside
+    /// corner (Max Tread Contraction); 0 leaves the fan as it is.
+    pub winder_contraction: f64,
+    /// The walkline (tread depth is measured along it).
+    pub walkline: Walkline,
+    /// What the Radius field of a curved stair measures to.
+    pub radius_ref: RadiusRef,
+    /// The Stringers panel.
+    pub stringers: StringerOptions,
+    /// A carpet runner.
+    pub runner: Runner,
+    /// The top landing's nosing and riser.
+    pub top_landing: TopLanding,
+    /// Handrail extensions and returns.
+    pub handrail_options: HandrailOptions,
+    /// Plan Display, Arrow and the rail details of the plan.
+    pub plan: PlanOptions,
+    /// Flare and curved treads.
+    pub flare_shape: Flare,
+    /// Starter treads.
+    pub starter: Starter,
+    /// A curved ramp: the radius of its inside edge (`None` is a straight
+    /// ramp). Only for [`StairShape::Ramp`].
+    pub ramp_curve: Option<f64>,
+    /// Library item (id) used for every newel instead of the built-in post;
+    /// empty uses the built-in.
+    pub newel_item: String,
+    /// Library item (id) used for every baluster.
+    pub baluster_item: String,
+    /// A doorway is cut in a railing the stair meets (Automatic Railing
+    /// Openings).
+    pub railing_openings: bool,
+    /// Sections wrap around a deck or landing corner and share attributes.
+    pub allow_wrap: bool,
+    /// Landings: the railing of each edge of the outline, in the order of
+    /// the outline (missing entries are automatic).
+    pub edge_rails: Vec<EdgeRail>,
+    /// A downward stair (drawn with Alt or the right mouse button): the plan
+    /// arrow starts at the top and points down, labelled DN instead of UP.
+    /// The steps themselves are the same as an upward stair's.
+    pub down: bool,
 }
 
 impl Default for StairParams {
@@ -238,8 +359,114 @@ impl Default for StairParams {
             slab_thickness: 3.5,
             outline: Vec::new(),
             flare: 0.0,
+            bullnose: Bullnose::None,
+            left_railing: None,
+            right_railing: None,
             spiral: false,
+            u_gap: 0.0,
+            split_landing: false,
+            winder_contraction: 0.0,
+            walkline: Walkline::default(),
+            radius_ref: RadiusRef::default(),
+            stringers: StringerOptions::default(),
+            runner: Runner::default(),
+            top_landing: TopLanding::default(),
+            handrail_options: HandrailOptions::default(),
+            plan: PlanOptions::default(),
+            flare_shape: Flare::default(),
+            starter: Starter::default(),
+            ramp_curve: None,
+            newel_item: String::new(),
+            baluster_item: String::new(),
+            railing_openings: false,
+            allow_wrap: false,
+            edge_rails: Vec::new(),
+            down: false,
         }
+    }
+}
+
+impl StairParams {
+    /// The rails, newels and balusters of one side: its own settings when it
+    /// has them, else the shared [`StairParams::railing`].
+    pub fn railing_for(&self, side: RailSide) -> RailingParams {
+        match side {
+            RailSide::Left => self.left_railing,
+            RailSide::Right => self.right_railing,
+        }
+        .unwrap_or(self.railing)
+    }
+
+    /// Distance of the walkline from the inside edge of a curve (and from the
+    /// right edge of a straight stair): the walkline's setting when it is on,
+    /// else half the width (the tread centre).
+    pub fn walk_offset(&self) -> f64 {
+        if self.walkline.on {
+            self.walkline.distance.clamp(0.0, self.width.max(0.0))
+        } else {
+            self.width.max(0.0) / 2.0
+        }
+    }
+
+    /// The radius of a curved stair measured to `which` circle, or `None`
+    /// for a stair that is not curved.
+    pub fn curve_radius(&self, which: RadiusRef) -> Option<f64> {
+        let StairShape::Curved { inner_radius } = self.shape else {
+            return None;
+        };
+        let inner = inner_radius.max(0.0);
+        Some(match which {
+            RadiusRef::InnerArc => inner,
+            RadiusRef::Centerline => inner + self.width / 2.0,
+            RadiusRef::Walkline => inner + self.walk_offset(),
+            RadiusRef::OuterArc => inner + self.width,
+        })
+    }
+
+    /// Sets the radius of a curved stair so that the `which` circle has the
+    /// radius `r` (the inside radius never goes below zero).
+    pub fn set_curve_radius(&mut self, which: RadiusRef, r: f64) {
+        if let StairShape::Curved { inner_radius } = &mut self.shape {
+            let off = match which {
+                RadiusRef::InnerArc => 0.0,
+                RadiusRef::Centerline => self.width / 2.0,
+                RadiusRef::Walkline => {
+                    if self.walkline.on {
+                        self.walkline.distance.clamp(0.0, self.width.max(0.0))
+                    } else {
+                        self.width.max(0.0) / 2.0
+                    }
+                }
+                RadiusRef::OuterArc => self.width,
+            };
+            *inner_radius = (r - off).max(0.0);
+        }
+    }
+
+    /// How far the bottom tread reaches past the left and right edges of the
+    /// stair for a given tread depth and nosing: the bullnose's half-round on
+    /// a rounded end, else the flare.
+    pub fn apron_reach(&self) -> (f64, f64) {
+        let round = (self.tread_depth + self.nosing) * 0.5;
+        // Starter treads are rounded at both ends unless an end says
+        // otherwise.
+        let starter = if self.starter == Starter::None || self.flare > 0.0 {
+            0.0
+        } else {
+            round
+        };
+        (
+            if self.bullnose.left() {
+                round
+            } else {
+                self.flare.max(starter)
+            },
+            if self.bullnose.right() {
+                round
+            } else {
+                self.flare.max(starter)
+            },
+        )
     }
 }
 
@@ -322,6 +549,9 @@ pub(crate) struct Split {
 /// there are too few risers for the requested turn).
 pub(crate) fn split(params: &StairParams, risers: u32) -> Option<Split> {
     let (pad, winders, asked) = match params.shape {
+        StairShape::UShaped {
+            treads_before_landing,
+        } if params.split_landing => (3, 0, Some(treads_before_landing)),
         StairShape::LShaped {
             treads_before_landing,
         }
@@ -379,7 +609,7 @@ pub fn solve(params: &StairParams) -> StairSolution {
         let runs = ramp_runs(params.total_rise);
         let run =
             params.total_rise.max(0.0) * slope_1_in.max(0.0) + f64::from(runs - 1) * RAMP_LANDING;
-        if slope_1_in < 12.0 {
+        if slope_1_in < RAMP_MIN_SLOPE {
             code_ok = false;
             warnings.push(format!(
                 "ramp slope 1:{slope_1_in:.1} is steeper than the 1:12 maximum"
@@ -472,7 +702,7 @@ pub fn solve(params: &StairParams) -> StairSolution {
     let treads = risers - 1;
     let straight_run = f64::from(treads) * params.tread_depth;
     if let (StairShape::Curved { inner_radius }, false) = (params.shape, spiral) {
-        let walk = inner_radius.max(0.0) + params.width / 2.0;
+        let walk = inner_radius.max(0.0) + params.walk_offset();
         let inside = params.tread_depth * inner_radius.max(0.0) / walk.max(1e-9);
         if inside < MIN_CURVED_TREAD_INSIDE - EPS {
             code_ok = false;
@@ -495,6 +725,7 @@ pub fn solve(params: &StairParams) -> StairSolution {
     };
 
     let landings = match (split(params, risers), params.shape) {
+        (Some(_), StairShape::UShaped { .. }) if params.split_landing => 2,
         (Some(_), StairShape::LShaped { .. } | StairShape::UShaped { .. }) => 1,
         _ => 0,
     };
@@ -527,12 +758,19 @@ pub fn min_risers(rise: f64, max_riser: f64) -> u32 {
 /// The centre of a curved stair in plan, or `None` for other shapes.
 pub fn curve_center(stair: &Stair) -> Option<Point> {
     let layout = Layout::build(stair);
-    layout.curve.map(|c| layout.frame.uv(c.center))
+    layout
+        .curve
+        .or_else(|| layout.ramp_arc.as_ref().map(|r| r.curve))
+        .map(|c| layout.frame.uv(c.center))
 }
 
 /// Angle swept by a curved stair from the first to the last riser, radians.
 pub fn curve_sweep(stair: &Stair) -> Option<f64> {
-    Layout::build(stair).curve.map(|c| c.sweep())
+    let layout = Layout::build(stair);
+    layout
+        .curve
+        .or_else(|| layout.ramp_arc.as_ref().map(|r| r.curve))
+        .map(|c| c.sweep())
 }
 
 /// Plan polygon covering all flights and landings (for stairwell openings).
@@ -548,7 +786,11 @@ pub fn footprint(stair: &Stair) -> Vec<Point> {
 /// Where the stair arrives: the centre of the top riser line and its elevation.
 pub fn top_point(stair: &Stair) -> (Point, f64) {
     let layout = Layout::build(stair);
-    if let Some(c) = &layout.curve {
+    if let Some(c) = layout
+        .curve
+        .as_ref()
+        .or_else(|| layout.ramp_arc.as_ref().map(|r| &r.curve))
+    {
         let p = layout.frame.uv(c.at(c.sweep(), c.walk()));
         return (p, stair.bottom_elevation() + layout.total_rise);
     }
@@ -565,3 +807,7 @@ pub fn top_point(stair: &Stair) -> (Point, f64) {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_r15;
+#[cfg(test)]
+mod tests_sections;

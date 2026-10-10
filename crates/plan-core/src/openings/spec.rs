@@ -11,6 +11,16 @@ use super::OpeningStyle;
 use crate::model::{Opening, OpeningKind};
 use serde::{Deserialize, Serialize};
 
+mod shape;
+mod tabs;
+pub use shape::{clip_segment_convex, inset_convex, section, CornerCut, ShapeKind, WindowShape};
+pub use tabs::{
+    BayRoof, BayRoofKind, BlindStyle, CurtainStyle, CurvedCasing, DoorSwing, EnergyValues,
+    FramedOpening, HeaderMaterial, InteriorShutterStyle, MillworkStyle, OpeningFraming,
+    OpeningInfo, OpeningMaterials, PartPaint, RoughBox, RoughMode, RoughOpening, Treatments,
+    DOOR_ENERGY_TYPES, DOOR_PARTS, WINDOW_ENERGY_TYPES, WINDOW_PARTS,
+};
+
 // ----- lites -----
 
 /// How a window or door light is divided (Lites tab).
@@ -545,6 +555,12 @@ pub struct OpeningView3d {
     pub doors_open: bool,
     /// The angle hinged doors stand open at when `doors_open`, degrees.
     pub open_angle_deg: f64,
+    /// Minimum Separation between window and door units (Window Defaults,
+    /// manual p. 603), inches. The tools keep it in step with the defaults so
+    /// the model functions (`Project::slide_opening` and friends) can read it.
+    pub min_separation: f64,
+    /// Ignore Casing for Opening Resize (General Plan Defaults).
+    pub ignore_casing: bool,
 }
 
 impl Default for OpeningView3d {
@@ -553,11 +569,66 @@ impl Default for OpeningView3d {
             casing: true,
             doors_open: false,
             open_angle_deg: 90.0,
+            min_separation: super::placement::DEFAULT_MIN_SEPARATION,
+            ignore_casing: false,
         }
     }
 }
 
 // ----- the spec -----
+
+// ----- plan detail, indicators and schedule data (round 14) -----
+
+/// The Opening Indicators tab: graphic marks the plan adds to an opening
+/// (DW-83). Both are off for an opening from before the tab.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OpeningIndicators {
+    /// An "X" over a fixed unit, an arrow for the way an awning or hopper
+    /// opens.
+    pub show_in_plan: bool,
+    /// An arrowhead at the free end of every swing arc, the way it opens.
+    pub swing_arrows: bool,
+}
+
+/// What an opening recessed into its wall is recessed to (Options panel,
+/// Recessed To Layer; manual pp. 589, 622, 642).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum RecessTo {
+    /// A typed depth from the exterior face.
+    #[default]
+    Depth,
+    /// The exterior side of the main (structural) layer of the wall.
+    MainLayer,
+    /// The exterior side of the sheathing layer.
+    SheathingLayer,
+}
+
+/// The Schedule tab of a door or window (L-29, DW-61): the data a schedule
+/// lists besides the size. The mark itself is `Opening::schedule_number`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OpeningSchedule {
+    /// "Include in Schedule": a clear box leaves the opening out of the door
+    /// or window schedule and out of the numbering.
+    pub include: bool,
+    pub manufacturer: String,
+    pub model: String,
+    pub supplier: String,
+    pub comment: String,
+}
+
+impl Default for OpeningSchedule {
+    fn default() -> Self {
+        Self {
+            include: true,
+            manufacturer: String::new(),
+            model: String::new(),
+            supplier: String::new(),
+            comment: String::new(),
+        }
+    }
+}
 
 /// The tab values of a door or window beyond the ones on [`Opening`] itself.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -606,6 +677,76 @@ pub struct OpeningSpec {
     /// The plan label moved from its default spot: along the wall and
     /// across it toward the room, inches (DW-63).
     pub label_offset: (f64, f64),
+    /// Options tab "Swings Both Directions" (DW-35): a double-acting door
+    /// draws its arcs on both sides of the wall.
+    pub swings_both: bool,
+    /// Sill/Threshold tab (DW-81): the thin threshold line across an
+    /// exterior door in plan.
+    pub threshold: bool,
+    /// Jamb tab (DW-82): the door's jamb blocks beside each jamb line in plan.
+    pub jamb_in_plan: bool,
+    /// Jamb and Frame tabs "Size Includes Jamb / Frame" (DW-82). Clear, the
+    /// opening in the wall is wider than the unit by the jamb on each side.
+    pub size_includes_frame: bool,
+    /// Options tab "Recessed into Wall" (DW-57): how far from the exterior
+    /// wall face the leaf stands, inches; `None` keeps it on the centerline.
+    pub recess_depth: Option<f64>,
+    /// Recessed To Layer: what `recess_depth` follows. A layer choice is
+    /// worked out from the wall's type by `Project::sync_recess_depths`.
+    pub recess_to: RecessTo,
+    /// Opening Indicators tab (DW-83).
+    pub indicators: OpeningIndicators,
+    /// Schedule tab (L-29).
+    pub schedule: OpeningSchedule,
+    /// Options tab "Door Swing": which leaves of a double door swing.
+    pub door_swing: DoorSwing,
+    /// Options tab "Swings from Center": the two leaves of a double door
+    /// hinge in the middle.
+    pub swings_from_center: bool,
+    /// Casing tab "Curved Wall Casing".
+    pub curved_casing: CurvedCasing,
+    /// Rough Opening tab (DW-56).
+    pub rough: RoughOpening,
+    /// Framing tab (DW-114).
+    pub framing: OpeningFraming,
+    /// Energy Values tab (DW-115).
+    pub energy: EnergyValues,
+    /// Layer tab (DW-116): the layer name, `None` for the kind's own.
+    pub layer: Option<String>,
+    /// Materials tab (DW-117).
+    pub materials: OpeningMaterials,
+    /// Object Information tab (DW-118).
+    pub info: OpeningInfo,
+    /// Shape tab of a window (DW-121).
+    pub shape: WindowShape,
+    /// Treatments tab of a window (DW-123).
+    pub treatments: Treatments,
+    /// Options tab, Bay Roof: the roof over a bay, box or bow window.
+    pub bay_roof: BayRoof,
+    /// General panel, Window Type (DW-164).
+    pub window_type: super::types::WindowType,
+    /// General panel, Component Size of the types that have one; 0 makes the
+    /// components identical.
+    pub component_size: f64,
+    /// General panel, Louver Size of a louvered window.
+    pub louver_size: f64,
+    /// The settings that follow the defaults (Use Default).
+    #[serde(skip_serializing_if = "is_no_default")]
+    pub dynamic: super::types::UseDefault,
+    /// General panel, Hinged and Sliding doors: Interior (`Some(false)`) or
+    /// Exterior (`Some(true)`) regardless of the wall; `None` follows the wall.
+    pub exterior_door: Option<bool>,
+    /// Window Level (manual p. 611): 0 is drawn in the layer colour and picked
+    /// first; the others draw light grey.
+    pub level: u8,
+    /// The Mulled Unit Specification of a component of a blocked unit.
+    pub mulled: Option<super::mull::MulledSpec>,
+    /// The Bay/Box and Bow Window Specification (manual p. 639).
+    pub bay: super::bay::BayUnit,
+}
+
+fn is_no_default(u: &super::types::UseDefault) -> bool {
+    !u.any()
 }
 
 impl Default for OpeningSpec {
@@ -634,10 +775,40 @@ impl Default for OpeningSpec {
             niche_depth: DEFAULT_NICHE_DEPTH,
             calc_panels: false,
             label_offset: (0.0, 0.0),
+            swings_both: false,
+            threshold: true,
+            jamb_in_plan: true,
+            size_includes_frame: true,
+            recess_depth: None,
+            recess_to: RecessTo::Depth,
+            indicators: OpeningIndicators::default(),
+            schedule: OpeningSchedule::default(),
+            door_swing: DoorSwing::Both,
+            swings_from_center: false,
+            curved_casing: CurvedCasing::Radial,
+            rough: RoughOpening::default(),
+            framing: OpeningFraming::default(),
+            energy: EnergyValues::default(),
+            layer: None,
+            materials: OpeningMaterials::default(),
+            info: OpeningInfo::default(),
+            shape: WindowShape::default(),
+            treatments: Treatments::default(),
+            bay_roof: BayRoof::default(),
+            window_type: super::types::WindowType::default(),
+            component_size: 0.0,
+            louver_size: 2.0,
+            dynamic: super::types::UseDefault::default(),
+            exterior_door: None,
+            level: 0,
+            mulled: None,
+            bay: super::bay::BayUnit::default(),
         }
     }
 }
 
+/// Width from which an older casement window has two sashes, inches.
+pub const DOUBLE_CASEMENT_FROM: f64 = 48.0;
 /// Default depth of a wall niche, inches.
 pub const DEFAULT_NICHE_DEPTH: f64 = 3.5;
 /// Width from which a calculated hinged door has two leaves, inches.
@@ -682,6 +853,20 @@ impl Opening {
         }
     }
 
+    /// How many sashes a casement window has: its type's (Single, Double or
+    /// Triple Casement), or for a window whose type is not a casement one (an
+    /// older plan) one, and two from [`DOUBLE_CASEMENT_FROM`] wide.
+    pub fn casement_sashes(&self) -> usize {
+        let t = self.extras.spec.window_type;
+        if t.style() == OpeningStyle::Casement {
+            t.components()
+        } else if self.width >= DOUBLE_CASEMENT_FROM {
+            2
+        } else {
+            1
+        }
+    }
+
     /// Frame (window) or jamb (door) width, inches.
     pub fn frame_width(&self) -> f64 {
         let w = match self.kind {
@@ -717,6 +902,12 @@ impl Opening {
     /// Whether the opening has an arched head.
     pub fn is_arched(&self) -> bool {
         self.extras.spec.arch.is_arched()
+    }
+
+    /// Whether a window's Shape tab gives it an outline other than a
+    /// rectangle (a door never has one).
+    pub fn is_shaped(&self) -> bool {
+        self.kind == OpeningKind::Window && self.extras.spec.shape.is_shaped()
     }
 }
 

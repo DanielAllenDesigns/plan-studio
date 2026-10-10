@@ -255,6 +255,21 @@ pub fn xform_dimension(d: &mut Dimension, x: &Xform) {
     if x.is_mirror() {
         d.offset = -d.offset;
     }
+    // A curved dimension carries its arc with it.
+    if let Some(c) = d.look.seg.curve.as_mut() {
+        let mirror = x.is_mirror();
+        c.center = x.apply(c.center);
+        c.radius *= x.scale_factor();
+        c.start = x.map_angle(c.start);
+        if mirror {
+            c.sweep = -c.sweep;
+            c.lateral = -c.lateral;
+        }
+        c.lateral *= x.scale_factor();
+    }
+    if let Some(m) = d.look.seg.label_move.as_mut() {
+        *m = m.scale(x.scale_factor());
+    }
 }
 
 /// Transforms a placed symbol: position, facing and size; a mirror also
@@ -315,6 +330,15 @@ impl Project {
                         for a in d.anchors.iter_mut() {
                             if a.as_ref().is_some_and(|an| !walls.contains(&an.wall)) {
                                 *a = None;
+                            }
+                        }
+                        // A curved dimension stays tied to walls that
+                        // moved with it only.
+                        if let Some(c) = d.look.seg.curve.as_mut() {
+                            for w in c.walls.iter_mut() {
+                                if w.is_some_and(|id| !walls.contains(&id)) {
+                                    *w = None;
+                                }
                             }
                         }
                         n += 1;

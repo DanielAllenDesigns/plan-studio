@@ -25,7 +25,7 @@ top of a wall, and the plane rises from there at a pitch measured as rise per 12
 - **Overhang**: how far the eave projects past the wall face; 16" by default.
 - **Baseline height**: the elevation of the eave (the wall top, optionally raised off the plate).
 - Roof data is stored in the floor's own typed `roofs` slot (a list of records tagged `plane`,
-  `settings`, `ceiling` and `dormer`), so the roof saves, loads and undoes with the plan and its
+  `settings`, `ceiling`, `dormer` and `face`), so the roof saves, loads and undoes with the plan and its
   outlines export to DXF. Planes are drawn straight from the records on the `Roof Planes` layer; there
   are no outline polylines in the CAD objects. Files from before this change kept the roof as hidden
   `Roof Planes, Data` text records plus an outline polyline per plane; the program converts them
@@ -55,6 +55,10 @@ or a hip next to a gable, on either side of a short jog) also falls back to the 
 
 **Rooms steer the roof** (Room Specification, chapter 4.4). A room with **Roof Over This Room** off is left out of the footprint: its exterior walls stop shaping the roof and a partition between it and a roofed room becomes the roof's edge (when that leaves no closed outline, the whole exterior is used); a roofless room that lies inside a plane gets a hole cut instead. A room with **Flat Roof Over This Room** on gets a level plane at its ceiling (`plan_roof::flat_roof_plane`) in place of the pitched roof, and the Flat Roof room type has no ceiling and a membrane deck. Auto Rebuild Roofs reruns when these flags change.
 
+**Wings** (Round 14). When the pitched rooms of the floor you build over stand at different plate heights, or first-floor rooms are not covered by the floor above (a one-story garage beside a two-story house), each group gets its own roof at its own plate. An edge against a taller wall or an upper floor rises to it as a high shed with no overhang. Auto Rebuild Roofs also watches the walls of the floors below. A floor with wings and a Flat Roof or Roof Over This Room off room keeps one footprint at its tallest wall instead.
+
+**Half hip** (Round 14). A Full Gable wall with an **Upper Pitch** is built as a half hip (a jerkinhead): the end wall rises vertically to the clip height (the wall's **Starts at Height**) and a short hip plane slopes up from there to the ridge. The Roof Styles button **Half Hip** in the Build Roof dialog sets this up.
+
 ## 8.2 Tools
 
 ### Roof Tools (row 2, Roof flyout; Build > Roof)
@@ -76,7 +80,7 @@ can change mode without going back to the flyout. Since Round 8 (QA-07) the acti
 | Auto Floating Dormer | `Ctrl+Alt+Shift+Cmd+R` | Auto Floating Dormer | Works, see 8.2. |
 | Explode Dormer | | Explode Dormer | Works; the dormer's walls stay as real walls (8.2). |
 | Roof Return | | Roof Return | Works. |
-| Edit All Roof Planes | `Ctrl+Alt+Shift+Cmd+P` | Edit | Works (select, move, reshape planes). |
+| Edit All Roof Planes | `Ctrl+Alt+Shift+Cmd+P` | Edit | Works (select, move, reshape planes). The flyout entry of this name starts Edit mode; the palette has **Edit Roof Planes** (Edit mode) and **Edit All Roof Planes** (the one-dialog mode, below) as two separate buttons. |
 | Delete Roof Planes | `Ctrl+Alt+Shift+Cmd+W` | (command) | Works: removes every roof plane in the plan, on every floor, in one undo step. "There are no roof planes to delete" if none. |
 | Delete Ceiling Planes | `Ctrl+Alt+Shift+Cmd+X` | (command) | Works: removes the ceiling planes of every floor in one undo step. "There are no ceiling planes to delete" if none. |
 | Join Roof Planes | (Edit toolbar) | Join | Works, see 8.2. It is on the Edit toolbar (with a plane selected) and in the tool's palette, as in Chief, not in the flyout. |
@@ -95,8 +99,18 @@ A rectangular plane is made at the default pitch (8:12). Each plane is one undo 
 | Click a plane | Selects it. |
 | Drag the plane | Moves it. |
 | Drag a vertex | Reshapes it; the plane stays planar (the other vertices re-solve). |
+| Drag an **edge handle** (a hollow square at the middle of an edge) | Moves that edge square to itself; the plane stays planar and keeps its pitch. Moving the baseline edge moves the eave. One undo step, "Move Roof Edge". |
+| Drag the **pitch arrow** (the round handle on an arrow up the slope from the plane's center; the pitch is printed beside it) | Steepens the plane as you drag up the slope and flattens it as you drag down, 1/4 in 12 per inch of drag, in quarter steps between 1/4:12 and 24:12. One undo step, "Change Roof Pitch". |
+| Drag the **rotate knob** (a ring below the middle of the eave) | Turns the whole plane about its center: outline, eave baseline, holes and heights. One undo step, "Rotate Roof Plane". |
 | Double-click, `Enter` | Opens the Roof Plane Specification. |
 | `Delete` | Removes the plane. |
+
+Any of these marks the plane **manual**, so a later Build Roof leaves it alone. The handles belong to Edit All
+Roof Planes; Select Objects shows the corner and move handles of a roof plane only.
+
+### Edit All Roof Planes (the dialog mode, Round 14)
+
+Pick **Edit All Roof Planes** in the palette in the top-left corner of the canvas and one dialog opens for every plane of the floor ("Edit All Roof Planes (n planes)"; "There are no roof planes to edit" when there are none). Every setting has a **Change** check box: only the settings you tick are written, to all planes at once, in one undo step ("Edit All Roof Planes"). Tabs: **General** (Pitch, Overhang; the automatic planes are rebuilt so hips and ridges follow), **Options** (Include Ridge Caps, Eave Cut, Rafter Tails, Fascia, Soffit, Frieze, Gutters), **Structure** (the Define Roof Structure window, below) and **Materials** (roofing material and layer). OK is refused with "Choose what to change" when nothing is ticked.
 
 ### Build Roof mode
 
@@ -105,6 +119,11 @@ exterior walls of the floor, using each wall's roof directive (Hip by default) a
 them as editable planes. With **Auto Rebuild Roofs** on, a change to the walls that
 affects the roof (a moved or added wall, a changed directive or height) rebuilds the automatic
 planes; manual planes are not touched. A message tells you if no exterior outline exists.
+
+A room with **Roof Over This Room** off (chapter 4.4) gets a hole in the roof. When the room sits across a ridge, hip or valley
+and no single plane encloses it (Round 13), Build Roof cuts one hole piece per plane, each sitting 0.04" inside the
+shared joint so the planes still meet. A **Flat Roof Over This Room** now has an overhang: the exterior edges overhang
+by half the wall plus the wall's (or the roof settings') overhang, the partition edges none.
 
 ### Gable/Roof Line mode
 
@@ -119,10 +138,11 @@ Clicking an exterior wall (away from any eave) still flips it between **Hip** an
 rises to the ridge instead of carrying a plane, and its neighbors extend to the rake. The tool flips every wall
 along the same footprint edge. The other wall directives (Dutch Gable, High Shed/Gable, Knee Wall,
 Extend Slope Downward) are set on the Roof tab of the Wall Specification (8.7); High Shed/Gable is built as a shed edge.
+Since Round 14 the Edit toolbar also sets the directive for a selection of walls (at least one exterior): **Hip Wall**, **Full Gable Wall**, **High Shed/Gable Wall**, **Knee Wall** and **Dutch Gable Wall**. The whole footprint edge the wall lies on follows (a Knee Wall is the wall itself only), it is one undo step named after the button, and with Auto Rebuild Roofs on the roof is rebuilt.
 
 ### Roof Hole and Skylight
 
-- **Roof Hole**: press and drag a rectangle inside a plane to cut a hole (at least 6" on each side).
+- **Roof Hole**: press and drag a rectangle inside a plane to cut a hole (at least 6" on each side), or (Round 14) click the corners of any outline that does not cross itself and double-click to close it. A polygon that straddles a ridge, hip or valley is cut into one piece per plane.
 - **Skylight**: press and drag a rectangle inside a plane, or just click to place a 24" x 48" one. The
   skylight gets a curb, a frame ring and a glass pane.
 
@@ -148,16 +168,19 @@ replaces the ones it made before. Ceiling planes you drew by hand stay. Auto Reb
 - **Auto Dormer**: click inside a roof plane. The click sets the dormer's place (centered at the click along the eave;
   the distance up the slope is the setback, at least 12") and the **Dormer Specification** opens (8.6); OK builds the
   dormer. "Auto Dormer: <reason>" is shown when it does not fit: too big, too close to the eave, past the ridge, a
-  hip ridge that would collapse, or a flat plane. A dormer across two planes is not supported. Double-click a dormer with
+  hip ridge that would collapse, or a flat plane. A dormer across two planes is not supported (a dormer you drag moves onto the plane the pointer is carried over, centered under it, if it still fits). Double-click a dormer with
   Edit All Roof Planes to change it; it follows its plane when Build Roof rebuilds the roof.
 - A dormer has a front wall (parallel to the eave), two triangular cheek walls, its own roof planes (gable 2, shed 1,
-  hip 3), a window in the front wall if you ask for one, and a hole in the main roof plane under it. It has no overhang,
-  soffit or fascia.
+  hip 3), a window in the front wall if you ask for one, and a hole in the main roof plane under it. Since Round 13
+  its roof has an **overhang** (12" for a new dormer; the Roof tab of the Dormer Specification): the eaves and rakes
+  project past the walls edge by edge while the ridges, hips and valleys keep their lines, and the 3D view builds
+  **fascia, rake boards, soffit and gutters** on them from the Roof Defaults. The ghost that follows the pointer in
+  Auto Dormer and Auto Floating Dormer outlines the dormer's overhanging planes before you click.
 - **Explode Dormer**: click a dormer (or use the Edit toolbar button with a dormer selected). Its roof planes become
   ordinary planes and its footprint a plain hole in the main plane (none for a floating dormer), and **the front and cheek walls become real walls**: they take the default exterior wall type
   and thickness, sit with their outer face on the footprint, and stand on the roof through a **Bottom Height** (chapter 2.9); a dormer window becomes a window opening in the front wall. "Exploded the
-  dormer into n roof planes". Limits: the front wall of a gable dormer is a rectangle up to the wall height (the gable triangle above it is not part of the wall); the plan view and room detection do not know Bottom Height yet, so a dormer wall
-  draws like any wall of the roof's floor and, being open at the back, makes no room; and Auto Rebuild after wall changes sees the dormer walls as exterior walls of that floor.
+  dormer into n roof planes". The front wall of a gable dormer is made as tall as the ridge and as a Full Gable wall, so it rises to the underside of the dormer roof and fills the gable triangle (Round 13); the exploded planes keep their overhang. Limits: room detection does not know Bottom Height, so a dormer wall
+  is a wall of the roof's floor and, being open at the back, makes no room (a raised wall of 48" or more is drawn dashed, chapter 2.1); and Auto Rebuild after wall changes sees the dormer walls as exterior walls of that floor.
 
 ### Roof Return mode
 
@@ -189,7 +212,9 @@ Use it for a dormer that sits on top of the roof surface instead of breaking thr
 - In plan, each plane draws as an outline on the `Roof Planes` layer with its pitch shown next to
   its label (for example `8:12`); vaulted ceiling planes draw on `Ceiling Planes`.
 - The 3D view shows each plane as a slab with its roof holes cut out, a skylight's curb, frame and glass on top, the
-  ceiling planes, and the dormers (walls and roof planes; their footprint is cut from the main plane). You can check a
+  ceiling planes (their neighbors meet in mitres), and the dormers (walls, roof planes and their eave detail; their footprint is cut from the main plane).
+  The roofs of every floor are drawn, whichever floor is active; in the plan a roof draws only while the floor that holds it is active.
+  Bay and bow windows carry a 6:12 hip roof and a box window a 6:12 shed roof, flush with the unit (Round 14; the pitch and overhang are not editable yet). You can check a
   roof in Perspective, Doll House and elevation views (chapter 10).
 - **Walls follow the roof in 3D.** The scene builder reads the roof and ceiling planes stored on the floors and shapes the
   top of every ordinary wall to them, so a roof no longer floats over flat-topped walls:
@@ -222,7 +247,7 @@ Opened from the Build Roof mode. Four tabs.
 
 | Tab | Fields |
 |---|---|
-| Roof | **Roof**: Build Roof Planes, Auto Rebuild Roofs, Ignore Top Floor (build over the floor below the top one), **Build ceiling planes for vaulted rooms** (Build Roof makes the ceiling planes of 8.2). **Defaults for walls without their own roof settings**: Pitch, Overhang, Raise Roof Off Plate. A note says which floor the roof goes over. |
+| Roof | **Roof Styles** (Round 14): Hip, Gable, Shed, Gambrel, Dutch Gable and Half Hip. Pick one (click it again to clear it) and OK writes the roof directives of the exterior walls before it builds, in the same undo step as the build: Hip makes every wall a Hip Wall; Gable makes the walls across the ridge Full Gable Walls; Shed makes one long wall the High Shed/Gable Wall and the ends Full Gable Walls; Gambrel gives the gable ends and a steep lower and a shallow upper pitch on the long walls; Dutch Gable makes the walls across the ridge Dutch Gable Walls; Half Hip makes gable ends whose peak is clipped by a small hip (Starts at Height). With no style the roof follows each wall's own Roof tab. The preview draws the style. **Roof**: Build Roof Planes, Auto Rebuild Roofs, Ignore Top Floor (build over the floor below the top one), **Build ceiling planes for vaulted rooms** (Build Roof makes the ceiling planes of 8.2). **Defaults for walls without their own roof settings**: Pitch, Overhang, Raise Roof Off Plate. A note says which floor the roof goes over. |
 | Options | **Framing**: Build Framing (stored; the Build > Framing commands frame the stored roof planes whatever it says, 11.11), Rafters (disabled, on), Trusses (disabled, off). |
 | Materials | **Roofing**: Material (Asphalt Shingles, Concrete Tile, Standing Seam Metal, Wood Shakes, Slate). |
 | Detail | The Roof Defaults form (8.4a), for this roof: it is copied into the roof settings of the floor when Build Roof runs. |
@@ -253,6 +278,7 @@ Open by double-clicking a plane.
 | Holes | Lists the plane's roof holes and skylights, each with its size and a **Delete** button. A skylight also has **Curb Height** (up to 48"), **Glass Thickness** (up to 6") and **Frame Width** (up to 12"). "This plane has no holes. Use the Roof Hole and Skylight tools." when empty. |
 | Build Roof Edge | For planes made by Build Roof: the settings of the wall edge the plane rises from. **Pitch** and **Overhang from wall face** are optional overrides (tick to use), and **Gable end (no plane rises from this edge)** turns the edge into a gable. OK rebuilds the automatic roof with these edge settings (the plane disappears if you made it a gable). Other planes show "Only planes made by Build Roof rise from a wall edge." |
 | Options | **Eaves and Ridge**: Include Ridge Caps (draws ridge and hip caps on this plane in 3D, 8.3), and this plane's own eave choices, each "Roof Default" until you change it: **Eave Cut** (Roof Default, Plumb, Level, Square) and **Rafter Tails**, **Fascia**, **Soffit**, **Frieze** and **Gutters** (Roof Default, On or Off, as a three-way choice). Only this plane's eaves change; the rest of the roof follows Roof Defaults (8.4a). |
+| Structure | **Structure > Define** (Round 14): the Source (This plane or Roof Defaults), the framing, member size and spacing, and thickness, with **Define...** and **Use Roof Defaults**. **Define Roof Structure** has Roof Framing (Rafters or Trusses; Member Width, Member Depth, Spacing On Center), Layers Over the Framing (Sheathing, Roofing thickness) and Ceiling Framing (Ceiling Joists, Vaulted (rafters show), Truss Bottom Chords), with the total thickness shown. The thickness and the rafter size reach the 3D roof. |
 | Materials | Roofing material. |
 | Layer | The layer. |
 | Label | The label text; the pitch is always appended. |
@@ -282,7 +308,7 @@ Auto Dormer opens it after your click, and a double-click on a dormer in Edit mo
 | Tab | Fields |
 |---|---|
 | General | **Type**: Gable, Shed or Hip. **Width** (48" by default) and **Wall Height** (36"). **Position on the roof plane**: Along the Eave (the distance from the plane's first eave vertex to the dormer's center) and Setback from Eave (36" by default; a click sets both). |
-| Roof | **Pitch** (8:12 by default) and **Height to Ridge**. A ridge higher than the walls sets the pitch (the dormer's planes then report the pitch they got); 0 uses the pitch above. A shed dormer uses the pitch and halves it when it is not flatter than the main roof. |
+| Roof | **Pitch** (8:12 by default), **Height to Ridge** and **Overhang** (12" by default; 0 for none). The overhang pushes the eaves and rakes out and builds the dormer's fascia, rake boards, soffit and gutters. A ridge higher than the walls sets the pitch (the dormer's planes then report the pitch they got); 0 uses the pitch above. A shed dormer uses the pitch and halves it when it is not flatter than the main roof. |
 | Window | A check box "Window in the front wall" with its Width and Height. |
 
 OK is refused for an out-of-range pitch or an invalid length. The preview draws the dormer's front elevation.
@@ -305,22 +331,43 @@ with Gable/Roof Line (Hip or Full Gable), and in the Build Roof defaults. Build 
 What Build Roof does with them:
 
 - **Full Gable** and **High Shed/Gable**: the edge becomes a gable (or shed) end; the wall rises to the roof in 3D (8.3).
-- **Extend Slope Downward**: the edge's plane continues the Drop below the eave instead of stopping at the wall.
+- **Extend Slope Downward**: the edge's plane continues down past the eave. It reaches down to the top of the wall below (the nearest lower floor's exterior wall within 6' of the edge) when there is one, else it drops the **Drop below Eave** length you typed (Round 14).
 - **Knee Wall**: the wall stands under a roof plane and makes no plane of its own; Build Roof leaves it out of the footprint unless that would leave no outline.
 - **Upper Pitch** (a gambrel or mansard) and **Dutch Gable**: the roof is built in two stages. The lower roof is the plain hip roof at the lower pitches, cut by a level plane at the break (the edges' Starts-at heights give the break above the eave; the smallest wins, and
   with none it is 60% of the roof's height). A second roof is built on the cut, with each edge at its upper pitch; a Dutch gable edge is a vertical gable end there, so the hip below it ends in a short gable. Edges that keep their pitch across the break become one plane again.
   If the two-stage roof cannot be built (the skeleton had to approximate, or the break is at or above the peak) Build Roof makes the plain roof.
 
+## 8.7a Roof trim, Gable/Roof Lines and skylights
+
+**Roof Trim.** Build > Roof > Roof Trim opens a dialog with a tab for each trim part: Rafter Tails, Ridge Caps, Gutters, Frieze, Shadow Boards, Subfascia, Lookouts and Soffits. Each part has a switch (nothing is made until it is on), a profile from the molding library (or a plain board) and its width and height. Build Roof then makes the parts as molding polylines on the layer Roofs, Trim, Automatically Generated; they select and edit like any molding polyline, they are listed under Exterior Trim in the Materials List, and a piece you edit stays when the trim is made again.
+
+| Part | What it does |
+|---|---|
+| Rafter Tails | Recipe Exposed (tails show, no soffit), Hidden (no tails, a soffit) or Partially Exposed (only the last few inches show past the soffit); Stretch to Fit Rafter or an own width and height; Extend Past Subfascia. |
+| Ridge Caps | Bend to Roof Pitch makes a strip on each plane of a ridge or hip; off makes one level strip. The Ridge Cap setting of a single edge is Automatic (ridges and hips), On or Off. |
+| Gutters | Along eaves that do not slope. |
+| Frieze | Against the wall under the eaves and under the gable overhangs. |
+| Shadow Boards | On the face of the fascia, eaves and rakes; needs a fascia. |
+| Subfascia, Lookouts | A board behind the fascia; blocks every 24" under the rake overhangs. |
+| Soffits | Boxed (horizontal) or Flush (follows the rafters), Higher Eaves Boxed, Trim Framing To Soffits. |
+
+**Gable/Roof Line objects.** A line drawn exactly parallel to an exterior wall and within 10 feet of the wall's Main Layer stays in the plan until you delete it. Each Build Roof turns it into a gable: two planes of the line's own pitch and overhang, running from the line into the roof, with valleys where they meet the old roof planes. The Gable Line Specification has the Gable Line (pitch, overhang), Line, Line Style and Arrow panels. With doors or windows on an exterior wall selected, **Gable Over Door/Window** draws a line 12" past each side of each one (openings within 30" of each other share a line); **Delete Gable Over Opening** takes those lines away again.
+
+**Skylights.** A click with the Skylight tool makes a 2 by 2 foot skylight, a drag a rectangle. The Skylight Specification: General (Shape Rectangle, Circle, Ellipse, Oval or Custom, Width and Length, Frame Width and Height, Display in Plan View, Edit Skylight Shape), Inside Hole Rim (Square, Plumb, Plumb/Square) and Ceiling Hole (Automatically Generate, Use Manual Polyline, Do Not Cut). Moving a corner of the opening makes the shape Custom.
+
+**Dormers.** The pure geometry for a gambrel dormer (second pitch, In from Eave), the Auto Roof Return of a gable dormer, the Dormer Room options of a floating dormer (shaft to the room below, Set to Existing Ceiling) and crickets behind up-slope walls is in `plan-roof` and tested; the Dormer Specification does not offer them yet (docs/integration-queue.md).
+
 ## 8.8 Differences from Chief
 
-- A roof with an upper pitch or a Dutch gable has one break height for the whole roof, and the vertical face of a Dutch gable is not a plane (Full Gable ends are not infilled either).
-- Extend Slope Downward drops a length you type instead of reaching the wall below, and Auto Roof Return applies only at gable ends. Include Frieze on the Wall Roof tab is stored but not edited (the frieze is a Roof Defaults switch and a per-plane choice); Roof Cuts Wall at Bottom is a Roof Defaults switch for the whole roof, not a per-wall one.
-- Explode Dormer keeps the walls, but the gable triangle above a gable dormer's front wall is not part of it, and the plan and room detection do not read their Bottom Height. Dormers have no overhang, soffit or fascia, and a dormer cannot straddle two planes.
+- A roof with an upper pitch or a Dutch gable has one break height for the whole roof. The vertical face of a Dutch gable is not a roof plane: Build Roof stores it as a **face** record that 3D meshes like wall, which every rebuild and Delete Roof Planes replaces and which you cannot select (Round 13).
+- Extend Slope Downward drops the typed length when there is no wall below to reach, and Auto Roof Return applies only at gable ends. Include Frieze on the Wall Roof tab is stored but not edited (the frieze is a Roof Defaults switch and a per-plane choice); Roof Cuts Wall at Bottom is a Roof Defaults switch for the whole roof, not a per-wall one.
+- Explode Dormer keeps the walls (the gable dormer's front wall now reaches the ridge), and room detection does not read their Bottom Height. A dormer cannot straddle two planes.
+- Not built: a break line per edge on a staged roof, Build Roof per framing group. Round 16 brief 20 added skylight shapes, roof trim molding polylines and Gable/Roof Line objects (8.7a); Mansard, Barrel, Curved Eave and Eyebrow dormers and automatic crickets are still open.
 - A Roof Return is a full, half or boxed return of a length you set; its other options (slope, extend, shadow boards, ridge cap, frieze, gutter) are not modeled.
 - Build Ceiling Planes follows the roof planes only. In 3D an interior wall rises to the ceiling planes over it (8.3).
 - Roof holes must sit wholly inside one plane; Chief's holes across a ridge need one hole per plane here.
 - No automatic attic floor from Build Roof.
 - Half, pony and foundation walls (and curved walls of those classes) are cut by the roof but never raised to a gable; railing, glass, fencing, deck and the other special classes keep a flat top. With the baseline-at-plate rule off (and in plans built before it existed) the gable triangle's corners stand about 6" above the plate because the
   roof slab is 6" thick (the wall rises to the roof's underside).
-- The eave cut is Plumb, Level or Square (no other angle); gutters are a plain board-shaped box hung along the eave (no profile, downspouts or slope), and rafter tails are rectangular boxes (no bird's-mouth or decorative end cut). The flat roof plane (a room's **Flat Roof Over This Room**, chapter 4.4) has no overhang.
+- The eave cut is Plumb, Level or Square (no other angle); gutters are a plain board-shaped box hung along the eave (no profile, downspouts or slope), and rafter tails are rectangular boxes (no bird's-mouth or decorative end cut). The flat roof plane is a room's **Flat Roof Over This Room** (chapter 4.4).
 

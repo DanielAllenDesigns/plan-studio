@@ -29,12 +29,21 @@
 use crate::dialogs::camera as cam;
 use crate::dialogs::layout::{
     default_layout_template, layout_templates_dir, list_layout_templates, save_layout_template,
-    BoxSpec, BoxSpecDialog, CadTextDialog, CadTextSpec, CloudDialog, CloudSpec, LayoutLayersDialog,
-    LayoutTemplateDialog, LeaderDialog, LeaderSpec, PageChoice, PageRow, PageSetup,
-    PageSetupDialog, PageTableDialog, Placement, PrintDialog, SendDialog, SendSource, SendSpec,
-    TemplateMode, TextBoxDialog, TextBoxSpec,
+    BoxSpec, BoxSpecDialog, CadTextDialog, CadTextSpec, CloudDialog, CloudSpec, CopyBoxDialog,
+    LayoutDefaults, LayoutDefaultsDialog, LayoutLayersDialog, LayoutTarget, LayoutTemplateDialog,
+    LeaderDialog, LeaderSpec, NameDialog, PageChoice, PageSetup, PageSetupDialog, Placement,
+    PrintDialog, SendSource, SendSpec, SheetSizes, SheetSizesDialog, SnapshotSpec, TemplateMode,
+    TextBoxDialog, TextBoxSpec,
 };
-use crate::dialogs::print::{self, Image3dDialog, ImageDialog, ModelDialog, PrintTarget};
+use crate::dialogs::layout_box::{
+    link_choices, BoxSpecChoices, ChangeScaleDialog, LayoutBoxDialog, LayoutLineDialog,
+};
+use crate::dialogs::layout_revisions::RevisionDialog;
+use crate::dialogs::page_info::PageInfoDialog;
+use crate::dialogs::print::{
+    self, Image3dDialog, ImageDialog, ModelDialog, PrintPreviewDialog, PrintTarget,
+};
+use crate::dialogs::send_to_layout::{SendAnswers, SendDetails, SendToLayoutDialog};
 use crate::dialogs::Outcome;
 use crate::editor::EditorContext;
 use eframe::egui::{
@@ -44,10 +53,11 @@ use plan_core::{CadItem, CadObject, Id, Point, Project};
 use plan_docs::{MasterList, Scale, CHIEF_SHEET_BACKGROUND};
 use plan_elevation::LineWeight;
 use plan_layout::{
-    fit_largest_scale, render_pdf, send_to_layout, source_size_in, BoxArtwork, BoxSource, BoxText,
-    Layout, LayoutBox, LayoutLayers, LayoutPage, LayoutRenderContext, MacroContext,
-    PerspectiveImage, PerspectiveRequest, PrintOptions, TitleBlockStyle, AUTO_SCALE_CEILING,
-    LAYER_CAD, LAYER_REVISION_CLOUDS, LAYER_TEXT, LAYER_TITLE_BLOCK,
+    render_pdf, send_to_layout, source_size_in, AlignEdge, BoxArtwork, BoxSource, BoxText,
+    CameraLink, Layout, LayoutBox, LayoutLayers, LayoutPage, LayoutRenderContext, MacroContext,
+    NewScale, PerspectiveImage, PerspectiveRequest, PrintOptions, SendOptions, SendRequest,
+    SendScale, Sent, Spread, TitleBlockStyle, UpdateScope, AUTO_SCALE_CEILING, LAYER_CAD,
+    LAYER_REVISION_CLOUDS, LAYER_TEXT, LAYER_TITLE_BLOCK,
 };
 use std::cell::{Cell, RefCell};
 use std::collections::hash_map::DefaultHasher;
@@ -59,8 +69,33 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 /// Smallest side of a layout box, paper inches.
 const MIN_BOX_IN: f64 = 0.25;
-/// Drag snap, paper inches (1/16").
-const SNAP_IN: f64 = 1.0 / 16.0;
+/// Drag snap of a layout that has not set its own, paper inches (1/16").
+const SNAP_IN: f64 = plan_layout::DEFAULT_SNAP_UNIT_IN;
+
+thread_local! {
+    /// The open layout's General Layout Defaults: Use Snap Grid and the Grid
+    /// Snap Unit (kept in step by [`LayoutView::sync_snap`]).
+    static SNAP: Cell<(bool, f64)> = const { Cell::new((true, SNAP_IN)) };
+    /// The part of the plan view on screen, plan inches `[x0, y0, x1, y1]`
+    /// (set each frame by the application): what Send to Layout's Current
+    /// Screen sends.
+    static PLAN_SCREEN: Cell<Option<[f64; 4]>> = const { Cell::new(None) };
+    /// The answers of the last Send to Layout, kept for the session: the next
+    /// dialog starts from them (manual p. 1400).
+    static LAST_SEND: RefCell<Option<SendAnswers>> = const { RefCell::new(None) };
+}
+
+/// Tells the layout window which part of the plan view is on screen (plan
+/// inches), for Send to Layout > Current Screen. `None` when the plan view is
+/// not showing.
+pub fn set_plan_screen(extent: Option<[f64; 4]>) {
+    PLAN_SCREEN.with(|s| s.set(extent));
+}
+
+/// The Grid Snap Unit drags snap to and arrow keys nudge by, paper inches.
+fn snap_unit() -> f64 {
+    SNAP.with(Cell::get).1
+}
 const MIN_ZOOM: f32 = 2.0;
 const MAX_ZOOM: f32 = 400.0;
 const HANDLE_PX: f32 = 7.0;
@@ -77,7 +112,10 @@ const SELECT_BLUE: Color32 = Color32::from_rgb(0x2F, 0x6C, 0xB3);
 
 /// The project's layout, if it has one and its JSON reads back.
 pub fn load(project: &Project) -> Option<Layout> {
-    serde_json::from_value(project.layout.clone()?).ok()
+    let mut layout: Layout = serde_json::from_value(project.layout.clone()?).ok()?;
+    // Layouts saved before the Layout Box Labels layer existed gain it.
+    layout.layers.complete();
+    Some(layout)
 }
 
 /// Writes `layout` into the project.
@@ -221,7 +259,9 @@ pub fn cached_perspective(
 fn trace_perspective(project: &Project, req: &PerspectiveRequest) -> Option<PerspectiveImage> {
     let c = project.camera(req.camera_id)?;
     let (w, h, samples) = (req.width.max(1), req.height.max(1), req.samples.max(1));
-    let scene = plan_3d::build_scene(project);
+    // The 3D view's own scene: roofs, stairs, cabinets, terrain and the rest,
+    // not just the walls and openings.
+    let scene = view_scene(project);
     let renderer = plan_render::Renderer::new(&scene);
     let elevation = project.floors.get(c.floor).map_or(0.0, |f| f.elevation);
     let fov = crate::shell::view3d_panel::vertical_fov(c.fov_deg as f32, w as f32 / h as f32);
@@ -305,11 +345,66 @@ pub fn load_picture(path: &str) -> Option<PerspectiveImage> {
     Some(out)
 }
 
+/// The scene elevations, sections and perspective views are drawn from: the
+/// 3D view's (`view3d_panel::build_view_scene`), so roofs, stairs, cabinets,
+/// dormers and the terrain appear, and the plan's opening display (casing,
+/// jambs, sills) applies.
+pub fn view_scene(project: &Project) -> plan_3d::Scene {
+    crate::shell::view3d_panel::build_view_scene(
+        project,
+        &crate::shell::view3d_panel::ViewScope::default(),
+    )
+}
+
+/// A picture of the 3D view from the camera it was taken with, `w` x `h`
+/// pixels at `samples` per pixel, lit by the plan's point lights.
+fn render_snapshot(
+    project: &Project,
+    view: &crate::shell::view3d_panel::Snapshot3d,
+    w: u32,
+    h: u32,
+    samples: u32,
+) -> PerspectiveImage {
+    let settings = plan_render::RenderSettings {
+        width: w.max(8),
+        height: h.max(8),
+        samples: samples.clamp(1, 512),
+        ..plan_render::RenderSettings::default()
+    };
+    let renderer = plan_render::Renderer::new(&view.scene);
+    let lights = cam::render_lights(project);
+    let image = renderer.render(
+        &view.camera,
+        &plan_render::Environment::default(),
+        &lights,
+        &settings,
+    );
+    PerspectiveImage {
+        width: image.width,
+        height: image.height,
+        rgba: image.rgba,
+    }
+}
+
+thread_local! {
+    /// The open 3D view, offered to the next Send to Layout so it can be sent
+    /// as a picture (set by `main.rs` when the 3D view is showing).
+    static SNAPSHOT_3D: RefCell<Option<crate::shell::view3d_panel::Snapshot3d>> =
+        const { RefCell::new(None) };
+}
+
+/// Offers the open 3D view to Send to Layout (a picture of it can be sent).
+pub fn offer_snapshot_3d(view: crate::shell::view3d_panel::Snapshot3d) {
+    SNAPSHOT_3D.with(|s| *s.borrow_mut() = Some(view));
+}
+
 /// The render context for printing and sending: camera drawings, perspective
 /// renders (made now when missing), picture files, the user's master list and
 /// the title block macros.
 pub fn render_context(project: &Project) -> LayoutRenderContext<'_> {
     let mut rcx = cam::layout_context(project)
+        .with_scene_builder(view_scene)
+        .with_plan_overlay(move |floor| crate::editor::plan_overlay::overlay(project, floor))
         .with_perspective_render(move |req| perspective_image(project, &effective_request(*req)))
         .with_picture_loader(load_picture)
         .with_master_list(load_master_list());
@@ -323,6 +418,8 @@ pub fn render_context(project: &Project) -> LayoutRenderContext<'_> {
 /// page never waits for the ray tracer.
 fn ui_context(project: &Project) -> LayoutRenderContext<'_> {
     let mut rcx = cam::layout_context(project)
+        .with_scene_builder(view_scene)
+        .with_plan_overlay(move |floor| crate::editor::plan_overlay::overlay(project, floor))
         .with_perspective_render(move |req| {
             cached_perspective(project, &effective_request(*req)).map(|i| (*i).clone())
         })
@@ -379,18 +476,7 @@ fn is_scaled(s: &BoxSource) -> bool {
 /// number any of them has (so moving the cover, sheet 0, away from the front
 /// does not shift the whole set up by one); template pages keep their number.
 pub fn renumber_pages(layout: &mut Layout) {
-    let Some(start) = layout
-        .pages
-        .iter()
-        .filter(|p| !p.template_page)
-        .map(|p| p.number)
-        .min()
-    else {
-        return;
-    };
-    for (n, p) in (start..).zip(layout.pages.iter_mut().filter(|p| !p.template_page)) {
-        p.number = n;
-    }
+    layout.renumber_pages();
 }
 
 fn next_box_id(layout: &Layout) -> Id {
@@ -444,6 +530,9 @@ pub fn delete_page(layout: &mut Layout, index: usize) -> Result<(), &'static str
     if !page.template_page && layout.content_pages().len() <= 1 {
         return Err("A layout keeps at least one page");
     }
+    if let Some(why) = layout.delete_blocker(index) {
+        return Err(why);
+    }
     layout.pages.remove(index);
     renumber_pages(layout);
     Ok(())
@@ -466,6 +555,8 @@ pub fn exchange_page(layout: &mut Layout, index: usize, forward: bool) -> Option
 /// template pages stay so their content still repeats.
 pub fn pages_in_range(layout: &Layout, range: Option<(usize, usize)>) -> Layout {
     let mut out = layout.clone();
+    // The pages left out still count for the labels and page macros.
+    out.bake_numbering();
     if let Some((from, to)) = range {
         let mut ordinal = 0;
         out.pages.retain(|p| {
@@ -479,17 +570,36 @@ pub fn pages_in_range(layout: &Layout, range: Option<(usize, usize)>) -> Layout 
     out
 }
 
+/// The layout with its Update on Demand views updated: they update when the
+/// page they are on prints (manual p. 1403). Plot Lines views stay as they are.
+fn updated_for_print(layout: Layout, rcx: &LayoutRenderContext) -> Layout {
+    let semi = layout
+        .pages
+        .iter()
+        .flat_map(|p| p.boxes.iter())
+        .any(|b| b.update_kind() == plan_layout::UpdateKind::SemiDynamic);
+    if !semi {
+        return layout;
+    }
+    let mut layout = layout;
+    plan_layout::update_views(&mut layout, rcx, &UpdateScope::OnPrint, None);
+    layout
+}
+
 /// The layout as a PDF: every printed page, or the pages in `range`, with the
 /// Project Information in the title blocks and camera boxes drawn.
 pub fn print_bytes(layout: &Layout, project: &Project, range: Option<(usize, usize)>) -> Vec<u8> {
-    let layout = pages_in_range(layout, range);
-    render_pdf(&layout, &render_context(project))
+    let rcx = render_context(project);
+    let layout = updated_for_print(pages_in_range(layout, range), &rcx);
+    render_pdf(&layout, &rcx)
 }
 
 /// The layout printed with the Print dialog's options: paper, scale, tiling,
 /// colour mode, line weights and range (see [`plan_layout::print_layout_pdf`]).
 pub fn print_with(layout: &Layout, project: &Project, opts: &PrintOptions) -> Vec<u8> {
-    plan_layout::print_layout_pdf(layout, &render_context(project), opts)
+    let rcx = render_context(project);
+    let layout = updated_for_print(layout.clone(), &rcx);
+    plan_layout::print_layout_pdf(&layout, &rcx, opts)
 }
 
 /// Floor `floor`'s plan printed at the options' scale. Returns the PDF and the
@@ -697,8 +807,9 @@ pub fn handle_at(r: [f64; 4], x: f64, y: f64, tol: f64) -> Option<Handle> {
 }
 
 fn snap(v: f64, on: bool) -> f64 {
-    if on {
-        (v / SNAP_IN).round() * SNAP_IN
+    let (grid, unit) = SNAP.with(Cell::get);
+    if on && grid {
+        (v / unit).round() * unit
     } else {
         v
     }
@@ -765,6 +876,15 @@ pub enum LayoutTool {
     Leader,
     /// Drag the rectangle a revision cloud goes around.
     Cloud,
+    /// Pan/Scale Layout Box: drag to pan the contents of the selected box
+    /// (not part of [`LayoutTool::ALL`]; it has its own edit button).
+    PanScale,
+    /// Edit Layout Lines: select, draw and delete the lines of a Plot Lines
+    /// view.
+    EditLines,
+    /// Point to Point Move: click where the selection moves from, then where
+    /// it moves to (object snaps apply).
+    PointToPoint,
 }
 
 impl LayoutTool {
@@ -793,6 +913,9 @@ impl LayoutTool {
             LayoutTool::Arc => "Arc",
             LayoutTool::Leader => "Leader",
             LayoutTool::Cloud => "Revision Cloud",
+            LayoutTool::PanScale => "Pan/Scale Layout Box",
+            LayoutTool::EditLines => "Edit Layout Lines",
+            LayoutTool::PointToPoint => "Point to Point Move",
         }
     }
 }
@@ -808,7 +931,22 @@ pub enum LayoutCommand {
     SendAllFloors,
     PageSetup,
     ProjectInfo,
+    /// Tools > Layout > Layout Page Table: click a page to place the table.
     PageTable,
+    /// Tools > Layout > Layout Revision Table: click a page to place the
+    /// table of that page's revisions.
+    RevisionTable,
+    /// Tools > Layout > Add Layout Revision: one revision on chosen pages.
+    AddLayoutRevision,
+    /// Edit > Default Settings > Layout: General Layout Defaults (Use Snap
+    /// Grid, Grid Snap Unit).
+    LayoutDefaults,
+    /// Copy the page's border and drawings (CAD, leaders, clouds) to
+    /// another page.
+    CopyDrawingsToPage,
+    /// Drag the page at `.0` to the position `.1` (the Project Browser and
+    /// the page tabs): the pages and their `#` labels renumber.
+    MovePage(usize, usize),
     InsertPageBefore,
     InsertPageAfter,
     DuplicatePage,
@@ -854,8 +992,58 @@ pub enum LayoutCommand {
     SaveAsTemplate,
     /// Layout > Apply Template: replace the layout with a saved template.
     ApplyTemplate,
+    /// Tools > Layout > Edit Page Information: Layout Page Information
+    /// (label, title, description, comments, page templates, revisions, the
+    /// page's own sheet size and title block).
+    PageInformation,
+    /// Layout > Customize Sheet Sizes: custom sizes and which standard sizes
+    /// the lists show.
+    CustomizeSheetSizes,
+    /// Line the selected boxes up (a single box lines up with the drawing
+    /// area).
+    Align(AlignEdge),
+    /// Spread three or more selected boxes with equal gaps.
+    Distribute(Spread),
+    /// Copy the selected boxes to another page.
+    CopyBoxToPage,
+    /// Copy the selected boxes on the same page.
+    DuplicateBox,
+    /// Go back to the view the selected box shows: a plan box opens its
+    /// floor plan.
+    OpenSourceView,
+    /// Layout > New Layout File: the plan gets a second layout file and it
+    /// opens.
+    NewLayoutFile,
+    /// Open the plan's `n`th layout file (0 is the open one).
+    SwitchLayout(usize),
+    /// Save the selected table box (or every table on the page) as CSV.
+    ExportTableCsv,
+    /// Save the selected table box (or every table on the page) as an Excel
+    /// workbook, a sheet each.
+    ExportTableExcel,
     /// Choose the tool that clicks and drags on the page use.
     Tool(LayoutTool),
+    /// Send every floor plan and elevation camera, with one dialog (or one
+    /// set of answers for all of them).
+    SendAllViews,
+    /// The Update View edit tool: the selected views.
+    UpdateView,
+    /// Tools > Layout > Update Layout Views > Update All Live Views.
+    UpdateLiveViews,
+    /// Update All Plot Line Views.
+    UpdatePlotLineViews,
+    /// The Rescale Layout View edit tool: the Change Scale dialog.
+    RescaleView,
+    /// Recenter Layout Box Contents.
+    RecenterBox,
+    /// Scale Layout Box Contents to Fit.
+    ScaleBoxToFit,
+    /// The Layout Box Layers edit tool: the box's layer set.
+    LayoutBoxLayers,
+    /// Unlink Saved Plan View: the box keeps the floor and layer set it shows.
+    UnlinkSavedView,
+    /// Center Object: the selection moves to the middle of the drawing area.
+    CenterObject,
     Undo,
     Redo,
 }
@@ -867,6 +1055,12 @@ enum Drag {
         id: Id,
         start: (f64, f64),
         orig: [f64; 4],
+        /// The other selected boxes and where they were: they move along.
+        group: Vec<(Id, [f64; 4])>,
+        /// The page drawings (CAD, leaders, clouds) selected with them move
+        /// along too, from the annotations as the drag found them.
+        cad: Vec<Id>,
+        cad_orig: Box<LayoutPage>,
         before: Box<Layout>,
     },
     Resize {
@@ -887,7 +1081,39 @@ enum Drag {
         id: Id,
         start: (f64, f64),
         orig: Box<LayoutPage>,
+        /// The other selected page drawings.
+        with_cad: Vec<Id>,
+        /// The boxes selected with it and where they were.
+        with_boxes: Vec<(Id, [f64; 4])>,
         before: Box<Layout>,
+    },
+    /// Pan/Scale Layout Box: panning the contents of box `id`.
+    PanBox {
+        id: Id,
+        start: (f64, f64),
+        pan0: (f64, f64),
+        before: Box<Layout>,
+    },
+    /// Edit Layout Lines: drawing a new line in box `id` (view inches).
+    DrawLine {
+        id: Id,
+        start: Point,
+        cur: Point,
+        before: Box<Layout>,
+    },
+    /// Edit Layout Lines: moving the selected lines from `start` (view
+    /// inches), as `orig` had them.
+    MoveLines {
+        id: Id,
+        start: Point,
+        orig: Box<plan_layout::ViewArt>,
+        before: Box<Layout>,
+    },
+    /// Edit Layout Lines: a marquee from `start` to `cur` (view inches).
+    Marquee {
+        id: Id,
+        start: Point,
+        cur: Point,
     },
     /// Resizing the selected page annotation by a handle.
     ResizeCad {
@@ -904,6 +1130,8 @@ enum Drag {
 struct Placing {
     source: BoxSource,
     scale: Option<Scale>,
+    /// The Send Options, scaling and camera link the dialog answered.
+    details: Option<SendDetails>,
     page: PageChoice,
     /// The size of the box that will be placed, paper inches (the ghost).
     size: (f64, f64),
@@ -916,10 +1144,15 @@ struct BoxCache {
 
 #[derive(Default)]
 struct Dialogs {
-    send: Option<SendDialog>,
+    send: Option<SendToLayoutDialog>,
     spec: Option<BoxSpecDialog>,
+    /// Layout Box Specification of a view box.
+    box_view: Option<LayoutBoxDialog>,
+    /// Layout Line Specification of the selected plot lines.
+    line_spec: Option<LayoutLineDialog>,
+    /// Rescale Layout View: Change Scale.
+    change_scale: Option<ChangeScaleDialog>,
     setup: Option<PageSetupDialog>,
-    table: Option<PageTableDialog>,
     print: Option<PrintDialog>,
     image: Option<ImageDialog>,
     text_box: Option<TextBoxDialog>,
@@ -930,6 +1163,18 @@ struct Dialogs {
     model: Option<ModelDialog>,
     /// Save As Template and Apply Template.
     template: Option<LayoutTemplateDialog>,
+    page_info: Option<PageInfoDialog>,
+    /// Copy Drawings to Page: the dialog and the page they come from.
+    copy_drawings: Option<CopyBoxDialog>,
+    /// Add Layout Revision.
+    revision: Option<RevisionDialog>,
+    /// General Layout Defaults.
+    defaults: Option<LayoutDefaultsDialog>,
+    sheet_sizes: Option<SheetSizesDialog>,
+    copy_box: Option<CopyBoxDialog>,
+    new_layout: Option<NameDialog>,
+    /// Print Preview: the pages as they will print.
+    preview: Option<PrintPreviewDialog>,
     /// Print Image of the 3D view: the dialog and the view it will render.
     image3d: Option<(Image3dDialog, crate::shell::view3d_panel::Snapshot3d)>,
 }
@@ -938,8 +1183,10 @@ impl Dialogs {
     fn any(&self) -> bool {
         self.send.is_some()
             || self.spec.is_some()
+            || self.box_view.is_some()
+            || self.line_spec.is_some()
+            || self.change_scale.is_some()
             || self.setup.is_some()
-            || self.table.is_some()
             || self.print.is_some()
             || self.image.is_some()
             || self.text_box.is_some()
@@ -949,6 +1196,14 @@ impl Dialogs {
             || self.layers.is_some()
             || self.model.is_some()
             || self.template.is_some()
+            || self.page_info.is_some()
+            || self.copy_drawings.is_some()
+            || self.revision.is_some()
+            || self.defaults.is_some()
+            || self.sheet_sizes.is_some()
+            || self.copy_box.is_some()
+            || self.new_layout.is_some()
+            || self.preview.is_some()
             || self.image3d.is_some()
     }
 }
@@ -963,6 +1218,12 @@ pub struct LayoutView {
     /// Index of the page shown (into `Layout::pages`).
     pub page: usize,
     pub selected: Option<Id>,
+    /// The other boxes selected with Shift (Align, Distribute, Copy work on
+    /// them together with [`selected`](Self::selected)).
+    also: Vec<Id>,
+    /// The other page drawings (CAD, leaders, clouds) selected with Shift,
+    /// besides [`selected_cad`](Self::selected_cad); they move with the boxes.
+    also_cad: Vec<Id>,
     /// Undo steps made since the last [`flush`](Self::flush): the label and
     /// the project as it was before the edit.
     steps: Vec<(String, Project)>,
@@ -995,6 +1256,17 @@ pub struct LayoutView {
     textures: HashMap<Id, (u64, egui::TextureHandle)>,
     /// Update Views rendering perspective views on a thread.
     update: Option<UpdateJob>,
+    /// The 3D view offered to the open Send to Layout dialog (sent as a
+    /// picture when the dialog asks).
+    snapshot_src: Option<crate::shell::view3d_panel::Snapshot3d>,
+    /// Edit Layout Lines: the selected lines of the selected box.
+    line_sel: Vec<Id>,
+    /// Pan/Scale Layout Box: the scale being typed.
+    pan_scale_text: String,
+    /// Views waiting for their Send to Layout dialog (Send All Views).
+    send_queue: Vec<SendSource>,
+    /// What the last send made (the warning when it was too big).
+    last_sent: Option<Sent>,
 }
 
 /// Update Views in progress: perspective renders on a thread, with a count
@@ -1014,6 +1286,8 @@ impl Default for LayoutView {
             stored: None,
             page: 0,
             selected: None,
+            also: Vec::new(),
+            also_cad: Vec::new(),
             steps: Vec::new(),
             #[cfg(test)]
             test_history: crate::editor::history::ChangeHistory::new(),
@@ -1033,6 +1307,11 @@ impl Default for LayoutView {
             poly: Vec::new(),
             textures: HashMap::new(),
             update: None,
+            snapshot_src: None,
+            line_sel: Vec::new(),
+            pan_scale_text: String::new(),
+            send_queue: Vec::new(),
+            last_sent: None,
         }
     }
 }
@@ -1062,6 +1341,8 @@ fn box_key(b: &LayoutBox, sig: u64) -> u64 {
     b.line_weight_scale.to_bits().hash(&mut h);
     b.hatch_materials.hash(&mut h);
     b.rotation_deg.to_bits().hash(&mut h);
+    b.label.hash(&mut h);
+    b.view.cache_key().hash(&mut h);
     match &b.source {
         BoxSource::ImageData {
             width,
@@ -1071,6 +1352,74 @@ fn box_key(b: &LayoutBox, sig: u64) -> u64 {
         other => format!("{other:?}").hash(&mut h),
     }
     h.finish()
+}
+
+/// A new layout called `name` from Daniel's template; a template saved as the
+/// default for its sheet size takes over.
+fn fresh_layout(name: &str, seed: Option<&crate::templates::LayoutInfoSeed>) -> Layout {
+    let mut layout = crate::templates::new_layout(name, seed);
+    if let Some(t) = layout_templates_dir().and_then(|d| default_layout_template(&d, layout.sheet))
+    {
+        layout = t.instantiate(name);
+    }
+    layout
+}
+
+fn json_layout_name(v: &serde_json::Value) -> String {
+    v.get("name")
+        .and_then(|n| n.as_str())
+        .unwrap_or("Layout")
+        .to_string()
+}
+
+/// The names of the plan's layout files, the open one first, then the ones
+/// parked in `Project::layout_files`.
+pub fn layout_names(project: &Project) -> Vec<String> {
+    project
+        .layout
+        .iter()
+        .chain(project.layout_files.iter())
+        .map(json_layout_name)
+        .collect()
+}
+
+/// The layout files parked in the plan, as `(index for
+/// [`LayoutCommand::SwitchLayout`], name)`; the open layout is index 0 and
+/// is not listed.
+pub fn parked_layouts(project: &Project) -> Vec<(usize, String)> {
+    project
+        .layout_files
+        .iter()
+        .enumerate()
+        .map(|(i, v)| (i + 1, json_layout_name(v)))
+        .collect()
+}
+
+/// The Drawing Scale the plan's Drawing Sheet Setup gives its plan view, when
+/// the plan has set one: where Send to Layout starts (manual p. 1426).
+fn sheet_scale(project: &Project) -> Option<Scale> {
+    use plan_core::drawing_sheet::ViewType;
+    project
+        .print_setup
+        .has_own(ViewType::Plan)
+        .then(|| crate::dialogs::drawing_sheet::default_scale(project, ViewType::Plan))
+}
+
+/// The scaling and options of a send that only knows a [`SendSpec`]: the
+/// scale asked for (else the largest that fits, up to 1/4"), a Live View,
+/// the whole view.
+pub fn default_details(spec: &SendSpec) -> SendDetails {
+    SendDetails {
+        scale: match spec.scale {
+            Some(s) => SendScale::Named(s),
+            None => SendScale::Largest(AUTO_SCALE_CEILING),
+        },
+        options: SendOptions::default(),
+        snap_to_point: false,
+        show_page: true,
+        all_remaining: false,
+        as_image: false,
+    }
 }
 
 impl LayoutView {
@@ -1093,6 +1442,9 @@ impl LayoutView {
         self.placing = None;
         self.poly.clear();
         self.selected_cad = None;
+        self.also.clear();
+        self.also_cad.clear();
+        self.line_sel.clear();
         self.clamp_page();
     }
 
@@ -1114,6 +1466,14 @@ impl LayoutView {
             if !there {
                 self.selected = None;
             }
+        }
+        let boxes: Vec<Id> = self
+            .current_page()
+            .map(|p| p.boxes.iter().map(|b| b.id).collect())
+            .unwrap_or_default();
+        self.also.retain(|id| boxes.contains(id));
+        if self.selected.is_none() {
+            self.selected = self.also.pop();
         }
     }
 
@@ -1221,13 +1581,7 @@ impl LayoutView {
         if self.layout.is_some() {
             return false;
         }
-        let mut layout = crate::templates::new_layout(&format!("{} Layout", project.name), seed);
-        // A template saved as the default for this sheet size takes over.
-        if let Some(t) =
-            layout_templates_dir().and_then(|d| default_layout_template(&d, layout.sheet))
-        {
-            layout = t.instantiate(&layout.name);
-        }
+        let layout = fresh_layout(&format!("{} Layout", project.name), seed);
         // Making the layout is an undo step too, so an older plan edit's
         // undo cannot drop it unseen.
         self.steps.push(("New Layout".to_string(), project.clone()));
@@ -1252,9 +1606,15 @@ impl LayoutView {
     pub fn set_page(&mut self, index: usize) {
         let n = self.layout.as_ref().map_or(0, |l| l.pages.len());
         if index < n && index != self.page {
+            let before = self.sheet_of(self.page);
             self.page = index;
             self.selected = None;
+            self.also.clear();
+            self.line_sel.clear();
             self.renaming = None;
+            if self.sheet_of(index) != before {
+                self.fit_pending = true;
+            }
         }
     }
 
@@ -1383,37 +1743,125 @@ impl LayoutView {
         }
     }
 
-    pub fn apply_page_table(&mut self, project: &mut Project, rows: &[PageRow]) -> bool {
-        self.edit(project, "Layout Page Table", |l| {
-            let mut changed = false;
-            for (p, r) in l.pages.iter_mut().zip(rows) {
-                if p.title != r.title || p.template_page != r.template_page {
-                    p.title = r.title.clone();
-                    p.template_page = r.template_page;
-                    changed = true;
+    /// Layout Page Information on the page shown: every page of the layout
+    /// can be edited from it (the Selected Page list).
+    pub fn page_info_dialog(&self, project: &Project) -> Option<PageInfoDialog> {
+        let l = self.layout.as_ref()?;
+        Some(PageInfoDialog::new(
+            l,
+            self.page,
+            &today(),
+            &macro_context(project).designer,
+        ))
+    }
+
+    /// Applies what Layout Page Information edited as one undo step: label,
+    /// title, description, comments, page templates, revisions and each
+    /// page's own sheet and title block. `Ok(false)` when nothing changed;
+    /// the error says why the edit was refused (nothing is changed then).
+    pub fn apply_page_info(
+        &mut self,
+        project: &mut Project,
+        d: &PageInfoDialog,
+    ) -> Result<bool, String> {
+        let mut refused = None;
+        let changed = self.edit(project, "Page Information", |l| {
+            let before = l.clone();
+            if let Err(e) = l.set_page_infos(&d.infos()) {
+                refused = Some(e);
+                return false;
+            }
+            for e in d.entries() {
+                if let Some(i) = l.pages.iter().position(|p| p.number == e.number) {
+                    l.pages[i].no_title_block = e.sheet.no_title_block;
+                    l.set_page_sheet(i, e.sheet.sheet.as_ref(), e.sheet.portrait);
                 }
             }
-            if changed {
-                renumber_pages(l);
-            }
-            changed
+            *l != before
+        });
+        match refused {
+            Some(e) => Err(e),
+            None => Ok(changed),
+        }
+    }
+
+    /// Add Layout Revision: `revision` goes on every page in `numbers`, one
+    /// undo step.
+    pub fn add_layout_revision(
+        &mut self,
+        project: &mut Project,
+        numbers: &[u32],
+        revision: &plan_layout::PageRevision,
+    ) -> bool {
+        self.edit(project, "Add Layout Revision", |l| {
+            l.add_revision(numbers, revision) > 0
         })
     }
 
-    pub fn page_rows(&self) -> Vec<PageRow> {
-        self.layout
+    /// General Layout Defaults, one undo step.
+    pub fn apply_layout_defaults(&mut self, project: &mut Project, d: &LayoutDefaults) -> bool {
+        let changed = self.edit(project, "General Layout Defaults", |l| {
+            let changed =
+                l.snap_grid != d.snap_grid || (l.snap_unit_in - d.snap_unit_in).abs() > 1e-12;
+            l.snap_grid = d.snap_grid;
+            l.snap_unit_in = d
+                .snap_unit_in
+                .clamp(plan_layout::MIN_SNAP_UNIT_IN, plan_layout::MAX_SNAP_UNIT_IN);
+            changed
+        });
+        self.sync_snap();
+        changed
+    }
+
+    /// Makes the open layout's snap settings the ones drags and the arrow
+    /// keys use.
+    pub fn sync_snap(&self) {
+        let v = self
+            .layout
             .as_ref()
-            .map(|l| {
-                l.pages
-                    .iter()
-                    .map(|p| PageRow {
-                        number: p.number,
-                        title: p.title.clone(),
-                        template_page: p.template_page,
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
+            .map_or((true, SNAP_IN), |l| (l.snap_grid, l.snap_unit_in));
+        SNAP.with(|c| c.set(v));
+    }
+
+    /// Drags page `from` to position `to` (an undo step); every `#` label
+    /// follows. Returns whether anything moved.
+    pub fn move_page_to(&mut self, project: &mut Project, from: usize, to: usize) -> bool {
+        // Moving renumbers every page, so the page shown is followed by its
+        // position, not its number.
+        let shown = self.page;
+        let len = self.layout.as_ref().map_or(0, |l| l.pages.len());
+        let moved = self.edit(project, "Move Page", |l| {
+            from != to && from < l.pages.len() && l.move_page(from, to).is_some()
+        });
+        if moved && len > 0 {
+            let to = to.min(len - 1);
+            self.page = if shown == from {
+                to
+            } else if from < shown && shown <= to {
+                shown - 1
+            } else if to <= shown && shown < from {
+                shown + 1
+            } else {
+                shown
+            };
+        }
+        moved
+    }
+
+    /// Copy Drawings to Page: the page shown gives its border and drawings
+    /// (CAD, leaders, clouds) to the page numbered `to`, one undo step.
+    /// Returns how many were copied.
+    pub fn copy_drawings_to(&mut self, project: &mut Project, to: u32) -> usize {
+        let from = self.page;
+        let mut n = 0;
+        self.edit(project, "Copy Drawings to Page", |l| {
+            let Some(t) = l.pages.iter().position(|p| p.number == to) else {
+                return false;
+            };
+            n = l.copy_page_drawings(from, t);
+            n > 0
+        });
+        n
     }
 
     // ----- page setup and project information -----
@@ -1421,7 +1869,7 @@ impl LayoutView {
     pub fn page_setup(&self) -> Option<PageSetup> {
         let l = self.layout.as_ref()?;
         Some(PageSetup {
-            sheet: l.sheet,
+            sheet: l.sheet_choice(),
             margins_in: l.margins_in,
             page_background: l.page_background,
             edge_line_weight: l.edge_line_weight,
@@ -1432,20 +1880,458 @@ impl LayoutView {
 
     pub fn apply_page_setup(&mut self, project: &mut Project, s: &PageSetup) -> bool {
         self.edit(project, "Page Setup", |l| {
-            let changed = l.sheet != s.sheet
+            let changed = l.sheet_choice() != s.sheet
                 || (l.margins_in - s.margins_in).abs() > 1e-9
                 || l.page_background != s.page_background
                 || l.edge_line_weight != s.edge_line_weight
                 || l.sheet_index != s.sheet_index
                 || l.portrait != s.portrait;
             l.portrait = s.portrait;
-            l.sheet = s.sheet;
+            l.set_sheet_choice(&s.sheet);
             l.margins_in = s.margins_in;
             l.page_background = s.page_background;
             l.edge_line_weight = s.edge_line_weight;
             l.sheet_index = s.sheet_index;
             changed
         })
+    }
+
+    // ----- page information, sheet sizes, arranging boxes (L-6, L-7, L-8) -----
+
+    /// The sheet page `index` prints on, paper inches: its own size from
+    /// Page Information, else the layout's.
+    fn sheet_of(&self, index: usize) -> (f64, f64) {
+        match &self.layout {
+            Some(l) => l
+                .pages
+                .get(index)
+                .map_or_else(|| l.sheet_inches(), |p| l.page_sheet_inches(p)),
+            None => (36.0, 24.0),
+        }
+    }
+
+    /// The layout's Customize Sheet Sizes answers.
+    pub fn sheet_sizes(&self) -> Option<SheetSizes> {
+        let l = self.layout.as_ref()?;
+        Some(SheetSizes {
+            custom: l.custom_sizes.clone(),
+            hidden: l.hidden_sizes.clone(),
+        })
+    }
+
+    /// Stores Customize Sheet Sizes as one undo step.
+    pub fn apply_sheet_sizes(&mut self, project: &mut Project, s: &SheetSizes) -> bool {
+        self.edit(project, "Customize Sheet Sizes", |l| {
+            let changed = l.custom_sizes != s.custom || l.hidden_sizes != s.hidden;
+            l.custom_sizes = s.custom.clone();
+            l.hidden_sizes = s.hidden.clone();
+            changed
+        })
+    }
+
+    /// The selected boxes: the one clicked first, then the ones added with
+    /// Shift.
+    pub fn selection_ids(&self) -> Vec<Id> {
+        let mut v: Vec<Id> = self.selected.into_iter().collect();
+        v.extend(
+            self.also
+                .iter()
+                .copied()
+                .filter(|i| Some(*i) != self.selected),
+        );
+        v
+    }
+
+    /// Copies the selected boxes on the page shown, offset a little.
+    pub fn duplicate_here(&mut self, project: &mut Project) -> usize {
+        match self.current_page().map(|p| p.number) {
+            Some(here) => self.copy_selected_to(project, here),
+            None => 0,
+        }
+    }
+
+    /// Selects `ids` on the page shown.
+    pub fn select_boxes(&mut self, ids: &[Id]) {
+        self.selected = ids.first().copied();
+        self.also = ids.iter().skip(1).copied().collect();
+        self.selected_cad = None;
+        self.also_cad.clear();
+    }
+
+    /// The selected page drawings: the one clicked first, then the ones added
+    /// with Shift.
+    pub fn cad_selection_ids(&self) -> Vec<Id> {
+        let mut v: Vec<Id> = self.selected_cad.into_iter().collect();
+        v.extend(
+            self.also_cad
+                .iter()
+                .copied()
+                .filter(|i| Some(*i) != self.selected_cad),
+        );
+        v
+    }
+
+    /// Shift-click on a page drawing: adds it to the selection (the boxes
+    /// stay selected), or takes it out when it is in already.
+    pub fn extend_cad_selection(&mut self, id: Id) {
+        let mut ids = self.cad_selection_ids();
+        match ids.iter().position(|i| *i == id) {
+            Some(at) => {
+                ids.remove(at);
+            }
+            None => ids.push(id),
+        }
+        self.selected_cad = ids.first().copied();
+        self.also_cad = ids.iter().skip(1).copied().collect();
+    }
+
+    /// Moves the boxes `boxes` (with the places they started at) and the
+    /// page drawings `cad` (from `cad_orig`, the annotations before the move)
+    /// by `(dx, dy)` paper inches, without a history step (mid-drag).
+    fn move_group_live(
+        &mut self,
+        project: &mut Project,
+        boxes: &[(Id, [f64; 4])],
+        cad: &[Id],
+        cad_orig: &LayoutPage,
+        (dx, dy): (f64, f64),
+    ) {
+        for (id, r) in boxes {
+            self.live_bounds(project, *id, [r[0] + dx, r[1] + dy, r[2] + dx, r[3] + dy]);
+        }
+        if !cad.is_empty() {
+            self.live_annotation(project, cad_orig, |p| {
+                for id in cad {
+                    p.move_annotation(*id, dx, dy);
+                }
+            });
+        }
+    }
+
+    /// Lines the selected boxes up on `edge` as one undo step. A single box
+    /// lines up with the page's drawing area. Returns how many moved.
+    pub fn align_selected(&mut self, project: &mut Project, edge: AlignEdge) -> usize {
+        let ids = self.selection_ids();
+        let at = self.page;
+        let mut moved = 0;
+        self.edit(project, edge.label(), |l| {
+            let to = (ids.len() == 1).then(|| {
+                let (lo, hi) = l.page_drawing_area(&l.pages[at]);
+                [lo.x, lo.y, hi.x, hi.y]
+            });
+            moved = plan_layout::align_boxes(&mut l.pages[at], &ids, edge, to);
+            moved > 0
+        });
+        moved
+    }
+
+    /// Spreads three or more selected boxes with equal gaps as one undo
+    /// step. Returns how many moved.
+    pub fn distribute_selected(&mut self, project: &mut Project, axis: Spread) -> usize {
+        let ids = self.selection_ids();
+        let at = self.page;
+        let mut moved = 0;
+        let label = match axis {
+            Spread::Horizontal => "Distribute Boxes Horizontally",
+            Spread::Vertical => "Distribute Boxes Vertically",
+        };
+        self.edit(project, label, |l| {
+            moved = plan_layout::distribute_boxes(&mut l.pages[at], &ids, axis);
+            moved > 0
+        });
+        moved
+    }
+
+    /// Copies the selected boxes onto the page numbered `to` as one undo
+    /// step and selects the copies (on the page shown, when that is `to`).
+    /// Returns how many were copied.
+    pub fn copy_selected_to(&mut self, project: &mut Project, to: u32) -> usize {
+        let ids = self.selection_ids();
+        let Some(from) = self.current_page().map(|p| p.number) else {
+            return 0;
+        };
+        let mut made = Vec::new();
+        self.edit(project, "Copy Layout Boxes", |l| {
+            made = plan_layout::copy_boxes(l, from, &ids, to);
+            !made.is_empty()
+        });
+        if !made.is_empty() {
+            if let Some(i) = self
+                .layout
+                .as_ref()
+                .and_then(|l| l.pages.iter().position(|p| p.number == to))
+            {
+                self.set_page(i);
+            }
+            self.select_boxes(&made);
+        }
+        made.len()
+    }
+
+    // ----- the plan's layout files (L-2) -----
+
+    /// Reads the open layout again after the project's JSON changed.
+    fn reload_layout(&mut self, project: &Project) {
+        self.layout = load(project);
+        self.stored = project.layout.clone();
+        self.cache.map.clear();
+        self.textures.clear();
+        self.drag = None;
+        self.placing = None;
+        self.poly.clear();
+        self.selected = None;
+        self.also.clear();
+        self.also_cad.clear();
+        self.selected_cad = None;
+        self.page = self
+            .layout
+            .as_ref()
+            .and_then(|l| l.pages.iter().position(|p| !p.template_page))
+            .unwrap_or(0);
+        self.fit_pending = true;
+    }
+
+    /// Opens layout file `index` of [`layout_names`] (0 is the open one):
+    /// the open layout is parked and the other takes its place. No history.
+    fn swap_in(&mut self, project: &mut Project, index: usize) -> bool {
+        if index == 0 || index > project.layout_files.len() {
+            return false;
+        }
+        let incoming = project.layout_files.remove(index - 1);
+        if let Some(current) = project.layout.replace(incoming) {
+            project.layout_files.insert(index - 1, current);
+        }
+        self.reload_layout(project);
+        true
+    }
+
+    /// Opens another of the plan's layout files as one undo step.
+    pub fn switch_layout(&mut self, project: &mut Project, index: usize) -> bool {
+        if index == 0 || index > project.layout_files.len() {
+            return false;
+        }
+        self.steps
+            .push(("Open Layout".to_string(), project.clone()));
+        self.swap_in(project, index)
+    }
+
+    /// Makes a new layout file called `name` from Daniel's template and
+    /// opens it; the layout that was open is parked. One undo step. `false`
+    /// when the name is empty or taken.
+    pub fn new_layout_file(
+        &mut self,
+        project: &mut Project,
+        name: &str,
+        seed: Option<&crate::templates::LayoutInfoSeed>,
+    ) -> bool {
+        let name = name.trim();
+        if name.is_empty()
+            || layout_names(project)
+                .iter()
+                .any(|n| n.trim().eq_ignore_ascii_case(name))
+        {
+            return false;
+        }
+        self.steps
+            .push(("New Layout File".to_string(), project.clone()));
+        if let Some(current) = project.layout.take() {
+            project.layout_files.insert(0, current);
+        }
+        let layout = fresh_layout(name, seed);
+        store(project, &layout);
+        if project.info.date.trim().is_empty() {
+            project.info.date = today();
+        }
+        self.reload_layout(project);
+        true
+    }
+
+    /// Sends `spec` to the layout file `target` names, as one undo step. A
+    /// file other than the open one is opened (the open one parked); the box
+    /// goes to a new page there, in the first free spot.
+    pub fn send_to(
+        &mut self,
+        project: &mut Project,
+        spec: &SendSpec,
+        target: &LayoutTarget,
+        snapshot: Option<(SnapshotSpec, crate::shell::view3d_panel::Snapshot3d)>,
+        center: Option<(f64, f64)>,
+    ) -> Result<Id, String> {
+        let details = default_details(spec);
+        self.send_to_with(project, spec, &details, target, snapshot, center)
+    }
+
+    /// [`send_to`](Self::send_to) with the Send Options, scaling and camera
+    /// link the dialog answered.
+    pub fn send_to_with(
+        &mut self,
+        project: &mut Project,
+        spec: &SendSpec,
+        details: &SendDetails,
+        target: &LayoutTarget,
+        snapshot: Option<(SnapshotSpec, crate::shell::view3d_panel::Snapshot3d)>,
+        center: Option<(f64, f64)>,
+    ) -> Result<Id, String> {
+        let other = !matches!(target, LayoutTarget::Current);
+        let before = other.then(|| project.clone());
+        let marks = self.steps.len();
+        match target {
+            LayoutTarget::Current => {}
+            LayoutTarget::Existing(name) => {
+                let i = layout_names(project)
+                    .iter()
+                    .position(|n| n == name)
+                    .ok_or_else(|| format!("There is no layout file called {name}"))?;
+                self.swap_in(project, i);
+            }
+            LayoutTarget::New(name) => {
+                let settings = crate::templates::load_settings();
+                let seed = crate::templates::refresh(&settings, false);
+                if !self.new_layout_file(project, name, seed.cache.layout.as_ref()) {
+                    return Err("That layout file name is empty or taken".into());
+                }
+                self.steps.truncate(marks);
+            }
+        }
+        let mut spec = spec.clone();
+        if other {
+            // The pages named in the dialog belong to the open layout.
+            spec.page = PageChoice::New;
+            if spec.placement == Placement::Click {
+                spec.placement = Placement::FirstFree;
+            }
+        }
+        let result = match snapshot {
+            Some((snap, view)) => self.send_snapshot(project, &view, snap, spec.page),
+            None => self.send_with(project, &spec, details, center),
+        };
+        if let Some(before) = before {
+            match &result {
+                // One step for the whole action, from before the switch.
+                Ok(_) => {
+                    self.steps.truncate(marks);
+                    self.steps.push(("Send to Layout".to_string(), before));
+                }
+                Err(_) => {
+                    self.steps.truncate(marks);
+                    *project = before;
+                    self.reload_layout(project);
+                }
+            }
+        }
+        result
+    }
+
+    /// Sends a picture of the 3D view as it is now: the view is ray traced
+    /// at the box's size and quality and embedded as a picture box (it does
+    /// not change when the plan or the camera does).
+    fn send_snapshot(
+        &mut self,
+        project: &mut Project,
+        view: &crate::shell::view3d_panel::Snapshot3d,
+        snap: SnapshotSpec,
+        page: PageChoice,
+    ) -> Result<Id, String> {
+        let Some(mut layout) = self.layout.clone() else {
+            return Err("There is no layout to send to".into());
+        };
+        if view.scene.meshes.is_empty() {
+            return Err("The 3D view has nothing to send".into());
+        }
+        let w_in = snap.width_in.clamp(1.0, 60.0);
+        let h_in = w_in * 0.75;
+        let (px_w, px_h) = plan_layout::perspective_pixels(w_in, h_in, snap.dpi);
+        let img = render_snapshot(project, view, px_w, px_h, snap.samples);
+        let page_no = match page {
+            PageChoice::Existing(n) if layout.page(n).is_some() => n,
+            _ => {
+                let n = next_page_number(&layout);
+                layout.add_page(n, "3D View");
+                n
+            }
+        };
+        let source = BoxSource::ImageData {
+            width: img.width,
+            height: img.height,
+            rgba: img.rgba,
+        };
+        let rcx = render_context(project);
+        let id = plan_layout::send_to_layout_sized(
+            &mut layout,
+            &rcx,
+            page_no,
+            source,
+            Scale::QuarterInch,
+            None,
+            Some((w_in, h_in)),
+        );
+        drop(rcx);
+        if let Some(b) = layout
+            .page_mut(page_no)
+            .and_then(|p| p.boxes.iter_mut().find(|b| b.id == id))
+        {
+            b.label = Some("3D VIEW".to_string());
+        }
+        self.commit(project, "Send 3D View to Layout", layout);
+        if let Some(i) = self
+            .layout
+            .as_ref()
+            .and_then(|l| l.pages.iter().position(|p| p.number == page_no))
+        {
+            self.page = i;
+        }
+        self.selected = Some(id);
+        Ok(id)
+    }
+
+    // ----- tables to Excel and CSV (L-32, L-37) -----
+
+    /// The tables of the selected table box, else of every table box on the
+    /// page shown: door, window, room and wall schedules, placed schedules,
+    /// the Materials List and the sheet index.
+    pub fn page_tables(&self, project: &Project) -> Vec<plan_docs::Schedule> {
+        let (Some(layout), Some(page)) = (self.layout.as_ref(), self.current_page()) else {
+            return Vec::new();
+        };
+        let rcx = render_context(project);
+        rcx.set_sheet_index(layout);
+        let chosen: Vec<&LayoutBox> = match self.selected_box() {
+            Some(b) => vec![b],
+            None => page.boxes.iter().collect(),
+        };
+        chosen
+            .into_iter()
+            .filter_map(|b| plan_layout::box_table(b, &rcx))
+            .collect()
+    }
+
+    /// The file for [`page_tables`](Self::page_tables): CSV text, or an Excel
+    /// workbook with a sheet per table. `(file name, bytes)`; `None` when the
+    /// page shows no table.
+    pub fn tables_file(&self, project: &Project, excel: bool) -> Option<(String, Vec<u8>)> {
+        let tables = self.page_tables(project);
+        let first = tables.first()?;
+        let name = if tables.len() == 1 {
+            first.title.clone()
+        } else {
+            self.current_page()
+                .map_or_else(|| "Schedules".to_string(), |p| p.title.clone())
+        };
+        let bytes = if excel {
+            plan_docs::xlsx::schedules_to_xlsx(&tables)
+        } else if tables.len() == 1 {
+            first.to_csv().into_bytes()
+        } else {
+            // Several tables in one text file: each under its title, a blank
+            // line between.
+            tables
+                .iter()
+                .map(|t| format!("{}\n{}", t.title, t.to_csv()))
+                .collect::<Vec<_>>()
+                .join("\n")
+                .into_bytes()
+        };
+        Some((name, bytes))
     }
 
     // ----- boxes -----
@@ -1497,6 +2383,21 @@ impl LayoutView {
     }
 
     pub fn apply_spec(&mut self, project: &mut Project, spec: &BoxSpec) -> bool {
+        // A Plot Lines or Update on Demand view keeps a picture; a Live View,
+        // Always Update keeps none.
+        let mut spec = spec.clone();
+        {
+            let b = &mut spec.layout_box;
+            if b.has_camera_options() {
+                if b.view.camera == CameraLink::Always {
+                    b.view.art = None;
+                } else if b.view.art.is_none() {
+                    let rcx = render_context(project);
+                    b.view.art = plan_layout::make_art(b, &rcx);
+                }
+            }
+        }
+        let spec = &spec;
         let done = self.edit(project, "Layout Box Specification", |l| {
             let before = l.clone();
             apply_box_spec(l, spec) && *l != before
@@ -2018,32 +2919,53 @@ impl LayoutView {
         spec: &SendSpec,
         center: Option<(f64, f64)>,
     ) -> Result<Id, String> {
-        let Some(mut layout) = self.layout.clone() else {
-            return Err("There is no layout to send to".into());
-        };
-        let source = match &spec.source {
+        self.send_with(project, spec, &default_details(spec), center)
+    }
+
+    /// The box source a [`SendSource`] stands for, or why it cannot be sent.
+    fn box_source(project: &Project, source: &SendSource) -> Result<BoxSource, String> {
+        match source {
             SendSource::Plan { floor, layer_set } => {
                 if *floor >= project.floors.len() {
                     return Err("That floor does not exist".into());
                 }
-                BoxSource::PlanView {
+                Ok(BoxSource::PlanView {
                     floor: *floor,
                     layer_set: layer_set.clone(),
-                }
+                })
             }
             SendSource::Camera { id, .. } => {
                 if project.camera(*id).is_none() {
                     return Err("That camera does not exist".into());
                 }
-                BoxSource::Camera { camera_id: *id }
+                Ok(BoxSource::Camera { camera_id: *id })
             }
             SendSource::Perspective { id, .. } => {
                 if project.camera(*id).is_none() {
                     return Err("That camera does not exist".into());
                 }
-                BoxSource::Perspective { camera_id: *id }
+                Ok(BoxSource::Perspective { camera_id: *id })
             }
+        }
+    }
+
+    /// [`send`](Self::send) with the dialog's other answers: the scaling
+    /// (the lists, a typed ratio, Fit to Sheet), Send Options (Entire
+    /// Plan/View, Current Screen, As Image, Link Saved Plan View), Camera View
+    /// Options (Live View or Plot Lines), Snap to Active CAD Point and Show
+    /// Layout Page. What it made (and whether it is too big for the sheet) is
+    /// in [`last_sent`](Self::last_sent).
+    pub fn send_with(
+        &mut self,
+        project: &mut Project,
+        spec: &SendSpec,
+        details: &SendDetails,
+        center: Option<(f64, f64)>,
+    ) -> Result<Id, String> {
+        let Some(mut layout) = self.layout.clone() else {
+            return Err("There is no layout to send to".into());
         };
+        let source = Self::box_source(project, &spec.source)?;
         let page_no = match spec.page {
             PageChoice::Existing(n) if layout.page(n).is_some() => n,
             _ => {
@@ -2053,23 +2975,54 @@ impl LayoutView {
             }
         };
         let rcx = render_context(project);
-        let scale = spec
-            .scale
-            .unwrap_or_else(|| fit_largest_scale(&layout, &rcx, &source, AUTO_SCALE_CEILING));
         let centre = match (spec.placement, center) {
             (Placement::FirstFree, _) | (Placement::Click, None) => None,
             (Placement::Centered, _) => {
-                let (lo, hi) = layout.drawing_area();
+                let (lo, hi) = layout
+                    .page(page_no)
+                    .map_or_else(|| layout.drawing_area(), |p| layout.page_drawing_area(p));
                 Some(((lo.x + hi.x) / 2.0, (lo.y + hi.y) / 2.0))
             }
             (Placement::Click, Some(c)) => Some(c),
         };
-        let at = centre.map(|(cx, cy)| {
-            let (w, h) = source_size_in(&source, scale, &rcx);
-            Point::new(cx - w / 2.0, cy - h / 2.0)
-        });
-        let id = send_to_layout(&mut layout, &rcx, page_no, source, scale, at);
+        let req = SendRequest {
+            page: page_no,
+            source,
+            scale: details.scale,
+            at: None,
+            centre: centre.map(|(x, y)| Point::new(x, y)),
+            options: details.options.clone(),
+        };
+        let sent = if details.as_image {
+            plan_layout::send_as_image(&mut layout, &rcx, &req)
+        } else {
+            plan_layout::send_view(&mut layout, &rcx, &req)
+        };
         drop(rcx);
+        let id = sent.id;
+        if details.snap_to_point {
+            // Snap to Active CAD Point: the box's lower left takes the nearest
+            // corner or end point already on the page.
+            let ll = layout
+                .page(page_no)
+                .and_then(|p| p.boxes.iter().find(|b| b.id == id))
+                .map(|b| {
+                    let r = bounds(b);
+                    Point::new(r[0], r[1])
+                });
+            if let Some(ll) = ll {
+                let snapped = plan_layout::snap_point_except(&layout, page_no, ll, 1.0, Some(id));
+                if snapped != ll {
+                    if let Some(b) = layout
+                        .page_mut(page_no)
+                        .and_then(|p| p.boxes.iter_mut().find(|b| b.id == id))
+                    {
+                        let r = bounds(b);
+                        set_bounds(b, moved(r, snapped.x - ll.x, snapped.y - ll.y, false));
+                    }
+                }
+            }
+        }
         let request = layout
             .pages
             .iter()
@@ -2082,15 +3035,24 @@ impl LayoutView {
             perspective_image(project, &r);
         }
         self.commit(project, "Send to Layout", layout);
-        if let Some(i) = self
-            .layout
-            .as_ref()
-            .and_then(|l| l.pages.iter().position(|p| p.number == page_no))
-        {
-            self.page = i;
+        if details.show_page {
+            if let Some(i) = self
+                .layout
+                .as_ref()
+                .and_then(|l| l.pages.iter().position(|p| p.number == page_no))
+            {
+                self.page = i;
+            }
         }
         self.selected = Some(id);
+        self.line_sel.clear();
+        self.last_sent = Some(sent);
         Ok(id)
+    }
+
+    /// The warning of the last send when its view did not fit the sheet.
+    pub fn last_send_warning(&self) -> Option<String> {
+        self.last_sent.as_ref().and_then(Sent::warning)
     }
 
     /// Sends every floor plan, one per page: the first onto the current page
@@ -2135,11 +3097,445 @@ impl LayoutView {
         }
     }
 
+    // ----- layout boxes: scale, pan, keeping views current, plot lines -----
+
+    /// Edits the selected boxes (those that show a scaled view) with `f`,
+    /// given the render context of the plan, as one undo step. True when `f`
+    /// changed any of them.
+    fn edit_selected_boxes(
+        &mut self,
+        project: &mut Project,
+        label: &str,
+        mut f: impl FnMut(&mut LayoutBox, &LayoutRenderContext) -> bool,
+    ) -> bool {
+        let ids = self.selection_ids();
+        if ids.is_empty() {
+            return false;
+        }
+        let Some(mut layout) = self.layout.clone() else {
+            return false;
+        };
+        let rcx = render_context(project);
+        let mut changed = false;
+        for p in &mut layout.pages {
+            for b in p.boxes.iter_mut().filter(|b| ids.contains(&b.id)) {
+                changed |= f(b, &rcx);
+            }
+        }
+        drop(rcx);
+        if changed {
+            self.commit(project, label, layout);
+        }
+        changed
+    }
+
+    /// Rescale Layout View: sets the scale of the selected views (No Scale, a
+    /// scale of the lists, a typed one), resizing the boxes with it unless
+    /// Scale Layout Box Contents Only is off, and Use Layout Line Scaling.
+    pub fn rescale_selected(
+        &mut self,
+        project: &mut Project,
+        new: NewScale,
+        line_scaling: Option<bool>,
+    ) -> bool {
+        self.edit_selected_boxes(project, "Rescale Layout View", |b, _| {
+            if !is_scaled(&b.source) {
+                return false;
+            }
+            let mut changed = plan_layout::rescale(b, new);
+            if let Some(on) = line_scaling {
+                changed |= b.view.layout_line_scaling != on;
+                b.view.layout_line_scaling = on;
+            }
+            changed
+        })
+    }
+
+    /// Pan/Scale Layout Box, the typed scale: sets the selected view's scale
+    /// from text such as `1:48` or `1/4" = 1'`.
+    pub fn set_scale_text(&mut self, project: &mut Project, text: &str) -> Result<bool, String> {
+        let ipf = plan_layout::parse_scale_text(text)
+            .ok_or_else(|| "Type a scale such as 1:48 or 1/4\" = 1'".to_string())?;
+        Ok(self.rescale_selected(project, NewScale::PerFoot(ipf), None))
+    }
+
+    /// Recenter Layout Box Contents on the selected views.
+    pub fn recenter_selected(&mut self, project: &mut Project) -> bool {
+        self.edit_selected_boxes(project, "Recenter Layout Box Contents", |b, cx| {
+            let Some(frame) = plan_layout::view_frame_in(&b.source, &b.view, cx) else {
+                return false;
+            };
+            let before = b.view.pan_in;
+            plan_layout::recenter(b, frame);
+            b.view.pan_in != before
+        })
+    }
+
+    /// Scale Layout Box Contents to Fit: the scale at which the whole view
+    /// fills each selected box, whether or not it is on a list.
+    pub fn scale_selected_to_fit(&mut self, project: &mut Project) -> bool {
+        self.edit_selected_boxes(project, "Scale Layout Box Contents to Fit", |b, cx| {
+            let Some(frame) = plan_layout::view_frame_in(&b.source, &b.view, cx) else {
+                return false;
+            };
+            let before = (b.scale, b.view.scale_mode, b.view.pan_in);
+            plan_layout::scale_box_to_fit(b, frame);
+            (b.scale, b.view.scale_mode, b.view.pan_in) != before
+        })
+    }
+
+    /// Pan/Scale Layout Box: moves the contents of the selected box by `d`
+    /// paper inches, as one undo step (a drag does it live).
+    pub fn pan_selected(&mut self, project: &mut Project, d: (f64, f64)) -> bool {
+        self.edit_selected_boxes(project, "Pan Layout Box", |b, _| {
+            let before = b.view.pan_in;
+            plan_layout::pan_by(b, d);
+            b.view.pan_in != before
+        })
+    }
+
+    /// Unlink Saved Plan View: the selected plan views keep the floor and
+    /// layer set the saved view gave them.
+    pub fn unlink_saved_view(&mut self, project: &mut Project) -> bool {
+        let snapshot = project.clone();
+        self.edit_selected_boxes(project, "Unlink Saved Plan View", |b, _| {
+            let Some(name) = b.view.saved_view.take() else {
+                return false;
+            };
+            if let BoxSource::PlanView { floor, layer_set } = &mut b.source {
+                if let Some((fl, set)) = plan_layout::saved_view_target(&snapshot, &name) {
+                    if let Some(fl) = fl {
+                        *floor = fl;
+                    }
+                    if !set.is_empty() {
+                        *layer_set = set;
+                    }
+                }
+            }
+            true
+        })
+    }
+
+    /// Update Layout Views: makes the pictures of the views `scope` names
+    /// again (one undo step), and says what it did. Perspective views are
+    /// rendered by [`start_update`](Self::start_update).
+    pub fn update_views(
+        &mut self,
+        project: &mut Project,
+        scope: &UpdateScope,
+    ) -> plan_layout::UpdateReport {
+        let Some(mut layout) = self.layout.clone() else {
+            return plan_layout::UpdateReport::default();
+        };
+        let rcx = render_context(project);
+        let report = plan_layout::update_views(&mut layout, &rcx, scope, None);
+        drop(rcx);
+        if report.updated > 0 {
+            self.commit(project, "Update Layout Views", layout);
+            self.cache.map.clear();
+        }
+        report
+    }
+
+    /// The status text for an update.
+    fn update_status(r: plan_layout::UpdateReport) -> String {
+        match (r.updated, r.skipped) {
+            (0, 0) => "No layout view needed updating".to_string(),
+            (n, 0) => format!("Updated {n} layout view(s)"),
+            (n, k) => format!("Updated {n} layout view(s); {k} cannot be updated"),
+        }
+    }
+
+    // ----- Edit Layout Lines -----
+
+    /// The selected plot lines box with the map from its view to paper.
+    fn plot_box(&self, project: &Project) -> Option<(LayoutBox, plan_layout::ContentMap)> {
+        let b = self.selected_box()?.clone();
+        b.view.art.as_ref()?;
+        let rcx = ui_context(project);
+        let map = plan_layout::box_content_map(&b, &rcx)?;
+        Some((b, map))
+    }
+
+    /// Selects the plot line near the paper point `(x, y)` of the selected
+    /// (or hit) Plot Lines box; with `extend` it joins or leaves the
+    /// selection. True when a line was hit.
+    pub fn select_line_at(
+        &mut self,
+        project: &Project,
+        x: f64,
+        y: f64,
+        tol: f64,
+        extend: bool,
+    ) -> bool {
+        // The box under the pointer becomes the working box.
+        if let Some(id) = self.current_page().and_then(|p| box_at(p, x, y)) {
+            if Some(id) != self.selected {
+                self.selected = Some(id);
+                self.line_sel.clear();
+            }
+        }
+        let Some((b, map)) = self.plot_box(project) else {
+            return false;
+        };
+        let k = b.points_per_inch() / 72.0;
+        let at = map.to_source(Point::new(x, y));
+        let hit = b
+            .view
+            .art
+            .as_ref()
+            .and_then(|a| a.hit_line(at, tol / k.max(1e-9)));
+        match (hit, extend) {
+            (Some(id), true) => {
+                if let Some(i) = self.line_sel.iter().position(|l| *l == id) {
+                    self.line_sel.remove(i);
+                } else {
+                    self.line_sel.push(id);
+                }
+            }
+            (Some(id), false) => self.line_sel = vec![id],
+            (None, false) => self.line_sel.clear(),
+            (None, true) => {}
+        }
+        hit.is_some()
+    }
+
+    /// The lines selected with Edit Layout Lines.
+    pub fn selected_lines(&self) -> &[Id] {
+        &self.line_sel
+    }
+
+    /// Runs `f` on the picture of the selected Plot Lines box as one undo
+    /// step.
+    fn edit_art(
+        &mut self,
+        project: &mut Project,
+        label: &str,
+        f: impl FnOnce(&mut plan_layout::ViewArt) -> bool,
+    ) -> bool {
+        let Some(id) = self.selected else {
+            return false;
+        };
+        self.edit(project, label, |l| {
+            for p in &mut l.pages {
+                if let Some(b) = p.boxes.iter_mut().find(|b| b.id == id) {
+                    return b.view.art.as_mut().is_some_and(f);
+                }
+            }
+            false
+        })
+    }
+
+    /// Draws a new line in the selected Plot Lines box, `a` to `b` in the
+    /// view's own space (it keeps its place against the view).
+    pub fn add_plot_line(&mut self, project: &mut Project, a: Point, b: Point) -> Option<Id> {
+        let mut made = None;
+        let done = self.edit_art(project, "Draw Layout Line", |art| {
+            made = Some(art.add_line(a, b, plan_layout::LineType::Edge));
+            true
+        });
+        if done {
+            self.line_sel = made.into_iter().collect();
+        }
+        made.filter(|_| done)
+    }
+
+    /// Deletes the selected plot lines.
+    pub fn delete_selected_lines(&mut self, project: &mut Project) -> usize {
+        let ids = self.line_sel.clone();
+        let mut n = 0;
+        if self.edit_art(project, "Delete Layout Lines", |art| {
+            n = art.delete_lines(&ids);
+            n > 0
+        }) {
+            self.line_sel.clear();
+        }
+        n
+    }
+
+    /// Applies the Layout Line Specification to the selected plot lines.
+    pub fn apply_line_spec(
+        &mut self,
+        project: &mut Project,
+        spec: &plan_layout::LineSpec,
+    ) -> usize {
+        let ids = self.line_sel.clone();
+        let mut n = 0;
+        self.edit_art(project, "Layout Line Specification", |art| {
+            n = art.set_spec(&ids, spec);
+            n > 0
+        });
+        n
+    }
+
+    /// The Layout Line Specification of the selected plot lines.
+    fn open_line_spec(&mut self) -> bool {
+        let Some(b) = self.selected_box() else {
+            return false;
+        };
+        let (Some(art), opts) = (&b.view.art, &b.view.plot) else {
+            return false;
+        };
+        let lines: Vec<_> = art
+            .lines
+            .iter()
+            .filter(|l| self.line_sel.contains(&l.id))
+            .map(|l| (l.clone(), plan_layout::effective_pen(l, opts)))
+            .collect();
+        if lines.is_empty() {
+            return false;
+        }
+        self.dialogs.line_spec = Some(LayoutLineDialog::new(&lines));
+        true
+    }
+
+    /// Moves the selected lines live (no history step) from `orig` by `d`
+    /// view inches.
+    fn live_move_lines(
+        &mut self,
+        project: &mut Project,
+        id: Id,
+        orig: &plan_layout::ViewArt,
+        d: Point,
+    ) {
+        let ids = self.line_sel.clone();
+        if let Some(l) = &mut self.layout {
+            for p in &mut l.pages {
+                if let Some(b) = p.boxes.iter_mut().find(|b| b.id == id) {
+                    let mut art = orig.clone();
+                    art.nudge_lines(&ids, d);
+                    b.view.art = Some(art);
+                }
+            }
+        }
+        self.write_back(project);
+    }
+
+    /// Pans a box live (no history step): its contents at `pan0` moved by the
+    /// drag `d` (paper inches).
+    fn live_pan(&mut self, project: &mut Project, id: Id, pan0: (f64, f64), d: (f64, f64)) {
+        if let Some(l) = &mut self.layout {
+            for p in &mut l.pages {
+                if let Some(b) = p.boxes.iter_mut().find(|b| b.id == id) {
+                    b.view.pan_in = pan0;
+                    plan_layout::pan_by(b, d);
+                }
+            }
+        }
+        self.write_back(project);
+    }
+
+    /// Resizes a non-scaled box by its corner live, the view growing with it
+    /// (the Alternate edit behavior).
+    fn live_resize_no_scale(
+        &mut self,
+        project: &mut Project,
+        id: Id,
+        orig: &LayoutBox,
+        r: [f64; 4],
+    ) {
+        if let Some(l) = &mut self.layout {
+            for p in &mut l.pages {
+                if let Some(b) = p.boxes.iter_mut().find(|b| b.id == id) {
+                    *b = orig.clone();
+                    plan_layout::resize_no_scale(b, r);
+                }
+            }
+        }
+        self.write_back(project);
+    }
+
+    // ----- object snaps and moving by points (R16-02, item 6) -----
+
+    /// A point snapped to the corners and ends already on the page (object
+    /// snap), else to the grid; `snapping` off leaves it where it is.
+    fn snap_xy(&self, x: f64, y: f64, snapping: bool, tol: f64) -> (f64, f64) {
+        if snapping {
+            if let (Some(l), Some(p)) = (self.layout.as_ref(), self.current_page()) {
+                let at = Point::new(x, y);
+                let q = plan_layout::snap_point(l, p.number, at, tol * 0.6);
+                if q != at {
+                    return (q.x, q.y);
+                }
+            }
+        }
+        (snap(x, snapping), snap(y, snapping))
+    }
+
+    /// The rectangle the whole selection covers (boxes and page drawings).
+    fn selection_bounds(&self) -> Option<[f64; 4]> {
+        let page = self.current_page()?;
+        let mut all: Vec<[f64; 4]> = page
+            .boxes
+            .iter()
+            .filter(|b| self.selection_ids().contains(&b.id))
+            .map(bounds)
+            .collect();
+        all.extend(
+            self.cad_selection_ids()
+                .into_iter()
+                .filter_map(|id| page.annotation_bounds(id)),
+        );
+        all.into_iter().reduce(|a, b| {
+            [
+                a[0].min(b[0]),
+                a[1].min(b[1]),
+                a[2].max(b[2]),
+                a[3].max(b[3]),
+            ]
+        })
+    }
+
+    /// Moves the selected boxes and page drawings by `(dx, dy)` paper inches
+    /// as one undo step.
+    pub fn move_selection(&mut self, project: &mut Project, d: (f64, f64), label: &str) -> bool {
+        if d.0.abs() < 1e-9 && d.1.abs() < 1e-9 {
+            return false;
+        }
+        let boxes = self.selection_ids();
+        let cads = self.cad_selection_ids();
+        let page = self.page;
+        self.edit(project, label, |l| {
+            let mut any = false;
+            if let Some(p) = l.pages.get_mut(page) {
+                for b in p.boxes.iter_mut().filter(|b| boxes.contains(&b.id)) {
+                    let r = bounds(b);
+                    set_bounds(b, [r[0] + d.0, r[1] + d.1, r[2] + d.0, r[3] + d.1]);
+                    any = true;
+                }
+                for id in &cads {
+                    any |= p.move_annotation(*id, d.0, d.1);
+                }
+            }
+            any
+        })
+    }
+
+    /// Center Object: moves the selection so it is centered in the page's
+    /// drawing area.
+    pub fn center_selection(&mut self, project: &mut Project) -> bool {
+        let (Some(r), Some(l), Some(p)) = (
+            self.selection_bounds(),
+            self.layout.as_ref(),
+            self.current_page(),
+        ) else {
+            return false;
+        };
+        let (lo, hi) = l.page_drawing_area(p);
+        let d = (
+            (lo.x + hi.x) / 2.0 - (r[0] + r[2]) / 2.0,
+            (lo.y + hi.y) / 2.0 - (r[1] + r[3]) / 2.0,
+        );
+        self.move_selection(project, d, "Center Object")
+    }
+
     // ----- viewing -----
 
     fn fit(&mut self, area: Rect) {
-        let Some(l) = &self.layout else { return };
-        let (w, h) = l.sheet_inches();
+        if self.layout.is_none() {
+            return;
+        }
+        let (w, h) = self.sheet_of(self.page);
         let z = ((area.width() - 40.0) / w as f32).min((area.height() - 40.0) / h as f32);
         self.zoom = z.clamp(MIN_ZOOM, MAX_ZOOM);
         self.offset = Vec2::new(
@@ -2200,17 +3596,29 @@ pub fn page_list(project: &Project) -> Vec<(usize, String, bool)> {
     else {
         return Vec::new();
     };
-    pages
+    let fields: Vec<(String, bool, u32)> = pages
         .iter()
-        .enumerate()
-        .map(|(i, p)| {
-            let n = p.get("number").and_then(|n| n.as_u64()).unwrap_or(0);
-            let title = p.get("title").and_then(|t| t.as_str()).unwrap_or("");
+        .map(|p| {
+            let n = p.get("number").and_then(|n| n.as_u64()).unwrap_or(0) as u32;
+            let label = p.get("label").and_then(|t| t.as_str()).unwrap_or("");
             let template = p
                 .get("template_page")
                 .and_then(|t| t.as_bool())
                 .unwrap_or(false);
-            (i, format!("A-{n}  {title}"), template)
+            (label.to_string(), template, n)
+        })
+        .collect();
+    // The labels follow the pages: a `#` takes the next number among the
+    // pages with the same label.
+    let labels = plan_layout::resolve_labels(fields.iter().map(|(l, t, n)| (l.as_str(), *t, *n)));
+    pages
+        .iter()
+        .zip(labels)
+        .zip(&fields)
+        .enumerate()
+        .map(|(i, ((p, label), (_, template, _)))| {
+            let title = p.get("title").and_then(|t| t.as_str()).unwrap_or("");
+            (i, format!("{label}  {title}"), *template)
         })
         .collect()
 }
@@ -2227,7 +3635,9 @@ pub fn current_page_index() -> usize {
 }
 
 /// File > New Layout: makes the project's layout from Daniel's template and
-/// shows it. A project keeps one layout; an existing one is opened instead.
+/// shows it. When the plan has a layout already, it becomes a second layout
+/// file (`Project::layout_files`): the New Layout File name dialog opens, and
+/// the layout that was open is parked when the file is made.
 pub fn new_layout(cx: &mut EditorContext) {
     let settings = crate::templates::load_settings();
     let seed = crate::templates::refresh(&settings, false);
@@ -2237,12 +3647,42 @@ pub fn new_layout(cx: &mut EditorContext) {
         v.flush(cx);
         made
     });
-    cx.status = if made {
-        "New layout: page template and page 1".into()
+    if made {
+        cx.status = "New layout: page template and page 1".into();
     } else {
-        "This plan already has a layout; opened it".into()
-    };
+        with_view(|v| v.active = true);
+        dispatch(LayoutCommand::NewLayoutFile, cx, None);
+        cx.status = "This plan already has a layout; name the new layout file".into();
+    }
     sync_sheet(cx);
+}
+
+/// File > Templates > New Layout from Template: makes the plan's layout and
+/// applies `template` to it (one undo step for the template). A plan that
+/// has a layout already keeps it: Layout > Apply Template changes that one.
+/// Returns whether the layout was made.
+pub fn new_layout_from_template(
+    cx: &mut EditorContext,
+    template: &plan_layout::LayoutTemplate,
+) -> bool {
+    if cx.project.layout.is_some() {
+        cx.status =
+            "This plan has a layout already: use Layout > Apply Template to change it".into();
+        return false;
+    }
+    new_layout(cx);
+    let done = with_view(|v| {
+        let ok = v.apply_template(&mut cx.project, template);
+        v.flush(cx);
+        ok
+    });
+    sync_sheet(cx);
+    cx.status = if done {
+        format!("New layout from the template \"{}\"", template.name)
+    } else {
+        "The layout was not changed".into()
+    };
+    done
 }
 
 /// Keeps the plan's Drawing Sheet outline on the layout's sheet size.
@@ -2349,11 +3789,65 @@ impl LayoutView {
             .map(|l| {
                 l.pages
                     .iter()
-                    .filter(|p| !p.template_page)
-                    .map(|p| (p.number, p.title.clone()))
+                    .zip(l.page_labels())
+                    .filter(|(p, _)| !p.template_page)
+                    .map(|(p, label)| (p.number, format!("{label}  {}", p.title)))
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    /// Starts placing a Layout Page Table or Layout Revision Table: the
+    /// next click on the page puts it there.
+    fn begin_table_placing(&mut self, cx: &mut EditorContext, source: BoxSource) -> String {
+        let Some((layout, page)) = self.layout.as_ref().zip(self.current_page()) else {
+            return "There is no page to place the table on".into();
+        };
+        let rcx = render_context(&cx.project);
+        rcx.set_sheet_index(layout);
+        rcx.set_current_page(page.number);
+        let size = source_size_in(&source, Scale::QuarterInch, &rcx);
+        drop(rcx);
+        self.placing = Some(Placing {
+            source,
+            scale: None,
+            details: None,
+            page: PageChoice::Existing(page.number),
+            size,
+        });
+        self.active = true;
+        "Click on the page to place the table (Esc cancels)".into()
+    }
+
+    /// The click that places a table: its centre lands at `(x, y)`.
+    fn place_table(&mut self, project: &mut Project, source: BoxSource, x: f64, y: f64) -> bool {
+        let Some(mut layout) = self.layout.clone() else {
+            return false;
+        };
+        let Some(page_no) = layout.pages.get(self.page).map(|p| p.number) else {
+            return false;
+        };
+        let rcx = render_context(project);
+        rcx.set_sheet_index(&layout);
+        rcx.set_current_page(page_no);
+        let (w, h) = source_size_in(&source, Scale::QuarterInch, &rcx);
+        let at = Point::new(
+            snap(x - w / 2.0, true).max(0.0),
+            snap(y - h / 2.0, true).max(0.0),
+        );
+        let id = send_to_layout(
+            &mut layout,
+            &rcx,
+            page_no,
+            source,
+            Scale::QuarterInch,
+            Some(at),
+        );
+        drop(rcx);
+        self.commit(project, "Layout Table", layout);
+        self.selected = Some(id);
+        self.selected_cad = None;
+        true
     }
 
     /// Executes `cmd`; the result is reported in the status bar.
@@ -2385,8 +3879,8 @@ impl LayoutView {
                 | C::ExportPdf
                 | C::PageSetup
                 | C::ProjectInfo
-                | C::PageTable
                 | C::SaveAsTemplate
+                | C::OpenSourceView
                 | C::Undo
                 | C::Redo
                 | C::FitPage
@@ -2415,31 +3909,221 @@ impl LayoutView {
                     .current_page()
                     .filter(|p| !p.template_page)
                     .map(|p| p.number);
-                self.dialogs.send = Some(SendDialog::new(
-                    source,
-                    self.page_list(),
-                    current,
-                    floors,
-                    sets,
-                ));
+                let mut dialog =
+                    SendToLayoutDialog::new(source, self.page_list(), current, floors, sets)
+                        .with_layouts(layout_names(project))
+                        .with_saved_view(project.current_plan_view().map(|v| v.name.clone()))
+                        .with_default_scale(sheet_scale(project))
+                        .with_screen(PLAN_SCREEN.with(Cell::get));
+                if let Some(last) = LAST_SEND.with(|l| l.borrow().clone()) {
+                    dialog = dialog.with_defaults(&last);
+                }
+                // A 3D view that is showing can be sent as a picture.
+                if let Some(view) = SNAPSHOT_3D.with(|s| s.borrow_mut().take()) {
+                    dialog = dialog.with_snapshot(camera.is_none());
+                    self.snapshot_src = Some(view);
+                }
+                self.dialogs.send = Some(dialog);
                 String::new()
+            }
+            C::SendAllViews => {
+                let layer_set = project.layer_sets.active.clone();
+                let mut sources: Vec<SendSource> = (0..project.floors.len())
+                    .map(|floor| SendSource::Plan {
+                        floor,
+                        layer_set: layer_set.clone(),
+                    })
+                    .collect();
+                sources.extend(
+                    project
+                        .cameras
+                        .iter()
+                        .filter(|c| cam::is_elevation_camera(c))
+                        .map(|c| SendSource::Camera {
+                            id: c.id,
+                            name: c.name.clone(),
+                        }),
+                );
+                if sources.is_empty() {
+                    "There are no views to send".into()
+                } else {
+                    self.begin_send_many(project, sources);
+                    String::new()
+                }
             }
             C::SendAllFloors => {
                 let n = self.send_all_floors(project);
                 format!("Sent {n} floor plan(s) to the layout")
             }
             C::PageSetup => {
-                self.dialogs.setup = self.page_setup().map(PageSetupDialog::new);
+                let choices = self.layout.as_ref().map(|l| l.size_choices());
+                self.dialogs.setup = self.page_setup().map(|s| {
+                    let d = PageSetupDialog::new(s);
+                    match choices {
+                        Some(c) => d.with_choices(c),
+                        None => d,
+                    }
+                });
                 String::new()
+            }
+            C::PageInformation => match self.page_info_dialog(project) {
+                Some(d) => {
+                    self.dialogs.page_info = Some(d);
+                    String::new()
+                }
+                None => "There is no page to edit".into(),
+            },
+            C::CustomizeSheetSizes => match (self.sheet_sizes(), self.layout.as_ref()) {
+                (Some(sizes), Some(l)) => {
+                    self.dialogs.sheet_sizes = Some(SheetSizesDialog::new(sizes, l.sheet));
+                    String::new()
+                }
+                _ => "There is no layout".into(),
+            },
+            C::Align(edge) => {
+                if self.selection_ids().is_empty() {
+                    "Select a layout box first (Shift-click for several)".into()
+                } else {
+                    let n = self.align_selected(project, edge);
+                    if n == 0 {
+                        "The boxes are already lined up".into()
+                    } else {
+                        format!("Moved {n} layout box(es): {}", edge.label())
+                    }
+                }
+            }
+            C::Distribute(axis) => {
+                if self.selection_ids().len() < 3 {
+                    "Select three or more layout boxes (Shift-click) to distribute them".into()
+                } else {
+                    let n = self.distribute_selected(project, axis);
+                    if n == 0 {
+                        "The boxes are already evenly spaced".into()
+                    } else {
+                        format!("Spread the layout boxes: moved {n}")
+                    }
+                }
+            }
+            C::CopyBoxToPage => {
+                let ids = self.selection_ids();
+                match self.current_page().map(|p| p.number) {
+                    Some(here) if !ids.is_empty() => {
+                        self.dialogs.copy_box =
+                            Some(CopyBoxDialog::new(self.page_list(), here, ids.len()));
+                        String::new()
+                    }
+                    _ => "Select a layout box first".into(),
+                }
+            }
+            C::DuplicateBox => {
+                if self.selection_ids().is_empty() {
+                    "Select a layout box first".into()
+                } else {
+                    let n = self.duplicate_here(project);
+                    format!("Copied {n} layout box(es)")
+                }
+            }
+            C::OpenSourceView => match self.selected_box().map(|b| b.source.clone()) {
+                Some(BoxSource::PlanView { floor, .. }) => {
+                    cx.floor = floor.min(project.floors.len().saturating_sub(1));
+                    self.active = false;
+                    format!("Opened {}", plan_layout::plan_label(&cx.project, cx.floor))
+                }
+                Some(BoxSource::Camera { camera_id } | BoxSource::Perspective { camera_id }) => {
+                    let name = project
+                        .camera(camera_id)
+                        .map_or("the camera".to_string(), |c| c.name.clone());
+                    format!("Open {name} from the Project Browser (cameras list)")
+                }
+                Some(_) => "That box does not come from a view of the plan".into(),
+                None => "Select a layout box first".into(),
+            },
+            C::NewLayoutFile => {
+                let taken = layout_names(project);
+                let suggestion = format!("{} Layout {}", project.name, taken.len() + 1);
+                self.dialogs.new_layout = Some(NameDialog::new(
+                    "New Layout File",
+                    "Name",
+                    &suggestion,
+                    taken,
+                ));
+                String::new()
+            }
+            C::SwitchLayout(i) => {
+                if self.switch_layout(project, i) {
+                    self.active = true;
+                    format!(
+                        "Opened layout {}",
+                        self.layout.as_ref().map_or("", |l| l.name.as_str())
+                    )
+                } else {
+                    String::new()
+                }
+            }
+            C::ExportTableCsv | C::ExportTableExcel => {
+                self.export_tables(project, cmd == C::ExportTableExcel)
             }
             C::ProjectInfo => {
                 // Tools > Project Information (the schedules builder's dialog).
                 crate::dialogs::build_tools::open_project_info(cx);
                 String::new()
             }
-            C::PageTable => {
-                self.dialogs.table = Some(PageTableDialog::new(self.page_rows()));
-                String::new()
+            C::PageTable => self.begin_table_placing(cx, BoxSource::PageTable),
+            C::RevisionTable => self.begin_table_placing(cx, BoxSource::RevisionTable),
+            C::AddLayoutRevision => match self.layout.as_ref() {
+                Some(l) => {
+                    let labels = l.page_labels();
+                    let pages: Vec<(u32, String)> = l
+                        .pages
+                        .iter()
+                        .zip(labels)
+                        .filter(|(p, _)| !p.template_page)
+                        .map(|(p, label)| (p.number, format!("{label}  {}", p.title)))
+                        .collect();
+                    let here = self
+                        .current_page()
+                        .filter(|p| !p.template_page)
+                        .map(|p| p.number)
+                        .into_iter()
+                        .collect();
+                    self.dialogs.revision = Some(RevisionDialog::add(
+                        pages,
+                        here,
+                        &today(),
+                        &macro_context(project).designer,
+                    ));
+                    String::new()
+                }
+                None => "There is no layout".into(),
+            },
+            C::LayoutDefaults => match self.layout.as_ref() {
+                Some(l) => {
+                    self.dialogs.defaults = Some(LayoutDefaultsDialog::new(LayoutDefaults::of(l)));
+                    String::new()
+                }
+                None => "There is no layout".into(),
+            },
+            C::CopyDrawingsToPage => {
+                let drawings = self
+                    .current_page()
+                    .map_or(0, |p| p.cad.len() + p.leaders.len() + p.clouds.len());
+                let here = self.current_page().map_or(0, |p| p.number);
+                if drawings == 0 {
+                    "This page has no drawings to copy".into()
+                } else if self.page_list().len() < 2 {
+                    "There is no other page to copy to".into()
+                } else {
+                    self.dialogs.copy_drawings =
+                        Some(CopyBoxDialog::drawings(self.page_list(), here, drawings));
+                    String::new()
+                }
+            }
+            C::MovePage(from, to) => {
+                if self.move_page_to(project, from, to) {
+                    "Moved the page; the labels follow".into()
+                } else {
+                    String::new()
+                }
             }
             C::SaveAsTemplate => {
                 let existing = layout_templates_dir()
@@ -2494,13 +4178,22 @@ impl LayoutView {
                 self.set_page(i);
                 String::new()
             }
-            C::BoxSpecification => match self.selected_box().cloned() {
-                Some(b) => {
-                    self.open_spec(project, &b);
+            C::BoxSpecification => {
+                if self.tool == LayoutTool::EditLines
+                    && !self.line_sel.is_empty()
+                    && self.open_line_spec()
+                {
                     String::new()
+                } else {
+                    match self.selected_box().cloned() {
+                        Some(b) => {
+                            self.open_spec(project, &b);
+                            String::new()
+                        }
+                        None => "Select a layout box first".into(),
+                    }
                 }
-                None => "Select a layout box first".into(),
-            },
+            }
             C::DeleteBox => {
                 if self.delete_selected(project) {
                     "Deleted the layout box".into()
@@ -2512,12 +4205,77 @@ impl LayoutView {
                 if self.updating() {
                     "Update Views is already running".into()
                 } else {
+                    // Update All Views: the semi-dynamic and Plot Lines views
+                    // first (one undo step), then the perspective renders.
+                    let report = self.update_views(project, &UpdateScope::All);
                     let n = self.start_update(project);
                     if n > 0 {
                         format!("Updating the layout views: {n} perspective view(s) to render")
+                    } else if report.updated > 0 {
+                        Self::update_status(report)
                     } else {
                         "Updated the layout views".into()
                     }
+                }
+            }
+            C::UpdateView => {
+                let ids = self.selection_ids();
+                if ids.is_empty() {
+                    "Select a layout view first".into()
+                } else {
+                    let report = self.update_views(project, &UpdateScope::Selected(ids));
+                    Self::update_status(report)
+                }
+            }
+            C::UpdateLiveViews => {
+                let report = self.update_views(project, &UpdateScope::LiveViews);
+                Self::update_status(report)
+            }
+            C::UpdatePlotLineViews => {
+                let report = self.update_views(project, &UpdateScope::PlotLines);
+                Self::update_status(report)
+            }
+            C::RescaleView => match self.selected_box().filter(|b| is_scaled(&b.source)) {
+                Some(b) => {
+                    self.dialogs.change_scale = Some(ChangeScaleDialog::new(b));
+                    String::new()
+                }
+                None => "Select a plan, section, elevation or detail view first".into(),
+            },
+            C::RecenterBox => {
+                if self.recenter_selected(project) {
+                    "Recentered the contents of the layout box".into()
+                } else {
+                    "The contents are centered already, or no view is selected".into()
+                }
+            }
+            C::ScaleBoxToFit => {
+                if self.scale_selected_to_fit(project) {
+                    "Scaled the contents to fit the layout box".into()
+                } else {
+                    "Select a plan, section, elevation or detail view first".into()
+                }
+            }
+            C::LayoutBoxLayers => match self.selected_box().cloned() {
+                Some(b) if matches!(b.source, BoxSource::PlanView { .. }) => {
+                    self.open_spec_on(project, &b, Some("Layer Set"));
+                    String::new()
+                }
+                Some(_) => "Layout Box Layers works on dynamic plan views".into(),
+                None => "Select a layout view first".into(),
+            },
+            C::CenterObject => {
+                if self.center_selection(project) {
+                    "Centered the selection in the drawing area".into()
+                } else {
+                    "Select a layout box or page drawing first".into()
+                }
+            }
+            C::UnlinkSavedView => {
+                if self.unlink_saved_view(project) {
+                    "Unlinked the saved plan view: the box keeps its floor and layer set".into()
+                } else {
+                    "The selected view is not linked to a saved plan view".into()
                 }
             }
             C::AddSheetIndex => match self.add_sheet_index_box(project) {
@@ -2551,7 +4309,13 @@ impl LayoutView {
                 let floors = snapshot.floors.len();
                 let mut added = 0;
                 let done = self.edit(project, "Create Construction Set", |l| {
-                    added = plan_layout::append_construction_set(l, &snapshot, floors, &master);
+                    added = plan_layout::append_construction_set_in(
+                        l,
+                        &snapshot,
+                        floors,
+                        &master,
+                        Some(&view_scene),
+                    );
                     added > 0
                 });
                 if done {
@@ -2603,11 +4367,27 @@ impl LayoutView {
                 self.tool = t;
                 self.poly.clear();
                 self.drag = None;
-                if t != LayoutTool::Select {
+                self.line_sel.clear();
+                if !matches!(
+                    t,
+                    LayoutTool::Select
+                        | LayoutTool::PanScale
+                        | LayoutTool::EditLines
+                        | LayoutTool::PointToPoint
+                ) {
                     self.selected = None;
                     self.selected_cad = None;
                 }
                 match t {
+                    LayoutTool::PointToPoint => {
+                        "Point to Point Move: click where the selection moves from, then where it moves to".into()
+                    }
+                    LayoutTool::PanScale => {
+                        "Pan/Scale Layout Box: drag to pan the contents of the selected view; type a scale in the box that opens".into()
+                    }
+                    LayoutTool::EditLines => {
+                        "Edit Layout Lines: click a line of a Plot Lines view to select it, drag to draw a new one, Delete removes the selected lines".into()
+                    }
                     LayoutTool::Select => String::new(),
                     LayoutTool::Line
                     | LayoutTool::Box
@@ -2657,6 +4437,15 @@ impl LayoutView {
         }
     }
 
+    /// Saves the tables on the page (or the selected table box) as CSV or an
+    /// Excel workbook; returns the status text.
+    fn export_tables(&self, project: &Project, excel: bool) -> String {
+        match self.tables_file(project, excel) {
+            Some((name, bytes)) => save_bytes_as(&name, if excel { "xlsx" } else { "csv" }, &bytes),
+            None => "Select a schedule or Materials List box, or open a page that has one".into(),
+        }
+    }
+
     fn send_source(&self, project: &Project, camera: Option<Id>, floor: usize) -> SendSource {
         if let Some(c) = camera.and_then(|id| project.camera(id)) {
             return if cam::is_elevation_camera(c) {
@@ -2678,9 +4467,57 @@ impl LayoutView {
     }
 
     fn open_spec(&mut self, project: &Project, b: &LayoutBox) {
+        self.open_spec_on(project, b, None);
+    }
+
+    /// The choices a view box's specification offers.
+    fn box_choices(&self, project: &Project) -> BoxSpecChoices {
+        let pages = self.page_list();
+        let cameras: Vec<(Id, String)> = project
+            .cameras
+            .iter()
+            .map(|c| (c.id, c.name.clone()))
+            .collect();
+        let details: Vec<String> = project
+            .floors
+            .iter()
+            .filter(|f| f.is_cad_detail())
+            .map(|f| f.name.clone())
+            .collect();
+        BoxSpecChoices {
+            floors: project.floors.iter().map(|f| f.name.clone()).collect(),
+            layer_sets: project
+                .layer_sets
+                .sets
+                .iter()
+                .map(|s| s.name.clone())
+                .collect(),
+            plan_views: project.plan_views.iter().map(|v| v.name.clone()).collect(),
+            default_sets: Vec::new(),
+            file_name: self
+                .layout
+                .as_ref()
+                .map_or_else(String::new, |l| format!("{} ({})", project.name, l.name)),
+            links: link_choices(&cameras, &details, &pages),
+            pages,
+        }
+    }
+
+    /// Opens the Layout Box Specification of `b` (the view-box dialog for a
+    /// view of the plan, else the plain one), on the panel `tab` names.
+    fn open_spec_on(&mut self, project: &Project, b: &LayoutBox, tab: Option<&str>) {
         let Some(page) = self.current_page() else {
             return;
         };
+        let number = page.number;
+        if LayoutBoxDialog::handles(b) {
+            let mut d = LayoutBoxDialog::new(b, number, self.box_choices(project));
+            if let Some(t) = tab {
+                d = d.on_tab(t);
+            }
+            self.dialogs.box_view = Some(d);
+            return;
+        }
         let floors = project.floors.iter().map(|f| f.name.clone()).collect();
         let sets = project
             .layer_sets
@@ -2690,7 +4527,7 @@ impl LayoutView {
             .collect();
         self.dialogs.spec = Some(BoxSpecDialog::new(
             b,
-            page.number,
+            number,
             self.page_list(),
             floors,
             sets,
@@ -2700,11 +4537,15 @@ impl LayoutView {
     /// The Print dialog for the layout's printed pages.
     fn layout_print_dialog(&self) -> Option<PrintDialog> {
         let l = self.layout.as_ref()?;
-        Some(PrintDialog::for_layout(
-            l.content_pages().len(),
-            l.sheet_inches(),
-            &l.name,
-        ))
+        Some(
+            PrintDialog::for_layout(l.content_pages().len(), l.sheet_inches(), &l.name)
+                .with_custom_papers(
+                    l.custom_sizes
+                        .iter()
+                        .map(|c| (c.label(), c.inches()))
+                        .collect(),
+                ),
+        )
     }
 
     /// File > Print (or Print Image): the layout's dialog when the layout view
@@ -2818,12 +4659,54 @@ impl LayoutView {
         cx.view_flags.insert(ViewFlag::DrawingSheet);
         cx.view_flags.insert(ViewFlag::PrintPreview);
         crate::editor::sheet::set_preview_color(opts.color);
+        self.open_preview(&cx.project, d);
         let mode = crate::editor::sheet::preview_color_label(opts.color);
         cx.status = if mode.is_empty() {
             "Print Preview: the sheet shows the chosen paper and scale".into()
         } else {
             format!("Print Preview: the sheet shows the chosen paper and scale, in {mode}")
         };
+    }
+
+    /// The pages of the layout as `opts` will print them (Print Preview),
+    /// without any rendering of perspective boxes that were not rendered
+    /// already.
+    pub fn print_preview_pages(
+        &self,
+        project: &Project,
+        opts: &PrintOptions,
+    ) -> Vec<plan_layout::PreviewPage> {
+        let Some(layout) = &self.layout else {
+            return Vec::new();
+        };
+        let rcx = ui_context(project);
+        rcx.set_sheet_index(layout);
+        plan_layout::layout_print_preview(layout, &rcx, opts)
+    }
+
+    /// Opens the Print Preview window: the pages as the Print dialog's
+    /// options will print them (colour mode, line weights, scale, tiles).
+    /// Perspective boxes show when they were rendered already (Update Views).
+    fn open_preview(&mut self, project: &Project, d: &PrintDialog) {
+        let opts = d.options();
+        let (title, note, pages) = match d.target() {
+            PrintTarget::Layout { name, .. } => (
+                name.clone(),
+                String::new(),
+                self.print_preview_pages(project, &opts),
+            ),
+            PrintTarget::PlanView {
+                floor,
+                layer_set,
+                title,
+            } => {
+                let rcx = ui_context(project);
+                let (pages, scale) =
+                    plan_layout::plan_view_print_preview(&rcx, *floor, layer_set, title, &opts);
+                (title.clone(), format!("SCALE: {}", scale.label()), pages)
+            }
+        };
+        self.dialogs.preview = Some(PrintPreviewDialog::new(&title, &note, pages));
     }
 
     /// Print Image was accepted: saves the plan view as a PNG.
@@ -2886,10 +4769,42 @@ impl LayoutView {
     fn show_dialogs(&mut self, ctx: &egui::Context, cx: &mut EditorContext) {
         self.sync(&cx.project);
         if let Some(mut d) = self.dialogs.send.take() {
-            match d.show(ctx) {
+            // The "too big for the sheet" warning: would the box the answers
+            // make fit the page's drawing area?
+            let outcome = {
+                let layout = self.layout.as_ref();
+                let project = &cx.project;
+                let mut warn = |a: &SendAnswers| -> Option<String> {
+                    let layout = layout?;
+                    let source = Self::box_source(project, &a.spec.source).ok()?;
+                    let page = match a.spec.page {
+                        PageChoice::Existing(n) => n,
+                        PageChoice::New => next_page_number(layout),
+                    };
+                    let rcx = render_context(project);
+                    let req = SendRequest {
+                        page,
+                        source,
+                        scale: a.details.scale,
+                        at: None,
+                        centre: None,
+                        options: a.details.options.clone(),
+                    };
+                    let (fit, _) = plan_layout::check_send(layout, &rcx, &req);
+                    fit.too_large.then(|| plan_layout::fit_warning(&fit))
+                };
+                d.show(ctx, &mut warn)
+            };
+            match outcome {
                 Outcome::Open => self.dialogs.send = Some(d),
-                Outcome::Cancel => {}
-                Outcome::Ok => self.finish_send(cx, d.spec().clone()),
+                Outcome::Cancel => {
+                    self.snapshot_src = None;
+                    self.send_queue.clear();
+                }
+                Outcome::Ok => {
+                    let answers = d.answers();
+                    self.finish_send_answers(cx, answers);
+                }
             }
         }
         if let Some(mut d) = self.dialogs.spec.take() {
@@ -2903,6 +4818,44 @@ impl LayoutView {
                 }
             }
         }
+        if let Some(mut d) = self.dialogs.box_view.take() {
+            match d.show(ctx) {
+                Outcome::Open => self.dialogs.box_view = Some(d),
+                Outcome::Cancel => {}
+                Outcome::Ok => {
+                    if self.apply_spec(&mut cx.project, &d.result()) {
+                        cx.status = "Updated the layout box".into();
+                    }
+                }
+            }
+        }
+        if let Some(mut d) = self.dialogs.line_spec.take() {
+            match d.show(ctx) {
+                Outcome::Open => self.dialogs.line_spec = Some(d),
+                Outcome::Cancel => {}
+                Outcome::Ok => {
+                    let n = self.apply_line_spec(&mut cx.project, &d.spec());
+                    cx.status = format!("Changed {n} layout line(s)");
+                }
+            }
+        }
+        if let Some(mut d) = self.dialogs.change_scale.take() {
+            match d.show(ctx) {
+                Outcome::Open => self.dialogs.change_scale = Some(d),
+                Outcome::Cancel => {}
+                Outcome::Ok => {
+                    if let Some((new, lines)) = d.result() {
+                        let changed = self.rescale_selected(&mut cx.project, new, Some(lines));
+                        cx.status = if changed {
+                            "Rescaled the layout view".into()
+                        } else {
+                            "The scale did not change".into()
+                        };
+                    }
+                }
+            }
+        }
+        self.pan_scale_window(ctx, cx);
         if let Some(mut d) = self.dialogs.setup.take() {
             match d.show(ctx) {
                 Outcome::Open => self.dialogs.setup = Some(d),
@@ -2911,17 +4864,6 @@ impl LayoutView {
                     if self.apply_page_setup(&mut cx.project, d.setup()) {
                         self.fit_pending = true;
                         cx.status = "Page setup changed".into();
-                    }
-                }
-            }
-        }
-        if let Some(mut d) = self.dialogs.table.take() {
-            match d.show(ctx) {
-                Outcome::Open => self.dialogs.table = Some(d),
-                Outcome::Cancel => {}
-                Outcome::Ok => {
-                    if self.apply_page_table(&mut cx.project, d.rows()) {
-                        cx.status = "Layout page table updated".into();
                     }
                 }
             }
@@ -3006,6 +4948,93 @@ impl LayoutView {
                 Outcome::Ok => cx.status = self.finish_template(&mut cx.project, &d),
             }
         }
+        if let Some(mut d) = self.dialogs.page_info.take() {
+            match d.show(ctx) {
+                Outcome::Open => self.dialogs.page_info = Some(d),
+                Outcome::Cancel => {}
+                Outcome::Ok => match self.apply_page_info(&mut cx.project, &d) {
+                    Ok(true) => {
+                        self.fit_pending = true;
+                        cx.status = "Page information changed".into();
+                    }
+                    Ok(false) => {}
+                    Err(e) => cx.status = e,
+                },
+            }
+        }
+        if let Some(mut d) = self.dialogs.revision.take() {
+            match d.show(ctx) {
+                Outcome::Open => self.dialogs.revision = Some(d),
+                Outcome::Cancel => {}
+                Outcome::Ok => {
+                    let pages = d.revised_pages();
+                    if self.add_layout_revision(&mut cx.project, &pages, &d.revision()) {
+                        cx.status = format!("Added a revision to {} page(s)", pages.len());
+                    }
+                }
+            }
+        }
+        if let Some(mut d) = self.dialogs.defaults.take() {
+            match d.show(ctx) {
+                Outcome::Open => self.dialogs.defaults = Some(d),
+                Outcome::Cancel => {}
+                Outcome::Ok => {
+                    if self.apply_layout_defaults(&mut cx.project, d.defaults()) {
+                        cx.status = "General layout defaults changed".into();
+                    }
+                }
+            }
+        }
+        if let Some(mut d) = self.dialogs.copy_drawings.take() {
+            match d.show(ctx) {
+                Outcome::Open => self.dialogs.copy_drawings = Some(d),
+                Outcome::Cancel => {}
+                Outcome::Ok => {
+                    let n = self.copy_drawings_to(&mut cx.project, d.to());
+                    cx.status = format!("Copied {n} drawing(s) to the other page");
+                }
+            }
+        }
+        if let Some(mut d) = self.dialogs.sheet_sizes.take() {
+            match d.show(ctx) {
+                Outcome::Open => self.dialogs.sheet_sizes = Some(d),
+                Outcome::Cancel => {}
+                Outcome::Ok => {
+                    if self.apply_sheet_sizes(&mut cx.project, d.sizes()) {
+                        cx.status = "Sheet sizes customized".into();
+                    }
+                }
+            }
+        }
+        if let Some(mut d) = self.dialogs.copy_box.take() {
+            match d.show(ctx) {
+                Outcome::Open => self.dialogs.copy_box = Some(d),
+                Outcome::Cancel => {}
+                Outcome::Ok => {
+                    let n = self.copy_selected_to(&mut cx.project, d.to());
+                    cx.status = format!("Copied {n} layout box(es) to A-{}", d.to());
+                }
+            }
+        }
+        if let Some(mut d) = self.dialogs.new_layout.take() {
+            match d.show(ctx) {
+                Outcome::Open => self.dialogs.new_layout = Some(d),
+                Outcome::Cancel => {}
+                Outcome::Ok => {
+                    let settings = crate::templates::load_settings();
+                    let seed = crate::templates::refresh(&settings, false);
+                    if self.new_layout_file(&mut cx.project, d.name(), seed.cache.layout.as_ref()) {
+                        self.active = true;
+                        cx.status = format!("Made layout file {}", d.name());
+                    }
+                }
+            }
+        }
+        if let Some(mut d) = self.dialogs.preview.take() {
+            if d.show(ctx) == Outcome::Open {
+                self.dialogs.preview = Some(d);
+            }
+        }
         if let Some(mut d) = self.dialogs.model.take() {
             match d.show(ctx) {
                 Outcome::Open => self.dialogs.model = Some(d),
@@ -3021,6 +5050,49 @@ impl LayoutView {
             }
         }
         self.update_progress(ctx, cx);
+    }
+
+    /// Pan/Scale Layout Box: while the tool is active and a view is selected,
+    /// a small window takes the scale to type (the inline text fields of the
+    /// tool in Chief).
+    fn pan_scale_window(&mut self, ctx: &egui::Context, cx: &mut EditorContext) {
+        if self.tool != LayoutTool::PanScale || self.dialogs.any() {
+            return;
+        }
+        let Some(b) = self.selected_box().filter(|b| is_scaled(&b.source)) else {
+            return;
+        };
+        let now = b.scale_note();
+        let mut apply = false;
+        egui::Window::new("Pan/Scale Layout Box")
+            .id(egui::Id::new("layout_pan_scale"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(Align2::RIGHT_TOP, Vec2::new(-12.0, 120.0))
+            .show(ctx, |ui| {
+                ui.label(format!("Scale now: {now}"));
+                ui.horizontal(|ui| {
+                    let edit = ui.add(
+                        egui::TextEdit::singleline(&mut self.pan_scale_text)
+                            .hint_text("1:48 or 1/4\" = 1'")
+                            .desired_width(140.0),
+                    );
+                    if ui.button("Apply").clicked()
+                        || (edit.lost_focus() && ctx.input(|i| i.key_pressed(egui::Key::Enter)))
+                    {
+                        apply = true;
+                    }
+                });
+                ui.weak("Drag on the view to pan it.");
+            });
+        if apply {
+            let text = self.pan_scale_text.clone();
+            cx.status = match self.set_scale_text(&mut cx.project, &text) {
+                Ok(true) => format!("Rescaled the layout view to {text}"),
+                Ok(false) => "The scale did not change".into(),
+                Err(e) => e,
+            };
+        }
     }
 
     /// Update Views: reads the render thread's progress and shows the
@@ -3058,28 +5130,119 @@ impl LayoutView {
         ctx.request_repaint_after(std::time::Duration::from_millis(100));
     }
 
+    /// The Send to Layout dialog was accepted with the plain answers (a
+    /// [`SendSpec`] only): the scale as asked, a Live View, the whole view.
+    fn finish_send(
+        &mut self,
+        cx: &mut EditorContext,
+        spec: SendSpec,
+        target: LayoutTarget,
+        snapshot: Option<SnapshotSpec>,
+    ) {
+        let details = default_details(&spec);
+        self.finish_send_answers(
+            cx,
+            SendAnswers {
+                spec,
+                details,
+                target,
+                snapshot,
+            },
+        );
+    }
+
+    /// Starts sending `sources`: the first gets its dialog, and a check box
+    /// there sends all the remaining views with the same settings.
+    pub fn begin_send_many(&mut self, project: &Project, mut sources: Vec<SendSource>) {
+        if sources.is_empty() {
+            return;
+        }
+        let first = sources.remove(0);
+        self.send_queue = sources;
+        self.open_send_dialog(project, first);
+    }
+
+    /// Opens the Send to Layout dialog on `source`, with the settings used
+    /// last and the views still waiting behind it.
+    fn open_send_dialog(&mut self, project: &Project, source: SendSource) {
+        let floors = project.floors.iter().map(|f| f.name.clone()).collect();
+        let sets = project
+            .layer_sets
+            .sets
+            .iter()
+            .map(|s| s.name.clone())
+            .collect();
+        let current = self
+            .current_page()
+            .filter(|p| !p.template_page)
+            .map(|p| p.number);
+        let mut dialog = SendToLayoutDialog::new(source, self.page_list(), current, floors, sets)
+            .with_layouts(layout_names(project))
+            .with_saved_view(project.current_plan_view().map(|v| v.name.clone()))
+            .with_default_scale(sheet_scale(project))
+            .with_screen(PLAN_SCREEN.with(Cell::get))
+            .with_remaining(self.send_queue.len());
+        if let Some(last) = LAST_SEND.with(|l| l.borrow().clone()) {
+            dialog = dialog.with_defaults(&last);
+        }
+        self.dialogs.send = Some(dialog);
+    }
+
     /// The Send to Layout dialog was accepted.
-    fn finish_send(&mut self, cx: &mut EditorContext, spec: SendSpec) {
-        if spec.placement == Placement::Click {
-            let source = match &spec.source {
-                SendSource::Plan { floor, layer_set } => BoxSource::PlanView {
-                    floor: *floor,
-                    layer_set: layer_set.clone(),
-                },
-                SendSource::Camera { id, .. } => BoxSource::Camera { camera_id: *id },
-                SendSource::Perspective { id, .. } => BoxSource::Perspective { camera_id: *id },
+    fn finish_send_answers(&mut self, cx: &mut EditorContext, answers: SendAnswers) {
+        LAST_SEND.with(|l| *l.borrow_mut() = Some(answers.clone()));
+        let SendAnswers {
+            spec,
+            details,
+            target,
+            snapshot,
+        } = answers;
+        let picture = snapshot.zip(self.snapshot_src.take());
+        if picture.is_some() || target != LayoutTarget::Current {
+            match self.send_to_with(&mut cx.project, &spec, &details, &target, picture, None) {
+                Ok(_) => {
+                    self.active = true;
+                    cx.status = match &target {
+                        LayoutTarget::Current => self.sent_status(),
+                        LayoutTarget::Existing(n) | LayoutTarget::New(n) => {
+                            format!("Sent to layout file {n}")
+                        }
+                    };
+                }
+                Err(e) => cx.status = e,
+            }
+            self.send_rest(cx, &spec, &details);
+            return;
+        }
+        if spec.placement == Placement::Click && self.send_queue.is_empty() {
+            let Ok(source) = Self::box_source(&cx.project, &spec.source) else {
+                cx.status = "That view cannot be sent".into();
+                return;
             };
             let rcx = render_context(&cx.project);
-            let scale = match (spec.scale, &self.layout) {
-                (Some(s), _) => s,
-                (None, Some(l)) => fit_largest_scale(l, &rcx, &source, AUTO_SCALE_CEILING),
-                (None, None) => AUTO_SCALE_CEILING,
-            };
-            let size = source_size_in(&source, scale, &rcx);
+            let size = self
+                .layout
+                .as_ref()
+                .map(|l| {
+                    let req = SendRequest {
+                        page: match spec.page {
+                            PageChoice::Existing(n) => n,
+                            PageChoice::New => next_page_number(l),
+                        },
+                        source: source.clone(),
+                        scale: details.scale,
+                        at: None,
+                        centre: None,
+                        options: details.options.clone(),
+                    };
+                    plan_layout::check_send(l, &rcx, &req).0.size_in
+                })
+                .unwrap_or_else(|| source_size_in(&source, AUTO_SCALE_CEILING, &rcx));
             drop(rcx);
             self.placing = Some(Placing {
                 source,
                 scale: spec.scale,
+                details: Some(details),
                 page: spec.page,
                 size,
             });
@@ -3097,18 +5260,85 @@ impl LayoutView {
             cx.status = "Click on the page to place the layout box (Esc cancels)".into();
             return;
         }
-        match self.send(&mut cx.project, &spec, None) {
+        let spec_now = SendSpec {
+            placement: if spec.placement == Placement::Click {
+                Placement::FirstFree
+            } else {
+                spec.placement
+            },
+            ..spec.clone()
+        };
+        match self.send_with(&mut cx.project, &spec_now, &details, None) {
             Ok(_) => {
-                self.active = true;
-                cx.status = "Sent to layout".into();
+                if details.show_page {
+                    self.active = true;
+                }
+                cx.status = self.sent_status();
             }
             Err(e) => cx.status = e,
+        }
+        self.send_rest(cx, &spec, &details);
+    }
+
+    /// After a send: the rest of a Send All Views, either all at once with the
+    /// same settings (the dialog's check box) or one dialog after another.
+    fn send_rest(&mut self, cx: &mut EditorContext, spec: &SendSpec, details: &SendDetails) {
+        if self.send_queue.is_empty() {
+            return;
+        }
+        if details.all_remaining {
+            let rest = std::mem::take(&mut self.send_queue);
+            let mut n = 1;
+            for source in rest {
+                let each = SendSpec {
+                    source,
+                    page: PageChoice::New,
+                    placement: Placement::FirstFree,
+                    ..spec.clone()
+                };
+                if self
+                    .send_with(&mut cx.project, &each, details, None)
+                    .is_ok()
+                {
+                    n += 1;
+                }
+            }
+            cx.status = format!("Sent {n} views to layout");
+        } else {
+            let next = self.send_queue.remove(0);
+            self.open_send_dialog(&cx.project, next);
+        }
+    }
+
+    /// The status line after a send: the scale, and the warning when the view
+    /// is too big for the sheet.
+    fn sent_status(&self) -> String {
+        match (&self.last_sent, self.last_send_warning()) {
+            (_, Some(w)) => format!("Sent to layout. {w}"),
+            (Some(s), None) => {
+                let (named, mode) = plan_layout::scale_for_ipf(s.ipf);
+                match mode {
+                    plan_layout::ScaleMode::Named => {
+                        format!("Sent to layout at {}", named.label())
+                    }
+                    _ => format!("Sent to layout at {}", plan_layout::custom_label(s.ipf)),
+                }
+            }
+            (None, None) => "Sent to layout".into(),
         }
     }
 
     /// The click that places a pending Send to Layout.
-    fn place_at(&mut self, cx: &mut EditorContext, x: f64, y: f64) {
+    pub(crate) fn place_at(&mut self, cx: &mut EditorContext, x: f64, y: f64) {
         let Some(p) = self.placing.take() else { return };
+        if matches!(p.source, BoxSource::PageTable | BoxSource::RevisionTable) {
+            cx.status = if self.place_table(&mut cx.project, p.source, x, y) {
+                "Placed the table".into()
+            } else {
+                "The table was not placed".into()
+            };
+            return;
+        }
         let page = match p.page {
             PageChoice::Existing(_) => self
                 .current_page()
@@ -3136,10 +5366,39 @@ impl LayoutView {
             scale: p.scale,
             placement: Placement::Click,
         };
-        cx.status = match self.send(&mut cx.project, &spec, Some((x, y))) {
-            Ok(_) => "Sent to layout".into(),
+        let details = p.details.unwrap_or_else(|| default_details(&spec));
+        cx.status = match self.send_with(&mut cx.project, &spec, &details, Some((x, y))) {
+            Ok(_) => self.sent_status(),
             Err(e) => e,
         };
+    }
+}
+
+/// Asks for a file name and writes `bytes` there; returns the status text.
+fn save_bytes_as(name: &str, ext: &str, bytes: &[u8]) -> String {
+    if cfg!(test) {
+        return format!("Saved {} bytes of {ext}", bytes.len());
+    }
+    let stem: String = name
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || " -_()".contains(c) {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let Some(path) = rfd::FileDialog::new()
+        .set_file_name(format!("{}.{ext}", stem.trim()))
+        .add_filter(ext, &[ext])
+        .save_file()
+    else {
+        return "Export cancelled".into();
+    };
+    match std::fs::write(&path, bytes) {
+        Ok(()) => format!("Saved {}", path.display()),
+        Err(e) => format!("Could not save: {e}"),
     }
 }
 
@@ -3182,6 +5441,12 @@ fn line_width(w: LineWeight, z: f32) -> f32 {
     }
 }
 
+thread_local! {
+    /// The page being painted and its macros: what a Layout Revision Table
+    /// and the macros in a text box depend on ([`box_art`] reads it).
+    static PAGE_CTX: RefCell<Option<(u32, MacroContext)>> = const { RefCell::new(None) };
+}
+
 /// What a box draws (lines, texts, pictures), from the cache when nothing it
 /// depends on changed.
 fn box_art<'a>(
@@ -3202,6 +5467,28 @@ fn box_art<'a>(
         }
         key = h.finish();
     }
+    let page_ctx = PAGE_CTX.with(|c| c.borrow().clone());
+    let table_page = matches!(b.source, BoxSource::PageTable | BoxSource::RevisionTable);
+    let macro_text = matches!(&b.source, BoxSource::Text { text, .. } if text.contains('%'));
+    if table_page || macro_text {
+        // The tables follow the pages' information and revisions, and text
+        // boxes their macros (which differ from page to page).
+        let mut h = DefaultHasher::new();
+        key.hash(&mut h);
+        if table_page {
+            format!("{:?}", layout.page_table_rows()).hash(&mut h);
+        }
+        if let Some((n, ctx)) = &page_ctx {
+            n.hash(&mut h);
+            if b.source == BoxSource::RevisionTable {
+                format!("{:?}", layout.revision_table_rows(*n)).hash(&mut h);
+            }
+            if macro_text {
+                format!("{ctx:?}").hash(&mut h);
+            }
+        }
+        key = h.finish();
+    }
     if let Some((k, art)) = cache.map.get(&b.id) {
         if *k == key {
             return art.clone();
@@ -3209,6 +5496,10 @@ fn box_art<'a>(
     }
     let rcx = rcx.get_or_insert_with(|| ui_context(project));
     rcx.set_sheet_index(layout);
+    if let Some((n, ctx)) = page_ctx {
+        rcx.set_current_page(n);
+        rcx.set_page_macros(Some(ctx));
+    }
     let art = Rc::new(plan_layout::render_box_artwork_in(b, rcx, &layout.layers));
     cache.map.insert(b.id, (key, art.clone()));
     art
@@ -3261,6 +5552,18 @@ fn paint_box(
 ) {
     let clip = painter.clip_rect().expand(20.0);
     let tint = |c: Color32| if faint { c.gamma_multiply(0.45) } else { c };
+    // Fills that have a color of their own (Color Fill, the box's Fill Style).
+    for f in &art.fills {
+        if f.polygon.len() >= 3 {
+            let pts: Vec<Pos2> = f.polygon.iter().map(|p| xf.pt(p.x, p.y)).collect();
+            let [r, g, b] = f.rgb;
+            painter.add(egui::Shape::convex_polygon(
+                pts,
+                tint(Color32::from_rgb(r, g, b)),
+                Stroke::NONE,
+            ));
+        }
+    }
     for im in &art.images {
         let fresh = textures.get(&b.id).is_some_and(|(k, _)| *k == key);
         if !fresh && im.width > 0 && im.height > 0 {
@@ -3306,24 +5609,15 @@ fn paint_box(
     for t in &art.texts {
         paint_text(&text_painter, xf, t, faint);
     }
-    if let Some(label) = &b.label {
-        let pos = xf.pt(bounds(b)[0], bounds(b)[1]) + Vec2::new(0.0, 4.0);
-        let size = (10.0 * xf.z / 20.0).clamp(7.0, 22.0);
-        painter.text(
-            pos,
-            Align2::LEFT_TOP,
-            label,
-            FontId::proportional(size),
-            tint(INK),
-        );
-        if is_scaled(&b.source) {
-            painter.text(
-                pos + Vec2::new(0.0, size + 2.0),
-                Align2::LEFT_TOP,
-                format!("SCALE: {}", b.scale.label()),
-                FontId::proportional((size * 0.7).max(6.0)),
-                tint(Color32::GRAY),
-            );
+    // The label, its callout shape and the scale note: the same strokes and
+    // texts the page prints (under the Layout Box Labels layer).
+    if let Some(label) = &art.label {
+        for l in &label.lines {
+            let (a, c) = (xf.pt(l.a.x, l.a.y), xf.pt(l.b.x, l.b.y));
+            painter.line_segment([a, c], st(1.0, tint(INK)));
+        }
+        for t in &label.texts {
+            paint_text(painter, xf, t, faint);
         }
     }
 }
@@ -3504,8 +5798,14 @@ fn paint_field(painter: &egui::Painter, r: Rect, label: &str, value: &str) {
 }
 
 /// The border and title block of a page, macros expanded for that sheet.
-fn paint_title_block(painter: &egui::Painter, xf: &Xf, layout: &Layout, ctx: &MacroContext) {
-    let (w, h) = layout.sheet_inches();
+fn paint_title_block(
+    painter: &egui::Painter,
+    xf: &Xf,
+    layout: &Layout,
+    ctx: &MacroContext,
+    size: (f64, f64),
+) {
+    let (w, h) = size;
     let m = layout.margins_in;
     let edge =
         (f32::from(u16::try_from(layout.edge_line_weight).unwrap_or(18)) / 100.0 * xf.z * 0.04)
@@ -3517,7 +5817,7 @@ fn paint_title_block(painter: &egui::Painter, xf: &Xf, layout: &Layout, ctx: &Ma
         StrokeKind::Middle,
     );
     let fields = layout.title_block.expand_macros(ctx);
-    let (lo, hi) = layout.drawing_area();
+    let (lo, hi) = layout.drawing_area_for(size);
     match &layout.title_block.style {
         TitleBlockStyle::RightStrip => {
             let x0 = hi.x;
@@ -3590,7 +5890,10 @@ impl LayoutView {
         project: &Project,
         index: usize,
     ) {
-        let (w, h) = layout.sheet_inches();
+        let (w, h) = layout
+            .pages
+            .get(index)
+            .map_or_else(|| layout.sheet_inches(), |p| layout.page_sheet_inches(p));
         let sheet = xf.rect([0.0, 0.0, w, h]);
         painter.rect_filled(
             sheet.translate(Vec2::new(3.0, 3.0)),
@@ -3608,11 +5911,12 @@ impl LayoutView {
             return;
         };
         let mut ctx = macro_context(project);
-        ctx.sheet_number = page.sheet_number();
-        ctx.sheet_title = page.title.clone();
+        // The sheet number is the page's label; the page macros and the
+        // REVISIONS table come with it.
+        ctx.apply_page(layout, page);
         ctx.scale = page_scale_label(page);
         ctx.page_count = layout.content_pages().len();
-        ctx.add_cloud_revisions(layout);
+        PAGE_CTX.with(|c| *c.borrow_mut() = Some((page.number, ctx.clone())));
         // The cached drawings depend on the layers too.
         let sig = {
             let mut h = DefaultHasher::new();
@@ -3625,7 +5929,7 @@ impl LayoutView {
         let mut textures = std::mem::take(&mut self.textures);
         let mut rcx = None;
         let painter = painter.with_clip_rect(painter.clip_rect().intersect(sheet.expand(4.0)));
-        for t in layout.template_pages() {
+        for t in layout.templates_for(index) {
             if !std::ptr::eq(t, page) {
                 for b in &t.boxes {
                     let art = box_art(&mut cache, &mut rcx, project, sig, b, layout);
@@ -3639,10 +5943,11 @@ impl LayoutView {
             paint_box(&painter, xf, b, &art, &mut textures, box_key(b, sig), false);
         }
         paint_annotations(&painter, xf, page, &ctx, &layout.layers);
+        PAGE_CTX.with(|c| *c.borrow_mut() = None);
         self.cache = cache;
         self.textures = textures;
-        if layout.layers.is_visible(LAYER_TITLE_BLOCK) {
-            paint_title_block(&painter, xf, layout, &ctx);
+        if layout.layers.is_visible(LAYER_TITLE_BLOCK) && !layout.effective_no_title_block(index) {
+            paint_title_block(&painter, xf, layout, &ctx, (w, h));
         }
         if page.template_page {
             painter.text(
@@ -3652,6 +5957,22 @@ impl LayoutView {
                 FontId::proportional((xf.z * 1.2).clamp(14.0, 80.0)),
                 Color32::from_black_alpha(28),
             );
+        }
+    }
+
+    /// The selected plot lines of the Edit Layout Lines tool, in blue.
+    fn paint_line_selection(&self, painter: &egui::Painter, xf: &Xf, project: &Project) {
+        if self.tool != LayoutTool::EditLines || self.line_sel.is_empty() {
+            return;
+        }
+        let Some((b, map)) = self.plot_box(project) else {
+            return;
+        };
+        let Some(art) = &b.view.art else { return };
+        let clip = painter.with_clip_rect(xf.rect(bounds(&b)));
+        for l in art.lines.iter().filter(|l| self.line_sel.contains(&l.id)) {
+            let (a, c) = (map.to_paper(l.a), map.to_paper(l.b));
+            clip.line_segment([xf.pt(a.x, a.y), xf.pt(c.x, c.y)], st(2.5, SELECT_BLUE));
         }
     }
 
@@ -3670,6 +5991,16 @@ impl LayoutView {
                     painter.rect_filled(hr, 0.0, Color32::WHITE);
                     painter.rect_stroke(hr, 0.0, st(1.0, SELECT_BLUE), StrokeKind::Inside);
                 }
+            }
+        }
+        if let Some(page) = self.current_page() {
+            for b in page.boxes.iter().filter(|b| self.also.contains(&b.id)) {
+                painter.rect_stroke(
+                    xf.rect(bounds(b)),
+                    0.0,
+                    st(1.5, SELECT_BLUE),
+                    StrokeKind::Outside,
+                );
             }
         }
         let Some(b) = self.selected_box() else { return };
@@ -3700,6 +6031,18 @@ impl LayoutView {
             let hr = Rect::from_center_size(c, Vec2::splat(HANDLE_PX));
             painter.rect_filled(hr, 0.0, Color32::WHITE);
             painter.rect_stroke(hr, 0.0, st(1.0, SELECT_BLUE), StrokeKind::Inside);
+        }
+        // A view with no scale reads out how big it is drawn at the corner
+        // handle (Chief shows the factor while you resize it).
+        if b.is_no_scale() {
+            let (px, py) = Handle::NE.position(r);
+            painter.text(
+                xf.pt(px, py) + Vec2::new(8.0, -4.0),
+                Align2::LEFT_BOTTOM,
+                format!("not to scale: {:.3}\" = 1'", b.effective_ipf()),
+                FontId::proportional(11.0),
+                SELECT_BLUE,
+            );
         }
         // The rotate knob above the top edge of what the box covers.
         let hit = hit_bounds(b);
@@ -3743,6 +6086,12 @@ impl LayoutView {
         });
         egui::TopBottomPanel::top("layout_draw_tools").show_inside(ui, |ui| {
             self.tool_row(ui, &mut cmds);
+        });
+        egui::TopBottomPanel::top("layout_arrange_tools").show_inside(ui, |ui| {
+            self.arrange_row(ui, cx, &mut cmds);
+        });
+        egui::TopBottomPanel::top("layout_view_tools").show_inside(ui, |ui| {
+            self.view_row(ui, &mut cmds);
         });
         egui::TopBottomPanel::bottom("layout_tabs").show_inside(ui, |ui| {
             self.page_tabs(ui, cx, &mut cmds);
@@ -3832,7 +6181,13 @@ impl LayoutView {
                             .is_some_and(|l| self.page + 1 < l.pages.len()),
                     );
                     ui.separator();
-                    btn(ui, "Page Table", "Layout Page Table", C::PageTable, true);
+                    btn(
+                        ui,
+                        "Page Table",
+                        "Layout Page Table: click a page to place it",
+                        C::PageTable,
+                        true,
+                    );
                     btn(
                         ui,
                         "Update Views",
@@ -3892,6 +6247,9 @@ impl LayoutView {
                             LayoutTool::Arc => "Draw an arc: centre, start, end",
                             LayoutTool::Leader => "Draw a leader: text with an arrow",
                             LayoutTool::Cloud => "Draw a revision cloud around an area",
+                            LayoutTool::PanScale => "Pan/Scale Layout Box",
+                            LayoutTool::EditLines => "Edit Layout Lines",
+                            LayoutTool::PointToPoint => "Point to Point Move",
                         };
                         if ui
                             .selectable_label(self.tool == t, t.name())
@@ -3973,6 +6331,281 @@ impl LayoutView {
             });
     }
 
+    /// The fourth toolbar row: the edit tools of a layout view (Rescale
+    /// Layout View, Pan/Scale, Recenter, Scale to Fit, Update View, Layout Box
+    /// Layers, Unlink Saved Plan View, Edit Layout Lines) and Send All Views.
+    fn view_row(&mut self, ui: &mut Ui, out: &mut Vec<LayoutCommand>) {
+        use LayoutCommand as C;
+        let picked = self.selection_ids().len();
+        let scaled = self.selected_box().is_some_and(|b| is_scaled(&b.source));
+        let plan = self
+            .selected_box()
+            .is_some_and(|b| matches!(b.source, BoxSource::PlanView { .. }));
+        let linked = self
+            .selected_box()
+            .is_some_and(|b| b.view.saved_view.is_some());
+        let local: RefCell<Vec<C>> = RefCell::new(Vec::new());
+        egui::ScrollArea::horizontal()
+            .id_salt("layout_view_row")
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("View:");
+                    let btn = |ui: &mut Ui, text: &str, tip: &str, c: C, on: bool| {
+                        if ui
+                            .add_enabled(on, egui::Button::new(text))
+                            .on_hover_text(tip)
+                            .on_disabled_hover_text(tip)
+                            .clicked()
+                        {
+                            local.borrow_mut().push(c);
+                        }
+                    };
+                    btn(
+                        ui,
+                        "Rescale\u{2026}",
+                        "Rescale Layout View: Change Scale",
+                        C::RescaleView,
+                        scaled,
+                    );
+                    btn(
+                        ui,
+                        "Recenter",
+                        "Recenter Layout Box Contents",
+                        C::RecenterBox,
+                        scaled,
+                    );
+                    btn(
+                        ui,
+                        "Scale to Fit",
+                        "Scale Layout Box Contents to Fit",
+                        C::ScaleBoxToFit,
+                        scaled,
+                    );
+                    btn(
+                        ui,
+                        "Update View",
+                        "Update the selected semi-dynamic or Plot Lines view",
+                        C::UpdateView,
+                        picked > 0,
+                    );
+                    btn(
+                        ui,
+                        "Layers\u{2026}",
+                        "Layout Box Layers: the layer set of the selected plan view",
+                        C::LayoutBoxLayers,
+                        plan,
+                    );
+                    btn(
+                        ui,
+                        "Unlink Saved View",
+                        "Unlink Saved Plan View",
+                        C::UnlinkSavedView,
+                        linked,
+                    );
+                    btn(
+                        ui,
+                        "Center Object",
+                        "Center the selection in the page's drawing area",
+                        C::CenterObject,
+                        picked > 0 || self.selected_cad.is_some(),
+                    );
+                    ui.separator();
+                    for (t, text, tip, on) in [
+                        (
+                            LayoutTool::PointToPoint,
+                            "Point to Point Move",
+                            "Move the selection from one point to another",
+                            picked > 0 || self.selected_cad.is_some(),
+                        ),
+                        (
+                            LayoutTool::PanScale,
+                            "Pan/Scale",
+                            "Pan/Scale Layout Box: drag to pan, type a scale",
+                            scaled,
+                        ),
+                        (
+                            LayoutTool::EditLines,
+                            "Edit Layout Lines",
+                            "Select, draw and delete the lines of a Plot Lines view",
+                            true,
+                        ),
+                    ] {
+                        let r = ui
+                            .add_enabled_ui(on, |ui| ui.selectable_label(self.tool == t, text))
+                            .inner
+                            .on_hover_text(tip);
+                        if r.clicked() {
+                            local.borrow_mut().push(C::Tool(if self.tool == t {
+                                LayoutTool::Select
+                            } else {
+                                t
+                            }));
+                        }
+                    }
+                    ui.separator();
+                    btn(
+                        ui,
+                        "Update Live Views",
+                        "Update All Live Views (Update on Demand)",
+                        C::UpdateLiveViews,
+                        true,
+                    );
+                    btn(
+                        ui,
+                        "Update Plot Line Views",
+                        "Update All Plot Line Views",
+                        C::UpdatePlotLineViews,
+                        true,
+                    );
+                    btn(
+                        ui,
+                        "Send All Views\u{2026}",
+                        "Send every floor plan and elevation to the layout",
+                        C::SendAllViews,
+                        true,
+                    );
+                });
+            });
+        out.extend(local.into_inner());
+    }
+
+    /// The third toolbar row: the plan's layout files, Page Specification and
+    /// sheet sizes, aligning, spreading and copying boxes, and the tables to
+    /// Excel.
+    fn arrange_row(&mut self, ui: &mut Ui, cx: &EditorContext, out: &mut Vec<LayoutCommand>) {
+        use LayoutCommand as C;
+        let names = layout_names(&cx.project);
+        let picked = self.selection_ids().len();
+        egui::ScrollArea::horizontal()
+            .id_salt("layout_arrange_row")
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Layout file:");
+                    egui::ComboBox::from_id_salt("layout_file_picker")
+                        .selected_text(names.first().cloned().unwrap_or_default())
+                        .show_ui(ui, |ui| {
+                            for (i, n) in names.iter().enumerate() {
+                                if ui.selectable_label(i == 0, n).clicked() && i > 0 {
+                                    out.push(C::SwitchLayout(i));
+                                }
+                            }
+                        });
+                    if ui
+                        .button("New Layout File\u{2026}")
+                        .on_hover_text("Make another layout file in this plan and open it")
+                        .clicked()
+                    {
+                        out.push(C::NewLayoutFile);
+                    }
+                    ui.separator();
+                    if ui
+                        .button("Page Information\u{2026}")
+                        .on_hover_text("Label, title, description, page templates, revisions and sheet size of this page")
+                        .clicked()
+                    {
+                        out.push(C::PageInformation);
+                    }
+                    if ui
+                        .button("Add Revision\u{2026}")
+                        .on_hover_text("Add a layout revision to chosen pages")
+                        .clicked()
+                    {
+                        out.push(C::AddLayoutRevision);
+                    }
+                    if ui
+                        .button("Revision Table")
+                        .on_hover_text("Click a page to place the table of that page's revisions")
+                        .clicked()
+                    {
+                        out.push(C::RevisionTable);
+                    }
+                    if ui
+                        .button("Layout Defaults\u{2026}")
+                        .on_hover_text("General Layout Defaults: Use Snap Grid and the Grid Snap Unit")
+                        .clicked()
+                    {
+                        out.push(C::LayoutDefaults);
+                    }
+                    if ui
+                        .button("Sheet Sizes\u{2026}")
+                        .on_hover_text("Customize Sheet Sizes")
+                        .clicked()
+                    {
+                        out.push(C::CustomizeSheetSizes);
+                    }
+                    ui.separator();
+                    ui.label("Align:");
+                    for (edge, text, tip) in [
+                        (AlignEdge::Left, "Left", "Line the selected boxes up on their left edge"),
+                        (AlignEdge::HCenter, "Center", "Line up their centers on a vertical line"),
+                        (AlignEdge::Right, "Right", "Line up on the right edge"),
+                        (AlignEdge::Top, "Top", "Line up on the top edge"),
+                        (AlignEdge::VCenter, "Middle", "Line up their middles on a horizontal line"),
+                        (AlignEdge::Bottom, "Bottom", "Line up on the bottom edge"),
+                    ] {
+                        if ui
+                            .add_enabled(picked > 0, egui::Button::new(text))
+                            .on_hover_text(format!(
+                                "{tip} (one box lines up with the drawing area; Shift-click selects several)"
+                            ))
+                            .clicked()
+                        {
+                            out.push(C::Align(edge));
+                        }
+                    }
+                    for (axis, text, tip) in [
+                        (Spread::Horizontal, "Spread H", "Equal gaps between boxes, left to right"),
+                        (Spread::Vertical, "Spread V", "Equal gaps between boxes, bottom to top"),
+                    ] {
+                        if ui
+                            .add_enabled(picked >= 3, egui::Button::new(text))
+                            .on_hover_text(format!("{tip} (three or more boxes)"))
+                            .clicked()
+                        {
+                            out.push(C::Distribute(axis));
+                        }
+                    }
+                    ui.separator();
+                    if ui
+                        .add_enabled(picked > 0, egui::Button::new("Copy to Page\u{2026}"))
+                        .on_hover_text("Copy the selected boxes to another page")
+                        .clicked()
+                    {
+                        out.push(C::CopyBoxToPage);
+                    }
+                    if ui
+                        .add_enabled(picked == 1, egui::Button::new("Open Source View"))
+                        .on_hover_text("Go back to the floor plan this box shows")
+                        .clicked()
+                    {
+                        out.push(C::OpenSourceView);
+                    }
+                    if ui
+                        .add_enabled(picked > 0, egui::Button::new("Duplicate Box"))
+                        .on_hover_text("Copy the selected boxes on this page")
+                        .clicked()
+                    {
+                        out.push(C::DuplicateBox);
+                    }
+                    ui.separator();
+                    if ui
+                        .button("Export CSV\u{2026}")
+                        .on_hover_text("Save the selected table (or the tables on this page) as CSV")
+                        .clicked()
+                    {
+                        out.push(C::ExportTableCsv);
+                    }
+                    if ui
+                        .button("Export Excel\u{2026}")
+                        .on_hover_text("Save the selected table (or the tables on this page) as an Excel workbook")
+                        .clicked()
+                    {
+                        out.push(C::ExportTableExcel);
+                    }
+                });
+            });
+    }
+
     fn page_tabs(&mut self, ui: &mut Ui, cx: &mut EditorContext, out: &mut Vec<LayoutCommand>) {
         use LayoutCommand as C;
         let titles: Vec<(String, bool)> = self
@@ -3981,11 +6614,12 @@ impl LayoutView {
             .map(|l| {
                 l.pages
                     .iter()
-                    .map(|p| {
+                    .zip(l.page_labels())
+                    .map(|(p, label)| {
                         let name = if p.template_page {
                             format!("{} (template)", p.title)
                         } else {
-                            format!("A-{}  {}", p.number, p.title)
+                            format!("{label}  {}", p.title)
                         };
                         (name, p.template_page)
                     })
@@ -4026,6 +6660,8 @@ impl LayoutView {
                         }
                         r.context_menu(|ui| {
                             for (text, c) in [
+                                ("Edit Page Information...", C::PageInformation),
+                                ("Copy Drawings to Page...", C::CopyDrawingsToPage),
                                 ("Insert Page Before", C::InsertPageBefore),
                                 ("Insert Page After", C::InsertPageAfter),
                                 ("Duplicate Page", C::DuplicatePage),
@@ -4059,8 +6695,10 @@ impl LayoutView {
     fn sheet_view(&mut self, ctx: &egui::Context, ui: &mut Ui, cx: &mut EditorContext) {
         let rect = ui.available_rect_before_wrap();
         let resp = ui.allocate_rect(rect, Sense::click_and_drag());
-        let Some(layout) = &self.layout else { return };
-        let (_, sheet_h) = layout.sheet_inches();
+        if self.layout.is_none() {
+            return;
+        }
+        let (_, sheet_h) = self.sheet_of(self.page);
         if self.fit_pending {
             self.fit(rect);
         }
@@ -4086,6 +6724,7 @@ impl LayoutView {
         painter.rect_filled(rect, 0.0, SURROUND);
         let page = self.page;
         self.paint_page(&painter, &xf, &cx.project, page);
+        self.paint_line_selection(&painter, &xf, &cx.project);
         self.paint_selection(&painter, &xf);
         self.interact(ctx, ui, cx, &resp, &xf, &painter);
     }
@@ -4136,8 +6775,82 @@ impl LayoutView {
             );
             if let (Some(pos), true, true) = (origin, primary && self.placing.is_none(), drawing) {
                 let (x, y) = xf.paper(pos);
-                let p = (snap(x, snapping), snap(y, snapping));
+                let p = self.snap_xy(x, y, snapping, tol);
                 self.drag = Some(Drag::Draw { start: p, cur: p });
+            } else if let (Some(pos), true, true) = (
+                origin,
+                primary && self.placing.is_none(),
+                self.tool == LayoutTool::PanScale,
+            ) {
+                // Pan/Scale Layout Box: drag the contents of the view under
+                // the pointer.
+                let (x, y) = xf.paper(pos);
+                let target = self.hit(xf, pos).filter(|id| {
+                    self.current_page()
+                        .and_then(|p| p.boxes.iter().find(|b| b.id == *id))
+                        .is_some_and(|b| is_scaled(&b.source))
+                });
+                match (target, self.layout.clone()) {
+                    (Some(id), Some(before)) => {
+                        self.selected = Some(id);
+                        let pan0 = self.selected_box().map_or((0.0, 0.0), |b| b.view.pan_in);
+                        self.drag = Some(Drag::PanBox {
+                            id,
+                            start: (x, y),
+                            pan0,
+                            before: Box::new(before),
+                        });
+                    }
+                    _ => self.drag = Some(Drag::Pan),
+                }
+            } else if let (Some(pos), true, true) = (
+                origin,
+                primary && self.placing.is_none(),
+                self.tool == LayoutTool::EditLines,
+            ) {
+                // Edit Layout Lines: drag a selected line to move it, hold
+                // Shift for a marquee, else draw a new line in the view.
+                let (x, y) = xf.paper(pos);
+                let tol = f64::from(HANDLE_PX) / f64::from(xf.z);
+                let shift = ui.input(|i| i.modifiers.shift);
+                if let Some(id) = self.hit(xf, pos) {
+                    if Some(id) != self.selected {
+                        self.selected = Some(id);
+                        self.line_sel.clear();
+                    }
+                }
+                match (self.plot_box(&cx.project), self.layout.clone()) {
+                    (Some((b, map)), Some(before)) => {
+                        let at = map.to_source(Point::new(x, y));
+                        let k = (b.points_per_inch() / 72.0).max(1e-9);
+                        let on_selected = b.view.art.as_ref().is_some_and(|a| {
+                            a.hit_line(at, tol / k)
+                                .is_some_and(|l| self.line_sel.contains(&l))
+                        });
+                        if on_selected {
+                            self.drag = Some(Drag::MoveLines {
+                                id: b.id,
+                                start: at,
+                                orig: Box::new(b.view.art.clone().unwrap_or_default()),
+                                before: Box::new(before),
+                            });
+                        } else if shift {
+                            self.drag = Some(Drag::Marquee {
+                                id: b.id,
+                                start: at,
+                                cur: at,
+                            });
+                        } else {
+                            self.drag = Some(Drag::DrawLine {
+                                id: b.id,
+                                start: at,
+                                cur: at,
+                                before: Box::new(before),
+                            });
+                        }
+                    }
+                    _ => self.drag = Some(Drag::Pan),
+                }
             } else if let (Some(pos), true) = (
                 origin,
                 primary && self.placing.is_none() && self.tool == LayoutTool::Select,
@@ -4168,12 +6881,40 @@ impl LayoutView {
                 } else if let (Some(id), Some(before), Some(orig)) =
                     (cad_hit, self.layout.clone(), self.annotations_only())
                 {
-                    self.selected_cad = Some(id);
-                    self.selected = None;
+                    // A drawing that is one of several selected moves them
+                    // all (and the selected boxes); any other becomes the
+                    // selection.
+                    let in_group = self.cad_selection_ids().contains(&id);
+                    let (with_cad, with_boxes) = if in_group {
+                        let boxes = self.selection_ids();
+                        (
+                            self.cad_selection_ids()
+                                .into_iter()
+                                .filter(|c| *c != id)
+                                .collect(),
+                            self.current_page()
+                                .map(|p| {
+                                    p.boxes
+                                        .iter()
+                                        .filter(|b| boxes.contains(&b.id))
+                                        .map(|b| (b.id, bounds(b)))
+                                        .collect()
+                                })
+                                .unwrap_or_default(),
+                        )
+                    } else {
+                        self.selected_cad = Some(id);
+                        self.selected = None;
+                        self.also.clear();
+                        self.also_cad.clear();
+                        (Vec::new(), Vec::new())
+                    };
                     self.drag = Some(Drag::MoveCad {
                         id,
                         start: (x, y),
                         orig: Box::new(orig),
+                        with_cad,
+                        with_boxes,
                         before: Box::new(before),
                     });
                 } else if let (Some((id, orig, h)), Some(before)) = (handle, self.layout.clone()) {
@@ -4184,16 +6925,48 @@ impl LayoutView {
                         orig,
                         before: Box::new(before),
                     });
-                } else if let (Some(id), Some(before)) = (self.hit(xf, pos), self.layout.clone()) {
-                    self.selected = Some(id);
-                    let orig = self
-                        .current_page()
+                } else if let (Some(id), Some(before), Some(cad_orig)) = (
+                    self.hit(xf, pos),
+                    self.layout.clone(),
+                    self.annotations_only().map(Box::new),
+                ) {
+                    // Dragging a box that is one of several selected moves
+                    // them all; any other box becomes the selection.
+                    let in_group = self.selection_ids().contains(&id);
+                    if !in_group {
+                        self.also.clear();
+                        self.selected_cad = None;
+                        self.also_cad.clear();
+                    }
+                    self.selected = if in_group { self.selected } else { Some(id) };
+                    let page = self.current_page();
+                    let orig = page
                         .and_then(|p| p.boxes.iter().find(|b| b.id == id))
                         .map_or([0.0; 4], bounds);
+                    let group: Vec<(Id, [f64; 4])> = if in_group {
+                        page.map(|p| {
+                            p.boxes
+                                .iter()
+                                .filter(|b| b.id != id && self.selection_ids().contains(&b.id))
+                                .map(|b| (b.id, bounds(b)))
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                    } else {
+                        Vec::new()
+                    };
+                    let cad = if in_group {
+                        self.cad_selection_ids()
+                    } else {
+                        Vec::new()
+                    };
                     self.drag = Some(Drag::Move {
                         id,
                         start: (x, y),
                         orig,
+                        group,
+                        cad,
+                        cad_orig,
                         before: Box::new(before),
                     });
                 } else {
@@ -4210,16 +6983,23 @@ impl LayoutView {
                 (Some(Drag::Pan), _) => self.offset += ui.input(|i| i.pointer.delta()),
                 (
                     Some(Drag::Move {
-                        id, start, orig, ..
+                        id,
+                        start,
+                        orig,
+                        group,
+                        cad,
+                        cad_orig,
+                        ..
                     }),
                     Some(pos),
                 ) => {
                     let (x, y) = xf.paper(pos);
-                    self.live_bounds(
-                        &mut cx.project,
-                        id,
-                        moved(orig, x - start.0, y - start.1, snapping),
-                    );
+                    let to = moved(orig, x - start.0, y - start.1, snapping);
+                    self.live_bounds(&mut cx.project, id, to);
+                    // The rest of the selection keeps its place around it:
+                    // the other boxes and the page drawings.
+                    let (dx, dy) = (to[0] - orig[0], to[1] - orig[1]);
+                    self.move_group_live(&mut cx.project, &group, &cad, &cad_orig, (dx, dy));
                 }
                 (
                     Some(Drag::Resize {
@@ -4232,30 +7012,99 @@ impl LayoutView {
                     Some(pos),
                 ) => {
                     let (x, y) = xf.paper(pos);
-                    self.live_bounds(
-                        &mut cx.project,
-                        id,
-                        resized(orig, handle, x - start.0, y - start.1, snapping),
-                    );
+                    let to = resized(orig, handle, x - start.0, y - start.1, snapping);
+                    // The Alternate edit behavior on a corner handle of a
+                    // box with no scale resizes the view with the border.
+                    let alternate = ui.input(|i| i.modifiers.command);
+                    let corner =
+                        matches!(handle, Handle::NE | Handle::NW | Handle::SE | Handle::SW);
+                    let first = match &self.drag {
+                        Some(Drag::Resize { before, .. }) => before
+                            .pages
+                            .iter()
+                            .flat_map(|p| p.boxes.iter())
+                            .find(|b| b.id == id)
+                            .cloned(),
+                        _ => None,
+                    };
+                    match first {
+                        Some(b0) if alternate && corner && b0.is_no_scale() => {
+                            self.live_resize_no_scale(&mut cx.project, id, &b0, to);
+                        }
+                        _ => self.live_bounds(&mut cx.project, id, to),
+                    }
                 }
                 (Some(Drag::Draw { start, .. }), Some(pos)) => {
                     let (x, y) = xf.paper(pos);
                     self.drag = Some(Drag::Draw {
                         start,
-                        cur: (snap(x, snapping), snap(y, snapping)),
+                        cur: self.snap_xy(x, y, snapping, tol),
                     });
                 }
                 (
-                    Some(Drag::MoveCad {
+                    Some(Drag::PanBox {
+                        id, start, pan0, ..
+                    }),
+                    Some(pos),
+                ) => {
+                    let (x, y) = xf.paper(pos);
+                    self.live_pan(&mut cx.project, id, pan0, (x - start.0, y - start.1));
+                }
+                (
+                    Some(Drag::DrawLine {
+                        id, start, before, ..
+                    }),
+                    Some(pos),
+                ) => {
+                    let (x, y) = xf.paper(pos);
+                    if let Some((_, map)) = self.plot_box(&cx.project) {
+                        self.drag = Some(Drag::DrawLine {
+                            id,
+                            start,
+                            cur: map.to_source(Point::new(x, y)),
+                            before,
+                        });
+                    }
+                }
+                (Some(Drag::Marquee { id, start, .. }), Some(pos)) => {
+                    let (x, y) = xf.paper(pos);
+                    if let Some((_, map)) = self.plot_box(&cx.project) {
+                        self.drag = Some(Drag::Marquee {
+                            id,
+                            start,
+                            cur: map.to_source(Point::new(x, y)),
+                        });
+                    }
+                }
+                (
+                    Some(Drag::MoveLines {
                         id, start, orig, ..
                     }),
                     Some(pos),
                 ) => {
                     let (x, y) = xf.paper(pos);
+                    if let Some((_, map)) = self.plot_box(&cx.project) {
+                        let at = map.to_source(Point::new(x, y));
+                        let d = Point::new(at.x - start.x, at.y - start.y);
+                        self.live_move_lines(&mut cx.project, id, &orig, d);
+                    }
+                }
+                (
+                    Some(Drag::MoveCad {
+                        id,
+                        start,
+                        orig,
+                        with_cad,
+                        with_boxes,
+                        ..
+                    }),
+                    Some(pos),
+                ) => {
+                    let (x, y) = xf.paper(pos);
                     let (dx, dy) = (snap(x - start.0, snapping), snap(y - start.1, snapping));
-                    self.live_annotation(&mut cx.project, &orig, |p| {
-                        p.move_annotation(id, dx, dy);
-                    });
+                    let mut all = with_cad;
+                    all.push(id);
+                    self.move_group_live(&mut cx.project, &with_boxes, &all, &orig, (dx, dy));
                 }
                 (
                     Some(Drag::ResizeCad {
@@ -4292,6 +7141,27 @@ impl LayoutView {
                     self.finish_drag(&mut cx.project, *before, "Resize Layout Drawing");
                 }
                 Some(Drag::Draw { start, cur }) => self.finish_draw(cx, start, cur),
+                Some(Drag::PanBox { before, .. }) => {
+                    self.finish_drag(&mut cx.project, *before, "Pan Layout Box");
+                }
+                Some(Drag::MoveLines { before, .. }) => {
+                    self.finish_drag(&mut cx.project, *before, "Move Layout Lines");
+                }
+                Some(Drag::DrawLine { start, cur, .. }) => {
+                    if start.dist(cur) > 1e-6
+                        && self.add_plot_line(&mut cx.project, start, cur).is_some()
+                    {
+                        cx.status = "Drew a layout line".into();
+                    }
+                }
+                Some(Drag::Marquee { id, start, cur }) if self.selected == Some(id) => {
+                    self.line_sel = self
+                        .selected_box()
+                        .and_then(|b| b.view.art.as_ref())
+                        .map(|a| a.lines_in_rect(start, cur))
+                        .unwrap_or_default();
+                    cx.status = format!("Selected {} layout line(s)", self.line_sel.len());
+                }
                 _ => {}
             }
             if let Some((l, _)) = self.steps.last() {
@@ -4305,7 +7175,8 @@ impl LayoutView {
                 if self.placing.is_some() {
                     self.place_at(cx, x, y);
                 } else {
-                    self.click(cx, xf, pos, snapping);
+                    let extend = ui.input(|i| i.modifiers.shift);
+                    self.click_with(cx, xf, pos, snapping, extend);
                 }
             }
         }
@@ -4337,6 +7208,35 @@ impl LayoutView {
                 }
             }
         }
+        if let Some(Drag::DrawLine { id, start, cur, .. } | Drag::Marquee { id, start, cur }) =
+            &self.drag
+        {
+            let marquee = matches!(self.drag, Some(Drag::Marquee { .. }));
+            if let Some((b, map)) = self
+                .layout
+                .as_ref()
+                .and_then(|l| {
+                    l.pages
+                        .iter()
+                        .flat_map(|p| p.boxes.iter())
+                        .find(|b| b.id == *id)
+                        .cloned()
+                })
+                .and_then(|b| {
+                    let rcx = ui_context(&cx.project);
+                    plan_layout::box_content_map(&b, &rcx).map(|m| (b, m))
+                })
+            {
+                let _ = b;
+                let (a, c) = (map.to_paper(*start), map.to_paper(*cur));
+                let (pa, pc) = (xf.pt(a.x, a.y), xf.pt(c.x, c.y));
+                if marquee {
+                    painter.rect_stroke(Rect::from_two_pos(pa, pc), 0.0, draft, StrokeKind::Middle);
+                } else {
+                    painter.line_segment([pa, pc], draft);
+                }
+            }
+        }
         if self.tool == LayoutTool::Arc && !self.poly.is_empty() {
             let pts: Vec<Pos2> = self.poly.iter().map(|p| xf.pt(p.x, p.y)).collect();
             if let Some(h) = resp.hover_pos() {
@@ -4348,14 +7248,15 @@ impl LayoutView {
             let mut pts: Vec<Pos2> = self.poly.iter().map(|p| xf.pt(p.x, p.y)).collect();
             if let Some(h) = resp.hover_pos() {
                 let (x, y) = xf.paper(h);
-                pts.push(xf.pt(snap(x, snapping), snap(y, snapping)));
+                let (sx, sy) = self.snap_xy(x, y, snapping, tol);
+                pts.push(xf.pt(sx, sy));
             }
             painter.add(egui::Shape::line(pts, draft));
         }
         // Keys.
         if !ctx.wants_keyboard_input() && !self.dialogs.any() {
             let (del, esc, nudge) = ui.input(|i| {
-                let big = if i.modifiers.shift { 4.0 } else { 1.0 } * SNAP_IN;
+                let big = if i.modifiers.shift { 4.0 } else { 1.0 } * snap_unit();
                 let mut n = (0.0, 0.0);
                 if i.key_pressed(egui::Key::ArrowLeft) {
                     n.0 -= big;
@@ -4375,7 +7276,10 @@ impl LayoutView {
                     n,
                 )
             });
-            if del {
+            if del && self.tool == LayoutTool::EditLines && !self.line_sel.is_empty() {
+                let n = self.delete_selected_lines(&mut cx.project);
+                cx.status = format!("Deleted {n} layout line(s)");
+            } else if del {
                 if self.selected_cad.is_some() {
                     if self.delete_selected_cad(&mut cx.project) {
                         cx.status = "Deleted the page drawing".into();
@@ -4419,7 +7323,21 @@ impl LayoutView {
 
     /// A click on the page, by tool: select (rotate knob, page CAD, boxes),
     /// add a polyline corner, or place page text.
+    #[cfg(test)]
     fn click(&mut self, cx: &mut EditorContext, xf: &Xf, pos: Pos2, snapping: bool) {
+        self.click_with(cx, xf, pos, snapping, false);
+    }
+
+    /// [`click`](Self::click); with `extend` (Shift) a click on a box adds it
+    /// to the selection, or takes it out when it is already in.
+    fn click_with(
+        &mut self,
+        cx: &mut EditorContext,
+        xf: &Xf,
+        pos: Pos2,
+        snapping: bool,
+        extend: bool,
+    ) {
         let (x, y) = xf.paper(pos);
         match self.tool {
             LayoutTool::Select => {
@@ -4434,30 +7352,62 @@ impl LayoutView {
                 let tol = f64::from(HANDLE_PX) / f64::from(xf.z);
                 let cad = self.current_page().and_then(|p| cad_at(p, x, y, tol));
                 match cad {
+                    // Shift adds a page drawing to the selection (the boxes
+                    // stay), so a group drag moves both.
+                    Some(id) if extend => self.extend_cad_selection(id),
                     Some(id) => {
                         self.selected_cad = Some(id);
                         self.selected = None;
+                        self.also.clear();
+                        self.also_cad.clear();
                     }
                     None => {
-                        self.selected = self.hit(xf, pos);
-                        self.selected_cad = None;
+                        let hit = self.hit(xf, pos);
+                        if !extend {
+                            self.selected_cad = None;
+                            self.also_cad.clear();
+                        }
+                        if extend {
+                            if let Some(id) = hit {
+                                let mut ids = self.selection_ids();
+                                match ids.iter().position(|i| *i == id) {
+                                    Some(at) => {
+                                        ids.remove(at);
+                                    }
+                                    None => ids.push(id),
+                                }
+                                // The page drawings selected stay selected.
+                                self.selected = ids.first().copied();
+                                self.also = ids.iter().skip(1).copied().collect();
+                            }
+                        } else {
+                            self.selected = hit;
+                            self.also.clear();
+                        }
                     }
                 }
             }
             LayoutTool::Polyline | LayoutTool::Leader => {
-                self.poly
-                    .push(Point::new(snap(x, snapping), snap(y, snapping)));
+                let tol = f64::from(HANDLE_PX) / f64::from(xf.z);
+                let (sx, sy) = self.snap_xy(x, y, snapping, tol);
+                self.poly.push(Point::new(sx, sy));
             }
             LayoutTool::Text => {
                 self.dialogs.cad_text = Some(CadTextDialog::new(CadTextSpec {
                     id: None,
-                    pos: Point::new(snap(x, snapping), snap(y, snapping)),
+                    pos: {
+                        let tol = f64::from(HANDLE_PX) / f64::from(xf.z);
+                        let (sx, sy) = self.snap_xy(x, y, snapping, tol);
+                        Point::new(sx, sy)
+                    },
                     text: String::new(),
                     height_in: 0.125,
                 }));
             }
             LayoutTool::Arc => {
-                let p = Point::new(snap(x, snapping), snap(y, snapping));
+                let tol = f64::from(HANDLE_PX) / f64::from(xf.z);
+                let (sx, sy) = self.snap_xy(x, y, snapping, tol);
+                let p = Point::new(sx, sy);
                 self.poly.push(p);
                 if self.poly.len() == 3 {
                     let (c, a, b) = (self.poly[0], self.poly[1], self.poly[2]);
@@ -4465,6 +7415,46 @@ impl LayoutView {
                     if self.add_cad_arc(&mut cx.project, c, a, b).is_some() {
                         cx.status = "Added an arc to the page".into();
                     }
+                }
+            }
+            LayoutTool::PointToPoint => {
+                let tol = f64::from(HANDLE_PX) / f64::from(xf.z);
+                let (sx, sy) = self.snap_xy(x, y, snapping, tol);
+                self.poly.push(Point::new(sx, sy));
+                if self.poly.len() >= 2 {
+                    let (a, b) = (self.poly[0], self.poly[1]);
+                    self.poly.clear();
+                    self.tool = LayoutTool::Select;
+                    cx.status = if self.move_selection(
+                        &mut cx.project,
+                        (b.x - a.x, b.y - a.y),
+                        "Point to Point Move",
+                    ) {
+                        "Moved the selection".into()
+                    } else {
+                        "Select a layout box or page drawing before Point to Point Move".into()
+                    };
+                } else {
+                    cx.status = "Click where the selection moves to".into();
+                }
+            }
+            LayoutTool::PanScale => {
+                // Click a view to pan and scale it.
+                if let Some(id) = self.hit(xf, pos) {
+                    self.selected = Some(id);
+                    self.also.clear();
+                }
+            }
+            LayoutTool::EditLines => {
+                let tol = f64::from(HANDLE_PX) / f64::from(xf.z);
+                if !self.select_line_at(&cx.project, x, y, tol, extend) {
+                    cx.status = if self.plot_box(&cx.project).is_some() {
+                        "No layout line there: drag to draw one".into()
+                    } else {
+                        "Select a view sent as Plot Lines to edit its lines".into()
+                    };
+                } else {
+                    cx.status = format!("{} layout line(s) selected", self.line_sel.len());
                 }
             }
             LayoutTool::Line
@@ -4484,6 +7474,12 @@ impl LayoutView {
         }
         if self.tool == LayoutTool::Leader {
             self.finish_leader();
+            return;
+        }
+        if self.tool == LayoutTool::EditLines {
+            if !self.line_sel.is_empty() && self.open_line_spec() {
+                cx.status = String::new();
+            }
             return;
         }
         if self.tool != LayoutTool::Select {
@@ -4970,14 +7966,16 @@ mod tests {
         assert_eq!(v.page, 2);
         assert!(v.delete_current_page(&mut p).is_ok());
         assert_eq!(v.layout().unwrap().pages.len(), 4);
-        // The template page can go, the last printed page cannot.
+        // The template page stays while pages use it (round 16: LP4), the
+        // last printed page cannot go.
         v.set_page(0);
-        assert!(v.delete_current_page(&mut p).is_ok());
+        assert!(v.delete_current_page(&mut p).is_err());
+        assert_eq!(v.layout().unwrap().pages.len(), 4);
         while v.layout().unwrap().content_pages().len() > 1 {
-            v.set_page(0);
+            v.set_page(1);
             assert!(v.delete_current_page(&mut p).is_ok());
         }
-        v.set_page(0);
+        v.set_page(1);
         assert_eq!(
             v.delete_current_page(&mut p),
             Err("A layout keeps at least one page")
@@ -4990,8 +7988,11 @@ mod tests {
     fn page_setup_changes_the_sheet() {
         let (mut v, mut p) = view_with_layout();
         let mut s = v.page_setup().unwrap();
-        assert_eq!(s.sheet, SheetSize::ArchC);
-        s.sheet = SheetSize::Tabloid;
+        assert_eq!(
+            s.sheet,
+            plan_layout::SheetChoice::Standard(SheetSize::ArchC)
+        );
+        s.sheet = plan_layout::SheetChoice::Standard(SheetSize::Tabloid);
         s.margins_in = 0.25;
         s.page_background = false;
         s.edge_line_weight = 35;
@@ -5063,14 +8064,15 @@ mod tests {
     }
 
     #[test]
-    fn page_table_renames_and_flags_templates() {
+    fn page_information_renames_and_flags_templates() {
         let (mut v, mut p) = view_with_layout();
-        let mut rows = v.page_rows();
-        assert_eq!(rows.len(), 2);
-        rows[1].title = "Main Level".into();
-        assert!(v.apply_page_table(&mut p, &rows));
+        let mut d = v.page_info_dialog(&p).unwrap();
+        assert_eq!(d.entries().len(), 2);
+        d.select(1);
+        d.info_mut().unwrap().title = "Main Level".into();
+        assert_eq!(v.apply_page_info(&mut p, &d), Ok(true));
         assert_eq!(v.layout().unwrap().pages[1].title, "Main Level");
-        assert!(!v.apply_page_table(&mut p, &rows));
+        assert_eq!(v.apply_page_info(&mut p, &d), Ok(false));
         assert_eq!(page_list(&p)[1].1, "A-1  Main Level");
         assert!(page_list(&p)[0].2, "page 0 is the template");
     }
@@ -5227,6 +8229,201 @@ mod tests {
         assert_eq!(cx.status, "Select a layout box first");
         v.run(&mut cx, LayoutCommand::ShowPlan, None);
         assert!(!v.active);
+    }
+
+    #[test]
+    fn the_new_commands_open_their_dialogs_and_work_the_selection() {
+        let mut cx = EditorContext::new(plan_defaults::embedded());
+        cx.project = project();
+        let mut v = LayoutView::default();
+        v.create(&mut cx.project, None);
+        v.run(&mut cx, LayoutCommand::ShowLayout, None);
+        v.run(&mut cx, LayoutCommand::PageInformation, None);
+        assert!(v.dialogs.page_info.is_some());
+        v.dialogs.page_info = None;
+        v.run(&mut cx, LayoutCommand::CustomizeSheetSizes, None);
+        assert!(v.dialogs.sheet_sizes.is_some());
+        v.dialogs.sheet_sizes = None;
+        v.run(&mut cx, LayoutCommand::NewLayoutFile, None);
+        assert!(v.dialogs.new_layout.is_some());
+        v.dialogs.new_layout = None;
+        // Nothing selected: the arranging commands say so.
+        for cmd in [
+            LayoutCommand::Align(AlignEdge::Left),
+            LayoutCommand::CopyBoxToPage,
+            LayoutCommand::DuplicateBox,
+        ] {
+            v.run(&mut cx, cmd, None);
+            assert!(
+                cx.status.starts_with("Select a layout box"),
+                "{}",
+                cx.status
+            );
+        }
+        v.run(&mut cx, LayoutCommand::Distribute(Spread::Horizontal), None);
+        assert!(cx.status.contains("three or more"), "{}", cx.status);
+        // Three boxes: align, spread, copy through the commands.
+        let a = v
+            .add_text_box_in(&mut cx.project, [1.0, 1.0, 3.0, 2.0])
+            .unwrap();
+        let b = v
+            .add_text_box_in(&mut cx.project, [4.0, 5.0, 8.0, 7.0])
+            .unwrap();
+        let c = v
+            .add_text_box_in(&mut cx.project, [2.0, 9.0, 3.0, 10.0])
+            .unwrap();
+        v.select_boxes(&[a, b, c]);
+        v.run(&mut cx, LayoutCommand::Align(AlignEdge::Left), None);
+        assert!(cx.status.starts_with("Moved 2 layout box"), "{}", cx.status);
+        v.run(&mut cx, LayoutCommand::Align(AlignEdge::Left), None);
+        assert_eq!(cx.status, "The boxes are already lined up");
+        v.run(&mut cx, LayoutCommand::Distribute(Spread::Vertical), None);
+        assert!(cx.status.starts_with("Spread"), "{}", cx.status);
+        v.run(&mut cx, LayoutCommand::CopyBoxToPage, None);
+        assert!(v.dialogs.copy_box.is_some());
+        v.dialogs.copy_box = None;
+        v.run(&mut cx, LayoutCommand::DuplicateBox, None);
+        assert_eq!(cx.status, "Copied 3 layout box(es)");
+        assert_eq!(v.current_page().unwrap().boxes.len(), 6);
+        // Export with no table box says what to select.
+        v.select_boxes(&[a]);
+        v.run(&mut cx, LayoutCommand::ExportTableExcel, None);
+        assert!(cx.status.starts_with("Select a schedule"), "{}", cx.status);
+        // A table box exports (the file dialog is skipped under test).
+        let t = v
+            .add_source_box(
+                &mut cx.project,
+                "Add Schedule",
+                BoxSource::Schedule {
+                    kind: plan_layout::ScheduleKind::Door,
+                },
+            )
+            .unwrap();
+        v.select_boxes(&[t]);
+        v.run(&mut cx, LayoutCommand::ExportTableExcel, None);
+        assert!(
+            cx.status.starts_with("Saved ") && cx.status.ends_with("of xlsx"),
+            "{}",
+            cx.status
+        );
+        v.run(&mut cx, LayoutCommand::ExportTableCsv, None);
+        assert!(cx.status.ends_with("of csv"), "{}", cx.status);
+        // Open Source View: a text box has no view; a plan box opens its floor.
+        v.select_boxes(&[a]);
+        v.run(&mut cx, LayoutCommand::OpenSourceView, None);
+        assert!(
+            cx.status.contains("does not come from a view"),
+            "{}",
+            cx.status
+        );
+        let plan = v.send(&mut cx.project, &plan_spec(0), None).unwrap();
+        v.select_boxes(&[plan]);
+        v.active = true;
+        v.run(&mut cx, LayoutCommand::OpenSourceView, None);
+        assert!(!v.active, "back on the plan");
+        assert!(cx.status.starts_with("Opened "), "{}", cx.status);
+        v.active = true;
+        // Switching to a layout file that is not there does nothing.
+        v.run(&mut cx, LayoutCommand::SwitchLayout(3), None);
+        assert!(v.layout().is_some());
+    }
+
+    #[test]
+    fn shift_click_adds_boxes_to_the_selection_and_takes_them_out() {
+        let (ctx, mut v, mut cx, _) = interactive();
+        let _ = ctx;
+        let page = v.current_page().unwrap().clone();
+        let first = page.boxes[0].id;
+        let second = v
+            .add_text_box_in(&mut cx.project, [1.0, 1.0, 3.0, 2.0])
+            .unwrap();
+        v.select_boxes(&[]);
+        let xf = v.last_xf.expect("the view drew a frame");
+        let at = |id: Id| {
+            let b = v
+                .current_page()
+                .unwrap()
+                .boxes
+                .iter()
+                .find(|b| b.id == id)
+                .unwrap()
+                .bounds_in();
+            xf.pt((b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0)
+        };
+        let (p1, p2) = (at(first), at(second));
+        v.click_with(&mut cx, &xf, p1, false, true);
+        assert_eq!(v.selection_ids(), vec![first]);
+        v.click_with(&mut cx, &xf, p2, false, true);
+        assert_eq!(v.selection_ids(), vec![first, second]);
+        // Shift on a selected box takes it out; a plain click selects one.
+        v.click_with(&mut cx, &xf, p1, false, true);
+        assert_eq!(v.selection_ids(), vec![second]);
+        v.click_with(&mut cx, &xf, p1, false, false);
+        assert_eq!(v.selection_ids(), vec![first]);
+        // The selection does not outlive its boxes.
+        v.select_boxes(&[first, second]);
+        v.delete_selected(&mut cx.project);
+        assert!(v.selection_ids().len() <= 1);
+    }
+
+    #[test]
+    fn a_page_with_its_own_sheet_paints_and_fits_at_that_size() {
+        let ctx = egui::Context::default();
+        let mut cx = EditorContext::new(plan_defaults::embedded());
+        cx.project = project();
+        let mut v = LayoutView::default();
+        v.create(&mut cx.project, None);
+        v.run(&mut cx, LayoutCommand::ShowLayout, None);
+        v.run(&mut cx, LayoutCommand::InsertPageAfter, None);
+        let second = v.page;
+        let mut d = v.page_info_dialog(&cx.project).unwrap();
+        d.sheet_mut().unwrap().sheet = Some(plan_layout::SheetChoice::Standard(SheetSize::ArchE));
+        assert_eq!(v.apply_page_info(&mut cx.project, &d), Ok(true));
+        assert_eq!(v.sheet_of(second), (48.0, 36.0));
+        assert_eq!(v.sheet_of(1), (24.0, 18.0));
+        // Going to the other page refits the window to its sheet.
+        v.set_page(1);
+        assert!(v.fit_pending);
+        for _ in 0..2 {
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| v.show(ctx, ui, &mut cx));
+            });
+        }
+        let zoom_small = v.zoom;
+        v.set_page(second);
+        for _ in 0..2 {
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| v.show(ctx, ui, &mut cx));
+            });
+        }
+        assert!(v.zoom < zoom_small, "the bigger sheet needs a smaller zoom");
+        assert_eq!(v.last_xf.unwrap().h, 36.0);
+    }
+
+    #[test]
+    fn print_preview_opens_from_the_print_dialog_and_draws() {
+        let ctx = egui::Context::default();
+        let mut cx = EditorContext::new(plan_defaults::embedded());
+        cx.project = project();
+        let mut v = LayoutView::default();
+        v.create(&mut cx.project, None);
+        v.send(&mut cx.project, &plan_spec(0), None).unwrap();
+        let mut d = v.layout_print_dialog().unwrap();
+        d.set_color(plan_layout::PrintColor::Grayscale);
+        v.preview_print(&mut cx, &d);
+        let prev = v.dialogs.preview.as_ref().expect("the preview window");
+        assert_eq!(prev.pages().len(), 1);
+        assert_eq!(prev.pages()[0].color, plan_layout::PrintColor::Grayscale);
+        for _ in 0..3 {
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                v.show_dialogs(ctx, &mut cx);
+            });
+        }
+        assert!(v.dialogs.preview.is_some(), "it stays until closed");
+        // A plan view prints a preview too, with its scale.
+        let plan = PrintDialog::for_plan(0, "Default Set", "FIRST FLOOR");
+        v.preview_print(&mut cx, &plan);
+        assert_eq!(v.dialogs.preview.as_ref().unwrap().pages().len(), 1);
     }
 
     #[test]
@@ -5436,6 +8633,39 @@ mod tests {
     }
 
     #[test]
+    fn dragging_one_of_several_selected_boxes_moves_them_all_in_one_undo_step() {
+        let (ctx, mut v, mut cx, id) = interactive();
+        let other = v
+            .add_text_box_in(&mut cx.project, [1.0, 1.0, 3.0, 2.0])
+            .unwrap();
+        v.steps.clear();
+        v.select_boxes(&[id, other]);
+        frame(&ctx, &mut v, &mut cx, vec![], 0.5);
+        let (c, before) = center_of(&v, id);
+        let (_, other_before) = center_of(&v, other);
+        let to = c + Vec2::new(60.0, 30.0);
+        drag(&ctx, &mut v, &mut cx, c, to, 1.0);
+        let (_, after) = center_of(&v, id);
+        let (_, other_after) = center_of(&v, other);
+        let (dx, dy) = (after[0] - before[0], after[1] - before[1]);
+        assert!(dx > 0.0 && dy < 0.0, "{dx} {dy}");
+        assert!(((other_after[0] - other_before[0]) - dx).abs() < 1e-9);
+        assert!(((other_after[1] - other_before[1]) - dy).abs() < 1e-9);
+        assert_eq!(v.selection_ids().len(), 2, "both stay selected");
+        assert_eq!(v.steps.len(), 1);
+        assert_eq!(v.undo(&mut cx.project).as_deref(), Some("Move Layout Box"));
+        assert_eq!(center_of(&v, id).1, before);
+        assert_eq!(center_of(&v, other).1, other_before);
+        // Dragging a box outside the selection selects that one alone.
+        v.select_boxes(&[other]);
+        frame(&ctx, &mut v, &mut cx, vec![], 3.0);
+        let (c, _) = center_of(&v, id);
+        drag(&ctx, &mut v, &mut cx, c, c + Vec2::new(20.0, 0.0), 4.0);
+        assert_eq!(v.selection_ids(), vec![id]);
+        assert_eq!(center_of(&v, other).1, other_before, "the other stayed");
+    }
+
+    #[test]
     fn dragging_a_handle_resizes_and_clicking_empty_space_deselects() {
         let (ctx, mut v, mut cx, id) = interactive();
         let (c, _) = center_of(&v, id);
@@ -5499,8 +8729,11 @@ mod tests {
             frame(&ctx, &mut v, &mut cx, vec![press(c, true)], t);
             frame(&ctx, &mut v, &mut cx, vec![press(c, false)], t + 0.05);
         }
-        assert!(v.dialogs.spec.is_some(), "double-click opens the spec");
-        v.dialogs.spec = None;
+        assert!(
+            v.dialogs.box_view.is_some(),
+            "double-click opens the specification of a view box"
+        );
+        v.dialogs.box_view = None;
         let key = egui::Event::Key {
             key: egui::Key::Delete,
             physical_key: None,
@@ -5522,7 +8755,7 @@ mod tests {
             scale: Some(Scale::EighthInch),
             ..plan_spec(0)
         };
-        v.finish_send(&mut cx, spec);
+        v.finish_send(&mut cx, spec, LayoutTarget::Current, None);
         assert!(v.placing.is_some());
         let xf = v.last_xf.unwrap();
         let at = xf.pt(8.0, 9.0);
@@ -5842,6 +9075,15 @@ mod tests {
             template_page: false,
             leaders: vec![],
             clouds: vec![],
+            size_override_in: None,
+            no_title_block: false,
+            label: String::new(),
+            description: String::new(),
+            comments: String::new(),
+            in_layout_table: true,
+            template: None,
+            revisions: vec![],
+            baked: None,
         };
         assert_eq!(
             box_at(&page, 5.0, 7.5),
@@ -6223,6 +9465,96 @@ mod tests {
         select_tool_drag(&ctx, &mut v, &mut cx, (20.0, 3.0), (21.0, 3.0), 3.0);
         assert_ne!(v.offset, before);
         assert_eq!(v.steps.len(), 1);
+    }
+
+    /// A page line well clear of the box `r`, and the points on it to grab.
+    fn line_clear_of(v: &LayoutView, id: Id) -> (Point, Point) {
+        let (_, r) = {
+            let b = v
+                .current_page()
+                .unwrap()
+                .boxes
+                .iter()
+                .find(|b| b.id == id)
+                .unwrap();
+            (0, bounds(b))
+        };
+        let (lo, hi) = v.layout().unwrap().drawing_area();
+        let y = if r[1] - lo.y > 1.0 {
+            r[1] - 0.5
+        } else {
+            (r[3] + 0.5).min(hi.y - 0.1)
+        };
+        let x0 = (r[0] + 0.5).max(lo.x + 0.1);
+        (Point::new(x0, y), Point::new(x0 + 2.0, y))
+    }
+
+    #[test]
+    fn dragging_a_box_moves_the_page_drawings_selected_with_it() {
+        let (ctx, mut v, mut cx, id) = interactive();
+        let (a, b) = line_clear_of(&v, id);
+        let l = v.add_cad_line(&mut cx.project, a, b).unwrap();
+        v.steps.clear();
+        v.select_boxes(&[id]);
+        v.extend_cad_selection(l);
+        assert_eq!(v.selection_ids(), vec![id]);
+        assert_eq!(v.cad_selection_ids(), vec![l]);
+        frame(&ctx, &mut v, &mut cx, vec![], 0.5);
+        let (c, before) = center_of(&v, id);
+        drag(&ctx, &mut v, &mut cx, c, c + Vec2::new(40.0, 25.0), 1.0);
+        let (_, after) = center_of(&v, id);
+        let (dx, dy) = (after[0] - before[0], after[1] - before[1]);
+        assert!(dx > 0.0 && dy != 0.0, "{dx} {dy}");
+        let CadItem::Line { a: a2, b: b2 } = v.current_page().unwrap().cad[0].item.clone() else {
+            panic!("a line")
+        };
+        assert!(((a2.x - a.x) - dx).abs() < 1e-9 && ((a2.y - a.y) - dy).abs() < 1e-9);
+        assert!(((b2.x - b.x) - dx).abs() < 1e-9 && ((b2.y - b.y) - dy).abs() < 1e-9);
+        // One undo step puts the box and the line back.
+        assert_eq!(v.steps.len(), 1);
+        assert_eq!(v.undo(&mut cx.project).as_deref(), Some("Move Layout Box"));
+        assert_eq!(center_of(&v, id).1, before);
+        let CadItem::Line { a: a3, .. } = v.current_page().unwrap().cad[0].item.clone() else {
+            panic!("a line")
+        };
+        assert_eq!(a3, a);
+        // A drawing left out of the selection stays where it is.
+        v.select_boxes(&[id]);
+        frame(&ctx, &mut v, &mut cx, vec![], 3.0);
+        let (c, _) = center_of(&v, id);
+        drag(&ctx, &mut v, &mut cx, c, c + Vec2::new(30.0, 0.0), 4.0);
+        let CadItem::Line { a: a4, .. } = v.current_page().unwrap().cad[0].item.clone() else {
+            panic!("a line")
+        };
+        assert_eq!(a4, a, "not selected, not moved");
+    }
+
+    #[test]
+    #[ignore = "R16-02 in progress: group drag of page CAD"]
+    fn dragging_a_selected_page_drawing_moves_the_boxes_selected_with_it() {
+        let (ctx, mut v, mut cx, id) = interactive();
+        let (a, b) = line_clear_of(&v, id);
+        let l = v.add_cad_line(&mut cx.project, a, b).unwrap();
+        v.steps.clear();
+        v.select_boxes(&[id]);
+        v.extend_cad_selection(l);
+        frame(&ctx, &mut v, &mut cx, vec![], 0.5);
+        let (_, before) = center_of(&v, id);
+        let mid = ((a.x + b.x) / 2.0, a.y);
+        select_tool_drag(&ctx, &mut v, &mut cx, mid, (mid.0 + 0.5, mid.1 + 0.25), 1.0);
+        let (_, after) = center_of(&v, id);
+        let CadItem::Line { a: a2, .. } = v.current_page().unwrap().cad[0].item.clone() else {
+            panic!("a line")
+        };
+        let (dx, dy) = (a2.x - a.x, a2.y - a.y);
+        assert!(dx.abs() > 1e-6 || dy.abs() > 1e-6);
+        assert!(((after[0] - before[0]) - dx).abs() < 1e-9);
+        assert!(((after[1] - before[1]) - dy).abs() < 1e-9);
+        assert_eq!(v.steps.len(), 1);
+        assert_eq!(v.steps[0].0, "Move Layout Drawing");
+        // Shift-clicking the drawing again takes it out of the selection.
+        v.extend_cad_selection(l);
+        assert!(v.cad_selection_ids().is_empty());
     }
 
     #[test]

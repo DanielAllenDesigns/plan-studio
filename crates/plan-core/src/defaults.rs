@@ -13,6 +13,12 @@ use crate::units::{LengthFormat, LengthUnit};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+pub mod dynamic;
+pub mod import;
+pub mod saved;
+pub mod template;
+pub mod views;
+
 // ----- wall types -----
 
 /// One layer of a wall assembly. `thickness` is in inches.
@@ -282,6 +288,24 @@ pub struct WindowDefaults {
     pub lites_vertical: u32,
     pub egress: bool,
     pub tempered: bool,
+    /// Minimum Separation (Window Defaults, General panel, manual p. 603): how
+    /// close window and door units may stand, and the width of the casing
+    /// windows share, inches.
+    #[serde(default = "default_min_separation")]
+    pub min_separation: f64,
+    /// The Mulled Unit Defaults (Default Settings > Windows): what a unit
+    /// blocked with Make Mulled Unit starts with.
+    #[serde(default)]
+    pub mulled: crate::openings::MulledSpec,
+    /// Ignore Casing for Opening Resize (General Plan Defaults, manual p. 119):
+    /// doors and windows may run right up to an intersecting wall instead of
+    /// stopping where their casing meets it.
+    #[serde(default)]
+    pub ignore_casing: bool,
+}
+
+fn default_min_separation() -> f64 {
+    crate::openings::placement::DEFAULT_MIN_SEPARATION
 }
 
 // ----- cabinets -----
@@ -363,6 +387,74 @@ pub struct CabinetDefaults {
     /// Edit > Default Settings > Cabinets > Backsplash.
     #[serde(default)]
     pub backsplash: BacksplashDefaults,
+    /// Edit > Default Settings > Cabinets > General Cabinet Defaults
+    /// (reference manual p. 644; Default Settings only).
+    #[serde(default)]
+    pub general: GeneralCabinetDefaults,
+}
+
+/// The General Cabinet Defaults dialog: automatic behaviors, how the resize
+/// handles step, and what the plan shows of a cabinet.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GeneralCabinetDefaults {
+    /// Smallest cabinet that is placed or resized to, inches (at least 1/16).
+    pub min_cabinet_width: f64,
+    /// Closest shelves inside Door and Opening face items, inches.
+    pub min_shelf_spacing: f64,
+    /// An Auto door opening this wide or narrower is one door, wider is a
+    /// pair, inches.
+    pub auto_door_threshold: f64,
+    /// Fillers generate between cabinets (and walls) within 3 in.
+    pub create_automatic_fillers: bool,
+    /// Fillers also generate in the angle where two cabinets meet at one
+    /// corner.
+    pub create_automatic_fillers_angled: bool,
+    pub create_automatic_blind_corners: bool,
+    /// Resize with the Snap Grid; off resizes by `resize_increment`.
+    pub resize_by_grid: bool,
+    /// The resize step when `resize_by_grid` is off, inches (at least 1/16).
+    pub resize_increment: f64,
+    /// Module lines are short grey ticks instead of lines across the cabinets.
+    pub show_partial_module_lines: bool,
+    pub show_closed_doors_drawers: bool,
+    pub show_pilasters: bool,
+    /// Draw the width of a countertop's edge profile in plan.
+    pub display_molding_edges: bool,
+}
+
+impl Default for GeneralCabinetDefaults {
+    fn default() -> Self {
+        Self {
+            min_cabinet_width: 3.0,
+            min_shelf_spacing: 6.0,
+            auto_door_threshold: 24.0,
+            create_automatic_fillers: true,
+            create_automatic_fillers_angled: true,
+            create_automatic_blind_corners: true,
+            resize_by_grid: false,
+            resize_increment: 3.0,
+            show_partial_module_lines: false,
+            show_closed_doors_drawers: false,
+            show_pilasters: false,
+            display_molding_edges: false,
+        }
+    }
+}
+
+impl GeneralCabinetDefaults {
+    /// The smallest width Chief allows a cabinet.
+    pub const SMALLEST: f64 = 1.0 / 16.0;
+
+    /// This record with every value brought into its allowed range.
+    pub fn clamped(&self) -> Self {
+        let mut g = self.clone();
+        g.min_cabinet_width = g.min_cabinet_width.max(Self::SMALLEST);
+        g.resize_increment = g.resize_increment.max(Self::SMALLEST);
+        g.min_shelf_spacing = g.min_shelf_spacing.max(0.0);
+        g.auto_door_threshold = g.auto_door_threshold.max(0.0);
+        g
+    }
 }
 
 /// Size of a box-like cabinet kind (soffit, shelf, partition, library types).
@@ -561,6 +653,13 @@ pub struct DimensionDefaults {
     /// default group.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub elevation_locate: Option<crate::dimension::LocateGroup>,
+    /// The General, Setup, Extensions, Layer and Auto Story Pole settings of
+    /// the Dimension Defaults dialog.
+    #[serde(default)]
+    pub setup: crate::dimension::DimSetup,
+    /// The Locate panels of the dimension tools beyond the typed fields above.
+    #[serde(default)]
+    pub locates: crate::dimension::ToolLocates,
 }
 
 fn default_true() -> bool {
@@ -652,6 +751,7 @@ impl DimensionDefaultSet {
                 trailing_zeroes: auto.trailing_zeroes,
                 ..LengthFormat::default()
             }),
+            label: auto.setup.label_options(auto.text_above_line),
         };
         Self { name, format, auto }
     }
@@ -699,6 +799,28 @@ pub struct RoomTypeDef {
     pub conditioned: bool,
     /// Empty means "use the plan default".
     pub default_floor_finish: String,
+    /// Ceiling and floor structure and finish, deck framing, layer, fill,
+    /// moldings and label the type hands its rooms (R-99).
+    #[serde(
+        default,
+        skip_serializing_if = "crate::rooms::RoomTypeSpec::is_default"
+    )]
+    pub spec: crate::rooms::RoomTypeSpec,
+}
+
+impl RoomTypeDef {
+    /// A room type named `name` with the given function, living-area and
+    /// conditioned inclusion and no other settings.
+    pub fn new(name: &str, function: &str, living: bool, conditioned: bool) -> Self {
+        Self {
+            name: name.into(),
+            function: function.into(),
+            include_in_living_area: living,
+            conditioned,
+            default_floor_finish: String::new(),
+            spec: crate::rooms::RoomTypeSpec::default(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -745,6 +867,9 @@ pub struct PlanDefaults {
     pub exterior_wall: WallDefaults,
     pub interior_wall: WallDefaults,
     pub foundation_wall: WallDefaults,
+    /// Foundation Defaults dialog: Auto Rebuild, platform hanging, S markers,
+    /// minimum height, piers, Garage Options and the Options panel (Round 16).
+    pub foundation: crate::foundation::FoundationSettings,
     /// Defaults of the pony, half, glass, railing, deck and fencing walls.
     pub wall_variants: WallVariantDefaults,
     pub wall_types: Vec<WallTypeDef>,
@@ -776,6 +901,190 @@ pub struct PlanDefaults {
     /// Roof detail: eave cut, fascia, soffit, rafter tails, attic walls,
     /// and the Build Roof baseline rule (Default Settings > Roof Defaults).
     pub roof_detail: RoofDetailDefaults,
+    /// Starting values the plan's code minimums set (Default Settings >
+    /// Plan Check > Apply code minimums to defaults).
+    pub code: CodeDefaults,
+    /// The values of the Default Settings pages that have no typed slot of
+    /// their own (CAD, Camera Tools, Schedules, Text, ...), by
+    /// `"<page>.<field>"`. A page field that is missing here reads as the
+    /// page's built-in value, so only changed values are stored; see
+    /// [`PageValue`] and `plan-app`'s `dialogs/default_pages`.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub pages: std::collections::BTreeMap<String, PageValue>,
+    /// The saved defaults and Default Sets new plans start with (the
+    /// template's); a plan keeps its own in [`Project::saved_defaults`].
+    #[serde(skip_serializing_if = "saved::SavedDefaults::is_empty")]
+    pub saved: saved::SavedDefaults,
+    /// Default Settings > Roofs > Tray Ceiling: what Make Tray Ceiling and
+    /// the Tray Ceiling tools start from; `None` is the built-in tray.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tray_ceiling: Option<crate::tray::TrayCeiling>,
+    /// The saved plan views the template carries (a new plan starts with
+    /// them); empty starts with the one starting view.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub plan_views: Vec<crate::layer_sets::SavedPlanView>,
+}
+
+/// One stored value of a Default Settings page field.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum PageValue {
+    Bool(bool),
+    /// A whole number (counts, percentages, undo levels).
+    Int(i64),
+    /// A length (inches), an angle (degrees) or another measure.
+    Num(f64),
+    /// A name or a choice.
+    Text(String),
+}
+
+impl PageValue {
+    /// The value as a number (a flag is 0 or 1, text is 0).
+    pub fn num(&self) -> f64 {
+        match self {
+            PageValue::Bool(b) => f64::from(u8::from(*b)),
+            PageValue::Int(i) => *i as f64,
+            PageValue::Num(n) => *n,
+            PageValue::Text(t) => t.trim().parse().unwrap_or(0.0),
+        }
+    }
+
+    /// The value as a whole number.
+    pub fn int(&self) -> i64 {
+        self.num().round() as i64
+    }
+
+    /// The value as a flag.
+    pub fn flag(&self) -> bool {
+        match self {
+            PageValue::Bool(b) => *b,
+            PageValue::Text(t) => matches!(t.as_str(), "true" | "yes" | "on"),
+            other => other.num() != 0.0,
+        }
+    }
+
+    /// The value as text.
+    pub fn text(&self) -> String {
+        match self {
+            PageValue::Bool(b) => b.to_string(),
+            PageValue::Int(i) => i.to_string(),
+            PageValue::Num(n) => n.to_string(),
+            PageValue::Text(t) => t.clone(),
+        }
+    }
+
+    /// Equal values regardless of how they are stored (`Int(2)` is `Num(2.0)`).
+    pub fn same(&self, other: &PageValue) -> bool {
+        match (self, other) {
+            (PageValue::Text(a), PageValue::Text(b)) => a == b,
+            (PageValue::Text(_), _) | (_, PageValue::Text(_)) => false,
+            (a, b) => (a.num() - b.num()).abs() < 1e-9,
+        }
+    }
+}
+
+impl PlanDefaults {
+    /// The stored value of page field `key`, if the page changed it.
+    pub fn page_value(&self, key: &str) -> Option<&PageValue> {
+        self.pages.get(key)
+    }
+
+    /// A stored number, else `fallback`.
+    pub fn page_num(&self, key: &str, fallback: f64) -> f64 {
+        self.pages.get(key).map_or(fallback, PageValue::num)
+    }
+
+    /// A stored flag, else `fallback`.
+    pub fn page_flag(&self, key: &str, fallback: bool) -> bool {
+        self.pages.get(key).map_or(fallback, PageValue::flag)
+    }
+
+    /// A stored text, else `fallback`.
+    pub fn page_text(&self, key: &str, fallback: &str) -> String {
+        self.pages
+            .get(key)
+            .map_or_else(|| fallback.to_string(), PageValue::text)
+    }
+
+    /// Stores page field `key`; a value equal to the built-in `builtin`
+    /// removes the entry so the template stays small.
+    pub fn set_page_value(&mut self, key: &str, value: PageValue, builtin: &PageValue) {
+        if value.same(builtin) {
+            self.pages.remove(key);
+        } else {
+            self.pages.insert(key.to_string(), value);
+        }
+    }
+
+    /// Forgets every stored value of the page whose keys start with `prefix`
+    /// (a page's Reset button).
+    pub fn clear_page(&mut self, prefix: &str) {
+        self.pages.retain(|k, _| !k.starts_with(prefix));
+    }
+}
+
+/// The code-legal values that tools and dialogs start from where the plan
+/// defaults have no other slot: stairs, railings, the bedroom window, the
+/// footing and the garage wall type. Inches. The app seeds them from the
+/// plan's code minimums (`apply_code_minimums` in plan-app); the values here
+/// are the 2021 IRC ones.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CodeDefaults {
+    /// Riser height a new stair aims for (R311.7.5.1: 7 3/4" at most).
+    pub stair_riser: f64,
+    /// Tread depth (R311.7.5.2: 10" at least).
+    pub stair_tread: f64,
+    /// Stair width (R311.7.1: 36" at least).
+    pub stair_width: f64,
+    /// Headroom (R311.7.2: 80" at least).
+    pub stair_headroom: f64,
+    /// Guard height (R312.1.2: 36").
+    pub guard_height: f64,
+    /// Handrail height (R311.7.8.1: 34" to 38").
+    pub handrail_height: f64,
+    /// Widest opening in a guard (R312.1.3: a 4" sphere must not pass).
+    pub baluster_opening: f64,
+    /// The window a new bedroom window starts as: egress-sized.
+    pub bedroom_window: WindowDefaults,
+    /// Footing width under a foundation wall (Table R403.1(1)).
+    pub footing_width: f64,
+    /// Footing thickness (R403.1.1: 6" at least).
+    pub footing_thickness: f64,
+    /// Wall type for the wall between a garage and the house ("" = none).
+    pub garage_wall_type: String,
+}
+
+impl Default for CodeDefaults {
+    fn default() -> Self {
+        Self {
+            stair_riser: 7.5,
+            stair_tread: 10.0,
+            stair_width: 36.0,
+            stair_headroom: 80.0,
+            guard_height: 36.0,
+            handrail_height: 36.0,
+            baluster_opening: 4.0,
+            bedroom_window: WindowDefaults {
+                width: 36.0,
+                height: 60.0,
+                sill_height: 36.0,
+                window_type: "Single Casement".into(),
+                frame_width: 0.75,
+                sash_width: 1.5,
+                lites_across: 1,
+                lites_vertical: 1,
+                egress: true,
+                tempered: false,
+                min_separation: default_min_separation(),
+                mulled: Default::default(),
+                ignore_casing: false,
+            },
+            footing_width: crate::floors::WALL_FOOTING.0,
+            footing_thickness: crate::floors::WALL_FOOTING.1,
+            garage_wall_type: String::new(),
+        }
+    }
 }
 
 /// How walls connect when drawn or edited.
@@ -952,6 +1261,13 @@ impl Default for PlanDefaults {
 const FALLBACK_FOUNDATION_THICKNESS: f64 = 8.0;
 
 impl PlanDefaults {
+    /// The tray ceiling a new one starts from (its id is never set).
+    pub fn tray_default(&self) -> crate::tray::TrayCeiling {
+        let mut t = self.tray_ceiling.clone().unwrap_or_default();
+        t.id = 0;
+        t
+    }
+
     pub fn wall_type(&self, name: &str) -> Option<&WallTypeDef> {
         self.wall_types.iter().find(|t| t.name == name)
     }
@@ -1013,6 +1329,10 @@ impl PlanDefaults {
             smallest_fraction: self.dimensions.smallest_fraction.max(1),
             unit_indicators: self.dimensions.unit_indicators,
             length: None,
+            label: self
+                .dimensions
+                .setup
+                .label_options(self.dimensions.text_above_line),
         }
     }
 
@@ -1087,6 +1407,8 @@ impl PlanDefaults {
             printed_size: false,
             temp_locate: None,
             elevation_locate: None,
+            setup: Default::default(),
+            locates: Default::default(),
         };
         PlanDefaults {
             name: "Chief X18 (Daniel)".into(),
@@ -1106,6 +1428,7 @@ impl PlanDefaults {
                 height: 48.0,
                 roof,
             },
+            foundation: crate::foundation::FoundationSettings::default(),
             wall_variants: WallVariantDefaults::default(),
             wall_types: chief_wall_types(),
             interior_door: door(30.0, 3.5, 0.75, 1.375),
@@ -1123,6 +1446,9 @@ impl PlanDefaults {
                 lites_vertical: 1,
                 egress: true,
                 tempered: true,
+                min_separation: default_min_separation(),
+                mulled: Default::default(),
+                ignore_casing: false,
             },
             cabinets: CabinetDefaults {
                 base: BaseCabinetDefaults {
@@ -1148,6 +1474,7 @@ impl PlanDefaults {
                     depth: 24.0,
                     height: 84.0,
                 },
+                general: GeneralCabinetDefaults::default(),
                 filler_width: default_filler_width(),
                 corner_base_leg: default_corner_base_leg(),
                 corner_wall_leg: default_corner_wall_leg(),
@@ -1192,6 +1519,11 @@ impl PlanDefaults {
             opening_labels: crate::openings::OpeningLabelDefaults::default(),
             opening_variants: crate::openings::OpeningVariantDefaults::default(),
             roof_detail: RoofDetailDefaults::default(),
+            code: CodeDefaults::default(),
+            pages: Default::default(),
+            saved: Default::default(),
+            tray_ceiling: None,
+            plan_views: Vec::new(),
         }
     }
 }
@@ -1292,8 +1624,8 @@ fn chief_room_types() -> Vec<RoomTypeDef> {
     const EXCLUDED_UTIL: (&str, bool, bool) = ("Utility", false, false);
     const DECK: (&str, bool, bool) = ("Deck", false, false);
     let rows: &[(&str, (&str, bool, bool))] = &[
-        ("Attic", EXCLUDED_UTIL),
-        ("Balcony", DECK),
+        ("Attic", ("Attic", false, false)),
+        ("Balcony", ("Balcony", false, false)),
         ("Bath", STD),
         ("Bedroom", STD),
         ("Bedroom #2", STD),
@@ -1303,8 +1635,8 @@ fn chief_room_types() -> Vec<RoomTypeDef> {
         ("Bonus Room", STD),
         ("Breakfast", STD),
         ("Closet", STD),
-        ("Courtyard", ("Standard", false, false)),
-        ("Crawl Space", EXCLUDED_UTIL),
+        ("Courtyard", ("Court", false, false)),
+        ("Crawl Space", ("Open Below", false, false)),
         ("Deck", DECK),
         ("Den", STD),
         ("Dinette", STD),
@@ -1315,7 +1647,7 @@ fn chief_room_types() -> Vec<RoomTypeDef> {
         ("Family Room", STD),
         ("Flat Roof", EXCLUDED_UTIL),
         ("Foyer", STD),
-        ("Garage", ("Garage", false, true)),
+        ("Garage", ("Garage", false, false)),
         ("Great Room", STD),
         ("Hall", STD),
         ("Kitchen", STD),
@@ -1333,33 +1665,25 @@ fn chief_room_types() -> Vec<RoomTypeDef> {
         ("Pantry", STD),
         ("Porch", ("Porch", false, false)),
         ("Powder Room", STD),
-        ("Slab", UTIL),
+        ("Slab", ("Slab", false, false)),
         ("Storage", UTIL),
         ("Study", STD),
     ];
     let mut types: Vec<RoomTypeDef> = rows
         .iter()
-        .map(|(name, (function, living, cond))| RoomTypeDef {
-            name: (*name).into(),
-            function: (*function).into(),
-            include_in_living_area: *living,
-            conditioned: *cond,
-            default_floor_finish: String::new(),
-        })
+        .map(|(name, (function, living, cond))| RoomTypeDef::new(name, function, *living, *cond))
         .collect();
     for name in ["Unspecified", "Utility"] {
-        types.push(RoomTypeDef {
-            name: name.into(),
-            function: if name == "Utility" {
+        types.push(RoomTypeDef::new(
+            name,
+            if name == "Utility" {
                 "Utility"
             } else {
                 "Standard"
-            }
-            .into(),
-            include_in_living_area: true,
-            conditioned: true,
-            default_floor_finish: String::new(),
-        });
+            },
+            true,
+            true,
+        ));
     }
     types
 }
@@ -1378,7 +1702,32 @@ impl Project {
         for v in &mut p.plan_views {
             v.layer_set = d.layer_sets.active.clone();
         }
+        // A template that carries saved plan views starts the plan with them
+        // (a view whose layer set the template lacks shows the active set).
+        if !d.plan_views.is_empty() {
+            p.plan_views = d
+                .plan_views
+                .iter()
+                .cloned()
+                .map(|mut v| {
+                    if d.layer_sets.get(&v.layer_set).is_none() {
+                        v.layer_set = d.layer_sets.active.clone();
+                    }
+                    v
+                })
+                .collect();
+            let first = p
+                .plan_views
+                .iter()
+                .find(|v| v.name == "Working Plan View")
+                .unwrap_or(&p.plan_views[0])
+                .name
+                .clone();
+            p.activate_plan_view(&first);
+        }
         p.wall_types = d.wall_types.clone();
+        p.saved_defaults = d.saved.clone();
+        p.saved_adopt_active();
         p
     }
 }

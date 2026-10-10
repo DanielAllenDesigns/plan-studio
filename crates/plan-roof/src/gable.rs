@@ -216,6 +216,625 @@ pub fn roof_return_at(
     })
 }
 
+// ===================================================================
+// Gable/Roof Line objects (RF-44, RF-133..RF-136)
+// ===================================================================
+
+/// How far from a wall's Main Layer a Gable/Roof Line may be drawn, inches
+/// (ten feet, manual p. 862).
+pub const GABLE_LINE_REACH: f64 = 120.0;
+/// A gable over a door or window reaches this far past each side of it,
+/// inches (p. 863).
+pub const OPENING_GABLE_MARGIN: f64 = 12.0;
+/// Two openings on one wall whose clear gap is at most this share a single
+/// gable, inches (p. 863).
+pub const OPENING_GABLE_MERGE: f64 = 30.0;
+/// Shortest Gable/Roof Line, inches.
+pub const MIN_GABLE_LINE: f64 = 12.0;
+/// Largest cross product of the unit directions that still counts as
+/// "exactly parallel" to a wall (about half a degree).
+const PARALLEL_TOL: f64 = 0.01;
+
+/// A Gable/Roof Line object: a line whose length is the width of the gable
+/// at the wall's Main Layer. It stays in the plan until the next Build Roof,
+/// which turns it into a gable (two roof planes of `pitch`, wider than the
+/// line by `overhang` on each side), and it is kept until it is deleted.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GableLine {
+    pub a: Point,
+    pub b: Point,
+    /// Rise per 12 of the two gable planes.
+    pub pitch: f64,
+    /// Overhang of the two planes past the line (and past the gable end),
+    /// inches.
+    pub overhang: f64,
+}
+
+impl Default for GableLine {
+    /// Build Roof's stock values: 8:12 and a 16" overhang.
+    fn default() -> Self {
+        Self {
+            a: Point::ZERO,
+            b: Point::ZERO,
+            pitch: 8.0,
+            overhang: 16.0,
+        }
+    }
+}
+
+impl GableLine {
+    pub fn new(a: Point, b: Point, pitch: f64, overhang: f64) -> Self {
+        Self {
+            a,
+            b,
+            pitch,
+            overhang,
+        }
+    }
+
+    pub fn length(&self) -> f64 {
+        self.a.dist(self.b)
+    }
+
+    pub fn midpoint(&self) -> Point {
+        Point::lerp(self.a, self.b, 0.5)
+    }
+}
+
+/// An exterior wall as a Gable/Roof Line sees it: the centre line and the
+/// thickness (the Main Layer is taken to be the whole thickness).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WallFace {
+    pub start: Point,
+    pub end: Point,
+    pub thickness: f64,
+}
+
+/// Why a Gable/Roof Line cannot be used.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GableLineProblem {
+    /// Shorter than [`MIN_GABLE_LINE`].
+    TooShort,
+    /// No exterior wall runs exactly parallel to the line.
+    NotParallel,
+    /// The nearest parallel wall's Main Layer is more than ten feet away.
+    TooFar,
+}
+
+impl GableLineProblem {
+    pub fn message(self) -> &'static str {
+        match self {
+            GableLineProblem::TooShort => "The Gable/Roof Line is too short",
+            GableLineProblem::NotParallel => {
+                "Draw the Gable/Roof Line exactly parallel to an exterior wall"
+            }
+            GableLineProblem::TooFar => {
+                "The Gable/Roof Line must be within 10 feet of the wall's Main Layer"
+            }
+        }
+    }
+}
+
+/// Checks `line` against the exterior `walls`: it must be exactly parallel
+/// to one and within [`GABLE_LINE_REACH`] of its Main Layer. Returns the
+/// index of the nearest such wall.
+///
+/// A line lying on the Main Layer (distance 0) is accepted: that is how an
+/// alcove is covered and how a gable over an opening sits. Whether the line
+/// touches a wall is not checked (Chief asks for a gap only when the line
+/// is drawn by hand).
+pub fn check_gable_line(line: &GableLine, walls: &[WallFace]) -> Result<usize, GableLineProblem> {
+    if line.length() < MIN_GABLE_LINE {
+        return Err(GableLineProblem::TooShort);
+    }
+    let u = line.b.sub(line.a).normalized();
+    let mut best: Option<(usize, f64)> = None;
+    let mut parallel = false;
+    for (i, w) in walls.iter().enumerate() {
+        let d = w.end.sub(w.start);
+        if d.length() < 1e-6 || u.cross(d.normalized()).abs() > PARALLEL_TOL {
+            continue;
+        }
+        parallel = true;
+        let across = line.midpoint().sub(w.start).cross(d.normalized()).abs();
+        let face = (across - w.thickness * 0.5).max(0.0);
+        if face <= GABLE_LINE_REACH && best.is_none_or(|(_, f)| face < f) {
+            best = Some((i, face));
+        }
+    }
+    match best {
+        Some((i, _)) => Ok(i),
+        None if parallel => Err(GableLineProblem::TooFar),
+        None => Err(GableLineProblem::NotParallel),
+    }
+}
+
+/// A door or window on an exterior wall, for [`gable_lines_over_openings`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OpeningSpan {
+    pub wall_start: Point,
+    pub wall_end: Point,
+    /// Distance of the opening's centre from `wall_start` along the wall.
+    pub offset: f64,
+    pub width: f64,
+    /// Unit plan vector from the wall's centre line to its outside.
+    pub outward: Point,
+    /// Distance from the centre line to the outside face, inches.
+    pub face: f64,
+}
+
+/// The Gable/Roof Lines "Gable Over Door/Window" makes: one per opening,
+/// [`OPENING_GABLE_MARGIN`] past each side of it, with openings on the same
+/// wall whose clear gap is at most [`OPENING_GABLE_MERGE`] sharing one line.
+/// The lines lie on the wall's outside face.
+pub fn gable_lines_over_openings(
+    spans: &[OpeningSpan],
+    pitch: f64,
+    overhang: f64,
+) -> Vec<GableLine> {
+    let same_wall = |a: &OpeningSpan, b: &OpeningSpan| {
+        a.wall_start.dist(b.wall_start) < 0.5 && a.wall_end.dist(b.wall_end) < 0.5
+    };
+    let mut done = vec![false; spans.len()];
+    let mut out = Vec::new();
+    for i in 0..spans.len() {
+        if done[i] {
+            continue;
+        }
+        let mut group: Vec<&OpeningSpan> = spans
+            .iter()
+            .enumerate()
+            .filter(|(j, s)| !done[*j] && same_wall(&spans[i], s))
+            .map(|(_, s)| s)
+            .collect();
+        for (j, s) in spans.iter().enumerate() {
+            if same_wall(&spans[i], s) {
+                done[j] = true;
+            }
+        }
+        group.sort_by(|a, b| a.offset.total_cmp(&b.offset));
+        let mut runs: Vec<(f64, f64, &OpeningSpan)> = Vec::new();
+        for s in group {
+            let (lo, hi) = (s.offset - s.width * 0.5, s.offset + s.width * 0.5);
+            match runs.last_mut() {
+                Some(r) if lo - r.1 <= OPENING_GABLE_MERGE => r.1 = r.1.max(hi),
+                _ => runs.push((lo, hi, s)),
+            }
+        }
+        for (lo, hi, s) in runs {
+            let dir = s.wall_end.sub(s.wall_start).normalized();
+            let at = |t: f64| s.wall_start.add(dir.scale(t)).add(s.outward.scale(s.face));
+            out.push(GableLine::new(
+                at(lo - OPENING_GABLE_MARGIN),
+                at(hi + OPENING_GABLE_MARGIN),
+                pitch,
+                overhang,
+            ));
+        }
+    }
+    out
+}
+
+/// Where a plane of a gabled roof came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlaneOrigin {
+    /// A piece of input plane `i` (the plane, or what a gable left of it).
+    Main(usize),
+    /// One of the two planes of Gable/Roof Line `i`.
+    Wing(usize),
+}
+
+/// The roof planes after [`apply_gable_lines`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct GabledRoof {
+    pub planes: Vec<RoofPlane>,
+    /// One per plane of `planes`.
+    pub origin: Vec<PlaneOrigin>,
+    /// Lines that did not reach the roof and were left out.
+    pub skipped: Vec<usize>,
+}
+
+/// Height of a plane as `c + gx * x + gy * y` in plan coordinates.
+#[derive(Debug, Clone, Copy)]
+struct Affine {
+    c: f64,
+    gx: f64,
+    gy: f64,
+}
+
+impl Affine {
+    fn of(plane: &RoofPlane) -> Option<Affine> {
+        let c = plane.height_at(Point::ZERO)?;
+        Some(Affine {
+            c,
+            gx: plane.height_at(Point::new(1.0, 0.0))? - c,
+            gy: plane.height_at(Point::new(0.0, 1.0))? - c,
+        })
+    }
+
+    fn at(&self, p: Point) -> f64 {
+        self.c + self.gx * p.x + self.gy * p.y
+    }
+}
+
+/// `poly` cut to the side where `f` is at least zero (`f` affine).
+fn keep_nonnegative(poly: &[Point], f: &dyn Fn(Point) -> f64) -> Vec<Point> {
+    let n = poly.len();
+    let mut out = Vec::with_capacity(n + 2);
+    for i in 0..n {
+        let (cur, prev) = (poly[i], poly[(i + n - 1) % n]);
+        let (fc, fp) = (f(cur), f(prev));
+        if fc >= 0.0 {
+            if fp < 0.0 {
+                out.push(Point::lerp(prev, cur, fp / (fp - fc)));
+            }
+            out.push(cur);
+        } else if fp >= 0.0 {
+            out.push(Point::lerp(prev, cur, fp / (fp - fc)));
+        }
+    }
+    out
+}
+
+/// Convex `subject` minus convex counter-clockwise `clip`, as convex pieces.
+fn minus_convex(subject: &[Point], clip: &[Point]) -> Vec<Vec<Point>> {
+    let mut rest = subject.to_vec();
+    let mut pieces = Vec::new();
+    let m = clip.len();
+    for k in 0..m {
+        if rest.len() < 3 {
+            break;
+        }
+        let (a, b) = (clip[k], clip[(k + 1) % m]);
+        // A zero-length edge (clipping leaves near-duplicate vertices) has
+        // no inside; skipping it keeps the whole of `rest` for the next edge.
+        if a.dist(b) < 1e-6 {
+            continue;
+        }
+        let side = move |p: Point| b.sub(a).cross(p.sub(a));
+        let outside = keep_nonnegative(&rest, &|p| -side(p));
+        if outside.len() >= 3 && polygon_area(&outside).abs() > MIN_PIECE {
+            pieces.push(outside);
+        }
+        rest = keep_nonnegative(&rest, &side);
+    }
+    pieces
+}
+
+/// Pieces smaller than this are dropped, square inches.
+const MIN_PIECE: f64 = 2.0;
+
+/// `ring` without vertices that lie on the line of their neighbours.
+fn without_collinear(ring: &[Point]) -> Vec<Point> {
+    let n = ring.len();
+    (0..n)
+        .filter(|&i| {
+            let (a, b, c) = (ring[(i + n - 1) % n], ring[i], ring[(i + 1) % n]);
+            b.sub(a).cross(c.sub(b)).abs()
+                > 1e-6 * b.sub(a).length().max(1.0) * c.sub(b).length().max(1.0)
+        })
+        .map(|i| ring[i])
+        .collect()
+}
+
+/// Joins counter-clockwise convex pieces that share an edge when their union
+/// is convex too, so one plane does not end up as several tiles.
+fn merge_convex(mut pieces: Vec<Vec<Point>>) -> Vec<Vec<Point>> {
+    let near = |a: Point, b: Point| a.dist(b) < 1e-6;
+    'again: loop {
+        for i in 0..pieces.len() {
+            for j in (i + 1)..pieces.len() {
+                let (pi, pj) = (&pieces[i], &pieces[j]);
+                let (ni, nj) = (pi.len(), pj.len());
+                for x in 0..ni {
+                    let (a, b) = (pi[x], pi[(x + 1) % ni]);
+                    let Some(y) = (0..nj).find(|&y| near(pj[y], b) && near(pj[(y + 1) % nj], a))
+                    else {
+                        continue;
+                    };
+                    // pi from b around to a, then pj's vertices strictly
+                    // between a and b.
+                    let mut ring: Vec<Point> = (0..ni).map(|k| pi[(x + 1 + k) % ni]).collect();
+                    ring.extend((2..nj).map(|k| pj[(y + k) % nj]));
+                    let ring = without_collinear(&ring);
+                    if ring.len() >= 3 && geom::is_convex(&ring) {
+                        pieces[i] = ring;
+                        pieces.remove(j);
+                        continue 'again;
+                    }
+                }
+            }
+        }
+        return pieces;
+    }
+}
+
+/// The roof plane through `poly`'s plan outline, the first edge being the
+/// lowest level one (the eave), counter-clockwise from above.
+fn plane_over(
+    poly: &[Point],
+    height: &Affine,
+    pitch: f64,
+    source_edge: usize,
+) -> Option<RoofPlane> {
+    let mut ring = geom::ccw(poly);
+    ring.dedup_by(|a, b| a.dist(*b) < 1e-6);
+    if ring.len() >= 2 && ring[0].dist(ring[ring.len() - 1]) < 1e-6 {
+        ring.pop();
+    }
+    if ring.len() < 3 || polygon_area(&ring).abs() < MIN_PIECE {
+        return None;
+    }
+    let n = ring.len();
+    let h = |p: Point| height.at(p);
+    // Eave: the level edge that is lowest, else the lowest edge.
+    let level = |i: usize| (h(ring[i]) - h(ring[(i + 1) % n])).abs() < 1e-6;
+    let low = |i: usize| h(ring[i]).min(h(ring[(i + 1) % n]));
+    let first = (0..n)
+        .filter(|&i| level(i))
+        .min_by(|&x, &y| low(x).total_cmp(&low(y)))
+        .or_else(|| (0..n).min_by(|&x, &y| low(x).total_cmp(&low(y))))?;
+    ring.rotate_left(first);
+    let polygon3d: Vec<V3> = ring.iter().map(|&p| geom::lift(p, h(p))).collect();
+    Some(RoofPlane {
+        baseline: (ring[0], ring[1]),
+        polygon3d,
+        pitch_in_12: pitch,
+        source_edge,
+    })
+}
+
+/// Highest surface of `planes` over `p` (the roof is a height field), or
+/// `None` where there is no roof.
+fn surface_at(planes: &[(RoofPlane, PlaneOrigin)], p: Point) -> Option<f64> {
+    planes
+        .iter()
+        .filter(|(pl, _)| plan_core::geometry::point_in_polygon(p, &pl.plan_polygon()))
+        .filter_map(|(pl, _)| pl.height_at(p))
+        .fold(None, |m: Option<f64>, h| Some(m.map_or(h, |m| m.max(h))))
+}
+
+/// Adds the gables of `lines` to a roof (`planes`, eaves at `eave_elevation`).
+///
+/// A gable is a small ridged roof over the line: two planes of the line's
+/// pitch whose eaves run away from the line at `eave_elevation`, a ridge
+/// above the line's midpoint, and a rake overhang past the line. Its height
+/// above the plan is the lower envelope of its two planes; the finished roof
+/// is the higher of that and the existing roof, so the gable's planes meet
+/// the roof planes in valleys and the roof planes keep what is above the
+/// gable. The line is on the side the roof is: the gable runs from the line
+/// into the roof and stops where its ridge meets the roof surface.
+///
+/// A line that never reaches the roof is listed in
+/// [`GabledRoof::skipped`] and changes nothing.
+pub fn apply_gable_lines(
+    planes: &[RoofPlane],
+    eave_elevation: f64,
+    lines: &[GableLine],
+) -> GabledRoof {
+    let mut work: Vec<(RoofPlane, PlaneOrigin)> = planes
+        .iter()
+        .cloned()
+        .enumerate()
+        .map(|(i, p)| (p, PlaneOrigin::Main(i)))
+        .collect();
+    let mut skipped = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        if !add_gable(&mut work, eave_elevation, line, i) {
+            skipped.push(i);
+        }
+    }
+    let (planes, origin) = work.into_iter().unzip();
+    GabledRoof {
+        planes,
+        origin,
+        skipped,
+    }
+}
+
+fn add_gable(
+    work: &mut Vec<(RoofPlane, PlaneOrigin)>,
+    base: f64,
+    line: &GableLine,
+    index: usize,
+) -> bool {
+    let len = line.length();
+    if len < MIN_GABLE_LINE || line.pitch <= 0.0 || work.is_empty() {
+        return false;
+    }
+    let u = line.b.sub(line.a).normalized();
+    let c = line.midpoint();
+    let ov = line.overhang.max(0.0);
+    let half = len * 0.5 + ov;
+    let k = line.pitch / 12.0;
+    let extent = {
+        let mut lo = Point::new(f64::MAX, f64::MAX);
+        let mut hi = Point::new(f64::MIN, f64::MIN);
+        for (pl, _) in work.iter() {
+            for p in pl.plan_polygon() {
+                lo = Point::new(lo.x.min(p.x), lo.y.min(p.y));
+                hi = Point::new(hi.x.max(p.x), hi.y.max(p.y));
+            }
+        }
+        lo.dist(hi) + len
+    };
+    // The side the roof is on: the nearer of the two along the midpoint.
+    let reach = |n: Point| {
+        let mut t = 0.0;
+        while t <= extent {
+            if surface_at(work, c.add(n.scale(t))).is_some() {
+                return Some(t);
+            }
+            t += 1.0;
+        }
+        None
+    };
+    // How far the roof runs unbroken from the midpoint along `n`.
+    let cover = |n: Point| {
+        let mut t = 0.0;
+        while t <= extent && surface_at(work, c.add(n.scale(t))).is_some() {
+            t += 1.0;
+        }
+        t
+    };
+    let (n1, n2) = (u.perp(), u.perp().scale(-1.0));
+    let n = match (reach(n1), reach(n2)) {
+        (Some(a), Some(b)) => {
+            if (a - b).abs() < 1e-9 {
+                // The line stands on the roof (on a wall face under the
+                // eave): the gable runs the way the roof is deeper.
+                if cover(n1) >= cover(n2) {
+                    n1
+                } else {
+                    n2
+                }
+            } else if a < b {
+                n1
+            } else {
+                n2
+            }
+        }
+        (Some(_), None) => n1,
+        (None, Some(_)) => n2,
+        (None, None) => return false,
+    };
+    // How far the gable runs: until its height is at or under the roof at
+    // every sampled distance from the midline.
+    let step = (half / 24.0).max(2.0);
+    let mut depth = 0.0f64;
+    let mut s = -half;
+    let mut met = false;
+    while s <= half + 1e-9 {
+        let g = base + (half - s.abs()) * k;
+        let mut t = 0.0;
+        while t <= extent {
+            let p = c.add(u.scale(s)).add(n.scale(t));
+            if surface_at(work, p).is_some_and(|h| h >= g - 1e-6) {
+                depth = depth.max(t);
+                met = true;
+                break;
+            }
+            t += 1.0;
+        }
+        s += step;
+    }
+    if !met {
+        return false;
+    }
+    depth += 3.0;
+    let at = |s: f64, t: f64| c.add(u.scale(s)).add(n.scale(t));
+    let halves = [(-half, 0.0, -1.0), (0.0, half, 1.0)];
+    let mut wings: Vec<(Vec<Point>, Affine)> = Vec::new();
+    for (s0, s1, sign) in halves {
+        let quad = geom::ccw(&[at(s0, -ov), at(s1, -ov), at(s1, depth), at(s0, depth)]);
+        // g = base + (half - sign * s) * k with s = (p - c) . u
+        let gx = -sign * k * u.x;
+        let gy = -sign * k * u.y;
+        let height = Affine {
+            c: base + half * k - sign * k * (-(c.x * u.x + c.y * u.y)),
+            gx,
+            gy,
+        };
+        wings.push((quad, height));
+    }
+    // Cut the roof planes where a wing is higher.
+    let mut next: Vec<(RoofPlane, PlaneOrigin)> = Vec::new();
+    for (plane, origin) in work.drain(..) {
+        let Some(h) = Affine::of(&plane) else {
+            next.push((plane, origin));
+            continue;
+        };
+        let poly = geom::ccw(&plane.plan_polygon());
+        let tiles: Vec<Vec<Point>> = if geom::is_convex(&poly) {
+            vec![poly.clone()]
+        } else {
+            geom::ear_triangles(&poly)
+                .into_iter()
+                .map(|t| t.to_vec())
+                .collect()
+        };
+        let mut cuts: Vec<Vec<Point>> = Vec::new();
+        for (quad, g) in &wings {
+            for tile in &tiles {
+                let inside = geom::clip_convex(tile, quad);
+                if inside.len() < 3 {
+                    continue;
+                }
+                let above = keep_nonnegative(&inside, &|p| g.at(p) - h.at(p));
+                if above.len() >= 3 && polygon_area(&above).abs() > MIN_PIECE {
+                    cuts.push(above);
+                }
+            }
+        }
+        if cuts.is_empty() {
+            next.push((plane, origin));
+            continue;
+        }
+        let mut pieces = tiles;
+        for cut in &cuts {
+            let cut = geom::ccw(cut);
+            pieces = pieces
+                .iter()
+                .flat_map(|piece| {
+                    // A piece the cut does not touch stays whole.
+                    if geom::clip_convex(piece, &cut).len() < 3 {
+                        vec![piece.clone()]
+                    } else {
+                        minus_convex(piece, &cut)
+                    }
+                })
+                .collect();
+        }
+        for piece in merge_convex(pieces) {
+            if let Some(pl) = plane_over(&piece, &h, plane.pitch_in_12, plane.source_edge) {
+                next.push((pl, origin));
+            }
+        }
+    }
+    // The gable planes where they stay above the roof.
+    let old = next.clone();
+    for (w, (quad, g)) in wings.iter().enumerate() {
+        let mut pieces = vec![quad.clone()];
+        for (plane, _) in &old {
+            let Some(h) = Affine::of(plane) else { continue };
+            let poly = geom::ccw(&plane.plan_polygon());
+            let tiles: Vec<Vec<Point>> = if geom::is_convex(&poly) {
+                vec![poly]
+            } else {
+                geom::ear_triangles(&poly)
+                    .into_iter()
+                    .map(|t| t.to_vec())
+                    .collect()
+            };
+            for tile in tiles {
+                let dom = keep_nonnegative(&tile, &|p| h.at(p) - g.at(p));
+                if dom.len() < 3 || polygon_area(&dom).abs() <= MIN_PIECE {
+                    continue;
+                }
+                let dom = geom::ccw(&dom);
+                pieces = pieces
+                    .iter()
+                    .flat_map(|piece| {
+                        if geom::clip_convex(piece, &dom).len() < 3 {
+                            vec![piece.clone()]
+                        } else {
+                            minus_convex(piece, &dom)
+                        }
+                    })
+                    .collect();
+            }
+        }
+        for piece in merge_convex(pieces) {
+            if let Some(pl) = plane_over(&piece, g, line.pitch, usize::MAX - w) {
+                next.push((pl, PlaneOrigin::Wing(index)));
+            }
+        }
+    }
+    *work = next;
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -350,5 +969,295 @@ mod tests {
         )
         .is_none());
         assert!(roof_return(south, 7, spec).is_none());
+    }
+
+    // ----- Gable/Roof Line objects -----
+
+    fn hip_roof() -> Roof {
+        build_roof(&rect(), &[EdgeRoof::default(); 4], 100.0)
+    }
+
+    /// Roof height at `p`: the highest plane over it.
+    fn surface(planes: &[RoofPlane], p: Point) -> Option<f64> {
+        planes
+            .iter()
+            .filter(|pl| plan_core::geometry::point_in_polygon(p, &pl.plan_polygon()))
+            .filter_map(|pl| pl.height_at(p))
+            .fold(None, |m: Option<f64>, h| Some(m.map_or(h, |m| m.max(h))))
+    }
+
+    #[test]
+    fn a_gable_line_over_a_hip_roof_adds_two_planes_and_valleys() {
+        let roof = hip_roof();
+        let line = GableLine::new(Point::new(200.0, 0.0), Point::new(260.0, 0.0), 8.0, 16.0);
+        let out = apply_gable_lines(&roof.planes, roof.baseline_elevation, &[line]);
+        assert!(out.skipped.is_empty());
+        let wings: Vec<&RoofPlane> = out
+            .planes
+            .iter()
+            .zip(&out.origin)
+            .filter(|(_, o)| matches!(o, PlaneOrigin::Wing(0)))
+            .map(|(p, _)| p)
+            .collect();
+        assert_eq!(wings.len(), 2, "one plane each side of the ridge");
+        // Every plane faces up and has the eave first.
+        for (pl, _) in out.planes.iter().zip(&out.origin) {
+            assert!(pl.normal()[1] > 0.0);
+            assert!((pl.polygon3d[0][1] - pl.polygon3d[1][1]).abs() < 1e-6 || pl.pitch_in_12 > 0.0);
+        }
+        // The gable is 60 + 2 * 16 = 92" wide at the eave: its planes reach
+        // x = 184 and x = 276, and the rake overhang puts them 16" in front of
+        // the line.
+        let xs: Vec<f64> = wings
+            .iter()
+            .flat_map(|p| p.polygon3d.iter().map(|v| v[0]))
+            .collect();
+        let (lo, hi) = (
+            xs.iter().cloned().fold(f64::MAX, f64::min),
+            xs.iter().cloned().fold(f64::MIN, f64::max),
+        );
+        assert!((lo - 184.0).abs() < 1e-6, "left {lo}");
+        assert!((hi - 276.0).abs() < 1e-6, "right {hi}");
+        let front = wings
+            .iter()
+            .flat_map(|p| p.polygon3d.iter().map(|v| -v[2]))
+            .fold(f64::MAX, f64::min);
+        assert!((front + 16.0).abs() < 1e-6, "front {front}");
+        // The ridge is level at eave + (46 * 8 / 12).
+        let top = wings
+            .iter()
+            .flat_map(|p| p.polygon3d.iter().map(|v| v[1]))
+            .fold(f64::MIN, f64::max);
+        assert!(
+            (top - (100.0 + 46.0 * 8.0 / 12.0)).abs() < 1e-6,
+            "top {top}"
+        );
+    }
+
+    #[test]
+    fn the_gabled_roof_is_the_higher_of_the_gable_and_the_old_roof() {
+        let roof = hip_roof();
+        let line = GableLine::new(Point::new(200.0, 0.0), Point::new(260.0, 0.0), 8.0, 16.0);
+        let out = apply_gable_lines(&roof.planes, roof.baseline_elevation, &[line]);
+        let g = |p: Point| {
+            let s = p.x - 230.0;
+            100.0 + (46.0 - s.abs()) * 8.0 / 12.0
+        };
+        let mut checked = 0;
+        let mut y = -10.0;
+        while y < 150.0 {
+            let mut x = 150.0;
+            while x < 310.0 {
+                let p = Point::new(x + 0.37, y + 0.41);
+                let in_wing = (p.x - 230.0).abs() <= 46.0 && p.y >= -16.0 && p.y <= 100.0;
+                let old = surface(&roof.planes, p);
+                let want = match (old, in_wing) {
+                    (Some(h), true) => Some(h.max(g(p))),
+                    (None, true) => Some(g(p)),
+                    (Some(h), false) => Some(h),
+                    (None, false) => None,
+                };
+                // Planes tile the roof, so the highest and the only plane agree.
+                let got = surface(&out.planes, p);
+                match (want, got) {
+                    (Some(w), Some(h)) => {
+                        assert!((w - h).abs() < 1e-4, "at {p:?}: want {w}, got {h}");
+                        checked += 1;
+                    }
+                    (None, None) => {}
+                    (w, h) => panic!("at {p:?}: want {w:?}, got {h:?}"),
+                }
+                x += 7.0;
+            }
+            y += 7.0;
+        }
+        assert!(checked > 300);
+        // The hip roof still has what is outside the gable.
+        let kept = out
+            .origin
+            .iter()
+            .filter(|o| matches!(o, PlaneOrigin::Main(_)))
+            .count();
+        assert!(kept >= 4);
+        // No overlap: the plan area of the main pieces plus the gable equals
+        // the old roof plus the gable's own footprint outside it.
+        let area = |ps: &[RoofPlane]| ps.iter().map(RoofPlane::projected_area).sum::<f64>();
+        let old = area(&roof.planes);
+        let new = area(&out.planes);
+        // The 92" wide strip projects 16" past the old eave? No: the old eave is
+        // already 16" out, so the gable adds nothing outside the old outline
+        // except where the rake overhang sticks out past the eave line.
+        assert!(new >= old - 1.0, "{new} vs {old}");
+    }
+
+    #[test]
+    fn lines_that_miss_the_roof_are_skipped_and_two_lines_stack() {
+        let roof = hip_roof();
+        let far = GableLine::new(
+            Point::new(2000.0, 2000.0),
+            Point::new(2060.0, 2000.0),
+            8.0,
+            16.0,
+        );
+        let out = apply_gable_lines(&roof.planes, roof.baseline_elevation, &[far]);
+        assert_eq!(out.skipped, vec![0]);
+        assert_eq!(out.planes.len(), roof.planes.len());
+        let a = GableLine::new(Point::new(100.0, 0.0), Point::new(160.0, 0.0), 8.0, 16.0);
+        let b = GableLine::new(Point::new(300.0, 0.0), Point::new(360.0, 0.0), 6.0, 12.0);
+        let two = apply_gable_lines(&roof.planes, roof.baseline_elevation, &[a, b]);
+        assert!(two.skipped.is_empty());
+        assert!(two.origin.contains(&PlaneOrigin::Wing(0)));
+        assert!(two.origin.contains(&PlaneOrigin::Wing(1)));
+        let p6 = two
+            .planes
+            .iter()
+            .zip(&two.origin)
+            .filter(|(_, o)| **o == PlaneOrigin::Wing(1))
+            .all(|(p, _)| (p.pitch_in_12 - 6.0).abs() < 1e-9);
+        assert!(p6);
+    }
+
+    #[test]
+    fn a_line_on_any_wall_face_runs_into_the_roof_whatever_its_direction() {
+        let roof = hip_roof();
+        // South wall face drawn west to east, north wall face east to west:
+        // both gables must run into the building, not out over the eave.
+        let south = GableLine::new(Point::new(200.0, 0.0), Point::new(260.0, 0.0), 8.0, 16.0);
+        let north = GableLine::new(
+            Point::new(260.0, 288.0),
+            Point::new(200.0, 288.0),
+            8.0,
+            16.0,
+        );
+        for (line, inward) in [(south, 1.0), (north, -1.0)] {
+            let out = apply_gable_lines(&roof.planes, roof.baseline_elevation, &[line]);
+            assert!(out.skipped.is_empty());
+            let mut ys: Vec<f64> = Vec::new();
+            for (p, _) in out
+                .planes
+                .iter()
+                .zip(&out.origin)
+                .filter(|(_, o)| matches!(o, PlaneOrigin::Wing(0)))
+            {
+                ys.extend(p.polygon3d.iter().map(|v| -v[2]));
+            }
+            assert!(!ys.is_empty());
+            let reach = ys
+                .iter()
+                .map(|y| (y - line.a.y) * inward)
+                .fold(f64::MIN, f64::max);
+            assert!(reach > 20.0, "gable runs {reach}\" into the roof");
+        }
+    }
+
+    #[test]
+    fn the_line_may_stand_outside_the_wall_like_a_porch_gable() {
+        let roof = hip_roof();
+        // 60" in front of the south eave line (y = -16), 120" wide.
+        let line = GableLine::new(
+            Point::new(180.0, -60.0),
+            Point::new(300.0, -60.0),
+            6.0,
+            12.0,
+        );
+        let out = apply_gable_lines(&roof.planes, roof.baseline_elevation, &[line]);
+        assert!(out.skipped.is_empty());
+        let wing_area: f64 = out
+            .planes
+            .iter()
+            .zip(&out.origin)
+            .filter(|(_, o)| matches!(o, PlaneOrigin::Wing(0)))
+            .map(|(p, _)| p.projected_area())
+            .sum();
+        // Out in front of the old roof the porch roof stands free: at least the
+        // 60" gap and the rake overhang times its width.
+        assert!(wing_area > 120.0 * 60.0, "{wing_area}");
+    }
+
+    #[test]
+    fn a_gable_line_must_be_parallel_to_a_wall_and_within_ten_feet() {
+        let walls = [
+            WallFace {
+                start: Point::new(0.0, 0.0),
+                end: Point::new(480.0, 0.0),
+                thickness: 6.0,
+            },
+            WallFace {
+                start: Point::new(480.0, 0.0),
+                end: Point::new(480.0, 288.0),
+                thickness: 6.0,
+            },
+        ];
+        let ok = GableLine::new(
+            Point::new(100.0, -40.0),
+            Point::new(160.0, -40.0),
+            8.0,
+            16.0,
+        );
+        assert_eq!(check_gable_line(&ok, &walls), Ok(0));
+        let tilted = GableLine::new(
+            Point::new(100.0, -40.0),
+            Point::new(160.0, -43.0),
+            8.0,
+            16.0,
+        );
+        assert_eq!(
+            check_gable_line(&tilted, &walls),
+            Err(GableLineProblem::NotParallel)
+        );
+        let far = GableLine::new(
+            Point::new(100.0, -200.0),
+            Point::new(160.0, -200.0),
+            8.0,
+            16.0,
+        );
+        assert_eq!(
+            check_gable_line(&far, &walls),
+            Err(GableLineProblem::TooFar)
+        );
+        let short = GableLine::new(Point::new(0.0, -40.0), Point::new(5.0, -40.0), 8.0, 16.0);
+        assert_eq!(
+            check_gable_line(&short, &walls),
+            Err(GableLineProblem::TooShort)
+        );
+        // On the Main Layer (an alcove cover): distance zero is fine.
+        let flush = GableLine::new(Point::new(100.0, -3.0), Point::new(160.0, -3.0), 8.0, 16.0);
+        assert_eq!(check_gable_line(&flush, &walls), Ok(0));
+    }
+
+    #[test]
+    fn gables_over_openings_extend_twelve_inches_and_merge_within_thirty() {
+        let span = |offset: f64, width: f64| OpeningSpan {
+            wall_start: Point::new(0.0, 0.0),
+            wall_end: Point::new(480.0, 0.0),
+            offset,
+            width,
+            outward: Point::new(0.0, -1.0),
+            face: 3.0,
+        };
+        // One 36" door at 120: 12" each side.
+        let one = gable_lines_over_openings(&[span(120.0, 36.0)], 8.0, 16.0);
+        assert_eq!(one.len(), 1);
+        assert!((one[0].length() - 60.0).abs() < 1e-9);
+        assert!((one[0].a.x - 90.0).abs() < 1e-9 && (one[0].b.x - 150.0).abs() < 1e-9);
+        assert!((one[0].a.y + 3.0).abs() < 1e-9, "on the outside face");
+        // Two windows with a 24" gap share one gable; a 40" gap does not.
+        let near = gable_lines_over_openings(&[span(60.0, 36.0), span(120.0, 36.0)], 8.0, 16.0);
+        assert_eq!(near.len(), 1);
+        assert!(
+            (near[0].length() - 120.0).abs() < 1e-9,
+            "{}",
+            near[0].length()
+        );
+        let far = gable_lines_over_openings(&[span(60.0, 36.0), span(136.0, 36.0)], 8.0, 16.0);
+        assert_eq!(far.len(), 2);
+        // A different wall is a different gable.
+        let mut other = span(60.0, 36.0);
+        other.wall_start = Point::new(0.0, 288.0);
+        other.wall_end = Point::new(480.0, 288.0);
+        assert_eq!(
+            gable_lines_over_openings(&[span(60.0, 36.0), other], 8.0, 16.0).len(),
+            2
+        );
     }
 }

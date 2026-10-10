@@ -13,6 +13,8 @@ use plan_core::{exterior_sign, Floor, Id, LabelPlacement, Opening, OpeningKind, 
 use plan_docs::schedule_kinds::Callout;
 use std::collections::HashMap;
 
+/// The colour of openings on a Window Level other than 0.
+const LEVEL_GREY: Color32 = Color32::from_gray(170);
 /// Smallest label text drawn, in screen pixels.
 const MIN_LABEL_PX: f32 = 3.0;
 /// Dash and gap of hidden lines, in screen pixels.
@@ -38,9 +40,15 @@ fn draw_part(
     }
     let thin = Stroke::new(0.8_f32, line_col);
     let stroke = match part.kind {
-        PartKind::Jamb | PartKind::Leaf | PartKind::Arrow => Stroke::new(1.0_f32, line_col),
-        PartKind::Swing => Stroke::new(1.0_f32, arc_col),
-        PartKind::Frame | PartKind::Glass | PartKind::Hidden | PartKind::Track => thin,
+        PartKind::Jamb | PartKind::Leaf | PartKind::Arrow | PartKind::Sill => {
+            Stroke::new(1.0_f32, line_col)
+        }
+        PartKind::Swing | PartKind::Indicator => Stroke::new(1.0_f32, arc_col),
+        PartKind::Frame
+        | PartKind::Glass
+        | PartKind::Hidden
+        | PartKind::Track
+        | PartKind::Threshold => thin,
     };
     match part.kind {
         PartKind::Hidden | PartKind::Track => {
@@ -74,6 +82,20 @@ pub fn draw_opening(
     draw_opening_in(painter, cam, wall, o, pal, exterior, ghost, false);
 }
 
+/// A ghost of an opening that stands over another one (the transom a window
+/// clicked onto a door would become): dashed, and the wall is not cleared
+/// again.
+pub fn draw_opening_over(
+    painter: &egui::Painter,
+    cam: &Camera,
+    wall: &Wall,
+    o: &Opening,
+    pal: &Palette,
+    exterior: f64,
+) {
+    draw_opening_in(painter, cam, wall, o, pal, exterior, true, true);
+}
+
 /// [`draw_opening`] for an opening of `floor`: one that stands over another
 /// opening of its wall (a transom over a door) is drawn dashed, as what is
 /// above the plan's cut plane, and does not clear the wall again.
@@ -105,6 +127,9 @@ fn draw_opening_in(
 ) {
     let (line_col, arc_col) = if ghost {
         (pal.ghost_stroke, pal.ghost_stroke)
+    } else if o.extras.spec.level != 0 {
+        // Window Levels other than 0 draw light grey (manual p. 612).
+        (LEVEL_GREY, LEVEL_GREY)
     } else {
         (pal.opening_line, pal.door_arc)
     };
@@ -125,7 +150,7 @@ fn draw_opening_in(
         sym.cut.1
     };
     if !over {
-        for quad in wall.band_quads(o.start_offset(), o.end_offset(), lo, hi) {
+        for quad in wall.band_quads(sym.span.0, sym.span.1, lo, hi) {
             painter.add(Shape::convex_polygon(
                 screen(cam, &quad),
                 pal.background,
@@ -192,6 +217,34 @@ fn text_width(text: &str, h: f64) -> f64 {
     text.chars().count() as f64 * CHAR_W * h
 }
 
+/// The opening whose label stands for `o`: `o` itself when it is not in a
+/// mulled unit or the unit shows component labels; for a unit with one label,
+/// the first component stretched over the whole unit (the other components
+/// have none); `None` when the unit suppresses its labels.
+pub fn unit_label_opening(cx: &EditorContext, o: &Opening) -> Option<Opening> {
+    use plan_core::openings::mull::MulledLabel;
+    let Some(spec) = o.extras.spec.mulled.as_ref() else {
+        return Some(o.clone());
+    };
+    match spec.label {
+        MulledLabel::Components => Some(o.clone()),
+        MulledLabel::Suppress => None,
+        MulledLabel::Single => {
+            let members = cx.project.unit_components(cx.floor, o.id);
+            if members.first() != Some(&o.id) {
+                return None;
+            }
+            let hole = cx.project.unit_hole(cx.floor, o.id)?;
+            let mut u = o.clone();
+            u.center_offset = (hole.s0 + hole.s1) * 0.5;
+            u.width = hole.s1 - hole.s0;
+            u.sill_height = hole.h0;
+            u.height = hole.h1 - hole.h0;
+            Some(u)
+        }
+    }
+}
+
 /// The text and the unmoved anchor of the label of `o` (before its dragged
 /// offset), or `None` when the label is suppressed or hidden in plan.
 fn label_base(
@@ -202,6 +255,9 @@ fn label_base(
     h: f64,
 ) -> Option<(String, Option<String>, Point)> {
     let mark = marks.get(&o.id).map(String::as_str);
+    // A mulled unit shows one label for all of it, the labels of its
+    // components, or none (Mulled Unit Specification, Label panel).
+    let o = &unit_label_opening(cx, o)?;
     let text = o.plan_label(&cx.defaults.opening_labels, mark)?;
     let placement = o.label_settings(&cx.defaults.opening_labels).placement;
     let ext = exterior_sign(wall, &cx.rooms);
@@ -329,6 +385,157 @@ fn draw_casing(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
                 Stroke::new(0.8_f32, pal.opening_line),
             ));
         }
+        // Openings whose casings touch share one casing as wide as the gap
+        // between them (manual p. 608).
+        for quad in shared_casing_quads(floor, wall, o, ext) {
+            painter.add(Shape::closed_line(
+                screen(cam, &quad),
+                Stroke::new(0.8_f32, pal.opening_line),
+            ));
+        }
+    }
+}
+
+/// The rectangles of the casing `o` shares with the opening beside it on its
+/// end side, on both faces of `wall`.
+pub fn shared_casing_quads(
+    floor: &Floor,
+    wall: &Wall,
+    o: &Opening,
+    exterior: f64,
+) -> Vec<[Point; 4]> {
+    let spec = &o.extras.spec;
+    let c = o.casing.unwrap_or_default();
+    let half = wall.thickness * 0.5;
+    let mut out = Vec::new();
+    let next = floor
+        .openings_on(wall.id)
+        .filter(|n| n.id != o.id && n.start_offset() >= o.end_offset() - 1e-9)
+        .filter(|n| plan_core::openings::mull::auto_mulled(o, n))
+        .min_by(|a, b| a.start_offset().total_cmp(&b.start_offset()));
+    let Some(n) = next else {
+        return out;
+    };
+    let gap = n.start_offset() - o.end_offset();
+    if gap <= 0.01 {
+        return out;
+    }
+    for side in [1.0, -1.0] {
+        let is_exterior = side == exterior;
+        if (is_exterior && !spec.casing_exterior) || (!is_exterior && !spec.casing_interior) {
+            continue;
+        }
+        let (t0, t1) = (side * half, side * (half + c.depth));
+        out.extend(wall.band_quads(o.end_offset(), n.start_offset(), t0.min(t1), t0.max(t1)));
+    }
+    out
+}
+
+/// The name of the layer that shows the headers over windows and doors.
+pub const HEADER_LAYER: &str = "Opening Header Lines";
+
+/// With the "Opening Header Lines" layer on, a dashed line across each window
+/// and door stands for its header (manual p. 612). The lines are not framing
+/// and cannot be selected.
+fn draw_header_lines(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
+    if !cx.layers().get(HEADER_LAYER).is_some_and(|l| l.display) {
+        return;
+    }
+    let floor = cx.floor();
+    let pal = &cx.palette;
+    for o in &floor.openings {
+        let Some(wall) = floor.wall(o.wall_id) else {
+            continue;
+        };
+        let pts = [
+            wall.point_along(o.start_offset()),
+            wall.point_along(o.end_offset()),
+        ];
+        let screen: Vec<Pos2> = pts.iter().map(|p| cam.world_to_screen(*p)).collect();
+        painter.extend(Shape::dashed_line(
+            &screen,
+            Stroke::new(0.8_f32, pal.opening_line),
+            DASH_PX.0,
+            DASH_PX.1,
+        ));
+    }
+}
+
+/// The Caution symbol over four or more openings in one place, and the width
+/// and radius dimensions of bay, box and bow windows.
+fn draw_cautions(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
+    let floor = cx.floor();
+    for c in cx.project.stacked_clusters(cx.floor) {
+        let Some(wall) = floor.wall(c.wall_id) else {
+            continue;
+        };
+        let at = cam.world_to_screen(wall.point_along(c.at));
+        let r = 9.0_f32;
+        let tri = vec![
+            at + Vec2::new(0.0, -r),
+            at + Vec2::new(r, r * 0.8),
+            at + Vec2::new(-r, r * 0.8),
+        ];
+        painter.add(Shape::convex_polygon(
+            tri,
+            Color32::from_rgb(0xF2, 0xC1, 0x2E),
+            Stroke::new(1.0_f32, Color32::BLACK),
+        ));
+        painter.text(
+            at + Vec2::new(0.0, 2.0),
+            egui::Align2::CENTER_CENTER,
+            "!",
+            FontId::proportional(11.0),
+            Color32::BLACK,
+        );
+    }
+}
+
+/// Bay, box and bow window dimensions in plan (Options panel: Display Standard
+/// Dimension, Display Dimensions to Center), on the Dimensions layer.
+fn draw_bay_dimensions(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
+    use plan_core::openings::bay::{bay_dimensions, BayDimKind};
+    if !cx.layers().is_visible("Dimensions") {
+        return;
+    }
+    let floor = cx.floor();
+    let pal = &cx.palette;
+    for o in floor.openings.iter().filter(|o| o.style.projects()) {
+        let Some(wall) = floor.wall(o.wall_id) else {
+            continue;
+        };
+        let ext = exterior_sign(wall, &cx.rooms);
+        let sign = if o.swing_flipped { -ext } else { ext };
+        let half = wall.thickness * 0.5;
+        let world = |p: (f64, f64)| {
+            let s = o.start_offset() + p.0;
+            wall.point_along(s)
+                .add(wall.normal_along(s).scale(sign * (half + p.1)))
+        };
+        for d in bay_dimensions(o.style, o.width, &o.extras.spec.bay) {
+            let (mut a, mut b) = (world(d.a), world(d.b));
+            // Width runs a little outside the front; depth beside the unit.
+            let off = match d.kind {
+                BayDimKind::Width => wall.normal_along(o.center_offset).scale(sign * 6.0),
+                BayDimKind::Depth => wall.tangent_along(o.center_offset).scale(-4.0),
+                BayDimKind::Radius => Point::ZERO,
+            };
+            a = a.add(off);
+            b = b.add(off);
+            let (sa, sb) = (cam.world_to_screen(a), cam.world_to_screen(b));
+            painter.line_segment([sa, sb], Stroke::new(0.8_f32, pal.opening_line));
+            let text = match d.kind {
+                BayDimKind::Radius => format!("R {}", plan_core::units::fmt_ft_in(d.value)),
+                _ => plan_core::units::fmt_ft_in(d.value),
+            };
+            painter.text(
+                Pos2::new((sa.x + sb.x) * 0.5, (sa.y + sb.y) * 0.5 - 6.0),
+                egui::Align2::CENTER_BOTTOM,
+                text,
+                FontId::proportional(10.0),
+                pal.text,
+            );
+        }
     }
 }
 
@@ -336,6 +543,9 @@ fn draw_casing(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
 /// belong to the same pass).
 pub fn draw_opening_labels(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
     draw_casing(cx, painter, cam);
+    draw_header_lines(cx, painter, cam);
+    draw_bay_dimensions(cx, painter, cam);
+    draw_cautions(cx, painter, cam);
     let style = schedule_view::label_style(&cx.project);
     let h = style.map_or(4.5, |s| s.height_in);
     let font_px = (h as f32 * cam.px_per_in as f32).clamp(1.0, 300.0);
@@ -475,7 +685,8 @@ mod tests {
         assert_eq!((get(d1).text.as_str(), get(d1).is_mark), ("D02", true));
         // The window has no schedule: still its size.
         assert_eq!((get(win).text.as_str(), get(win).is_mark), ("3050", false));
-        // A new door takes the next free mark.
+        // A new door goes to the bottom of the schedule, wherever it is
+        // (manual p. 715).
         let d3 = cx
             .project
             .add_opening(0, w, 10.0, OpeningKind::Door)
@@ -485,7 +696,7 @@ mod tests {
             .iter()
             .map(|id| l.iter().find(|x| x.opening == *id).unwrap().text.clone())
             .collect();
-        assert_eq!(marks, ["D01", "D02", "D03"]);
+        assert_eq!(marks, ["D03", "D01", "D02"]);
         // Removing it releases the numbers again.
         cx.project.floors[0].openings.retain(|o| o.id != d3);
         let l = labels_of(&mut cx);

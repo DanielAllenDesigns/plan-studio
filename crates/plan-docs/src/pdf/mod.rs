@@ -267,6 +267,17 @@ impl PdfColor {
     /// Opaque black.
     pub const BLACK: PdfColor = PdfColor::Gray(0.0);
 
+    /// The colour as 8-bit red, green and blue.
+    pub fn rgb8(self) -> [u8; 3] {
+        match self {
+            PdfColor::Gray(g) => {
+                let v = (g.clamp(0.0, 1.0) * 255.0).round() as u8;
+                [v, v, v]
+            }
+            PdfColor::Rgb(r, g, b) => [r, g, b],
+        }
+    }
+
     fn components(self) -> String {
         match self {
             PdfColor::Gray(g) => num(g.clamp(0.0, 1.0)),
@@ -323,8 +334,29 @@ impl PdfColorMode {
         }
     }
 
+    /// An image pixel in this mode: as is, its luminance gray, or black and
+    /// white (what the PDF writer embeds).
+    pub fn pixel(self, rgb: [u8; 3]) -> [u8; 3] {
+        match self {
+            PdfColorMode::Color => rgb,
+            mode => {
+                let l = Self::luma(PdfColor::Rgb(rgb[0], rgb[1], rgb[2]));
+                let v = if mode == PdfColorMode::BlackWhite {
+                    if l < 0.5 {
+                        0
+                    } else {
+                        255
+                    }
+                } else {
+                    (l * 255.0).round() as u8
+                };
+                [v, v, v]
+            }
+        }
+    }
+
     /// The colour of strokes, text and tracked fills in this mode.
-    fn ink(self, c: PdfColor) -> PdfColor {
+    pub fn ink(self, c: PdfColor) -> PdfColor {
         match self {
             PdfColorMode::Color => c,
             PdfColorMode::Grayscale => PdfColor::Gray(Self::luma(c)),
@@ -335,7 +367,7 @@ impl PdfColorMode {
     }
 
     /// The colour of a filled area: black B&W prints keep only dark fills.
-    fn area(self, c: PdfColor) -> PdfColor {
+    pub fn area(self, c: PdfColor) -> PdfColor {
         match self {
             PdfColorMode::BlackWhite => PdfColor::Gray(if Self::luma(c) < 0.5 { 0.0 } else { 1.0 }),
             other => other.ink(c),
@@ -385,12 +417,15 @@ impl GState {
     }
 }
 
-/// An embedded 8-bit `/DeviceRGB` image.
+/// An embedded 8-bit `/DeviceRGB` image, with an 8-bit soft mask when the
+/// picture has transparent parts.
 #[derive(Debug, Clone)]
 struct Image {
     width_px: u32,
     height_px: u32,
     rgb: Vec<u8>,
+    /// `width_px * height_px` alpha bytes (255 opaque), rows top to bottom.
+    alpha: Option<Vec<u8>>,
 }
 
 /// Object number of the Helvetica font.
@@ -421,6 +456,9 @@ pub struct PdfDoc {
     /// Indices into `images` used by each page, parallel to `pages`.
     page_images: Vec<Vec<usize>>,
     images: Vec<Image>,
+    /// Opacity levels (percent) set with [`PdfDoc::set_alpha`] on each page,
+    /// parallel to `pages`; each becomes an `/ExtGState` resource.
+    page_alphas: Vec<Vec<u32>>,
     gs: GState,
     /// States saved by [`PdfDoc::save_state`] on the current page.
     stack: Vec<GState>,
@@ -451,6 +489,7 @@ impl PdfDoc {
             sizes: vec![(width_pt, height_pt)],
             page_images: vec![Vec::new()],
             images: Vec::new(),
+            page_alphas: vec![Vec::new()],
             gs: GState::initial(),
             stack: Vec::new(),
             bold: false,
@@ -583,7 +622,24 @@ impl PdfDoc {
         self.pages.push(String::new());
         self.sizes.push((width_pt, height_pt));
         self.page_images.push(Vec::new());
+        self.page_alphas.push(Vec::new());
         self.emit_state();
+    }
+
+    /// Draw everything that follows with opacity `alpha` (1 solid, 0
+    /// invisible) until the state is restored: fills, strokes, text and
+    /// pictures all blend over what is below (a watermark). Call between
+    /// [`PdfDoc::save_state`] and [`PdfDoc::restore_state`]; opacity is kept
+    /// in 1% steps.
+    pub fn set_alpha(&mut self, alpha: f64) {
+        let pct = (alpha.clamp(0.0, 1.0) * 100.0).round() as u32;
+        if let Some(used) = self.page_alphas.last_mut() {
+            if !used.contains(&pct) {
+                used.push(pct);
+            }
+        }
+        let s = format!("/GSA{pct} gs\n");
+        self.emit(&s);
     }
 
     // ------------------------------------------------------------ state --
@@ -1166,25 +1222,14 @@ impl PdfDoc {
                 .as_chunks::<3>()
                 .0
                 .iter()
-                .flat_map(|p| {
-                    let l = PdfColorMode::luma(PdfColor::Rgb(p[0], p[1], p[2]));
-                    let v = if mode == PdfColorMode::BlackWhite {
-                        if l < 0.5 {
-                            0
-                        } else {
-                            255
-                        }
-                    } else {
-                        (l * 255.0).round() as u8
-                    };
-                    [v, v, v]
-                })
+                .flat_map(|p| mode.pixel(*p))
                 .collect(),
         };
         self.images.push(Image {
             width_px,
             height_px,
             rgb,
+            alpha: None,
         });
         if let Some(used) = self.page_images.last_mut() {
             used.push(idx);
@@ -1195,6 +1240,65 @@ impl PdfDoc {
             num(h),
             num(x),
             num(y),
+            idx + 1
+        );
+        self.emit(&s);
+        true
+    }
+
+    /// Draw an 8-bit RGBA image keeping its transparency (a soft mask), as a
+    /// `w` x `h` point rectangle centred on `(cx, cy)` and turned `angle_rad`
+    /// counter-clockwise about its centre. Used by watermark pictures; draw
+    /// it under [`PdfDoc::set_alpha`] for a see-through mark. Returns `false`
+    /// (drawing nothing) when the data length does not match the pixels.
+    #[allow(clippy::too_many_arguments)]
+    pub fn image_rgba_placed(
+        &mut self,
+        cx: f64,
+        cy: f64,
+        w: f64,
+        h: f64,
+        angle_rad: f64,
+        width_px: u32,
+        height_px: u32,
+        rgba: &[u8],
+    ) -> bool {
+        let expect = u64::from(width_px) * u64::from(height_px) * 4;
+        if width_px == 0 || height_px == 0 || expect != rgba.len() as u64 {
+            return false;
+        }
+        let mode = self.color_mode;
+        let mut rgb = Vec::with_capacity(rgba.len() / 4 * 3);
+        let mut alpha = Vec::with_capacity(rgba.len() / 4);
+        for p in rgba.as_chunks::<4>().0 {
+            let px = if mode == PdfColorMode::Color {
+                [p[0], p[1], p[2]]
+            } else {
+                mode.pixel([p[0], p[1], p[2]])
+            };
+            rgb.extend_from_slice(&px);
+            alpha.push(p[3]);
+        }
+        let masked = alpha.iter().any(|a| *a != 255);
+        let idx = self.images.len();
+        self.images.push(Image {
+            width_px,
+            height_px,
+            rgb,
+            alpha: masked.then_some(alpha),
+        });
+        if let Some(used) = self.page_images.last_mut() {
+            used.push(idx);
+        }
+        let (sin, cos) = angle_rad.sin_cos();
+        let s = format!(
+            "q {} {} {} {} {} {} cm /Im{} Do Q\n",
+            num6(w * cos),
+            num6(w * sin),
+            num6(-h * sin),
+            num6(h * cos),
+            num(cx - w * 0.5 * cos + h * 0.5 * sin),
+            num(cy - w * 0.5 * sin - h * 0.5 * cos),
             idx + 1
         );
         self.emit(&s);
@@ -1380,10 +1484,20 @@ impl PdfDoc {
                 .into_bytes(),
             );
         }
+        // Soft masks (pictures with transparent parts) come after the
+        // embedded fonts, so every object number above stays where it was.
+        let smask_base = emb_start + emb_objs.len();
+        let mut next_smask = smask_base;
         for img in &self.images {
+            let mask_ref = if img.alpha.is_some() {
+                next_smask += 1;
+                format!(" /SMask {} 0 R", next_smask - 1)
+            } else {
+                String::new()
+            };
             let mut obj = format!(
                 "<< /Type/XObject /Subtype/Image /Width {} /Height {} \
-                 /ColorSpace/DeviceRGB /BitsPerComponent 8 /Length {} >>\nstream\n",
+                 /ColorSpace/DeviceRGB /BitsPerComponent 8{mask_ref} /Length {} >>\nstream\n",
                 img.width_px,
                 img.height_px,
                 img.rgb.len()
@@ -1407,10 +1521,26 @@ impl PdfDoc {
                     .collect();
                 format!(" /XObject << {} >>", items.join(" "))
             };
+            let ext_gstates = if self.page_alphas[i].is_empty() {
+                String::new()
+            } else {
+                let items: Vec<String> = self.page_alphas[i]
+                    .iter()
+                    .map(|pct| {
+                        let a = f64::from(*pct) / 100.0;
+                        format!(
+                            "/GSA{pct} << /Type/ExtGState /ca {} /CA {} >>",
+                            num(a),
+                            num(a)
+                        )
+                    })
+                    .collect();
+                format!(" /ExtGState << {} >>", items.join(" "))
+            };
             objs.push(
                 format!(
                     "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {} {}] /Contents {} 0 R \
-                     /Resources << /Font << /F1 {OBJ_FONT} 0 R /F2 {OBJ_FONT_BOLD} 0 R{emb_resources} >>{xobjects} >> >>",
+                     /Resources << /Font << /F1 {OBJ_FONT} 0 R /F2 {OBJ_FONT_BOLD} 0 R{emb_resources} >>{xobjects}{ext_gstates} >> >>",
                     num(w),
                     num(h),
                     first_page_obj + 2 * i + 1
@@ -1434,6 +1564,21 @@ impl PdfDoc {
             );
         }
         objs.extend(emb_objs);
+        for img in &self.images {
+            if let Some(alpha) = &img.alpha {
+                let mut obj = format!(
+                    "<< /Type/XObject /Subtype/Image /Width {} /Height {} \
+                     /ColorSpace/DeviceGray /BitsPerComponent 8 /Length {} >>\nstream\n",
+                    img.width_px,
+                    img.height_px,
+                    alpha.len()
+                )
+                .into_bytes();
+                obj.extend_from_slice(alpha);
+                obj.extend_from_slice(b"endstream");
+                objs.push(obj);
+            }
+        }
         if !self.bookmarks.is_empty() {
             // Outline: the root, then one item per bookmark, all after the
             // pages so the fixed object numbers above do not move.

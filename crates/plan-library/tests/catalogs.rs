@@ -288,3 +288,39 @@ fn json_round_trips_for_every_catalog() {
         assert_eq!(back, cat, "{}", cat.name);
     }
 }
+
+#[test]
+fn the_type_filter_classifies_the_built_in_catalogs() {
+    use plan_library::browse::{apply, Filter};
+    use plan_library::manage::UserMeta;
+    use plan_library::types::classify;
+    use plan_library::LibType;
+    let lib = Library::with_all_core();
+    let total = lib.len();
+    let unclassified: Vec<String> = lib
+        .all_items()
+        .filter(|i| classify(i).is_none())
+        .map(|i| format!("{} ({})", i.name, i.category.join(" > ")))
+        .collect();
+    assert!(
+        unclassified.len() * 10 <= total,
+        "{} of {total} built-in items have no browser type: {unclassified:?}",
+        unclassified.len()
+    );
+    let meta = UserMeta::default();
+    let only = |t: LibType, q: &str| {
+        let f = Filter {
+            query: q.into(),
+            types: vec![t],
+            ..Filter::default()
+        };
+        apply(&lib, &f, &meta)
+    };
+    assert!(only(LibType::Fixtures, "toilet")
+        .iter()
+        .any(|i| i.id == "core.plumbing.toilet_elongated"));
+    assert!(only(LibType::Furniture, "toilet").is_empty());
+    assert!(!only(LibType::Plants, "").is_empty());
+    assert!(!only(LibType::Electrical, "outlet").is_empty());
+    assert!(!only(LibType::Cabinets, "").is_empty());
+}

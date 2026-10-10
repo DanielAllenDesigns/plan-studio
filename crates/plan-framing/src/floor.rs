@@ -1,7 +1,8 @@
 //! Floor platform framing: joists, rim joists and mid-span blocking.
 
+use crate::build::{BlockingStyle, Connection, DetailOptions};
 use crate::defaults::FramingDefaults;
-use crate::lumber::TWO_BY_THICKNESS;
+use crate::lumber::{Lumber, TWO_BY_THICKNESS};
 use crate::member::{add, scale, Member, MemberKind, Transform3, Vec3};
 use plan_core::{Point, Room};
 use serde::{Deserialize, Serialize};
@@ -49,6 +50,51 @@ pub fn frame_floor(
     frame_floor_holes(room, floor_elevation, d, direction, &[])
 }
 
+/// Frame a ceiling over `room`: ceiling joists (`d.ceiling_joist_size` at
+/// `d.ceiling_joist_spacing`, running `d.ceiling_direction`) that rest on the
+/// top plates, so their bottoms sit at `plate_top`. No rim joists or blocking.
+/// The members are [`MemberKind::CeilingJoist`].
+pub fn frame_ceiling(room: &Room, plate_top: f64, d: &FramingDefaults) -> Vec<Member> {
+    frame_ceiling_ref(room, plate_top, d, &DetailOptions::default(), None)
+}
+
+/// [`frame_ceiling`] with the detail options and the joists laid out from a
+/// Framing Reference Marker.
+pub fn frame_ceiling_ref(
+    room: &Room,
+    plate_top: f64,
+    d: &FramingDefaults,
+    opts: &DetailOptions,
+    reference: Option<Point>,
+) -> Vec<Member> {
+    let as_floor = FramingDefaults {
+        joist_size: d.ceiling_joist_size,
+        joist_spacing: d.ceiling_joist_spacing,
+        rim_joist: false,
+        blocking: false,
+        ..d.clone()
+    };
+    // `frame_floor` puts the joist tops one subfloor thickness below the
+    // elevation it is given; the ceiling joists stand on the plate instead.
+    let elevation = plate_top + SUBFLOOR + d.ceiling_joist_size.depth;
+    frame_floor_ref(
+        room,
+        elevation,
+        &as_floor,
+        d.ceiling_direction,
+        &[],
+        opts,
+        true,
+        reference,
+    )
+    .into_iter()
+    .map(|mut m| {
+        m.kind = MemberKind::CeilingJoist;
+        m
+    })
+    .collect()
+}
+
 /// A hole in the platform (a stairwell) in the frame of the joists: `s` along
 /// the joists, `c` across them.
 struct HoleBox {
@@ -74,6 +120,56 @@ pub fn frame_floor_holes(
     d: &FramingDefaults,
     direction: JoistDirection,
     holes: &[Vec<Point>],
+) -> Vec<Member> {
+    frame_floor_opts(
+        room,
+        floor_elevation,
+        d,
+        direction,
+        holes,
+        &DetailOptions::default(),
+        false,
+    )
+}
+
+/// [`frame_floor_holes`] with the framing detail options: the Rim Joist
+/// Width, the Stagger or Flush connection of double rim joists, a maximum rim
+/// board length and the blocking style (In Line, Stagger or Cross/Bridging).
+/// `ceiling` takes the ceiling's blocking style.
+pub fn frame_floor_opts(
+    room: &Room,
+    floor_elevation: f64,
+    d: &FramingDefaults,
+    direction: JoistDirection,
+    holes: &[Vec<Point>],
+    opts: &DetailOptions,
+    ceiling: bool,
+) -> Vec<Member> {
+    frame_floor_ref(
+        room,
+        floor_elevation,
+        d,
+        direction,
+        holes,
+        opts,
+        ceiling,
+        None,
+    )
+}
+
+/// [`frame_floor_opts`] with the joist layout anchored at a Framing Reference
+/// Marker: a joist centre falls on the marker's position plus whole
+/// spacings, and edge joists close the gaps the grid leaves (manual p. 919).
+#[allow(clippy::too_many_arguments)]
+pub fn frame_floor_ref(
+    room: &Room,
+    floor_elevation: f64,
+    d: &FramingDefaults,
+    direction: JoistDirection,
+    holes: &[Vec<Point>],
+    opts: &DetailOptions,
+    ceiling: bool,
+    reference: Option<Point>,
 ) -> Vec<Member> {
     let poly = &room.polygon;
     if poly.len() < 3 {
@@ -107,14 +203,25 @@ pub fn frame_floor_holes(
         [1.0, 0.0, 0.0]
     };
     let up: Vec3 = [0.0, 1.0, 0.0];
-    let rim = if d.rim_joist { TWO_BY_THICKNESS } else { 0.0 };
+    let rim_plies = d.rim_plies.clamp(1, 3);
+    let rim_width = if opts.rim_width > 0.1 {
+        opts.rim_width
+    } else {
+        TWO_BY_THICKNESS
+    };
+    let rim = if d.rim_joist {
+        rim_width * f64::from(rim_plies)
+    } else {
+        0.0
+    };
 
     let (lo, hi) = if along_x {
         (min.y, max.y)
     } else {
         (min.x, max.x)
     };
-    let lines: Vec<Line> = joist_positions(lo, hi, d.joist_spacing.max(t), t)
+    let origin = reference.map(|r| if along_x { r.y } else { r.x });
+    let lines: Vec<Line> = joist_positions(lo, hi, d.joist_spacing.max(t), t, origin)
         .into_iter()
         .map(|across| Line {
             across,
@@ -246,24 +353,60 @@ pub fn frame_floor_holes(
                 continue;
             }
             let inward = if ccw { e.perp() } else { -e.perp() }.normalized();
-            let start = p + inward * (t / 2.0);
             let dir = e.normalized();
-            let tf = Transform3 {
-                origin: [start.x, y_mid, -start.y],
-                axis_x: [dir.x, 0.0, -dir.y],
-                axis_y: up,
+            let rim_lumber = Lumber {
+                thickness: rim_width,
+                depth: lumber.depth,
             };
-            out.push(Member::new(
-                MemberKind::RimJoist,
-                lumber,
-                e.length(),
-                tf,
-                None,
-            ));
+            // Boards no longer than the maximum, cut evenly along the edge.
+            let boards = if opts.max_rim_length > 1.0 {
+                (e.length() / opts.max_rim_length).ceil().max(1.0) as usize
+            } else {
+                1
+            };
+            for ply in 0..rim_plies {
+                // Stagger: every ply after the first stops one board
+                // thickness short at alternating ends of alternating edges;
+                // Flush runs every ply to the platform edge.
+                let (cut_start, cut_end) = match opts.rim_connection {
+                    Connection::Flush => (0.0, 0.0),
+                    Connection::Stagger if ply == 0 => (0.0, 0.0),
+                    Connection::Stagger => {
+                        if (i + ply as usize).is_multiple_of(2) {
+                            (rim_width, 0.0)
+                        } else {
+                            (0.0, rim_width)
+                        }
+                    }
+                };
+                let base = p + inward * (rim_width * (f64::from(ply) + 0.5));
+                let run = e.length() - cut_start - cut_end;
+                let piece = run / boards as f64;
+                for k in 0..boards {
+                    let start = base + dir * (cut_start + piece * k as f64);
+                    let tf = Transform3 {
+                        origin: [start.x, y_mid, -start.y],
+                        axis_x: [dir.x, 0.0, -dir.y],
+                        axis_y: up,
+                    };
+                    out.push(Member::new(
+                        MemberKind::RimJoist,
+                        rim_lumber,
+                        piece,
+                        tf,
+                        None,
+                    ));
+                }
+            }
         }
     }
 
     if d.blocking {
+        let style = if ceiling {
+            opts.ceiling_blocking_style
+        } else {
+            opts.blocking_style
+        };
         for pair in lines.windows(2) {
             let (l0, l1) = (&pair[0], &pair[1]);
             let gap = l1.across - l0.across - t;
@@ -273,15 +416,52 @@ pub fn frame_floor_holes(
             if l0.spans.len() != l1.spans.len() {
                 continue;
             }
-            for (&(a0, b0), &(a1, b1)) in l0.spans.iter().zip(&l1.spans) {
+            for (bay, (&(a0, b0), &(a1, b1))) in l0.spans.iter().zip(&l1.spans).enumerate() {
                 let (a, b) = (a0.max(a1), b0.min(b1));
                 let span = b - a;
                 if span <= MAX_UNBLOCKED_SPAN {
                     continue;
                 }
                 let rows = (span / MAX_UNBLOCKED_SPAN).ceil() as u32 - 1;
+                let pair_index = (l0.across / d.joist_spacing.max(1.0)).round() as i64 + bay as i64;
                 for r in 1..=rows {
-                    let at = a + span * f64::from(r) / f64::from(rows + 1);
+                    let mut at = a + span * f64::from(r) / f64::from(rows + 1);
+                    // Stagger: alternate bays sit either side of the row.
+                    if style == BlockingStyle::Stagger {
+                        at += if pair_index % 2 == 0 { t } else { -t };
+                    }
+                    if style == BlockingStyle::Cross {
+                        // Two crossed bridging boards in the bay.
+                        let h = (lumber.depth * 0.9).max(1.0);
+                        let len = gap.hypot(h);
+                        let bridge = Lumber {
+                            thickness: 1.0,
+                            depth: 3.0,
+                        };
+                        for flip in [false, true] {
+                            let (y0, y1) = if flip {
+                                (y_mid + h / 2.0, y_mid - h / 2.0)
+                            } else {
+                                (y_mid - h / 2.0, y_mid + h / 2.0)
+                            };
+                            let from = add(to3(at, l0.across, y0), scale(across_dir, t / 2.0));
+                            let dirv = [
+                                across_dir[0] * gap / len,
+                                (y1 - y0) / len,
+                                across_dir[2] * gap / len,
+                            ];
+                            let tf = Transform3 {
+                                origin: from,
+                                axis_x: dirv,
+                                axis_y: span_dir,
+                            };
+                            let mut m = Member::new(MemberKind::Blocking, bridge, len, tf, None);
+                            m.label =
+                                format!("cross bridging x {}", crate::lumber::format_inches(len));
+                            out.push(m);
+                        }
+                        continue;
+                    }
                     let start = add(to3(at, l0.across, y_mid), scale(across_dir, t / 2.0));
                     let tf = Transform3 {
                         origin: start,
@@ -292,6 +472,170 @@ pub fn frame_floor_holes(
                 }
             }
         }
+    }
+    out
+}
+
+/// Framing for a tray ceiling (manual p. 458, "Build Framing for Selected
+/// Object"): the side walls of the step and the ceiling joists of the
+/// ceilings it makes.
+///
+/// * Vertical sides: a wall along each edge of the hole, just outside it - a
+///   bottom plate at the lower ceiling, a top plate under the upper one and
+///   studs between them at `d.stud_spacing` (the last stud at the corner) -
+///   as [`MemberKind::BottomPlate`], [`MemberKind::TopPlate`] and
+///   [`MemberKind::Stud`].
+/// * Sloped sides: one [`MemberKind::Rafter`] per `rec.rafter_spacing` along
+///   each edge, running up the slope from the outer ceiling to the hole.
+/// * Ceiling joists ([`MemberKind::CeilingJoist`], `d.ceiling_joist_size` at
+///   `rec.rafter_spacing`): over the outer ceiling (the ring around the hole)
+///   when it hangs below the surface the tray sits in, and over the inner
+///   ceiling when a Recess into Ceiling raises it.
+///
+/// Heights in `geom` are above the floor datum; `floor_elevation` is added.
+/// A tray with a Caution or with Retain Framing set makes no members.
+pub fn frame_tray_ceiling(
+    geom: &plan_core::tray::TrayGeom,
+    rec: &plan_core::tray::TrayCeiling,
+    floor_elevation: f64,
+    d: &FramingDefaults,
+) -> Vec<Member> {
+    if !geom.ok() || rec.retain_framing || geom.inner.len() < 3 {
+        return Vec::new();
+    }
+    let up: Vec3 = [0.0, 1.0, 0.0];
+    let to3 = |p: Point, y: f64| -> Vec3 { [p.x, y, -p.y] };
+    let dir3 = |v: Point| -> Vec3 { [v.x, 0.0, -v.y] };
+    let (low, high) = (floor_elevation + geom.low(), floor_elevation + geom.high());
+    let lumber = d.stud_size;
+    let t = lumber.thickness;
+    let inner = plan_core::tray::ccw(&geom.inner);
+    let n = inner.len();
+    let mut out = Vec::new();
+
+    for i in 0..n {
+        let (a, b) = (inner[i], inner[(i + 1) % n]);
+        let len = a.dist(b);
+        if len < 1.0 {
+            continue;
+        }
+        let dir = (b - a).normalized();
+        // Outward from a counter-clockwise hole is to the right of the edge.
+        let outward = -dir.perp();
+        let step = |dist: f64| a + dir * dist + outward * (lumber.depth / 2.0);
+        if geom.run > 1e-6 {
+            // A rafter up the slope: its low end on the outer ceiling's edge
+            // `run` out from the hole, its high end at the hole.
+            let spacing = rec.rafter_spacing.max(t);
+            let slope = (geom.run * geom.run + (geom.h_inner - geom.h_outer).powi(2)).sqrt();
+            let mut at: f64 = 0.0;
+            loop {
+                let along = at.min(len);
+                let foot = a + dir * along + outward * geom.run;
+                let top = a + dir * along;
+                let (y0, y1) = (
+                    floor_elevation + geom.h_outer,
+                    floor_elevation + geom.h_inner,
+                );
+                let axis: Vec3 = [
+                    (top.x - foot.x) / slope,
+                    (y1 - y0) / slope,
+                    -(top.y - foot.y) / slope,
+                ];
+                let tf = Transform3 {
+                    origin: to3(foot, y0),
+                    axis_x: axis,
+                    axis_y: dir3(dir),
+                };
+                out.push(Member::new(
+                    MemberKind::Rafter,
+                    d.ceiling_joist_size,
+                    slope,
+                    tf,
+                    None,
+                ));
+                if along >= len {
+                    break;
+                }
+                at += spacing;
+            }
+            continue;
+        }
+        // Plates lie flat along the edge: depth across the wall, thickness up.
+        let flat = |kind: MemberKind, y: f64| {
+            let tf = Transform3 {
+                origin: to3(step(0.0), y),
+                axis_x: dir3(dir),
+                axis_y: dir3(outward),
+            };
+            Member::new(kind, lumber, len, tf, None)
+        };
+        out.push(flat(MemberKind::BottomPlate, low + t / 2.0));
+        out.push(flat(MemberKind::TopPlate, high - t / 2.0));
+        let stud_len = (high - low - 2.0 * t).max(0.0);
+        if stud_len < 0.5 {
+            continue;
+        }
+        let spacing = d.stud_spacing.max(t);
+        let mut at: f64 = 0.0;
+        loop {
+            // Studs are centred on `at`; the first and last sit flush.
+            let centre = at.clamp(t / 2.0, (len - t / 2.0).max(t / 2.0));
+            let tf = Transform3 {
+                origin: to3(step(centre), low + t),
+                axis_x: up,
+                axis_y: dir3(outward),
+            };
+            out.push(Member::new(MemberKind::Stud, lumber, stud_len, tf, None));
+            if at >= len {
+                break;
+            }
+            at += spacing;
+        }
+    }
+
+    // Ceiling joists for the ceilings the tray makes.
+    let joist_defaults = FramingDefaults {
+        ceiling_joist_spacing: rec.rafter_spacing.max(t),
+        ..d.clone()
+    };
+    let joists = |poly: &[Point], holes: &[Vec<Point>], level: f64| -> Vec<Member> {
+        let room = Room {
+            polygon: poly.to_vec(),
+            ..Room::default()
+        };
+        let as_floor = FramingDefaults {
+            joist_size: joist_defaults.ceiling_joist_size,
+            joist_spacing: joist_defaults.ceiling_joist_spacing,
+            rim_joist: false,
+            blocking: false,
+            ..joist_defaults.clone()
+        };
+        let elevation = level + SUBFLOOR + joist_defaults.ceiling_joist_size.depth;
+        frame_floor_holes(
+            &room,
+            elevation,
+            &as_floor,
+            joist_defaults.ceiling_direction,
+            holes,
+        )
+        .into_iter()
+        .map(|mut m| {
+            m.kind = MemberKind::CeilingJoist;
+            m
+        })
+        .collect()
+    };
+    if geom.h_outer < geom.base - 1e-6 {
+        let edge = if geom.run > 1e-6 {
+            plan_core::tray::outset_outline(&geom.inner, geom.run)
+        } else {
+            geom.inner.clone()
+        };
+        out.extend(joists(&geom.outer, &[edge], floor_elevation + geom.h_outer));
+    }
+    if geom.h_inner > geom.base + 1e-6 {
+        out.extend(joists(&geom.inner, &[], floor_elevation + geom.h_inner));
     }
     out
 }
@@ -321,11 +665,25 @@ fn signed_area(poly: &[Point]) -> f64 {
 
 /// Joist centre positions across `[lo, hi]`: flush at both edges, on `step`
 /// centres between, never overlapping the last joist.
-fn joist_positions(lo: f64, hi: f64, step: f64, t: f64) -> Vec<f64> {
+fn joist_positions(lo: f64, hi: f64, step: f64, t: f64, origin: Option<f64>) -> Vec<f64> {
     if hi - lo < t {
         return Vec::new();
     }
     let (first, last) = (lo + t / 2.0, hi - t / 2.0);
+    if let Some(o) = origin {
+        let k0 = ((first - o) / step - EPS).ceil() as i64;
+        let mut v: Vec<f64> = (k0..)
+            .map(|k| o + k as f64 * step)
+            .take_while(|&p| p <= last + EPS)
+            .collect();
+        if v.first().is_none_or(|&p| p - first > t + EPS) {
+            v.insert(0, first);
+        }
+        if v.last().is_none_or(|&p| last - p > t + EPS) {
+            v.push(last);
+        }
+        return v;
+    }
     let mut v: Vec<f64> = (0..)
         .map(|k| first + f64::from(k) * step)
         .take_while(|&p| p <= last - t + EPS)
@@ -555,5 +913,242 @@ mod tests {
         assert!(of(&m, MemberKind::Joist)
             .iter()
             .all(|j| (j.length - 237.0).abs() < 1e-9));
+    }
+
+    #[test]
+    fn a_double_rim_adds_a_second_ply_and_shortens_the_joists() {
+        let d = FramingDefaults {
+            rim_plies: 2,
+            ..FramingDefaults::default()
+        };
+        let m = frame_floor(&rect(), 0.0, &d, JoistDirection::Auto);
+        assert_eq!(of(&m, MemberKind::RimJoist).len(), 4);
+        // 120" less two double rims of 3".
+        assert!(of(&m, MemberKind::Joist).iter().all(|j| j.length == 114.0));
+        let zs: Vec<f64> = of(&m, MemberKind::RimJoist)
+            .iter()
+            .map(|r| r.transform.origin[2])
+            .collect();
+        assert_eq!(zs, [-0.75, -2.25, -119.25, -117.75]);
+    }
+
+    #[test]
+    fn ceiling_joists_stand_on_the_plate_with_their_own_size_and_spacing() {
+        let d = FramingDefaults {
+            ceiling_joist_size: crate::lumber::TWO_BY_EIGHT,
+            ceiling_joist_spacing: 24.0,
+            ceiling_direction: JoistDirection::AlongX,
+            ..FramingDefaults::default()
+        };
+        let m = frame_ceiling(&rect(), 109.0, &d);
+        assert!(!m.is_empty());
+        assert!(m.iter().all(|j| j.kind == MemberKind::CeilingJoist));
+        assert!(m.iter().all(|j| j.lumber == crate::lumber::TWO_BY_EIGHT));
+        // Running along X: each joist spans the 240" length.
+        assert!(m.iter().all(|j| j.transform.axis_x == [1.0, 0.0, 0.0]));
+        assert!(m.iter().all(|j| (j.length - 240.0).abs() < 1e-9));
+        // Bottom of every joist on the plate.
+        for j in &m {
+            let bottom = j.transform.origin[1] - j.lumber.depth / 2.0;
+            assert!((bottom - 109.0).abs() < 1e-9, "{bottom}");
+        }
+        // 24" spacing: fewer joists than the 16" floor above.
+        let floor = frame_floor(
+            &rect(),
+            0.0,
+            &FramingDefaults::default(),
+            JoistDirection::AlongX,
+        );
+        assert!(m.len() < of(&floor, MemberKind::Joist).len());
+    }
+    // ----- Round 16: rim joists and blocking styles -----
+
+    #[test]
+    fn the_rim_width_and_connection_shape_a_double_rim() {
+        let d = FramingDefaults {
+            rim_plies: 2,
+            ..FramingDefaults::default()
+        };
+        let wide = DetailOptions {
+            rim_width: 2.0,
+            ..DetailOptions::default()
+        };
+        let m = frame_floor_opts(&rect(), 0.0, &d, JoistDirection::Auto, &[], &wide, false);
+        // Two doubled rims of 2" boards take 8" of every joist.
+        assert!(of(&m, MemberKind::Joist)
+            .iter()
+            .all(|j| (j.length - 112.0).abs() < 1e-9));
+        let rims = of(&m, MemberKind::RimJoist);
+        assert_eq!(rims.len(), 4);
+        assert!(rims.iter().all(|r| (r.lumber.thickness - 2.0).abs() < 1e-9));
+        // Stagger: the second ply of each edge stops one board short at one end.
+        let mut lens: Vec<f64> = rims.iter().map(|r| r.length).collect();
+        lens.sort_by(f64::total_cmp);
+        assert_eq!(lens, [238.0, 238.0, 240.0, 240.0]);
+        let flush = DetailOptions {
+            rim_connection: Connection::Flush,
+            ..wide.clone()
+        };
+        let m = frame_floor_opts(&rect(), 0.0, &d, JoistDirection::Auto, &[], &flush, false);
+        assert!(of(&m, MemberKind::RimJoist)
+            .iter()
+            .all(|r| r.length == 240.0));
+    }
+
+    #[test]
+    fn a_maximum_rim_length_cuts_the_rim_into_boards() {
+        let opts = DetailOptions {
+            max_rim_length: 100.0,
+            ..DetailOptions::default()
+        };
+        let m = frame_floor_opts(
+            &rect(),
+            0.0,
+            &FramingDefaults::default(),
+            JoistDirection::Auto,
+            &[],
+            &opts,
+            false,
+        );
+        let rims = of(&m, MemberKind::RimJoist);
+        // Two 240" edges in three 80" boards each.
+        assert_eq!(rims.len(), 6);
+        assert!(rims.iter().all(|r| (r.length - 80.0).abs() < 1e-9));
+    }
+
+    #[test]
+    fn blocking_goes_in_line_staggered_or_as_cross_bridging() {
+        let d = FramingDefaults {
+            blocking: true,
+            ..FramingDefaults::default()
+        };
+        let run = |style| {
+            let o = DetailOptions {
+                blocking_style: style,
+                ..DetailOptions::default()
+            };
+            frame_floor_opts(&rect(), 0.0, &d, JoistDirection::Auto, &[], &o, false)
+        };
+        let zs = |m: &[Member]| -> Vec<i64> {
+            let mut v: Vec<i64> = of(m, MemberKind::Blocking)
+                .iter()
+                .map(|b| (b.transform.origin[2] * 100.0).round() as i64)
+                .collect();
+            v.sort_unstable();
+            v.dedup();
+            v
+        };
+        let line = run(BlockingStyle::InLine);
+        assert_eq!(of(&line, MemberKind::Blocking).len(), 15);
+        assert_eq!(zs(&line).len(), 1);
+        let stagger = run(BlockingStyle::Stagger);
+        assert_eq!(of(&stagger, MemberKind::Blocking).len(), 15);
+        assert_eq!(zs(&stagger).len(), 2);
+        let cross = run(BlockingStyle::Cross);
+        let boards = of(&cross, MemberKind::Blocking);
+        // Two crossed boards in each of the 15 bays, named as bridging.
+        assert_eq!(boards.len(), 30);
+        assert!(boards.iter().all(|b| b.label.starts_with("cross bridging")));
+        // In plan the pair covers the same bay as one in-line block.
+        assert!(boards.iter().all(|b| b.length > 14.5 && b.length < 20.0));
+    }
+}
+
+#[cfg(test)]
+mod tray_tests {
+    use super::*;
+    use plan_core::tray::{resolve, RoomCeiling, TrayCeiling};
+    use plan_core::Project;
+
+    fn rect(x1: f64, y1: f64) -> Vec<Point> {
+        vec![
+            Point::new(0.0, 0.0),
+            Point::new(x1, 0.0),
+            Point::new(x1, y1),
+            Point::new(0.0, y1),
+        ]
+    }
+
+    fn geom(spec: TrayCeiling) -> (plan_core::tray::TrayGeom, TrayCeiling) {
+        let mut p = Project::new("t");
+        let id = p.make_tray_in_room(0, &rect(240.0, 180.0), spec).unwrap();
+        let room = RoomCeiling {
+            outline: rect(240.0, 180.0),
+            height: 96.0,
+            flat: true,
+        };
+        let g = resolve(&p.floors[0], &[room]).remove(0);
+        (g, p.floors[0].tray(id).unwrap().clone())
+    }
+
+    fn count(m: &[Member], k: MemberKind) -> usize {
+        m.iter().filter(|x| x.kind == k).count()
+    }
+
+    #[test]
+    fn a_vertical_step_gets_plates_and_studs_on_every_edge() {
+        let (g, rec) = geom(TrayCeiling::default());
+        let m = frame_tray_ceiling(&g, &rec, 0.0, &FramingDefaults::default());
+        // Four edges: a bottom and a top plate on each.
+        assert_eq!(count(&m, MemberKind::BottomPlate), 4);
+        assert_eq!(count(&m, MemberKind::TopPlate), 4);
+        let studs: Vec<&Member> = m.iter().filter(|x| x.kind == MemberKind::Stud).collect();
+        // 192" edges: 0, 16 ... 192 -> 13 studs; 132" edges: 0 ... 128 and the
+        // corner -> 10 studs.
+        assert_eq!(studs.len(), 2 * 13 + 2 * 10);
+        // Stud length is the 8" step less the two plates.
+        assert!(studs.iter().all(|s| (s.length - (8.0 - 3.0)).abs() < 1e-9));
+        // Plates run the edge, between the dropped (88") and upper (96") ceiling.
+        let bottom = m
+            .iter()
+            .find(|x| x.kind == MemberKind::BottomPlate)
+            .unwrap();
+        assert!((bottom.transform.origin[1] - (88.0 + 0.75)).abs() < 1e-9);
+        // The dropped ring is joisted below the surface it hangs from.
+        assert!(count(&m, MemberKind::CeilingJoist) > 0);
+        assert_eq!(count(&m, MemberKind::Rafter), 0);
+    }
+
+    #[test]
+    fn a_sloped_step_gets_rafters_not_walls() {
+        let (g, rec) = geom(TrayCeiling {
+            pitch: Some(12.0),
+            ..Default::default()
+        });
+        let m = frame_tray_ceiling(&g, &rec, 0.0, &FramingDefaults::default());
+        assert_eq!(count(&m, MemberKind::Stud), 0);
+        assert_eq!(count(&m, MemberKind::TopPlate), 0);
+        let rafters = count(&m, MemberKind::Rafter);
+        // 16" spacing along 192" and 132" edges, a rafter at each end.
+        assert_eq!(rafters, 2 * 13 + 2 * 10);
+        let r = m.iter().find(|x| x.kind == MemberKind::Rafter).unwrap();
+        // 8" run and 8" rise: an 11.3" slope.
+        assert!((r.length - 128f64.sqrt()).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_recessed_tray_joists_the_raised_ceiling_and_retain_framing_stops_it() {
+        let (g, rec) = geom(TrayCeiling {
+            recess: true,
+            ..Default::default()
+        });
+        let m = frame_tray_ceiling(&g, &rec, 0.0, &FramingDefaults::default());
+        let joists: Vec<&Member> = m
+            .iter()
+            .filter(|x| x.kind == MemberKind::CeilingJoist)
+            .collect();
+        assert!(!joists.is_empty());
+        // Over the 192" x 132" hole: joists span the short way.
+        assert!(joists.iter().all(|j| j.length <= 192.0 + 1e-6));
+        let mut kept = rec.clone();
+        kept.retain_framing = true;
+        assert!(frame_tray_ceiling(&g, &kept, 0.0, &FramingDefaults::default()).is_empty());
+    }
+
+    #[test]
+    fn a_tray_with_a_caution_is_not_framed() {
+        let (mut g, rec) = geom(TrayCeiling::default());
+        g.caution = Some(plan_core::tray::Caution::RoomNotFlat);
+        assert!(frame_tray_ceiling(&g, &rec, 0.0, &FramingDefaults::default()).is_empty());
     }
 }

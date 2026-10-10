@@ -21,13 +21,31 @@ use plan_core::cad::{CadItem, DEFAULT_CAD_LAYER};
 use plan_core::extras::{
     AreaKind, MoldingKind, MoldingRef, RoomFill, RoomLabelOptions, StructureLayer,
 };
-use plan_core::floors::{DeriveFrom, FloorPlacement, FloorSettings, NewFloorOptions};
+use plan_core::floors::{
+    DeriveFrom, FloorPlacement, FloorSettings, FoundationKind, FoundationOptions, FoundationRooms,
+    NewFloorOptions,
+};
 use plan_core::geometry::{polygon_area, Point};
-use plan_core::rooms::{apply_function_defaults, function_defaults};
-use plan_core::{detect_rooms, FloorKind, FoundationKind, PlanDefaults, Room, RoomName};
+use plan_core::living::{self, LivingArea, LivingTo};
+use plan_core::rooms::{
+    apply_function_defaults, apply_type_spec, function_defaults_with, molding_def,
+};
+use plan_core::{detect_rooms, FloorKind, PlanDefaults, Room, RoomName};
 use plan_spaceplan::{bump, plan_symbols, RoomBox, Stroke as SpStroke, GRID};
 use std::cell::RefCell;
 use std::collections::HashMap;
+
+pub mod commands;
+pub mod exterior;
+
+#[cfg(test)]
+pub use commands::id as run_ids;
+pub use commands::{edit_actions, run_command};
+pub use exterior::{
+    apply_exterior_spec, exterior_at, exterior_cycle, exterior_dialog_init, exterior_drag_down,
+    exterior_drag_move, exterior_drag_up, exterior_dragging, request_exterior_dialog,
+    select_exterior, selected_exterior, take_exterior_dialog_request, ExteriorInit, Next,
+};
 
 // ----- per-room settings -----
 
@@ -114,6 +132,7 @@ pub type LabelOptions = RoomLabelOptions;
 /// Default molding heights when a profile name is first entered, inches.
 const BASE_MOLDING_HEIGHT: f64 = 5.25;
 const CROWN_MOLDING_HEIGHT: f64 = 3.5;
+const CHAIR_MOLDING_HEIGHT: f64 = 3.0;
 
 /// What a Room Specification holds beyond the plain fields of
 /// `plan_core::RoomName`. Conditioned, the stem wall, the moldings, the fill
@@ -135,6 +154,8 @@ pub struct RoomExtras {
     pub stem_wall_height: f64,
     pub base_molding: String,
     pub crown_molding: String,
+    /// Chair rail profile name ("" = none).
+    pub chair_molding: String,
     pub wall_covering: String,
     pub fill: FillStyle,
     pub label: LabelOptions,
@@ -142,6 +163,10 @@ pub struct RoomExtras {
     pub floor_structure: Vec<StructureLayer>,
     /// Ceiling Structure layers (R-29); empty follows the floor's default.
     pub ceiling_structure: Vec<StructureLayer>,
+    /// The layered Floor/Ceiling Structure and Finish definitions of the
+    /// room (Structure panel Edit buttons, Round 16); a slot that is still
+    /// Legacy keeps the fields above.
+    pub assemblies: plan_core::assemblies::PlatformAssemblies,
 }
 
 impl RoomExtras {
@@ -158,11 +183,13 @@ impl RoomExtras {
             stem_wall_height: 0.0,
             base_molding: String::new(),
             crown_molding: String::new(),
+            chair_molding: String::new(),
             wall_covering: String::new(),
             fill: FillStyle::default(),
             label: LabelOptions::default(),
             floor_structure: Vec::new(),
             ceiling_structure: Vec::new(),
+            assemblies: plan_core::assemblies::PlatformAssemblies::default(),
         }
     }
 
@@ -175,6 +202,7 @@ impl RoomExtras {
         }
         self.base_molding = molding_profile(name, MoldingKind::Base);
         self.crown_molding = molding_profile(name, MoldingKind::Crown);
+        self.chair_molding = molding_profile(name, MoldingKind::Chair);
         self.fill = FillStyle::from_room(name.fill_style.as_ref());
         self.label = name.label.clone();
         if let Some(m) = &name.misc {
@@ -187,6 +215,7 @@ impl RoomExtras {
             self.wall_covering = m.wall_covering.clone();
             self.floor_structure = m.floor_structure.clone();
             self.ceiling_structure = m.ceiling_structure.clone();
+            self.assemblies = m.assemblies.clone();
         }
         self
     }
@@ -207,6 +236,12 @@ impl RoomExtras {
             &self.crown_molding,
             CROWN_MOLDING_HEIGHT,
         );
+        set_molding(
+            name,
+            MoldingKind::Chair,
+            &self.chair_molding,
+            CHAIR_MOLDING_HEIGHT,
+        );
         name.fill_style = self.fill.to_room();
         name.label = self.label.clone();
         name.misc = Some(plan_core::extras::RoomMisc {
@@ -219,6 +254,7 @@ impl RoomExtras {
             wall_covering: self.wall_covering.clone(),
             floor_structure: self.floor_structure.clone(),
             ceiling_structure: self.ceiling_structure.clone(),
+            assemblies: self.assemblies.clone(),
         });
     }
 }
@@ -232,20 +268,28 @@ fn molding_profile(name: &RoomName, kind: MoldingKind) -> String {
         .unwrap_or_default()
 }
 
-/// Sets, renames or removes the `kind` molding of `name`; other kinds stay,
-/// and a renamed molding keeps its height.
+/// Sets, renames or removes the `kind` molding of `name`; other kinds stay.
+/// A profile from the molding library brings its own height (R-34); a name
+/// the library does not know keeps the height the molding had, or `height`.
 fn set_molding(name: &mut RoomName, kind: MoldingKind, profile: &str, height: f64) {
     let profile = profile.trim();
+    let library = molding_def(profile).map(|d| d.height());
     match name.moldings.iter().position(|m| m.kind == kind) {
         Some(i) if profile.is_empty() => {
             name.moldings.remove(i);
         }
-        Some(i) => name.moldings[i].profile = profile.to_string(),
+        Some(i) => {
+            let m = &mut name.moldings[i];
+            if m.profile != profile {
+                m.height = library.unwrap_or(m.height);
+            }
+            m.profile = profile.to_string();
+        }
         None if profile.is_empty() => {}
         None => name.moldings.push(MoldingRef {
             kind,
             profile: profile.to_string(),
-            height,
+            height: library.unwrap_or(height),
         }),
     }
 }
@@ -285,6 +329,10 @@ struct State {
     bump_snap: f64,
     /// A room label being dragged (R-44).
     label_drag: Option<LabelDrag>,
+    /// The selected Exterior Room (R-106) and its pending dialog request.
+    ext: exterior::ExtState,
+    /// The enlarged room Expand Room Polyline made (R-110).
+    expanded: Option<commands::Expanded>,
 }
 
 /// A drag of one room label: the room is remembered by a point inside it.
@@ -363,7 +411,12 @@ pub fn label_options(cx: &EditorContext, room: &Room) -> RoomLabelOptions {
 
 /// The plan fill stored with `room`.
 pub fn fill_style(cx: &EditorContext, room: &Room) -> FillStyle {
-    FillStyle::from_room(name_entry(cx, room).and_then(|n| n.fill_style.as_ref()))
+    // A room without a fill of its own takes the Floor Defaults' Fill Style.
+    FillStyle::from_room(
+        name_entry(cx, room)
+            .and_then(|n| n.fill_style.as_ref())
+            .or(cx.floor().settings.room_fill.as_ref()),
+    )
 }
 
 // ----- selection (R-16) -----
@@ -378,11 +431,19 @@ pub fn select_room(cx: &mut EditorContext, idx: usize) {
         point: room_anchor(room),
     };
     cx.selection.clear();
-    with(|s| s.selected = Some(sel));
+    with(|s| {
+        s.selected = Some(sel);
+        s.ext.selected = None;
+        s.expanded = None;
+    });
 }
 
 pub fn clear_room_selection() {
-    with(|s| s.selected = None);
+    with(|s| {
+        s.selected = None;
+        s.ext.selected = None;
+        s.expanded = None;
+    });
 }
 
 /// Index into `cx.rooms` of the selected room, if it still exists on the
@@ -446,7 +507,7 @@ pub struct LabelValues {
 }
 
 /// The macros a label template understands, with what each stands for.
-pub const LABEL_MACROS: [(&str, &str); 9] = [
+pub const LABEL_MACROS: [(&str, &str); 12] = [
     ("<name>", "room name"),
     ("<type>", "room type"),
     ("<area>", "interior area"),
@@ -456,6 +517,9 @@ pub const LABEL_MACROS: [(&str, &str); 9] = [
     ("<ceiling>", "ceiling height"),
     ("<floor>", "floor name"),
     ("<perimeter>", "interior perimeter"),
+    ("%dimensions%", "interior dimensions"),
+    ("%internal_area%", "interior area"),
+    ("%standard_area%", "standard area"),
 ];
 
 /// Replaces the label macros of `template` with `vals`. Unknown text stays
@@ -471,6 +535,9 @@ pub fn expand_label_macros(template: &str, vals: &LabelValues) -> String {
         ("<ceiling>", &vals.ceiling),
         ("<floor>", &vals.floor),
         ("<perimeter>", &vals.perimeter),
+        ("%dimensions%", &vals.dims),
+        ("%internal_area%", &vals.area),
+        ("%standard_area%", &vals.standard_area),
     ];
     let mut out = template.replace("\\n", "\n");
     for (token, value) in pairs {
@@ -481,6 +548,40 @@ pub fn expand_label_macros(template: &str, vals: &LabelValues) -> String {
 
 fn sq_ft_text(v: f64) -> String {
     format!("{} sq ft", v.round())
+}
+
+/// The Interior Area of `room` on the active floor, square feet: to the inner
+/// wall surfaces, including the space inside bay, box and bow windows
+/// (manual p. 453).
+pub fn interior_area_sq_ft(cx: &EditorContext, room: &Room) -> f64 {
+    let f = cx.floor();
+    let has_bay = f.openings.iter().any(|o| {
+        matches!(
+            o.style,
+            plan_core::openings::OpeningStyle::BayWindow
+                | plan_core::openings::OpeningStyle::BowWindow
+                | plan_core::openings::OpeningStyle::BoxWindow
+        )
+    });
+    if has_bay {
+        let def = living::defining_walls(&f.walls);
+        living::interior_area_with_bays_sq_in(f, room, &def) / 144.0
+    } else {
+        room.interior_area_sq_ft()
+    }
+}
+
+/// The Standard Area of `room` on the active floor, square feet: to the
+/// center of interior walls and to the outside surface or the outside of the
+/// Main Layer of exterior walls (the `Living Area to` setting); bay, box and
+/// bow windows are not in it.
+pub fn standard_area_sq_ft(cx: &EditorContext, room: &Room) -> f64 {
+    let to = living_basis(&cx.defaults);
+    if to == LivingTo::OutsideSurface {
+        return room.standard_area_sq_ft();
+    }
+    let def = living::defining_walls(&cx.floor().walls);
+    living::standard_area_sq_in(room, &def, cx.wall_types(), to) / 144.0
 }
 
 /// The macro values of `room` on the active floor.
@@ -497,8 +598,8 @@ pub fn label_values(cx: &EditorContext, room: &Room) -> LabelValues {
     LabelValues {
         name: cx.room_name(room),
         room_type: entry.map_or_else(String::new, |n| n.room_type.clone()),
-        area: sq_ft_text(room.interior_area_sq_ft()),
-        standard_area: sq_ft_text(room.standard_area_sq_ft()),
+        area: sq_ft_text(interior_area_sq_ft(cx, room)),
+        standard_area: sq_ft_text(standard_area_sq_ft(cx, room)),
         centerline_area: sq_ft_text(room.area_sq_ft()),
         dims: interior_dims_text(cx, room),
         ceiling: cx.fmt_dim(
@@ -529,8 +630,8 @@ pub fn room_label_text(cx: &EditorContext, room: &Room) -> String {
     }
     if opts.show_area {
         lines.push(match opts.area_kind {
-            AreaKind::Interior => format!("{} sq ft", room.interior_area_sq_ft().round()),
-            AreaKind::Standard => format!("{} sq ft std", room.standard_area_sq_ft().round()),
+            AreaKind::Interior => format!("{} sq ft", interior_area_sq_ft(cx, room).round()),
+            AreaKind::Standard => format!("{} sq ft std", standard_area_sq_ft(cx, room).round()),
             AreaKind::Centerline => format!("{} sq ft c/l", room.area_sq_ft().round()),
         });
     }
@@ -545,8 +646,22 @@ pub const LABEL_FONT_PX: f64 = 13.0;
 /// Where `room`'s label is drawn: the room's label point plus the offset the
 /// label was dragged by.
 pub fn label_position(cx: &EditorContext, room: &Room) -> Point {
-    let off = name_entry(cx, room).map_or(Point::ZERO, |n| n.label.offset);
-    room_anchor(room) + off
+    match name_entry(cx, room) {
+        Some(n) => room.label_point(n.label_style.placement, LABEL_INSET) + n.label.offset,
+        None => room_anchor(room),
+    }
+}
+
+/// How far in from the wall a label placed near a wall sits, inches.
+pub const LABEL_INSET: f64 = 18.0;
+
+/// The text style `room`'s label is drawn in: the one its Label tab names,
+/// else the Room Label Style (R-46).
+pub fn label_text_style(cx: &EditorContext, room: &Room) -> String {
+    name_entry(cx, room).map_or_else(
+        || plan_core::rooms::ROOM_LABEL_TEXT_STYLE.to_string(),
+        |n| n.label_style.style_name().to_string(),
+    )
 }
 
 /// Half the width and height of `room`'s label box in plan inches at the
@@ -681,10 +796,22 @@ pub fn label_pointer_up() -> bool {
     with(|s| s.label_drag.take().is_some())
 }
 
-// ----- living area (R-51..R-54) -----
+// ----- living area (R-51..R-54, R-108, R-109) -----
+
+/// The `Living Area to` setting of General Plan Defaults: where the Standard
+/// Area and the Living Area stop at an exterior wall.
+pub fn living_basis(defaults: &PlanDefaults) -> LivingTo {
+    LivingTo::from_name(&defaults.page_text(living::LIVING_TO_KEY, LivingTo::default().name()))
+}
+
+/// Show Living Area Label of General Plan Defaults.
+pub fn show_living_label(defaults: &PlanDefaults) -> bool {
+    defaults.page_flag(living::SHOW_LIVING_LABEL_KEY, true)
+}
 
 /// Does the room count toward the living area? Its own setting wins, else the
-/// room type's, else it counts.
+/// room type's, else it counts. (The rough ceiling rule of 48 in needs the
+/// floor: see [`plan_core::living::room_in_living_area`].)
 pub fn counts_as_living(defaults: &PlanDefaults, entry: Option<&RoomName>) -> bool {
     match entry {
         Some(e) => e.include_in_living_area.unwrap_or_else(|| {
@@ -696,34 +823,113 @@ pub fn counts_as_living(defaults: &PlanDefaults, entry: Option<&RoomName>) -> bo
     }
 }
 
-/// Total Living Area over all floors, square feet (interior areas).
-pub fn living_area_total_sq_ft(cx: &EditorContext) -> f64 {
-    let mut total = 0.0;
-    for f in &cx.project.floors {
-        for room in detect_rooms(&f.walls, 0.5) {
-            let entry = room.name_entry(&f.room_names);
-            if counts_as_living(&cx.defaults, entry) {
-                total += room.interior_area_sq_ft();
-            }
-        }
+/// The Living Area of each structure of floor `fl`, using the rooms `rooms`
+/// detected on it.
+pub fn living_areas_of(cx: &EditorContext, fl: usize, rooms: &[Room]) -> Vec<LivingArea> {
+    living::living_areas(
+        &cx.project.floors[fl],
+        rooms,
+        &cx.defaults.rooms.room_types,
+        cx.wall_types(),
+        living_basis(&cx.defaults),
+    )
+}
+
+type LivingKey = ((u64, u64), usize, LivingTo, u64);
+
+thread_local! {
+    static LIVING_CACHE: RefCell<Option<(LivingKey, Vec<LivingArea>)>> = const { RefCell::new(None) };
+}
+
+/// The Living Area labels of the active floor, one per structure with a
+/// counted room (R-109). Recalculated whenever the plan or the room types
+/// change, otherwise the last result.
+pub fn living_labels(cx: &EditorContext) -> Vec<LivingArea> {
+    let types: u64 = cx
+        .defaults
+        .rooms
+        .room_types
+        .iter()
+        .enumerate()
+        .map(|(i, t)| (i as u64 + 1) * (1 + u64::from(t.include_in_living_area)))
+        .sum();
+    let key: LivingKey = (cx.cache_key(), cx.floor, living_basis(&cx.defaults), types);
+    if let Some(hit) = LIVING_CACHE.with(|c| {
+        c.borrow()
+            .as_ref()
+            .filter(|(k, _)| *k == key)
+            .map(|(_, v)| v.clone())
+    }) {
+        return hit;
     }
-    total
+    let areas = living_areas_of(cx, cx.floor, &cx.rooms);
+    LIVING_CACHE.with(|c| *c.borrow_mut() = Some((key, areas.clone())));
+    areas
+}
+
+/// Living Area of each floor, square feet (per structure, rounded to the
+/// nearest square foot), in floor order.
+pub fn living_area_by_floor(cx: &EditorContext) -> Vec<(String, f64)> {
+    cx.project
+        .floors
+        .iter()
+        .enumerate()
+        .map(|(i, f)| {
+            let rooms = detect_rooms(&f.walls, 0.5);
+            let area: f64 = living_areas_of(cx, i, &rooms)
+                .iter()
+                .map(LivingArea::sq_ft)
+                .sum();
+            (f.name.clone(), area)
+        })
+        .collect()
+}
+
+/// Total Living Area over all floors, square feet.
+pub fn living_area_total_sq_ft(cx: &EditorContext) -> f64 {
+    living_area_by_floor(cx).iter().map(|(_, a)| a).sum()
+}
+
+/// The total living area readout (R-52): the total, then each floor that has
+/// any, as in "Total living area 1,820 sq ft (1st Floor 1,200, 2nd Floor 620)".
+pub fn living_area_report(cx: &EditorContext) -> String {
+    let by_floor = living_area_by_floor(cx);
+    let total: f64 = by_floor.iter().map(|(_, a)| a).sum();
+    let parts: Vec<String> = by_floor
+        .iter()
+        .filter(|(_, a)| *a >= 0.5)
+        .map(|(n, a)| format!("{n} {}", group_thousands(a.round() as i64)))
+        .collect();
+    let mut out = format!(
+        "Total living area {} sq ft",
+        group_thousands(total.round() as i64)
+    );
+    if parts.len() > 1 {
+        out.push_str(&format!(" ({})", parts.join(", ")));
+    }
+    out
+}
+
+fn group_thousands(n: i64) -> String {
+    living::group_thousands(n)
 }
 
 // ----- the Room Specification (R-19..R-36) -----
 
 /// The room type a new room on the active floor starts with: the floor's
-/// default room type (Floor Defaults) when it names a known type, else the
-/// first of the plan's types.
+/// default room type (Floor Defaults) when it names a known type, else
+/// "Unspecified", else the first of the plan's types.
 pub fn draft_room_type(cx: &EditorContext) -> String {
     let wanted = &cx.floor().settings.default_room_type;
     if !wanted.is_empty() && cx.defaults.room_type(wanted).is_some() {
         return wanted.clone();
     }
-    cx.defaults
-        .rooms
-        .room_types
-        .first()
+    // A new room is "Unspecified" until it is given a type (manual p. 445).
+    let types = &cx.defaults.rooms.room_types;
+    types
+        .iter()
+        .find(|t| t.name == "Unspecified")
+        .or_else(|| types.first())
         .map_or(String::new(), |t| t.name.clone())
 }
 
@@ -744,17 +950,53 @@ fn new_room_draft(cx: &EditorContext, room: &Room) -> (RoomName, RoomExtras) {
     let mut extras = extras_for(cx, room);
     extras.floor_finish_thickness = st.floor_finish_thickness;
     extras.ceiling_finish_thickness = st.ceiling_finish_thickness;
+    // A room on a floor with layered platforms follows them (Use Default).
+    for kind in plan_core::assemblies::AssemblyKind::PLATFORM {
+        if !st.platform.slot(kind).is_legacy() {
+            extras
+                .assemblies
+                .set(kind, plan_core::assemblies::AssemblySlot::Default);
+        }
+    }
     if !st.default_room_type.is_empty() {
         if let Some(def) = cx.defaults.room_type(&ty) {
-            let fd = function_defaults(&def.function, &ty);
+            let fd = function_defaults_with(&def.function, &ty, slab_thickness(cx));
             apply_function_defaults(&mut name, &fd, st.floor_finish_thickness);
+            // The type's own structure, deck, layer, fill, moldings and label.
+            apply_type_spec(&mut name, &def.spec);
             if let Some(m) = name.misc.take() {
                 extras.floor_finish_thickness = m.floor_finish_thickness;
                 extras.floor_structure = m.floor_structure;
+                // The type's own floor platform replaces the floor's layers.
+                if !fd.floor_structure.is_empty() {
+                    extras.assemblies.floor_structure = plan_core::assemblies::AssemblySlot::Legacy;
+                }
+                if fd.floor_finish_thickness.is_some() {
+                    extras.assemblies.floor_finish = plan_core::assemblies::AssemblySlot::Legacy;
+                }
             }
         }
     }
     (name, extras)
+}
+
+/// The slab thickness of the Foundation Defaults: what a Slab room's floor
+/// platform is as thick as (manual p. 447).
+pub fn slab_thickness(cx: &EditorContext) -> f64 {
+    cx.defaults.page_num("foundation.slab_thickness", 4.0)
+}
+
+/// The ceiling height a room on the active floor gets when it names none,
+/// measured from its own floor `offset` above the floor datum: the floor's
+/// ceiling height, or on a foundation floor with a basement the clear height
+/// under the first floor's platform.
+fn default_ceiling_height(cx: &EditorContext, offset: f64) -> f64 {
+    let f = cx.floor();
+    if f.kind == FloorKind::Foundation && f.settings.ceiling_structure_thickness > 0.0 {
+        (f.ceiling_height - f.settings.ceiling_structure_thickness - offset).max(1.0)
+    } else {
+        f.ceiling_height
+    }
 }
 
 /// Everything the Room Specification dialog starts from.
@@ -772,6 +1014,15 @@ pub fn room_dialog_init(cx: &EditorContext, idx: usize) -> Option<RoomInit> {
     let perimeter: f64 = (0..outline.len())
         .map(|i| outline[i].dist(outline[(i + 1) % outline.len()]))
         .sum();
+    let ceiling_default = default_ceiling_height(cx, name.floor_height_offset);
+    let def_walls = living::defining_walls(&cx.floor().walls);
+    let entry_ref = name_entry(cx, room);
+    let heights = living::room_heights(&cx.project, cx.floor, entry_ref, room_anchor(room));
+    let structure_living = living::structures(&cx.rooms)
+        .iter()
+        .position(|st| st.rooms.contains(&idx))
+        .and_then(|si| living_labels(cx).into_iter().find(|a| a.structure == si))
+        .map_or(0.0, |a| a.sq_ft());
     Some(RoomInit {
         room_index: idx,
         name,
@@ -779,15 +1030,40 @@ pub fn room_dialog_init(cx: &EditorContext, idx: usize) -> Option<RoomInit> {
         types: cx.defaults.rooms.room_types.clone(),
         polygon: outline,
         interior_dims: interior_dims_text(cx, room),
-        interior_area_sq_ft: room.interior_area_sq_ft(),
-        standard_area_sq_ft: room.standard_area_sq_ft(),
+        interior_area_sq_ft: interior_area_sq_ft(cx, room),
+        standard_area_sq_ft: standard_area_sq_ft(cx, room),
+        centerline_area_sq_ft: room.area_sq_ft(),
+        bay_area_sq_ft: living::bay_area_sq_in(cx.floor(), room, &def_walls) / 144.0,
+        structure_living_sq_ft: structure_living,
+        heights,
+        slab_thickness: slab_thickness(cx),
+        layers: cx
+            .project
+            .layers
+            .layers
+            .iter()
+            .map(|l| l.name.clone())
+            .collect(),
         perimeter_in: perimeter,
         floor_elevation: cx.floor().elevation,
-        floor_ceiling_height: cx.floor().ceiling_height,
+        floor_ceiling_height: ceiling_default,
         default_floor_finish: cx.floor().settings.floor_finish_thickness,
         default_name: room.label.clone(),
         total_living_sq_ft: living_area_total_sq_ft(cx),
         floor_name: cx.floor().name.clone(),
+        text_styles: cx
+            .project
+            .text_styles
+            .names()
+            .into_iter()
+            .map(String::from)
+            .collect(),
+        slab_allowed: cx.floor().kind == FloorKind::Normal,
+        default_floor_material: cx.floor().settings.floor_material.clone(),
+        default_ceiling_material: cx.floor().settings.ceiling_material.clone(),
+        default_wall_material: cx.floor().settings.wall_material.clone(),
+        floor_settings: cx.floor().settings.clone(),
+        library: cx.project.assemblies.clone(),
     })
 }
 
@@ -830,6 +1106,16 @@ pub fn apply_room_spec(
         n.has_ceiling = draft.has_ceiling;
         n.has_floor = draft.has_floor;
         n.rough_ceiling = draft.rough_ceiling;
+        n.monolithic_slab = draft.monolithic_slab;
+        n.label_style = draft.label_style.clone();
+        // Roof Group (R-114): which building the room's roof belongs to.
+        n.roof_group = draft.roof_group;
+        // Flat Ceiling Over This Room (R-146) and the Structure and Layer
+        // panel switches (R-103, R-115, R-145).
+        n.flat_ceiling = draft.flat_ceiling;
+        n.options = draft.options.clone();
+        // The Deck tab (CB-86).
+        n.deck = draft.deck.clone();
         extras.store_into(n);
     }
     with(|s| {
@@ -838,8 +1124,11 @@ pub fn apply_room_spec(
         }
         s.extras.insert(extras_key(fl, anchor), extras.clone());
     });
+    // The room's layered platform definitions own its older thickness fields.
+    cx.project.sync_platform_mirrors();
     cx.mark_dirty();
     cx.refresh();
+    cx.status = format!("Updated the room. {}", living_area_report(cx));
     true
 }
 
@@ -1011,6 +1300,8 @@ fn draw_fill(
 /// Fills of every room, then the outline and corner handles of the selected
 /// room (R-16, R-35). Called once from the room drawing.
 pub fn draw_room_selection(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
+    // The Living Area labels and the selected Exterior Room (R-106, R-109).
+    exterior::draw(cx, painter, cam);
     for room in &cx.rooms {
         let fill = fill_style(cx, room);
         let poly = if room.inner_polygon.len() >= 3 {
@@ -1034,6 +1325,14 @@ pub fn draw_room_selection(cx: &EditorContext, painter: &egui::Painter, cam: &Ca
     for p in pts {
         let r = egui::Rect::from_center_size(p, egui::vec2(7.0, 7.0));
         painter.rect_filled(r, 0.0, col);
+    }
+    // The room Expand Room Polyline made, over the selected one.
+    if let Some(e) = commands::expanded_room().filter(|e| e.floor == cx.floor) {
+        let big = screen_poly(cam, &living::room_polyline(&e.room));
+        painter.add(Shape::closed_line(
+            big,
+            Stroke::new(2.0_f32, col.gamma_multiply(0.6)),
+        ));
     }
 }
 
@@ -1178,6 +1477,7 @@ pub fn draw_space_boxes(cx: &EditorContext, painter: &egui::Painter, cam: &Camer
 pub enum FoundationType {
     WallsWithFootings,
     MonolithicSlab,
+    /// Grade Beams on Piers.
     Piers,
 }
 
@@ -1192,7 +1492,7 @@ impl FoundationType {
         match self {
             FoundationType::WallsWithFootings => "Walls with Footings",
             FoundationType::MonolithicSlab => "Monolithic Slab",
-            FoundationType::Piers => "Piers",
+            FoundationType::Piers => "Grade Beams on Piers",
         }
     }
 }
@@ -1200,34 +1500,163 @@ impl FoundationType {
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct FoundationSpec {
     pub kind: FoundationType,
+    /// Walls with Footings: the height of the foundation walls, bottom to the
+    /// first floor, inches.
     pub stem_height: f64,
     pub min_stem_height: f64,
     /// Not stored by the model yet.
     pub garage_floor: bool,
+    /// Walls with Footings: a footing under the walls.
+    pub footing: bool,
+    pub footing_width: f64,
+    pub footing_depth: f64,
+    /// Monolithic Slab: the slab's thickness and the stem wall (thickened
+    /// edge) height, inches.
+    pub slab_thickness: f64,
+    pub slab_stem_height: f64,
+    /// Grade Beams on Piers: beam height, pier height and the spacing of the
+    /// piers along the walls, inches.
+    pub beam_height: f64,
+    pub pier_height: f64,
+    pub pier_spacing: f64,
+    /// Walls with Footings: the room made inside (a basement from the
+    /// wall height up, else a crawl space).
+    pub rooms: FoundationRooms,
+    /// Auto Rebuild, Hang Platform, S markers, Garage Options, piers and
+    /// the Options panel (manual pp. 739-741).
+    pub settings: plan_core::foundation::FoundationSettings,
+    /// Floor 1's platform thickness, inches: `stem_height` is measured from
+    /// the underside of it, the model's height to the finished floor adds it.
+    pub platform: f64,
 }
 
 impl FoundationSpec {
     pub fn from_defaults(d: &PlanDefaults) -> Self {
+        let o = FoundationOptions::new(FoundationKind::MonolithicSlab);
         Self {
             kind: FoundationType::WallsWithFootings,
             stem_height: d.foundation_wall.height,
-            min_stem_height: 12.0,
-            garage_floor: true,
+            min_stem_height: d.foundation.min_height,
+            garage_floor: d.foundation.garage_floor,
+            footing: true,
+            // The footing starts at the code-legal size of the plan's defaults.
+            footing_width: d.code.footing_width,
+            footing_depth: d.code.footing_thickness,
+            slab_thickness: o.slab_thickness,
+            slab_stem_height: o.edge_height,
+            beam_height: plan_core::floors::GRADE_BEAM_HEIGHT,
+            pier_height: o.pier_height,
+            pier_spacing: o.pier_spacing,
+            rooms: FoundationRooms::Auto,
+            settings: d.foundation,
+            platform: d.rooms.floor.floor_structure_thickness,
         }
     }
 
+    /// Takes the choices a foundation was built with (`Build Foundation` on
+    /// a foundation already built opens on them and rebuilds it in place).
+    pub fn restore(&mut self, o: &FoundationOptions) {
+        match o.kind {
+            FoundationKind::StemWall { height } => {
+                self.kind = FoundationType::WallsWithFootings;
+                self.stem_height = (height - self.platform).max(1.0);
+            }
+            FoundationKind::MonolithicSlab => self.kind = FoundationType::MonolithicSlab,
+            FoundationKind::Pier => self.kind = FoundationType::Piers,
+        }
+        self.footing = o.footing_width > 0.0 && o.footing_depth > 0.0;
+        if self.footing {
+            self.footing_width = o.footing_width;
+            self.footing_depth = o.footing_depth;
+        }
+        self.slab_thickness = o.slab_thickness;
+        match o.kind {
+            FoundationKind::Pier => self.beam_height = o.edge_height,
+            _ => self.slab_stem_height = o.edge_height,
+        }
+        self.pier_height = o.pier_height;
+        self.pier_spacing = o.pier_spacing;
+        self.rooms = o.rooms;
+        self.settings = o.settings;
+        self.min_stem_height = o.settings.min_height;
+        self.garage_floor = o.settings.garage_floor;
+    }
+
+    /// The Foundation Type this spec carries as a model kind. The stem wall
+    /// height of the dialog runs from the footing top to the underside of
+    /// Floor 1's platform, so the model's height to the finished floor is
+    /// that plus the platform (DECISIONS 301 as corrected).
     pub fn to_kind(self) -> FoundationKind {
         match self.kind {
             FoundationType::WallsWithFootings => FoundationKind::StemWall {
-                height: self.stem_height.max(self.min_stem_height),
+                height: self.stem_height.max(self.min_stem_height) + self.platform,
             },
             FoundationType::MonolithicSlab => FoundationKind::MonolithicSlab,
             FoundationType::Piers => FoundationKind::Pier,
         }
     }
+
+    /// What the model builds from these choices.
+    pub fn to_options(self) -> FoundationOptions {
+        let footed = self.footing && self.kind == FoundationType::WallsWithFootings;
+        FoundationOptions {
+            kind: self.to_kind(),
+            footing_width: if footed { self.footing_width } else { 0.0 },
+            footing_depth: if footed { self.footing_depth } else { 0.0 },
+            slab_thickness: self.slab_thickness,
+            edge_height: match self.kind {
+                FoundationType::Piers => self.beam_height,
+                _ => self.slab_stem_height,
+            },
+            pier_height: self.pier_height,
+            pier_spacing: self.pier_spacing,
+            rooms: self.rooms,
+            settings: plan_core::foundation::FoundationSettings {
+                min_height: self.min_stem_height,
+                garage_floor: self.garage_floor,
+                ..self.settings
+            },
+        }
+    }
+
+    /// Why the dialog cannot be accepted, if so.
+    pub fn error(&self) -> Option<&'static str> {
+        match self.kind {
+            FoundationType::WallsWithFootings => {
+                if self.stem_height <= 0.0 {
+                    Some("Stem wall height must be greater than zero")
+                } else if self.footing && (self.footing_width <= 0.0 || self.footing_depth <= 0.0) {
+                    Some("The footing needs a width and a depth")
+                } else {
+                    None
+                }
+            }
+            FoundationType::MonolithicSlab => {
+                if self.slab_thickness <= 0.0 {
+                    Some("The slab thickness must be greater than zero")
+                } else if self.slab_stem_height <= 0.0 {
+                    Some("The stem wall height must be greater than zero")
+                } else {
+                    None
+                }
+            }
+            FoundationType::Piers => {
+                if self.beam_height <= 0.0 || self.pier_height <= 0.0 {
+                    Some("The beams and piers need a height")
+                } else if self.pier_spacing < 12.0 {
+                    Some("The piers need at least a foot between them")
+                } else {
+                    None
+                }
+            }
+        }
+    }
 }
 
 fn after_floor_change(cx: &mut EditorContext, floor: usize) {
+    // A floor built from plan defaults that follow the plan-wide platform
+    // definitions picks them up.
+    cx.project.sync_platform_mirrors();
     cx.floor = floor.min(cx.project.floors.len() - 1);
     cx.reset_view_state();
     clear_room_selection();
@@ -1260,6 +1689,13 @@ pub struct NewFloorSpec {
     pub heights_from_defaults: bool,
     /// Build this foundation too when the plan has none.
     pub foundation: Option<FoundationSpec>,
+    /// Build the attic floor too (R-68).
+    pub attic: bool,
+    /// Move Highest Floor's Roof Up (roof planes on the top floor rise with
+    /// the new floor).
+    pub move_roof_up: bool,
+    /// Step floor/ceiling elevations to match the existing floor.
+    pub step_elevations: bool,
 }
 
 impl NewFloorSpec {
@@ -1273,6 +1709,9 @@ impl NewFloorSpec {
             copy_foundation: false,
             heights_from_defaults: true,
             foundation: None,
+            attic: false,
+            move_roof_up: false,
+            step_elevations: false,
         }
     }
 }
@@ -1307,6 +1746,8 @@ pub fn build_new_floor_with(cx: &mut EditorContext, spec: &NewFloorSpec) -> Opti
         copy_foundation: spec.copy_foundation,
         ceiling_height: None,
         settings: None,
+        move_roof_up: spec.move_roof_up,
+        step_elevations: spec.step_elevations,
     };
     if spec.heights_from_defaults {
         opts.ceiling_height = Some(cx.defaults.rooms.ceiling_height);
@@ -1314,17 +1755,19 @@ pub fn build_new_floor_with(cx: &mut EditorContext, spec: &NewFloorSpec) -> Opti
     }
     let build_foundation = spec.foundation.filter(|_| !has_foundation(cx));
     cx.begin_change("Build New Floor");
+    let blocker = cx.project.new_floor_blocker(&opts);
     let Some(mut idx) = cx.project.build_new_floor_with(&opts) else {
         cx.cancel_change();
-        cx.status = match spec.place {
-            FloorPlacement::Above => "Cannot build a floor above the attic".into(),
-            FloorPlacement::Below => "Cannot build a floor below the foundation".into(),
-        };
+        cx.status = blocker.unwrap_or_else(|| "Cannot build that floor".into());
         return None;
     };
     if let Some(f) = build_foundation {
-        cx.project.build_foundation(f.to_kind());
+        build_foundation_classified(cx, &f.to_options());
+        add_foundation_room_types(cx);
         idx += 1;
+    }
+    if spec.attic {
+        cx.project.build_attic_floor();
     }
     after_floor_change(cx, idx);
     cx.status = format!("Built {}", cx.project.floors[idx].name);
@@ -1377,6 +1820,7 @@ pub fn apply_floor_defaults(
 ) -> bool {
     cx.begin_change("Floor Defaults");
     let fl = cx.floor;
+    let old_settings = cx.floor().settings.clone();
     if !cx
         .project
         .apply_floor_settings(fl, ceiling_height, settings.clone())
@@ -1384,9 +1828,12 @@ pub fn apply_floor_defaults(
         cx.cancel_change();
         return false;
     }
+    // Rooms still at the old finish follow a new layered one.
+    cx.project.rooms_follow_floor_finish(fl, &old_settings);
     if as_plan_default {
         set_plan_floor_defaults(cx, ceiling_height, settings);
     }
+    cx.project.sync_platform_mirrors();
     cx.mark_dirty();
     cx.refresh();
     cx.status = "Updated the floor defaults".into();
@@ -1403,7 +1850,7 @@ pub fn set_plan_floor_defaults(
     cx.defaults.rooms.ceiling_height = ceiling_height;
     cx.defaults.rooms.floor_finish_thickness = settings.floor_finish_thickness;
     cx.defaults.rooms.ceiling_finish_thickness = settings.ceiling_finish_thickness;
-    cx.defaults.rooms.floor = settings;
+    cx.defaults.rooms.floor = settings.without_foundation();
 }
 
 /// Delete Current Floor (R-60).
@@ -1413,7 +1860,13 @@ pub fn delete_floor(cx: &mut EditorContext) -> bool {
     cx.begin_change("Delete Current Floor");
     if !cx.project.delete_floor(idx) {
         cx.cancel_change();
-        cx.status = "Cannot delete the only floor".into();
+        cx.status = if cx.project.floors[idx].kind == FloorKind::Foundation
+            && cx.project.foundation_auto_rebuild()
+        {
+            "Floor 0 cannot be deleted while Auto Rebuild Foundation is on".into()
+        } else {
+            "Cannot delete the only floor".into()
+        };
         return false;
     }
     after_floor_change(cx, idx.saturating_sub(1));
@@ -1462,10 +1915,106 @@ pub fn build_foundation(cx: &mut EditorContext, spec: FoundationSpec) {
         .first()
         .is_some_and(|f| f.kind == FloorKind::Foundation);
     cx.begin_change("Build Foundation");
-    cx.project.build_foundation(spec.to_kind());
+    build_foundation_classified(cx, &spec.to_options());
+    // The dialog's choices are the Foundation Defaults from now on.
+    cx.defaults.foundation = spec.to_options().settings;
+    add_foundation_room_types(cx);
     let next = if had { cx.floor } else { cx.floor + 1 };
     after_floor_change(cx, next);
-    cx.status = format!("Built the foundation ({})", spec.kind.name());
+    let rooms = cx
+        .project
+        .floors
+        .first()
+        .and_then(|f| f.room_names.first())
+        .map(|n| format!(" with a {}", n.room_type.to_lowercase()))
+        .unwrap_or_default();
+    cx.status = format!("Built the foundation ({}){rooms}", spec.kind.name());
+}
+
+/// Is the room type `t` a Garage or Slab room (its function, not its name)?
+fn is_slab_type(defaults: &PlanDefaults, t: &str) -> bool {
+    match defaults.room_type(t) {
+        Some(def) => matches!(def.function.as_str(), "Garage" | "Slab"),
+        None => plan_core::floors::is_slab_room_type(t),
+    }
+}
+
+/// Runs the model's Build Foundation with the plan's Room Types telling
+/// which rooms are Garage and Slab rooms.
+fn build_foundation_classified(cx: &mut EditorContext, opts: &FoundationOptions) -> usize {
+    let defaults = cx.defaults.clone();
+    cx.project
+        .build_foundation_classified(opts, &|t| is_slab_type(&defaults, t))
+}
+
+/// Auto Rebuild Foundation (manual p. 745): when the foundation was built
+/// with it on and Floor 1 has changed in a way the foundation follows, build
+/// it again with the same choices. Not an undo step of its own: it follows
+/// the edit that caused it. Returns whether it rebuilt.
+pub fn auto_rebuild_foundation(cx: &mut EditorContext) -> bool {
+    if !cx.project.foundation_auto_rebuild() {
+        return false;
+    }
+    let defaults = cx.defaults.clone();
+    if !cx
+        .project
+        .auto_rebuild_foundation(&|t| is_slab_type(&defaults, t))
+    {
+        return false;
+    }
+    add_foundation_room_types(cx);
+    cx.mark_dirty();
+    true
+}
+
+/// Makes sure the room types the foundation floor's rooms use (Basement,
+/// Crawl Space) are in the plan's Room Types list, so the Room Specification
+/// can show them (R-18).
+fn add_foundation_room_types(cx: &mut EditorContext) {
+    let wanted: Vec<String> = cx
+        .project
+        .floors
+        .iter()
+        .filter(|f| f.kind == FloorKind::Foundation)
+        .flat_map(|f| f.room_names.iter().map(|n| n.room_type.clone()))
+        .collect();
+    for t in wanted {
+        if cx.defaults.room_type(&t).is_none() {
+            cx.defaults.rooms.room_types.push(
+                // Basement and Crawl Space are not functions (DECISIONS 300
+                // as corrected): a basement is an interior room that
+                // counts in the Living Area from a rough ceiling of 48 in;
+                // a crawl space is an Open Below room.
+                if t == "Basement" {
+                    plan_core::defaults::RoomTypeDef::new(&t, "Standard", true, true)
+                } else if t == "Slab" {
+                    plan_core::defaults::RoomTypeDef::new(&t, "Slab", false, false)
+                } else {
+                    plan_core::defaults::RoomTypeDef::new(&t, "Open Below", false, false)
+                },
+            );
+        }
+    }
+}
+
+/// Build Attic Floor (R-68): the attic floor above the top floor with attic
+/// walls over its exterior walls (no room: the Attic floor has none), or the
+/// existing one brought up to date. One undo step; the attic becomes the
+/// active floor.
+pub fn build_attic_floor(cx: &mut EditorContext) -> Option<usize> {
+    cx.begin_change("Build Attic Floor");
+    match cx.project.build_attic_floor() {
+        Some(idx) => {
+            after_floor_change(cx, idx);
+            cx.status = "Built the attic floor".into();
+            Some(idx)
+        }
+        None => {
+            cx.cancel_change();
+            cx.status = "The attic needs a floor with exterior walls to sit on".into();
+            None
+        }
+    }
 }
 
 /// Delete Foundation (R-63).
@@ -1479,6 +2028,10 @@ pub fn delete_foundation(cx: &mut EditorContext) -> bool {
         cx.status = "There is no foundation".into();
         return false;
     }
+    if cx.project.foundation_auto_rebuild() {
+        cx.status = "Floor 0 cannot be deleted while Auto Rebuild Foundation is on".into();
+        return false;
+    }
     cx.begin_change("Delete Foundation");
     cx.project.delete_floor(0);
     let next = cx.floor.saturating_sub(1);
@@ -1490,7 +2043,12 @@ pub fn delete_foundation(cx: &mut EditorContext) -> bool {
 /// Rebuild Walls/Floors/Ceilings (R-33): restack the floors and redo the
 /// derived data.
 pub fn rebuild_all(cx: &mut EditorContext) {
-    cx.project.restack_floors();
+    // One undo step when the restack changes the plan, none when it does not
+    // (QA-25).
+    cx.undo_group(|cx| {
+        cx.begin_change("Rebuild All");
+        cx.project.restack_floors();
+    });
     cx.mark_dirty();
     cx.refresh();
     cx.status = "Rebuilt walls, floors and ceilings".into();
@@ -1533,8 +2091,10 @@ pub fn add_plan_footprint(cx: &mut EditorContext) -> Option<f64> {
     );
     cx.mark_dirty();
     cx.status = format!(
-        "Plan Footprint: {:.0} sq ft, {:.1} ft around",
-        fp.area_sq_ft, fp.perimeter_ft
+        "Plan Footprint: {:.0} sq ft, {:.1} ft around. {}",
+        fp.area_sq_ft,
+        fp.perimeter_ft,
+        living_area_report(cx)
     );
     Some(fp.area_sq_ft)
 }
@@ -1543,6 +2103,7 @@ pub fn add_plan_footprint(cx: &mut EditorContext) -> Option<f64> {
 mod tests {
     use super::*;
     use crate::plan_defaults;
+    use plan_core::rooms::LabelPlacement;
     use plan_core::{Project, WallKind};
 
     fn house() -> EditorContext {
@@ -2098,10 +2659,11 @@ mod tests {
         let at = |p| room_index_at(&cx, p).map(|i| cx.rooms[i].area_sq_in);
         assert_eq!(at(inside), Some(closet.area_sq_in));
         assert_eq!(at(around), Some(outer.area_sq_in));
-        // The living area counts the closet once.
+        // The living area counts the closet once: the Standard Areas of the
+        // room around it and of the closet add up to the outside of the walls
+        // (246 x 186 in, 317.75 sq ft, shown as 318).
         let total = living_area_total_sq_ft(&cx);
-        let box_inner = (240.0 - 6.0) * (180.0 - 6.0) / 144.0;
-        assert!(total < box_inner + 0.01, "{total} <= {box_inner}");
+        assert_eq!(total, 318.0, "{total}");
     }
 
     #[test]
@@ -2208,6 +2770,280 @@ mod tests {
         assert!(apply_room_spec(&mut cx, 0, &draft, &extras));
         let room = cx.rooms[0].clone();
         assert!(room_label_text(&cx, &room).starts_with("Study\n"));
+    }
+
+    fn spec(kind: FoundationType) -> FoundationSpec {
+        let mut s = FoundationSpec::from_defaults(&PlanDefaults::chief_x18_daniel());
+        s.kind = kind;
+        s
+    }
+
+    #[test]
+    fn the_foundation_spec_hands_its_choices_to_the_model() {
+        let mut s = spec(FoundationType::WallsWithFootings);
+        s.stem_height = 96.0;
+        s.footing_width = 24.0;
+        s.footing_depth = 12.0;
+        let o = s.to_options();
+        // The stem wall height is measured from the platform's underside; the
+        // model's height runs to Floor 1's finished level.
+        assert_eq!(
+            o.kind,
+            FoundationKind::StemWall {
+                height: 96.0 + s.platform
+            }
+        );
+        assert_eq!((o.footing_width, o.footing_depth), (24.0, 12.0));
+        s.footing = false;
+        assert_eq!(s.to_options().footing_width, 0.0);
+        s.kind = FoundationType::MonolithicSlab;
+        s.slab_thickness = 5.0;
+        s.slab_stem_height = 14.0;
+        let o = s.to_options();
+        assert_eq!(o.kind, FoundationKind::MonolithicSlab);
+        assert_eq!((o.slab_thickness, o.edge_height), (5.0, 14.0));
+        s.kind = FoundationType::Piers;
+        s.beam_height = 20.0;
+        s.pier_spacing = 72.0;
+        let o = s.to_options();
+        assert_eq!(o.kind, FoundationKind::Pier);
+        assert_eq!((o.edge_height, o.pier_spacing), (20.0, 72.0));
+        // The names Chief's dialog uses.
+        let names: Vec<&str> = FoundationType::ALL.iter().map(|t| t.name()).collect();
+        assert_eq!(
+            names,
+            [
+                "Walls with Footings",
+                "Monolithic Slab",
+                "Grade Beams on Piers"
+            ]
+        );
+    }
+
+    #[test]
+    fn the_spec_adds_the_platform_and_the_minimum_height_and_restores_what_was_built() {
+        let mut s = spec(FoundationType::WallsWithFootings);
+        s.platform = 10.25;
+        s.stem_height = 8.0;
+        s.min_stem_height = 24.0;
+        // The stem wall is at least the minimum; the platform bears on it.
+        assert_eq!(s.to_kind(), FoundationKind::StemWall { height: 34.25 });
+        assert_eq!(s.to_options().settings.min_height, 24.0);
+        s.settings.hang_platform = true;
+        s.settings.rebar.slab.bars = 3;
+        s.footing_width = 22.0;
+        let built = s.to_options();
+        // A spec restored from what was built gives the same options back.
+        let mut again = spec(FoundationType::MonolithicSlab);
+        again.platform = 10.25;
+        again.restore(&built);
+        assert_eq!(again.kind, FoundationType::WallsWithFootings);
+        assert_eq!(again.stem_height, 24.0);
+        assert_eq!(again.to_options(), built);
+        // Pier and slab choices come back too.
+        let mut piers = spec(FoundationType::Piers);
+        piers.beam_height = 20.0;
+        piers.pier_spacing = 72.0;
+        let mut r = spec(FoundationType::WallsWithFootings);
+        r.restore(&piers.to_options());
+        assert_eq!(r.kind, FoundationType::Piers);
+        assert_eq!((r.beam_height, r.pier_spacing), (20.0, 72.0));
+    }
+
+    #[test]
+    fn the_foundation_spec_refuses_nonsense() {
+        let mut s = spec(FoundationType::WallsWithFootings);
+        assert!(s.error().is_none());
+        s.stem_height = 0.0;
+        assert!(s.error().is_some());
+        s.stem_height = 36.0;
+        s.footing_width = 0.0;
+        assert!(s.error().unwrap().contains("footing"));
+        s.footing = false;
+        assert!(s.error().is_none());
+        s.kind = FoundationType::MonolithicSlab;
+        s.slab_thickness = 0.0;
+        assert!(s.error().is_some());
+        s.slab_thickness = 4.0;
+        s.slab_stem_height = 0.0;
+        assert!(s.error().is_some());
+        s.kind = FoundationType::Piers;
+        s.pier_spacing = 6.0;
+        assert!(s.error().is_some());
+        s.pier_spacing = 96.0;
+        assert!(s.error().is_none());
+    }
+
+    #[test]
+    fn build_foundation_makes_a_basement_and_its_room_type() {
+        let mut cx = house();
+        assert!(cx.defaults.room_type("Basement").is_none());
+        let mut s = spec(FoundationType::WallsWithFootings);
+        s.stem_height = 108.0;
+        build_foundation(&mut cx, s);
+        assert_eq!(cx.floor, 1, "the active floor moved up with the plan");
+        let f = &cx.project.floors[0];
+        assert_eq!(f.kind, FloorKind::Foundation);
+        assert_eq!(f.room_names[0].room_type, "Basement");
+        let t = cx.defaults.room_type("Basement").expect("type added");
+        assert_eq!(t.function, "Standard", "Basement is not a function");
+        assert!(
+            t.include_in_living_area,
+            "a basement of 48 in or more counts"
+        );
+        assert!(cx.status.contains("basement"), "{}", cx.status);
+        // One undo step.
+        assert_eq!(cx.undo_label(), Some("Build Foundation"));
+        cx.undo();
+        assert_eq!(cx.project.floors.len(), 1);
+        // A short wall makes a crawl space, which the template already has.
+        let mut s = spec(FoundationType::WallsWithFootings);
+        s.stem_height = 30.0;
+        build_foundation(&mut cx, s);
+        assert_eq!(cx.project.floors[0].room_names[0].room_type, "Crawl Space");
+        assert!(!cx.project.floors[0].room_names[0].has_floor);
+        // Choosing no room leaves the foundation floor unnamed.
+        s.rooms = FoundationRooms::None;
+        build_foundation(&mut cx, s);
+        assert!(cx.project.floors[0].room_names.is_empty());
+    }
+
+    #[test]
+    fn the_other_foundation_types_build_their_parts() {
+        let mut cx = house();
+        build_foundation(&mut cx, spec(FoundationType::MonolithicSlab));
+        let layer = plan_core::foundation::FoundationLayer::load(&cx.project.floors[0]);
+        assert_eq!(layer.slabs.len(), 1);
+        assert!(cx.project.floors[0].room_names.is_empty());
+        build_foundation(&mut cx, spec(FoundationType::Piers));
+        let layer = plan_core::foundation::FoundationLayer::load(&cx.project.floors[0]);
+        assert!(layer.slabs.is_empty() && layer.piers.len() >= 4);
+        assert_eq!(cx.project.floors.len(), 2);
+    }
+
+    #[test]
+    fn build_new_floor_can_build_the_attic_too() {
+        let mut cx = house();
+        let spec = NewFloorSpec {
+            attic: true,
+            ..NewFloorSpec::new()
+        };
+        let idx = build_new_floor_with(&mut cx, &spec).unwrap();
+        assert_eq!(cx.project.floors.len(), 3);
+        assert_eq!(cx.project.floors[2].kind, FloorKind::Attic);
+        assert_eq!(cx.floor, idx, "the new floor is the active one");
+        cx.undo();
+        assert_eq!(cx.project.floors.len(), 1);
+    }
+
+    #[test]
+    fn build_attic_floor_is_one_undo_step_and_needs_walls() {
+        let mut cx = house();
+        let a = build_attic_floor(&mut cx).unwrap();
+        assert_eq!(cx.floor, a);
+        assert_eq!(cx.project.floors[a].kind, FloorKind::Attic);
+        // Rooms cannot be created on the Attic floor (manual p. 773).
+        assert!(cx.project.floors[a].room_names.is_empty());
+        assert_eq!(cx.undo_label(), Some("Build Attic Floor"));
+        cx.undo();
+        assert_eq!(cx.project.floors.len(), 1);
+        let mut blank = EditorContext::new(plan_defaults::embedded());
+        assert!(build_attic_floor(&mut blank).is_none());
+        assert!(blank.status.contains("exterior walls"), "{}", blank.status);
+    }
+
+    #[test]
+    fn the_living_area_readout_names_the_floors() {
+        let mut cx = house();
+        cx.project.build_new_floor(true);
+        cx.refresh();
+        let report = living_area_report(&cx);
+        assert!(report.starts_with("Total living area "), "{report}");
+        assert!(
+            report.contains("1st Floor") && report.contains("2nd Floor"),
+            "{report}"
+        );
+        let total = living_area_total_sq_ft(&cx);
+        let per: f64 = living_area_by_floor(&cx).iter().map(|(_, a)| a).sum();
+        assert!((total - per).abs() < 1e-9);
+        assert_eq!(group_thousands(1820), "1,820");
+        assert_eq!(group_thousands(999), "999");
+        assert_eq!(group_thousands(1_234_567), "1,234,567");
+        // A Room Specification OK leaves the readout in the status line.
+        let room = cx.rooms[0].clone();
+        let extras = extras_for(&cx, &room);
+        let draft = RoomName::new(room_anchor(&room), "Den", "Den");
+        assert!(apply_room_spec(&mut cx, 0, &draft, &extras));
+        assert!(cx.status.contains("Total living area"), "{}", cx.status);
+    }
+
+    #[test]
+    fn a_label_sits_where_its_placement_says_and_keeps_its_drag() {
+        let mut cx = house();
+        let room = cx.rooms[0].clone();
+        let centre = label_position(&cx, &room);
+        let extras = extras_for(&cx, &room);
+        let mut draft = RoomName::new(room_anchor(&room), "Den", "Den");
+        draft.label_style.placement = LabelPlacement::Bottom;
+        assert!(apply_room_spec(&mut cx, 0, &draft, &extras));
+        let room = cx.rooms[0].clone();
+        let low = label_position(&cx, &room);
+        assert!(low.y < centre.y - 10.0, "{low:?} vs {centre:?}");
+        assert!(room.contains(low));
+        // A drag adds to the placement.
+        assert!(set_label_offset(&mut cx, 0, Point::new(10.0, 0.0)));
+        assert!((label_position(&cx, &room).x - (low.x + 10.0)).abs() < 1e-9);
+        // The text style comes from the Label tab, else the Room Label Style.
+        assert_eq!(label_text_style(&cx, &room), "Room Label Style");
+        let mut draft = cx.floor().room_names[0].clone();
+        draft.label_style.text_style = "Schedule Style".into();
+        let extras = extras_for(&cx, &room);
+        assert!(apply_room_spec(&mut cx, 0, &draft, &extras));
+        let room = cx.rooms[0].clone();
+        assert_eq!(label_text_style(&cx, &room), "Schedule Style");
+    }
+
+    #[test]
+    fn the_monolithic_slab_flag_and_the_chair_rail_are_stored_with_the_room() {
+        let mut cx = house();
+        let room = cx.rooms[0].clone();
+        let mut extras = extras_for(&cx, &room);
+        extras.base_molding = "Base - Colonial 5 1/4".into();
+        extras.chair_molding = "Chair Rail - Simple 2 1/2".into();
+        extras.crown_molding = "Crown - Cove 3 5/8".into();
+        let mut draft = RoomName::new(room_anchor(&room), "Den", "Den");
+        draft.monolithic_slab = Some(plan_core::rooms::RoomSlab {
+            thickness: 5.0,
+            stem_height: 15.0,
+        });
+        assert!(apply_room_spec(&mut cx, 0, &draft, &extras));
+        let n = &cx.floor().room_names[0];
+        assert_eq!(n.monolithic_slab.unwrap().stem_height, 15.0);
+        // The library gives each molding its own height.
+        let h = |k: MoldingKind| n.moldings.iter().find(|m| m.kind == k).map(|m| m.height);
+        assert_eq!(h(MoldingKind::Base), Some(5.25));
+        assert_eq!(h(MoldingKind::Chair), Some(2.5));
+        assert_eq!(h(MoldingKind::Crown), Some(3.625));
+        // The dialog reads them back.
+        let again = extras_for(&cx, &room);
+        assert_eq!(again.chair_molding, "Chair Rail - Simple 2 1/2");
+        // Clearing a profile removes the molding; a name the library lacks
+        // keeps the height it had.
+        let mut extras = again;
+        extras.chair_molding.clear();
+        extras.base_molding = "My Own Base".into();
+        let draft = cx.floor().room_names[0].clone();
+        assert!(apply_room_spec(&mut cx, 0, &draft, &extras));
+        let n = &cx.floor().room_names[0];
+        assert_eq!(n.moldings.len(), 2);
+        assert_eq!(
+            n.moldings
+                .iter()
+                .find(|m| m.kind == MoldingKind::Base)
+                .unwrap()
+                .height,
+            5.25
+        );
     }
 
     #[test]

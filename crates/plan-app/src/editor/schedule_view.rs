@@ -6,19 +6,27 @@
 //! A floor's [`ScheduleLayer`] lives in the typed slot `Floor.schedules`;
 //! [`save`] also makes sure the layer the tables are drawn on exists. Undo and
 //! redo restore it with the rest of the project. Every edit is one undo step.
+//! The plan-wide Schedule Defaults and custom categories live in
+//! `Project::schedule_setup`.
 //!
 //! # Drawing
 //!
 //! [`draw_schedules`] is called once from `render::draw_plan`. Each schedule
-//! is a table (title row, header row, one row per object) whose rows come
-//! from the plan, so it is always live: the built tables, their sizes and the
-//! callout labels are kept in a cache that is dropped on every change signal
-//! of the editor context (`EditorContext::cache_key`), so a frame that
-//! changed nothing only draws. Text sizes are the plan
-//! text style's character height in plan inches (the same scale as every
-//! other annotation). The same call draws the callout labels (D01, W03, C-01
-//! ...) next to doors, windows, cabinets and fixtures when a schedule of that
-//! kind on the floor has Show Labels on.
+//! is a table (title row, heading row, one row per object, a Totals row) whose
+//! rows come from the plan, so it is always live: the built tables, their
+//! layouts and the callout labels are kept in a cache that is dropped on
+//! every change signal of the editor context (`EditorContext::cache_key`), so
+//! a frame that changed nothing only draws. Text sizes are the text styles'
+//! character heights in plan inches (the same scale as every other
+//! annotation). The same call draws the callout labels (D01, W03, C-01 ...)
+//! next to doors, windows, cabinets and fixtures when a schedule of that kind
+//! on the floor has Show Labels on.
+//!
+//! The submodules split the work: [`layout`] places the cells (Swap
+//! Rows/Columns, Wrapping, column widths, the turn), [`paint`] draws them and
+//! the callout shapes, [`handles`] holds the edit handles of a selected
+//! schedule and [`ops`] the Edit toolbar commands (Renumber Schedule, Move
+//! Row, Open Row Object(s), Schedule to Text, Find in Plan, ...).
 //!
 //! # Selection
 //!
@@ -26,11 +34,21 @@
 //! tool share `cx.selection`, and [`draw_schedules`] highlights the selected
 //! ones.
 
+pub mod handles;
+pub mod layout;
+mod ops;
+mod paint;
+
+pub use handles::HandleKind;
+pub use layout::{Frame, Layout, Metrics};
+pub use ops::*;
+
 use super::{Camera, EditorContext, ObjectRef};
-use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Shape, Stroke, StrokeKind};
+use eframe::egui::{self, Color32, Pos2, Rect, Shape, Stroke};
 use plan_core::geometry::Point;
 use plan_core::schedules::{
-    ensure_layer, Schedule, ScheduleKind, ScheduleLayer, SCHEDULE_LABEL_STYLE,
+    ensure_layer, LabelOptions, RoomRef, Schedule, ScheduleKind, ScheduleLayer,
+    SCHEDULE_LABEL_STYLE,
 };
 use plan_core::{Id, Project, TextStyle};
 use plan_docs::schedule_kinds::{self, Callout};
@@ -38,17 +56,6 @@ use plan_docs::Schedule as Table;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-
-/// Characters narrower than this many character heights are rare; a column is
-/// sized as `chars * CHAR_W * height`.
-const CHAR_W: f64 = 0.56;
-/// Horizontal padding on each side of a cell, in character heights.
-const PAD_X: f64 = 0.45;
-/// Row height in character heights.
-const ROW_H: f64 = 1.55;
-const TITLE_H: f64 = 2.1;
-/// Text smaller than this many screen pixels is not drawn.
-const MIN_TEXT_PX: f32 = 3.0;
 
 /// Is schedule `id` placed on `floor`?
 pub fn exists(floor: &plan_core::Floor, id: Id) -> bool {
@@ -112,11 +119,22 @@ struct FloorCache {
     labels: Option<Rc<LabelSources>>,
 }
 
-/// Per label source: the layer its schedule is drawn on and its callouts.
-type LabelSources = Vec<(String, Vec<Callout>)>;
+/// One schedule that shows callouts: the layer they are drawn on, the
+/// callouts and how they look.
+struct LabelSource {
+    layer: String,
+    kind: ScheduleKind,
+    callouts: Vec<Callout>,
+    opts: LabelOptions,
+}
+
+type LabelSources = Vec<LabelSource>;
 
 thread_local! {
     static CACHE: RefCell<Option<FloorCache>> = const { RefCell::new(None) };
+    /// The look of the callouts of each kind, for the callouts other views
+    /// draw (the door and window marks over the openings).
+    static LABEL_OPTS: RefCell<Vec<(ScheduleKind, LabelOptions)>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Runs `f` on the cache of `cx`'s current state, starting it afresh when a
@@ -148,19 +166,40 @@ fn layer_rc(cx: &EditorContext) -> Rc<ScheduleLayer> {
 /// [`layout_of`] without the copy: the cached layout when `def` is the
 /// schedule it was built from, else built (and kept) now.
 pub fn layout_rc(cx: &EditorContext, def: &Schedule, floor: usize) -> Rc<Layout> {
+    if let Some(l) = with_cache(cx, |c| {
+        c.layouts
+            .get(&(floor, def.id))
+            .filter(|(d, _)| d == def)
+            .map(|(_, l)| l.clone())
+    }) {
+        return l;
+    }
+    // Built outside the cache borrow: it reads the plan, not the cache.
+    let l = Rc::new(build_layout(cx, def, floor));
     with_cache(cx, |c| {
-        if let Some((d, l)) = c.layouts.get(&(floor, def.id)) {
-            if d == def {
-                return l.clone();
-            }
-        }
-        let l = Rc::new(layout(
-            table_for(cx, def, floor),
-            def,
-            text_height(&cx.project, def),
-        ));
         c.layouts.insert((floor, def.id), (def.clone(), l.clone()));
-        l
+    });
+    l
+}
+
+fn active_rooms<'a>(
+    cx: &'a EditorContext,
+    floor: usize,
+) -> plan_docs::schedule_kinds::ActiveRooms<'a> {
+    (floor == cx.floor).then_some((floor, cx.rooms.as_slice()))
+}
+
+/// Builds the layout of `def` placed on `floor`.
+pub fn build_layout(cx: &EditorContext, def: &Schedule, floor: usize) -> Layout {
+    let rooms = active_rooms(cx, floor);
+    let built = schedule_kinds::built(&cx.project, def, floor, rooms);
+    let cols = schedule_kinds::effective_columns(&cx.project, def);
+    layout::build(layout::Input {
+        table: built.table,
+        def,
+        cols: &cols,
+        previews: built.previews,
+        metrics: metrics(&cx.project, def),
     })
 }
 
@@ -195,12 +234,30 @@ pub fn edit_floor(
     cx.mark_dirty();
 }
 
+/// A new schedule of `kind` as the Schedule Defaults make it, with its
+/// upper-left corner at `at`, its id and the numbers its objects start with
+/// (existing objects in order of their labels, p. 715).
+pub fn new_schedule(cx: &mut EditorContext, kind: ScheduleKind, at: Point) -> Schedule {
+    let id = cx.project.alloc_id();
+    let mut s = cx.project.schedule_setup.template(kind, at);
+    s.id = id;
+    let rooms = active_rooms(cx, cx.floor);
+    s.numbers = schedule_kinds::snapshot_numbers(&cx.project, &s, rooms);
+    // A schedule that does not take new types (Notes) records the types it
+    // has now as ticked.
+    if !s.new_types_included && s.categories.is_empty() {
+        for c in schedule_kinds::category_ids(&cx.project, kind) {
+            s.set_category(&c, true);
+        }
+    }
+    s
+}
+
 /// Places a new schedule of `kind` with its upper-left corner at `at` on the
 /// active floor. Returns its id.
 pub fn add(cx: &mut EditorContext, kind: ScheduleKind, at: Point) -> Id {
-    let id = cx.project.alloc_id();
-    let mut s = Schedule::new(kind, at);
-    s.id = id;
+    let s = new_schedule(cx, kind, at);
+    let id = s.id;
     let fl = cx.floor;
     edit_floor(cx, fl, &format!("Place {}", kind.title()), |l| {
         l.add(s);
@@ -216,6 +273,11 @@ pub fn find(cx: &EditorContext, id: Id) -> Option<Schedule> {
 /// Replaces schedule `id` of floor `fi` with `def` (the Schedule
 /// Specification dialog's OK). Returns whether it exists.
 pub fn replace(cx: &mut EditorContext, fi: usize, def: Schedule) -> bool {
+    replace_as(cx, fi, def, "Schedule Specification")
+}
+
+/// [`replace`] as the undo step `label`.
+pub fn replace_as(cx: &mut EditorContext, fi: usize, def: Schedule, label: &str) -> bool {
     let exists = cx
         .project
         .floors
@@ -226,7 +288,29 @@ pub fn replace(cx: &mut EditorContext, fi: usize, def: Schedule) -> bool {
     }
     let mut def = def;
     def.reconcile_columns();
-    edit_floor(cx, fi, "Schedule Specification", |l| {
+    // A custom category the dialog made joins the plan with the schedule that
+    // ticks it.
+    let unknown: Vec<String> = def
+        .categories
+        .keys()
+        .filter_map(|k| k.strip_prefix("Custom/"))
+        .filter(|n| cx.project.schedule_setup.category(n).is_none())
+        .map(str::to_string)
+        .collect();
+    if !unknown.is_empty() {
+        cx.begin_change(label);
+        for n in &unknown {
+            let _ = cx.project.schedule_setup.add_category(n);
+        }
+        let mut layer = ScheduleLayer::load(&cx.project.floors[fi]);
+        if let Some(s) = layer.find_mut(def.id) {
+            *s = def;
+        }
+        save(&mut cx.project, fi, &layer);
+        cx.mark_dirty();
+        return true;
+    }
+    edit_floor(cx, fi, label, |l| {
         if let Some(s) = l.find_mut(def.id) {
             *s = def;
         }
@@ -318,8 +402,7 @@ pub fn move_to(cx: &mut EditorContext, id: Id, to: Point) -> bool {
 /// The schedule as a table of strings (what is drawn, exported and shown in
 /// the schedule window). `floor` is the floor the schedule is placed on.
 pub fn table_for(cx: &EditorContext, def: &Schedule, floor: usize) -> Table {
-    let rooms = (floor == cx.floor).then_some((floor, cx.rooms.as_slice()));
-    schedule_kinds::table(&cx.project, def, floor, rooms)
+    schedule_kinds::table(&cx.project, def, floor, active_rooms(cx, floor))
 }
 
 /// File name and CSV text of schedule `id` on the active floor.
@@ -333,65 +416,44 @@ pub fn export_csv(cx: &EditorContext, id: Id) -> Option<(String, String)> {
 // Layout
 // ===================================================================
 
-/// Where a table's cells fall, in plan inches.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Layout {
-    pub table: Table,
-    /// Character height of the table text.
-    pub h: f64,
-    /// Width of each column.
-    pub col_w: Vec<f64>,
-    pub width: f64,
-    pub title_h: f64,
-    pub row_h: f64,
-    pub height: f64,
-}
-
-fn text_w(s: &str, h: f64, bold: bool) -> f64 {
-    s.chars().count() as f64 * h * if bold { CHAR_W * 1.1 } else { CHAR_W }
-}
-
-/// Sizes the table for text of character height `h` and the columns' own
-/// width settings.
-pub fn layout(table: Table, def: &Schedule, h: f64) -> Layout {
-    let h = h.max(0.5);
-    let visible: Vec<_> = def
-        .visible_columns()
-        .filter(|c| def.kind.fields().iter().any(|f| f.id == c.field))
-        .collect();
-    let col_w: Vec<f64> = table
-        .columns
-        .iter()
-        .enumerate()
-        .map(|(i, title)| {
-            let own = visible.get(i).map_or(0.0, |c| c.width);
-            let content = table
-                .rows
-                .iter()
-                .map(|r| text_w(r.get(i).map_or("", String::as_str), h, false))
-                .fold(text_w(title, h, true), f64::max)
-                + 2.0 * PAD_X * h;
-            if own > 0.0 {
-                own
-            } else {
-                content
-            }
-        })
-        .collect();
-    let cols_w: f64 = col_w.iter().sum();
-    let width = cols_w.max(text_w(&table.title, h, true) + 2.0 * PAD_X * h);
-    let title_h = TITLE_H * h;
-    let row_h = ROW_H * h;
-    let height = title_h + row_h * (1 + table.rows.len()) as f64;
-    Layout {
-        table,
-        h,
-        col_w,
-        width,
-        title_h,
-        row_h,
-        height,
+/// The character heights of a schedule's three text styles.
+pub fn metrics(project: &Project, def: &Schedule) -> Metrics {
+    let body = text_height(project, def);
+    let of = |name: &str, fallback: f64| {
+        if name.is_empty() {
+            fallback
+        } else {
+            project
+                .text_styles
+                .resolve(name)
+                .map_or(fallback, |s| s.height_in)
+        }
+    };
+    Metrics {
+        body,
+        title: of(&def.title_style, body * 1.15),
+        head: of(&def.header_style, body),
     }
+}
+
+/// Sizes a table for text of character height `h` and the columns' own width
+/// settings (the plain layout: no previews, one text size).
+pub fn layout(table: Table, def: &Schedule, h: f64) -> Layout {
+    let cols: Vec<plan_core::schedules::ColumnSpec> = def
+        .visible_columns()
+        .filter(|c| {
+            def.kind.fields().iter().any(|f| f.id == c.field)
+                || c.field.starts_with(plan_core::props::COLUMN_PREFIX)
+        })
+        .cloned()
+        .collect();
+    layout::build(layout::Input {
+        previews: vec![None; table.rows.len()],
+        table,
+        def,
+        cols: &cols,
+        metrics: Metrics::uniform(h),
+    })
 }
 
 /// The character height of a schedule's text style.
@@ -400,17 +462,6 @@ pub fn text_height(project: &Project, def: &Schedule) -> f64 {
         .text_styles
         .resolve(&def.text_style)
         .map_or(4.5, |s| s.height_in)
-}
-
-impl Layout {
-    /// The table's rectangle with the upper-left corner at `top_left`:
-    /// `(min, max)` in plan inches (Y up).
-    pub fn bounds(&self, top_left: Point) -> (Point, Point) {
-        (
-            Point::new(top_left.x, top_left.y - self.height),
-            Point::new(top_left.x + self.width, top_left.y),
-        )
-    }
 }
 
 /// The layout of schedule `def` placed on floor `floor`.
@@ -427,11 +478,7 @@ pub fn pick(cx: &EditorContext, p: Point) -> Option<Id> {
         .iter()
         .rev()
         .filter(|s| cx.layers().is_visible(&s.layer))
-        .find(|s| {
-            let l = layout_rc(cx, s, cx.floor);
-            let (lo, hi) = l.bounds(s.position);
-            p.x >= lo.x && p.x <= hi.x && p.y >= lo.y && p.y <= hi.y
-        })
+        .find(|s| layout_rc(cx, s, cx.floor).contains(s.position, p))
         .map(|s| s.id)
 }
 
@@ -439,14 +486,14 @@ pub fn pick(cx: &EditorContext, p: Point) -> Option<Id> {
 // Callout labels
 // ===================================================================
 
-/// The labels to draw on the active floor: for each kind with labels, the
-/// first schedule on the floor that shows them (when its layer is visible).
+/// The labels to draw on the active floor: for each schedule that shows
+/// callouts, those of its objects on the floor (when the layer is visible).
 pub fn labels(cx: &EditorContext) -> Vec<Callout> {
     let sources = label_sources(cx);
     sources
         .iter()
-        .filter(|(layer, _)| cx.layers().is_visible(layer))
-        .flat_map(|(_, callouts)| callouts.iter().cloned())
+        .filter(|s| cx.layers().is_visible(&s.layer))
+        .flat_map(|s| s.callouts.iter().cloned())
         .collect()
 }
 
@@ -457,20 +504,37 @@ fn label_sources(cx: &EditorContext) -> Rc<LabelSources> {
         return l;
     }
     let layer = layer_rc(cx);
-    let mut out = Vec::new();
+    let mut out: LabelSources = Vec::new();
     for kind in [
         ScheduleKind::Door,
         ScheduleKind::Window,
         ScheduleKind::Cabinet,
         ScheduleKind::Fixture,
     ] {
-        if let Some(def) = layer.label_source(kind) {
-            out.push((
-                def.layer.clone(),
-                schedule_kinds::callouts(&cx.project, cx.floor, def),
-            ));
+        for def in layer.label_sources(kind) {
+            let callouts = schedule_kinds::callouts(&cx.project, cx.floor, def);
+            out.push(LabelSource {
+                layer: def
+                    .label
+                    .layer
+                    .layer_of(def)
+                    .unwrap_or(def.layer.as_str())
+                    .to_string(),
+                kind,
+                callouts,
+                opts: def.label.clone(),
+            });
         }
     }
+    LABEL_OPTS.with(|o| {
+        let mut o = o.borrow_mut();
+        o.clear();
+        for s in &out {
+            if !o.iter().any(|(k, _)| *k == s.kind) {
+                o.push((s.kind, s.opts.clone()));
+            }
+        }
+    });
     let out = Rc::new(out);
     with_cache(cx, |c| c.labels = Some(out.clone()));
     out
@@ -502,75 +566,8 @@ fn color_of(style: Option<&TextStyle>, fallback: Color32) -> Color32 {
     }
 }
 
-fn draw_table(
-    painter: &egui::Painter,
-    cam: &Camera,
-    l: &Layout,
-    top_left: Point,
-    ink: Color32,
-    paper: Color32,
-) {
-    let px = cam.px_per_in as f32;
-    let tl = cam.world_to_screen(top_left);
-    let size = egui::vec2(l.width as f32 * px, l.height as f32 * px);
-    let outer = Rect::from_min_size(tl, size);
-    if !outer.intersects(cam.rect) {
-        return;
-    }
-    let line = Stroke::new(1.0_f32, ink);
-    let faint = Stroke::new(1.0_f32, ink.gamma_multiply(0.35));
-    painter.rect_filled(outer, 0.0, paper);
-    let font_px = (l.h as f32 * px).clamp(1.0, 400.0);
-    let title_h = l.title_h as f32 * px;
-    let row_h = l.row_h as f32 * px;
-    // Title row and header rule.
-    painter.hline(outer.x_range(), tl.y + title_h, line);
-    painter.hline(outer.x_range(), tl.y + title_h + row_h, line);
-    for k in 1..=l.table.rows.len() {
-        let y = tl.y + title_h + row_h * (k + 1) as f32;
-        if k < l.table.rows.len() {
-            painter.hline(outer.x_range(), y, faint);
-        }
-    }
-    painter.rect_stroke(outer, 0.0, Stroke::new(1.6_f32, ink), StrokeKind::Inside);
-    if font_px < MIN_TEXT_PX {
-        return;
-    }
-    let bold = FontId::proportional(font_px);
-    painter.text(
-        Pos2::new(outer.center().x, tl.y + title_h * 0.5),
-        Align2::CENTER_CENTER,
-        &l.table.title,
-        FontId::proportional(font_px * 1.15),
-        ink,
-    );
-    let pad = (PAD_X * l.h) as f32 * px;
-    let mut x = tl.x;
-    for (i, w) in l.col_w.iter().enumerate() {
-        let wpx = *w as f32 * px;
-        if i > 0 {
-            painter.vline(x, (tl.y + title_h)..=outer.bottom(), faint);
-        }
-        painter.text(
-            Pos2::new(x + pad, tl.y + title_h + row_h * 0.5),
-            Align2::LEFT_CENTER,
-            &l.table.columns[i],
-            bold.clone(),
-            ink,
-        );
-        for (r, row) in l.table.rows.iter().enumerate() {
-            painter.text(
-                Pos2::new(x + pad, tl.y + title_h + row_h * (r as f32 + 1.5)),
-                Align2::LEFT_CENTER,
-                row.get(i).map_or("", String::as_str),
-                FontId::proportional(font_px),
-                ink,
-            );
-        }
-        x += wpx;
-    }
-}
-
+/// Draws one callout label in the shape the schedule that numbers it asks
+/// for (a circle for doors, a hexagon for windows unless it says otherwise).
 pub(crate) fn draw_label(
     painter: &egui::Painter,
     cam: &Camera,
@@ -581,36 +578,23 @@ pub(crate) fn draw_label(
 ) {
     let px = cam.px_per_in as f32;
     let font_px = (h as f32 * px).clamp(1.0, 300.0);
-    if font_px < MIN_TEXT_PX {
+    if font_px < paint::MIN_TEXT_PX {
         return;
     }
     let at = cam.world_to_screen(c.at);
     if !cam.rect.expand(40.0).contains(at) {
         return;
     }
-    let radius = (text_w(&c.text, h, false) as f32 * 0.5 + 0.35 * h as f32) * px;
-    let stroke = Stroke::new(1.2_f32, ink);
-    match c.kind {
-        ScheduleKind::Door => {
-            painter.circle(at, radius, paper, stroke);
-        }
-        ScheduleKind::Window => {
-            let pts: Vec<Pos2> = (0..6)
-                .map(|k| {
-                    let a = std::f32::consts::FRAC_PI_3 * k as f32 + std::f32::consts::FRAC_PI_6;
-                    Pos2::new(at.x + radius * 1.1 * a.cos(), at.y + radius * 1.1 * a.sin())
-                })
-                .collect();
-            painter.add(Shape::convex_polygon(pts, paper, stroke));
-        }
-        _ => {}
-    }
-    painter.text(
-        at,
-        Align2::CENTER_CENTER,
-        &c.text,
-        FontId::proportional(font_px),
-        ink,
+    let opts = LABEL_OPTS
+        .with(|o| {
+            o.borrow()
+                .iter()
+                .find(|(k, _)| *k == c.kind)
+                .map(|(_, o)| o.clone())
+        })
+        .unwrap_or_default();
+    paint::draw_callout_shape(
+        painter, at, &c.text, font_px, &opts, c.kind, ink, paper, 0.0,
     );
 }
 
@@ -627,21 +611,46 @@ pub fn draw_schedules(cx: &EditorContext, painter: &egui::Painter, cam: &Camera)
             continue;
         }
         let l = layout_rc(cx, s, cx.floor);
-        let style = cx.project.text_styles.resolve(&s.text_style);
-        let ink = color_of(style, pal.text);
-        draw_table(painter, cam, &l, s.position, ink, pal.background);
+        let body = cx.project.text_styles.resolve(&s.text_style);
+        let title = if s.title_style.is_empty() {
+            body
+        } else {
+            cx.project.text_styles.resolve(&s.title_style)
+        };
+        let head = if s.header_style.is_empty() {
+            body
+        } else {
+            cx.project.text_styles.resolve(&s.header_style)
+        };
+        let colors = paint::Colors {
+            body: color_of(body, pal.text),
+            title: color_of(title, pal.text),
+            head: color_of(head, pal.text),
+            paper: pal.background,
+        };
+        paint::draw_schedule(painter, cam, s, &l, colors);
         if is_selected(cx, s.id) {
-            let (lo, hi) = l.bounds(s.position);
-            let r = Rect::from_two_pos(
-                cam.world_to_screen(Point::new(lo.x, hi.y)),
-                cam.world_to_screen(Point::new(hi.x, lo.y)),
+            let f = l.frame(s.position);
+            let pts: Vec<Pos2> = [
+                (0.0, 0.0),
+                (l.width, 0.0),
+                (l.width, l.height),
+                (0.0, l.height),
+            ]
+            .iter()
+            .map(|(x, y)| cam.world_to_screen(f.to_plan(*x, *y)))
+            .collect();
+            painter.add(Shape::closed_line(pts, Stroke::new(3.0_f32, pal.selection)));
+            paint::draw_handles(
+                painter,
+                cam,
+                &handles::handles(s, &l),
+                pal.selection,
+                pal.background,
             );
-            painter.rect_stroke(
-                r.expand(2.0),
-                0.0,
-                Stroke::new(3.0_f32, pal.selection),
-                StrokeKind::Outside,
-            );
+            if let Some(row) = selected_row_of(s.id, cx.floor) {
+                ops::draw_row_highlight(painter, cam, s, &l, row, pal.selection);
+            }
         }
     }
     let style = label_style(&cx.project);
@@ -649,13 +658,48 @@ pub fn draw_schedules(cx: &EditorContext, painter: &egui::Painter, cam: &Camera)
     let ink = color_of(style, pal.text);
     // Doors and windows are labelled over the opening itself (the mark when
     // a schedule numbers them, else the size): see `opening_view`.
-    for c in labels(cx)
+    let sources = label_sources(cx);
+    for src in sources
         .iter()
-        .filter(|c| !matches!(c.kind, ScheduleKind::Door | ScheduleKind::Window))
+        .filter(|s| cx.layers().is_visible(&s.layer))
+        .filter(|s| !matches!(s.kind, ScheduleKind::Door | ScheduleKind::Window))
     {
-        draw_label(painter, cam, c, h, ink, pal.background);
+        for c in &src.callouts {
+            let px = cam.px_per_in as f32;
+            let font_px = (h as f32 * px).clamp(1.0, 300.0);
+            if font_px < paint::MIN_TEXT_PX {
+                continue;
+            }
+            let at = cam.world_to_screen(c.at);
+            if !cam.rect.expand(40.0).contains(at) {
+                continue;
+            }
+            paint::draw_callout_shape(
+                painter,
+                at,
+                &c.text,
+                font_px,
+                &src.opts,
+                c.kind,
+                ink,
+                pal.background,
+                0.0,
+            );
+        }
     }
 }
+
+/// The rooms of the active floor as `(RoomRef, name)` for "Include Objects
+/// from Room".
+pub fn room_refs(cx: &EditorContext) -> Vec<(RoomRef, String)> {
+    schedule_kinds::room_choices(&cx.project, Some((cx.floor, cx.rooms.as_slice())))
+        .into_iter()
+        .map(|(f, name, p)| (RoomRef::at(f, p), name))
+        .collect()
+}
+
+#[allow(dead_code)]
+fn _keep(_: Rect) {}
 
 #[cfg(test)]
 mod tests {

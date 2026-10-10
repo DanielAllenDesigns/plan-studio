@@ -83,22 +83,38 @@ pub fn cabinet_by_id(floor: &Floor, id: Id) -> Option<Cabinet> {
     load_cabinets(floor).into_iter().find(|c| c.id == id)
 }
 
-/// Runs `f` on the typed cabinet list and stores the result. Refuses (returns
-/// `None`) when some stored entry does not parse, so nothing is ever lost.
+/// The floor's cabinets split into the ones this build reads and the raw
+/// records it cannot (a newer build's kind), which every edit writes back
+/// untouched (QA-29).
+fn split_cabinets(floor: &Floor) -> (Vec<Cabinet>, Vec<serde_json::Value>) {
+    let (good, bad) = plan_core::foreign::read_each::<Cabinet>(&floor.cabinets);
+    (good, bad.into_iter().map(|(_, v)| v).collect())
+}
+
+/// Stores `list` followed by the `raw` records that could not be read.
+fn store_cabinets(floor: &mut Floor, list: &[Cabinet], raw: Vec<serde_json::Value>) -> bool {
+    if floor.set_cabinets(list).is_err() {
+        return false;
+    }
+    floor.cabinets.extend(raw);
+    true
+}
+
+/// Runs `f` on the typed cabinet list and stores the result; records this
+/// build cannot read stay as they are. `None` only when the list cannot be
+/// written.
 fn edit_cabinets<R>(
     project: &mut Project,
     floor: usize,
     f: impl FnOnce(&mut Vec<Cabinet>) -> R,
 ) -> Option<R> {
-    let mut list = project.floors[floor].cabinets_as::<Cabinet>().ok()?;
+    let (mut list, raw) = split_cabinets(&project.floors[floor]);
     let r = f(&mut list);
-    project.floors[floor].set_cabinets(&list).ok()?;
-    Some(r)
+    store_cabinets(&mut project.floors[floor], &list, raw).then_some(r)
 }
 
 /// Adds a cabinet under a fresh id.
 pub fn add_cabinet(project: &mut Project, floor: usize, mut cab: Cabinet) -> Option<Id> {
-    project.floors[floor].cabinets_as::<Cabinet>().ok()?;
     let id = project.alloc_id();
     cab.id = id;
     edit_cabinets(project, floor, |v| v.push(cab))?;
@@ -280,6 +296,7 @@ pub fn hit_cabinet(
     let cabs = load_cabinets(cx.floor());
     let near = |c: &&Cabinet| {
         cx.layers().is_visible(cabinet_layer(c.kind))
+            && !c.auto_filler
             && filter(c)
             && poly_dist(p, &c.footprint()) <= tol
     };
@@ -589,14 +606,44 @@ pub fn draw_cabinet_parts(
     merged_tops: bool,
     labels: bool,
 ) {
+    draw_cabinet_strokes(
+        painter,
+        cam,
+        cab,
+        plan_symbol(cab),
+        color,
+        merged_tops,
+        labels,
+    );
+}
+
+/// [`draw_cabinet_parts`] for the given strokes (the plan symbol with the
+/// run display and the Plan Display Options applied, see
+/// `plan_cabinets::plan_strokes`).
+pub fn draw_cabinet_strokes(
+    painter: &egui::Painter,
+    cam: &Camera,
+    cab: &Cabinet,
+    strokes: Vec<CabStroke>,
+    color: Color32,
+    merged_tops: bool,
+    labels: bool,
+) {
     let stroke = egui::Stroke::new(1.2_f32, color);
-    for (i, k) in plan_symbol(cab).iter().enumerate() {
+    // The countertop outline is the stroke after the footprint; a footprint
+    // with hidden edges is several leading lines.
+    let lead = strokes
+        .iter()
+        .take_while(|k| matches!(k, CabStroke::Line(..)))
+        .count();
+    let top_index = if lead > 0 { lead } else { 1 };
+    for (i, k) in strokes.iter().enumerate() {
         match k {
             CabStroke::Line(a, b) => {
                 painter.line_segment([sc(cam, *a), sc(cam, *b)], stroke);
             }
             CabStroke::Polyline(pts, closed) => {
-                if merged_tops && cab.countertop.is_some() && i == 1 {
+                if merged_tops && cab.countertop.is_some() && i == top_index {
                     continue;
                 }
                 let s: Vec<Pos2> = pts.iter().map(|p| sc(cam, *p)).collect();
@@ -624,11 +671,39 @@ pub fn draw_cabinet_parts(
                 height,
                 angle,
             } => {
-                if labels {
+                if labels && !text.is_empty() {
                     draw_text(painter, cam, *at, text, *height, *angle, color);
                 }
             }
         }
+    }
+}
+
+/// Fills a cabinet's outline in the plan as its Fill Style tab says: a
+/// translucent solid, or hatch lines at 45 degrees (and 135 for a cross
+/// hatch) clipped to the outline.
+pub fn draw_cabinet_fill(painter: &egui::Painter, cam: &Camera, cab: &Cabinet) {
+    let fill = &cab.fill;
+    if !fill.is_visible() {
+        return;
+    }
+    let ring = cab.footprint();
+    let alpha = (fill.alpha.clamp(0.0, 1.0) * 255.0).round() as u8;
+    let [r, g, b] = fill.color;
+    let color = Color32::from_rgba_unmultiplied(r, g, b, alpha);
+    if fill.pattern == plan_cabinets::FillPattern::Solid {
+        for t in plan_cabinets::triangulate(&ring, &[]) {
+            painter.add(Shape::convex_polygon(
+                t.iter().map(|p| sc(cam, *p)).collect(),
+                color,
+                egui::Stroke::NONE,
+            ));
+        }
+        return;
+    }
+    let stroke = egui::Stroke::new(1.0_f32, color);
+    for [a, b] in fill.hatch_lines(&ring) {
+        painter.line_segment([sc(cam, a), sc(cam, b)], stroke);
     }
 }
 
@@ -675,13 +750,40 @@ pub fn draw_placed(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
         .into_iter()
         .filter(|c| cx.layers().is_visible(cabinet_layer(c.kind)))
         .collect();
+    // Merged cabinets (side by side within 3 in, or meeting at a corner) show
+    // module lines instead of the end faces they share; the layer "Cabinets,
+    // Module Lines" turns the lines off.
+    let general = &cx.defaults.cabinets.general;
+    let display = plan_cabinets::run_display(
+        &cabs,
+        plan_cabinets::merge_reach(general.create_automatic_fillers),
+        general.show_partial_module_lines,
+    );
+    let plan_options = plan_cabinets::PlanOptions::from_general(general);
     for c in &cabs {
         let color = if cabinet_layer(c.kind) == "Cabinets, Wall" {
             pal.text.gamma_multiply(0.7)
         } else {
             pal.text
         };
-        draw_cabinet_parts(painter, cam, c, color, true, labels_visible);
+        draw_cabinet_fill(painter, cam, c);
+        let hidden = display
+            .hidden_edges
+            .get(&c.id)
+            .map_or(&[][..], Vec::as_slice);
+        let strokes = plan_cabinets::plan_strokes(c, hidden, &plan_options);
+        draw_cabinet_strokes(painter, cam, c, strokes, color, true, labels_visible);
+    }
+    if cx.layers().is_visible(plan_cabinets::MODULE_LINES_LAYER) {
+        let line = egui::Stroke::new(1.0_f32, pal.text.gamma_multiply(0.6));
+        for l in &display.lines {
+            let pts = [sc(cam, l.a), sc(cam, l.b)];
+            if general.show_partial_module_lines {
+                painter.line_segment(pts, line);
+            } else {
+                painter.extend(Shape::dashed_line(&pts, line, 5.0, 3.0));
+            }
+        }
     }
     let tops: Vec<Cabinet> = cabs
         .iter()
@@ -707,12 +809,21 @@ pub fn draw_placed(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
                 None => draw_outline(painter, cam, &s.footprint(), stroke),
             }
         }
-        if !s.label.is_empty() {
+        // An unknown catalog item is a labelled box (its own label, else
+        // the words of its id).
+        let unknown =
+            s.image.is_none() && s.distribution.is_none() && find_item(&s.catalog_id).is_none();
+        let label = if s.label.is_empty() && unknown {
+            plan_library::standin::stand_in_label(&s.catalog_id)
+        } else {
+            s.label.clone()
+        };
+        if !label.is_empty() {
             draw_text(
                 painter,
                 cam,
                 symbol_center(s),
-                &s.label,
+                &label,
                 3.0,
                 s.angle.to_radians(),
                 pal.text,
@@ -821,10 +932,11 @@ pub fn copy_placed(cx: &mut EditorContext) -> usize {
             PlacedRef::Cabinet(id) => {
                 cabinet_by_id(cx.floor(), id).map(|c| PlacedItem::Cabinet(Box::new(c)))
             }
+            // A fireplace carries its specification with the copy.
             PlacedRef::Symbol(id) => cx
                 .floor()
                 .symbol(id)
-                .cloned()
+                .map(|s| cx.floor().symbol_for_copy(s))
                 .map(|s| PlacedItem::Symbol(Box::new(s))),
         })
         .collect();
@@ -1131,11 +1243,29 @@ pub fn cabinet_label(c: &Cabinet) -> String {
 /// [`run_command`]).
 pub const GENERATE_COUNTERTOP: &str = "cabinet.generate_countertop";
 
+/// Edit-toolbar command id of Convert Polyline to Soffit (CB-17): the
+/// selected closed CAD polylines become polygon soffits.
+pub const SOFFIT_FROM_POLYLINE: &str = "cabinet.soffit_from_polyline";
+
 /// Runs a cabinet command by id; false when the id is not one of ours.
 pub fn run_command(cx: &mut EditorContext, id: &str) -> bool {
     match id {
         GENERATE_COUNTERTOP => {
             generate_countertops(cx);
+            true
+        }
+        SOFFIT_FROM_POLYLINE => {
+            soffits_from_polylines(cx);
+            true
+        }
+        crate::tools::cabinet::SET_AS_DEFAULT_COMMAND => {
+            crate::tools::cabinet::set_as_default(cx);
+            true
+        }
+        crate::tools::cabinet::BUMP_MODE_COMMAND => {
+            let next = crate::tools::cabinet::bump_mode().next();
+            crate::tools::cabinet::set_bump_mode(next);
+            cx.status = format!("Cabinets: {}", next.toolbar_label());
             true
         }
         // Underlays, Preferences and the material tools (their menu rows
@@ -1149,11 +1279,99 @@ pub fn run_command(cx: &mut EditorContext, id: &str) -> bool {
                 || crate::dialogs::app_info::run_command(cx, id)
                 || crate::dialogs::layer_sets::run_command(cx, id)
                 || crate::dialogs::plan_views::run_command(cx, id)
+                || crate::dialogs::plan_check::run_command(cx, id)
                 || crate::dialogs::defaults::run_command(cx, id)
                 || crate::tools::cad::run_edit_command(cx, id)
                 || crate::tools::dimension::run_command(cx, id)
         }
     }
+}
+
+/// The ring of a CAD polyline that can become a soffit: closed, or open with
+/// its end on its start, with at least three distinct corners and some area.
+pub fn closed_polyline_ring(item: &plan_core::cad::CadItem) -> Option<Vec<Point>> {
+    let plan_core::cad::CadItem::Polyline { points, closed } = item else {
+        return None;
+    };
+    let mut ring = points.clone();
+    if !closed && ring.len() > 3 && ring[0].dist(ring[ring.len() - 1]) < 0.01 {
+        ring.pop();
+    } else if !closed {
+        return None;
+    }
+    ring.dedup_by(|a, b| a.dist(*b) < 0.01);
+    if ring.len() > 1 && ring[0].dist(ring[ring.len() - 1]) < 0.01 {
+        ring.pop();
+    }
+    (ring.len() >= 3 && plan_cabinets::ring_area(&ring).abs() > 1e-6).then_some(ring)
+}
+
+/// Does the selection hold a closed CAD polyline? (The Edit toolbar offers
+/// Convert Polyline to Soffit then.)
+pub fn selection_has_closed_polyline(cx: &EditorContext) -> bool {
+    cx.selection.items.iter().any(|o| match o {
+        ObjectRef::Cad(id) => cx
+            .floor()
+            .cad
+            .iter()
+            .any(|c| c.id == *id && closed_polyline_ring(&c.item).is_some()),
+        _ => false,
+    })
+}
+
+/// Convert Polyline to Soffit (CB-17): each selected closed CAD polyline is
+/// replaced by a polygon soffit with the outline of the polyline, the height
+/// and elevation of the Soffit tool's defaults, on the soffit's layer. One
+/// undo step. Returns how many soffits were made.
+pub fn soffits_from_polylines(cx: &mut EditorContext) -> usize {
+    let rings: Vec<(Id, Vec<Point>)> = cx
+        .selection
+        .items
+        .iter()
+        .filter_map(|o| match o {
+            ObjectRef::Cad(id) => cx
+                .floor()
+                .cad
+                .iter()
+                .find(|c| c.id == *id)
+                .and_then(|c| closed_polyline_ring(&c.item))
+                .map(|r| (*id, r)),
+            _ => None,
+        })
+        .collect();
+    if rings.is_empty() {
+        cx.status = "Select a closed polyline first".into();
+        return 0;
+    }
+    if cx.layers().is_locked(cabinet_layer(CabinetKind::Soffit)) {
+        cx.status = "The soffit layer is locked".into();
+        return 0;
+    }
+    let base = crate::tools::cabinet::default_cabinet(cx, CabinetKind::Soffit);
+    cx.begin_change("Convert Polyline to Soffit");
+    let fl = cx.floor;
+    let mut made = Vec::new();
+    for (cad_id, ring) in rings {
+        let Some(cab) = Cabinet::soffit_polygon(&ring, base.height, base.elevation) else {
+            continue;
+        };
+        let Some(id) = add_cabinet(&mut cx.project, fl, cab) else {
+            continue;
+        };
+        cx.project.remove_cad(fl, cad_id);
+        made.push(ObjectRef::Cabinet(id));
+    }
+    if made.is_empty() {
+        cx.cancel_change();
+        cx.status = "The plan's cabinets could not be read".into();
+        return 0;
+    }
+    cx.project.prune_cad_data(fl);
+    let n = made.len();
+    cx.selection.items = made;
+    cx.mark_dirty();
+    cx.status = format!("Made {n} soffit{}", if n == 1 { "" } else { "s" });
+    n
 }
 
 /// Generate Countertop (CB-14, CB-15): joins the countertops of touching base
@@ -1242,9 +1460,7 @@ pub fn rejoin_countertops(cx: &mut EditorContext) -> usize {
     if cx.layers().is_locked("Cabinets, Base") {
         return 0;
     }
-    let Ok(stored) = cx.project.floors[fl].cabinets_as::<Cabinet>() else {
-        return 0;
-    };
+    let (stored, raw) = split_cabinets(&cx.project.floors[fl]);
     let mut cabs = stored.clone();
     // Take every generated top apart.
     let old_tops: Vec<Cabinet> = cabs
@@ -1302,7 +1518,7 @@ pub fn rejoin_countertops(cx: &mut EditorContext) -> usize {
     if sorted(&cabs) == sorted(&stored) {
         return count;
     }
-    if cx.project.floors[fl].set_cabinets(&cabs).is_err() {
+    if !store_cabinets(&mut cx.project.floors[fl], &cabs, raw) {
         return 0;
     }
     let project = &cx.project;
@@ -1316,11 +1532,9 @@ pub fn rejoin_countertops(cx: &mut EditorContext) -> usize {
 /// caller has begun. Returns how many changed.
 pub fn refresh_backsplashes(cx: &mut EditorContext) -> usize {
     let fl = cx.floor;
-    let Ok(mut cabs) = cx.project.floors[fl].cabinets_as::<Cabinet>() else {
-        return 0;
-    };
+    let (mut cabs, raw) = split_cabinets(&cx.project.floors[fl]);
     let n = plan_cabinets::fit_full_height_backsplashes(&mut cabs);
-    if n > 0 && cx.project.floors[fl].set_cabinets(&cabs).is_ok() {
+    if n > 0 && store_cabinets(&mut cx.project.floors[fl], &cabs, raw) {
         cx.mark_dirty();
         return n;
     }
@@ -1330,6 +1544,8 @@ pub fn refresh_backsplashes(cx: &mut EditorContext) -> usize {
 /// [`rejoin_countertops`] when the automatic join is on; full-height
 /// backsplashes follow the wall cabinets either way.
 pub fn rejoin_if_enabled(cx: &mut EditorContext) -> usize {
+    // Automatic fillers first: the generated tops then run over them.
+    crate::tools::cabinet::sync_auto_fillers(cx);
     refresh_backsplashes(cx);
     if auto_join_enabled() {
         rejoin_countertops(cx)
@@ -1923,6 +2139,9 @@ mod tests {
         let mut cx = cx();
         set_auto_join(false);
         let ids = bases(&mut cx, &[0.0, 24.0]);
+        // The first pass stores the program-made ends of the cabinets; after
+        // that nothing more is written.
+        rejoin_if_enabled(&mut cx);
         let before = cx.project.floors[0].cabinets.clone();
         assert_eq!(rejoin_if_enabled(&mut cx), 0);
         assert_eq!(cx.project.floors[0].cabinets, before);

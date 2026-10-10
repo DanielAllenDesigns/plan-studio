@@ -69,6 +69,13 @@ pub struct Viewport3d {
     pub look: Look,
     /// Shadows, ambient occlusion, quality and exposure.
     pub settings: ViewSettings,
+    /// A picture drawn behind the model in place of the sky gradient (the
+    /// Backdrop tab of a camera); only the looks that draw a sky show it.
+    pub backdrop: Option<Arc<crate::backdrop::BackdropImage>>,
+    /// What lies below the horizon behind the model.
+    pub ground: crate::backdrop::Ground,
+    /// Distance haze over the model (and the edge lines).
+    pub fog: crate::backdrop::Fog,
     /// Point lights of the plan; the nearest few light the view.
     lights: Vec<ViewLight>,
     gpu: Arc<Mutex<GpuScene>>,
@@ -136,6 +143,9 @@ impl Viewport3d {
             textures_enabled: true,
             look: Look::Standard,
             settings: ViewSettings::default(),
+            backdrop: None,
+            ground: crate::backdrop::Ground::default(),
+            fog: crate::backdrop::Fog::default(),
             lights: Vec::new(),
             prefetching: Arc::clone(&gpu.prefetching),
             gpu: Arc::new(Mutex::new(gpu)),
@@ -394,6 +404,9 @@ impl Viewport3d {
             look: self.look,
             settings: self.settings,
             background: self.background,
+            backdrop: self.backdrop.clone(),
+            ground: self.ground,
+            fog: self.fog,
             lights: nearest_lights(&self.lights, self.camera.eye(), MAX_POINT_LIGHTS),
             bounds: self.bounds,
             pixels_per_point: ui.ctx().pixels_per_point(),

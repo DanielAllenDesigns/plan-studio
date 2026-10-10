@@ -108,7 +108,10 @@ fn a_retaining_wall_top_follows_the_terrain() {
     let g = |x: f64| elevation_at(&surface, pt(x, 100.0)).unwrap() as f32;
     assert!(g(1000.0) - g(100.0) > 50.0, "the lot rises to the east");
     for x in [100.0, 1000.0] {
-        assert!((top_at(x as f32) - g(x) - 36.0).abs() < 1.5, "top at x={x}");
+        assert!(
+            (top_at(x as f32) - g(x) - wall.height as f32).abs() < 1.5,
+            "top at x={x}"
+        );
     }
 
     // Curbs use the same rule with their own sizes; a curved wall is its arc.

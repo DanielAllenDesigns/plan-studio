@@ -27,12 +27,16 @@ use crate::{finding, Finding, Severity, Target};
 const ON_EDGE: f64 = 8.0;
 /// Wall length one receptacle serves (NEC 210.52(A): none farther than 6' from one), inches.
 const RECEPTACLE_RUN: f64 = 144.0;
+/// Narrowest wall space that needs a receptacle (E3901.2.2), inches.
+const WALL_SPACE_MIN: f64 = 24.0;
+/// How far along a wall space one receptacle reaches (E3901.2.1), inches.
+const RECEPTACLE_REACH: f64 = 72.0;
 const EPS: f64 = 1e-6;
 
 /// The fields of a stored electrical device the rules use.
-struct Dev {
-    kind: String,
-    at: Point,
+pub(crate) struct Dev {
+    pub kind: String,
+    pub at: Point,
 }
 
 #[derive(Deserialize)]
@@ -42,7 +46,7 @@ struct RawDev {
 }
 
 /// The devices of the floor, in storage order.
-fn devices(ctx: &Ctx) -> Vec<Dev> {
+pub(crate) fn devices(ctx: &Ctx) -> Vec<Dev> {
     let Some(v) = ctx.floor.electrical.as_ref() else {
         return Vec::new();
     };
@@ -67,7 +71,7 @@ fn is_receptacle(kind: &str) -> bool {
 }
 
 /// Is `p` in room `i` (inside its outline, or on a wall of it)?
-fn in_room(ctx: &Ctx, i: usize, p: Point) -> bool {
+pub(crate) fn in_room(ctx: &Ctx, i: usize, p: Point) -> bool {
     let poly = &ctx.rooms[i].polygon;
     if poly.len() < 3 {
         return false;
@@ -155,6 +159,9 @@ pub(crate) fn electrical(ctx: &Ctx, out: &mut Vec<Finding>) {
                 .ceil()
                 .max(1.0) as usize;
             let have = here(&|k| is_receptacle(k)).len();
+            if have >= wanted {
+                receptacle_wall_spaces(ctx, i, &devs, out);
+            }
             if have < wanted {
                 out.push(
                     finding(
@@ -185,6 +192,99 @@ pub(crate) fn electrical(ctx: &Ctx, out: &mut Vec<Finding>) {
     }
 }
 
+/// IRC E3901.2 (NEC 210.52(A)) wall spaces: every wall space 2' or wider
+/// needs a receptacle, and no point along the floor line of a space may be
+/// more than 6' from one. A door breaks a wall space, a window does not, and a
+/// receptacle serves only the space it is in. One finding per room, at the
+/// middle of the longest uncovered stretch.
+fn receptacle_wall_spaces(ctx: &Ctx, i: usize, devs: &[Dev], out: &mut Vec<Finding>) {
+    let poly = &ctx.rooms[i].polygon;
+    let recs: Vec<Point> = devs
+        .iter()
+        .filter(|d| is_receptacle(&d.kind))
+        .map(|d| d.at)
+        .collect();
+    let mut bad = 0usize;
+    let mut worst: Option<(f64, Point)> = None;
+    for k in 0..poly.len() {
+        let (a, b) = (poly[k], poly[(k + 1) % poly.len()]);
+        let len = a.dist(b);
+        if len < WALL_SPACE_MIN {
+            continue;
+        }
+        let dir = b.sub(a).scale(1.0 / len);
+        let along = |p: Point| p.sub(a).dot(dir);
+        // Door openings on this edge cut it into wall spaces.
+        let mut cuts: Vec<(f64, f64)> = ctx
+            .ops
+            .iter()
+            .filter(|o| o.op.kind == plan_core::OpeningKind::Door && o.touches(i))
+            .filter_map(|o| o.center.map(|c| (o, c)))
+            .filter(|(_, c)| dist_to_segment(*c, a, b) <= ON_EDGE)
+            .map(|(o, c)| {
+                let t = along(c);
+                (t - o.op.width / 2.0, t + o.op.width / 2.0)
+            })
+            .collect();
+        cuts.sort_by(|x, y| x.0.total_cmp(&y.0));
+        let mut spaces = Vec::new();
+        let mut at = 0.0_f64;
+        for (lo, hi) in cuts {
+            if lo > at {
+                spaces.push((at, lo.min(len)));
+            }
+            at = at.max(hi);
+        }
+        if at < len {
+            spaces.push((at, len));
+        }
+        for (lo, hi) in spaces
+            .into_iter()
+            .filter(|(lo, hi)| hi - lo >= WALL_SPACE_MIN)
+        {
+            let mut ts: Vec<f64> = recs
+                .iter()
+                .filter(|p| dist_to_segment(**p, a, b) <= ON_EDGE)
+                .map(|p| along(*p))
+                .filter(|t| *t >= lo - ON_EDGE && *t <= hi + ON_EDGE)
+                .map(|t| t.clamp(lo, hi))
+                .collect();
+            ts.sort_by(f64::total_cmp);
+            // The stretches farther than 6' from every receptacle.
+            let mut stretches = Vec::new();
+            let mut start = lo;
+            for t in &ts {
+                stretches.push((start, *t - RECEPTACLE_REACH));
+                start = *t + RECEPTACLE_REACH;
+            }
+            stretches.push((start, hi));
+            for (s, e) in stretches.into_iter().filter(|(s, e)| e - s > EPS) {
+                bad += 1;
+                let width = e - s;
+                if worst.is_none_or(|(w, _)| width > w) {
+                    worst = Some((width, a + dir * ((s + e) / 2.0)));
+                }
+            }
+        }
+    }
+    if let Some((_, at)) = worst {
+        out.push(
+            finding(
+                "IRC E3901.2 receptacle spacing",
+                Severity::Warning,
+                format!(
+                    "{} has {bad} stretch{} of wall space more than 6' from a receptacle (walls 2' or wider, doors break a wall space)",
+                    ctx.name(i),
+                    if bad == 1 { "" } else { "es" }
+                ),
+                "Add a receptacle so no point along a wall is more than 6' from one; a space on its own needs its own",
+            )
+            .at(at)
+            .on(Target::Room(i)),
+        );
+    }
+}
+
 // ----- framing -----
 
 /// A stored automatic framing member, reduced to what the rules read.
@@ -192,6 +292,8 @@ struct Piece {
     kind: String,
     depth: f64,
     length: f64,
+    /// Length of the member's plan projection (equals `length` when level).
+    run: f64,
     /// Start of the member and its unit direction, plan frame.
     start: Point,
     dir: Point,
@@ -214,12 +316,14 @@ impl Piece {
             ])
         };
         let (origin, axis) = (vec3("origin")?, vec3("axis_x")?);
+        let dir = Point::new(axis[0], -axis[2]);
         Some(Piece {
             kind,
             depth,
             length,
+            run: length * dir.length(),
             start: Point::new(origin[0], -origin[2]),
-            dir: Point::new(axis[0], -axis[2]),
+            dir,
             wall_id: o.get("wall_id").and_then(Value::as_u64),
         })
     }
@@ -263,7 +367,26 @@ fn joist_limit(depth: f64) -> f64 {
     }
 }
 
-/// IRC R602.7 headers over exterior-wall openings and R502.3 floor joist spans.
+/// Longest rafter run, inches of plan projection, by rafter depth (IRC
+/// R802.4.1(1) and (2), a simplified conservative table: 16" on centre, 20 psf
+/// roof live load, 10 psf dead load, ceiling joists tied at the plates,
+/// hem-fir or Douglas fir-larch No. 2). Not a structural design.
+fn rafter_limit(depth: f64) -> f64 {
+    if depth < 4.5 {
+        72.0
+    } else if depth < 6.5 {
+        120.0
+    } else if depth < 8.5 {
+        158.0
+    } else if depth < 10.5 {
+        202.0
+    } else {
+        244.0
+    }
+}
+
+/// IRC R602.7 headers over exterior-wall openings, R502.3 floor joist spans
+/// and R802.4 rafter spans.
 pub(crate) fn framing(ctx: &Ctx, out: &mut Vec<Finding>) {
     let pieces: Vec<Piece> = ctx
         .floor
@@ -364,6 +487,42 @@ pub(crate) fn framing(ctx: &Ctx, out: &mut Vec<Finding>) {
                     fmt_ft_in(longest)
                 ),
                 "Use a deeper joist, add a bearing line, or reduce the span",
+            )
+            .at(over[0].middle()),
+        );
+    }
+
+    // Rafters that run farther than their size allows (R802.4.1).
+    let mut rafter_depths: Vec<f64> = pieces
+        .iter()
+        .filter(|p| p.kind == "Rafter")
+        .map(|p| p.depth)
+        .collect();
+    rafter_depths.sort_by(f64::total_cmp);
+    rafter_depths.dedup_by(|a, b| (*a - *b).abs() < 1e-6);
+    for depth in rafter_depths {
+        let limit = rafter_limit(depth);
+        let over: Vec<&Piece> = pieces
+            .iter()
+            .filter(|p| p.kind == "Rafter" && (p.depth - depth).abs() < 1e-6 && p.run > limit + EPS)
+            .collect();
+        let Some(longest) = over.iter().map(|p| p.run).reduce(f64::max) else {
+            continue;
+        };
+        out.push(
+            finding(
+                "IRC R802.4.1 rafter span",
+                Severity::Warning,
+                format!(
+                    "{} {} rafter{} run{} over {} in plan (longest {})",
+                    over.len(),
+                    lumber_name(depth),
+                    if over.len() == 1 { "" } else { "s" },
+                    if over.len() == 1 { "s" } else { "" },
+                    fmt_ft_in(limit),
+                    fmt_ft_in(longest)
+                ),
+                "Use a deeper rafter, add a purlin brace or a ridge beam, or reduce the run",
             )
             .at(over[0].middle()),
         );

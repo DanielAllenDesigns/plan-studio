@@ -18,6 +18,7 @@ use crate::tools::foundation::FoundationVariant;
 use crate::tools::framing::FramingVariant;
 use crate::tools::images::ImageMode;
 use crate::tools::opening::OpeningVariant;
+use crate::tools::painters::PainterMode;
 use crate::tools::wall::{WallStyle as Style, WallVariant};
 use crate::tools::ToolId;
 
@@ -67,6 +68,8 @@ pub enum Dock {
     Library,
     Project,
     LayerDisplay,
+    /// The Plan Agent ("Ask to make changes"); see `shell::agent_panel`.
+    Agent,
 }
 
 impl Dock {
@@ -75,6 +78,7 @@ impl Dock {
             Dock::Library => "Library Browser",
             Dock::Project => "Project Browser",
             Dock::LayerDisplay => "Active Layer Display Options",
+            Dock::Agent => "Plan Agent",
         }
     }
 }
@@ -176,6 +180,9 @@ pub enum Action {
     FloorDefaults,
     /// Edit > Default Settings > Floors and Rooms > Floor Defaults.
     PlanFloorDefaults,
+    /// Edit > Default Settings > Foundation > Foundation (the Foundation
+    /// Defaults dialog; Build > Floor lists it too).
+    FoundationDefaults,
     /// The Reference Display dialog (Tools > Floor/Reference Display).
     ReferenceDisplayOptions,
     DeleteFloor,
@@ -245,6 +252,13 @@ pub enum Slot {
     ViewSelector,
     /// The current floor number (row 1).
     FloorLabel,
+    /// Active Layer Set control: the layer set the plan view shows.
+    LayerSetSelector,
+    /// Active Dimension Defaults control.
+    DimensionDefaultsSelector,
+    /// Active Default Set control ("Using Active Defaults" when no set is in
+    /// force).
+    DefaultSetSelector,
 }
 
 /// App state the bars and menus need to draw themselves.
@@ -944,6 +958,8 @@ pub fn electrical() -> Flyout {
                 E::Gfci,
             ),
             plain("outlet_110", E::OutletFloor),
+            plain("outlet_110", E::OutletWp),
+            plain("outlet_220", E::OutletDedicated),
             elec("switch", "Switch", "E, S", E::Switch),
             plain("switch", E::Switch3Way),
             plain("switch", E::Switch4Way),
@@ -1026,6 +1042,32 @@ pub fn stairs() -> Flyout {
             ),
             st("landing", K::Landing, "\u{2303}\u{2325}\u{21E7}\u{2318}G"),
             st("ramp", K::Ramp, "\u{2303}\u{2325}\u{21E7}\u{2318}H"),
+            item(
+                "ramp",
+                K::CurvedRamp.name(),
+                Action::SetTool(ToolId::StairsVariant(K::CurvedRamp)),
+            ),
+            item(
+                "stairs",
+                K::ToDeck.name(),
+                Action::SetTool(ToolId::StairsVariant(K::ToDeck)),
+            ),
+        ],
+    )
+}
+
+/// The Fireplace flyout: a fireplace beside a wall, built into a wall, a
+/// prefab one and a chimney on its own (CB-87).
+pub fn fireplace() -> Flyout {
+    use crate::tools::fireplace::FireplaceMode as M;
+    let fp = |icon, m: M| item(icon, m.name(), Action::SetTool(ToolId::FireplaceVariant(m)));
+    fly(
+        "Fireplace",
+        vec![
+            fp("foundation", M::Masonry),
+            fp("wall_exterior", M::InWall),
+            fp("box", M::Prefab),
+            fp("post", M::Chimney),
         ],
     )
 }
@@ -1048,6 +1090,13 @@ pub fn floor() -> Flyout {
                 Action::InsertFloorBelow,
             ),
             item("floor_defaults", "Floor Defaults", Action::FloorDefaults),
+            // Split-level floors: stairs where rooms of one floor meet at
+            // different heights (R-86).
+            item(
+                "stairs",
+                "Add Steps at Level Changes",
+                Action::Custom(crate::editor::fireplace_view::cmd::ADD_STEPS),
+            ),
             with_hotkey(
                 item("foundation", "Build Foundation", Action::BuildFoundation),
                 "\u{2318}F",
@@ -1126,6 +1175,16 @@ pub fn roof() -> Flyout {
                 "\u{2303}\u{2325}\u{21E7}\u{2318}U",
                 M::Ceiling,
             ),
+            item(
+                "roof_plane",
+                "Tray Ceiling Polyline",
+                Action::SetTool(ToolId::TrayCeiling),
+            ),
+            item(
+                "roof_plane",
+                "Roof Baseline Polyline",
+                Action::SetTool(ToolId::RoofBaseline),
+            ),
             roof_k(
                 "gable_line",
                 "Gable/Roof Line",
@@ -1170,7 +1229,12 @@ pub fn roof() -> Flyout {
                 "roof_plane",
                 "Edit All Roof Planes",
                 "\u{2303}\u{2325}\u{21E7}\u{2318}P",
-                M::Edit,
+                M::EditAll,
+            ),
+            item(
+                "roof_plane",
+                "Edit Roof Planes",
+                Action::SetTool(ToolId::RoofVariant(M::Edit)),
             ),
             with_hotkey(
                 item(
@@ -1202,6 +1266,7 @@ pub fn trim() -> Flyout {
             det("quoins", DetailsVariant::AutoQuoins),
             det("corner_boards", DetailsVariant::MoldingLine),
             det("corner_boards", DetailsVariant::MoldingPolyline),
+            det("corner_boards", DetailsVariant::ReplaceMoldings),
         ],
     )
 }
@@ -1332,6 +1397,8 @@ pub fn image() -> Flyout {
             img("drawing_sheet", ImageMode::CreateImage),
             img("drawing_sheet", ImageMode::BillboardImage),
             img("library_browser", ImageMode::ImageLibrary),
+            sep(img("dim_manual", ImageMode::PointToPointResize)),
+            img("crosshairs", ImageMode::RotateToAlign),
         ],
     )
 }
@@ -1371,12 +1438,16 @@ pub fn dimensions() -> Flyout {
             dim("dim_manual", D::Running, Some("\u{2303}\u{2325}\u{2318}C")),
             dim("dim_manual", D::Baseline, Some("\u{2303}\u{2325}\u{2318}D")),
             dim("dim_angular", D::Angular, Some("\u{2303}\u{2325}\u{2318}F")),
+            dim("dim_angular", D::Radius, None),
+            dim("dim_angular", D::ArcLength, None),
             dim(
                 "dim_manual",
                 D::Centerline,
                 Some("\u{2303}\u{2325}\u{2318}G"),
             ),
             dim("dim_manual", D::TapeMeasure, Some("D, T, M")),
+            sep(dim("dim_manual", D::ExtensionAdd, None)),
+            dim("dim_manual", D::ExtensionDelete, None),
         ],
     )
 }
@@ -1445,6 +1516,7 @@ pub fn text_tools() -> Flyout {
             txt("note", T::Note, "\u{2303}\u{2325}\u{2318}N"),
             sep(txt_plain("note", T::NoteTypes)),
             txt_plain("text", T::Macros),
+            txt_plain("text", T::TextStyles),
         ],
     );
     f.current = 2;
@@ -1500,6 +1572,11 @@ pub fn lines() -> Flyout {
             cad_item("line", C::InputLine),
             cad_item("arrow_line", C::LineArrow),
             cad_item("polyline", C::Polyline),
+            item(
+                "line",
+                "Construction Line",
+                Action::SetTool(ToolId::ConstructionLine),
+            ),
         ],
     )
 }
@@ -1572,6 +1649,16 @@ pub fn terrain_wall_curb() -> Flyout {
             terr("wall_exterior", "Straight Terrain Curb", T::StraightCurb),
             terr("wall_curved", "Curved Terrain Wall", T::CurvedWall),
             terr("wall_curved", "Curved Terrain Curb", T::CurvedCurb),
+            sep(terr(
+                "wall_exterior",
+                "Straight Retaining Wall",
+                T::StraightRetainingWall,
+            )),
+            terr(
+                "wall_curved",
+                "Curved Retaining Wall",
+                T::CurvedRetainingWall,
+            ),
         ],
     )
 }
@@ -1591,6 +1678,17 @@ pub fn site_objects() -> Flyout {
             terr("terrain", "North Pointer", T::NorthPointer),
             terr("terrain", "Scale Bar", T::ScaleBar),
             terr("terrain", "Building Pad", T::BuildingPad),
+            sep(terr(
+                "terrain",
+                "Import Terrain Data\u{2026}",
+                T::ImportData,
+            )),
+            terr("terrain", "Import GPS Data\u{2026}", T::ImportGps),
+            terr(
+                "terrain",
+                "Terrain Cut and Fill Report\u{2026}",
+                T::CutFillReport,
+            ),
         ],
     )
 }
@@ -1605,6 +1703,17 @@ pub fn elevation_data() -> Flyout {
             terr("terrain", "Elevation Region", T::ElevationRegion),
             terr("spline", "Elevation Spline", T::ElevationSpline),
             terr("terrain", "Terrain Break", T::Break),
+            terr("terrain", "Terrain Labels", T::TerrainLabels),
+            sep(terr(
+                "terrain",
+                "Terrain Elevation Reference Point",
+                T::ReferencePoint,
+            )),
+            terr(
+                "terrain",
+                "Remove Terrain Elevation Reference Point",
+                T::RemoveReferencePoint,
+            ),
             sep(terr("terrain", "Build Terrain", T::Build)),
         ],
     )
@@ -1650,6 +1759,8 @@ pub fn terrain_feature() -> Flyout {
             terr("terrain", "Rectangular Feature", T::RectFeature),
             terr("terrain", "Kidney Shaped Feature", T::KidneyFeature),
             terr("spline", "Spline Feature", T::SplineFeature),
+            terr("polyline", "Polyline Feature", T::PolylineFeature),
+            terr("terrain", "Round Feature", T::RoundFeature),
             terr(
                 "terrain",
                 "Terrain Hole",
@@ -1687,6 +1798,7 @@ pub fn water_feature() -> Flyout {
         vec![
             terr("polyline", "Polyline Water Feature", T::WaterPolyline),
             terr("spline", "Spline Water Feature", T::WaterSpline),
+            sep(terr("spline", "Stream", T::Stream)),
         ],
     )
 }
@@ -1707,10 +1819,14 @@ pub fn road() -> Flyout {
         vec![
             terr(
                 "road",
-                "Polyline Road",
+                "Straight Road",
                 crate::tools::terrain::TerrainVariant::Road,
             ),
             terr("road", "Spline Road", T::SplineRoad),
+            terr("road", "Polyline Road", T::PolylineRoad),
+            terr("road", "Median", T::Median),
+            terr("road", "Cul-de-sac", T::CulDeSac),
+            sep(terr("road", "Auto Generate Sidewalk", T::AutoSidewalk)),
         ],
     )
 }
@@ -1721,10 +1837,11 @@ pub fn driveway() -> Flyout {
         vec![
             terr(
                 "road",
-                "Polyline Driveway",
+                "Straight Driveway",
                 crate::tools::terrain::TerrainVariant::Driveway,
             ),
             terr("road", "Spline Driveway", T::SplineDriveway),
+            terr("road", "Polyline Driveway", T::PolylineDriveway),
         ],
     )
 }
@@ -1735,10 +1852,22 @@ pub fn sidewalk() -> Flyout {
         vec![
             terr(
                 "road",
-                "Polyline Sidewalk",
+                "Straight Sidewalk",
                 crate::tools::terrain::TerrainVariant::Sidewalk,
             ),
             terr("road", "Spline Sidewalk", T::SplineSidewalk),
+            terr("road", "Polyline Sidewalk", T::PolylineSidewalk),
+        ],
+    )
+}
+
+/// Road Marking: a painted stripe laid on the ground or on a road.
+pub fn road_marking() -> Flyout {
+    fly(
+        "Road Marking",
+        vec![
+            terr("road", "Polyline Road Marking", T::RoadMarking),
+            terr("road", "Spline Road Marking", T::SplineRoadMarking),
         ],
     )
 }
@@ -1749,6 +1878,7 @@ pub fn plant() -> Flyout {
         vec![
             terr("terrain", "Polyline Plant", T::PlantPolyline),
             terr("terrain", "Spline Plant", T::PlantSpline),
+            sep(terr("terrain", "Grow All Plants\u{2026}", T::GrowPlants)),
         ],
     )
 }
@@ -1759,6 +1889,12 @@ pub fn sprinkler() -> Flyout {
         vec![
             terr("terrain", "Polyline Sprinkler", T::SprinklerPolyline),
             terr("terrain", "Spline Sprinkler", T::SprinklerSpline),
+            sep(terr(
+                "terrain",
+                "Polyline Sprinkler Line",
+                T::SprinklerLinePolyline,
+            )),
+            terr("terrain", "Spline Sprinkler Line", T::SprinklerLineSpline),
         ],
     )
 }
@@ -1777,7 +1913,7 @@ fn single(f: Flyout) -> MenuGroup {
     }
 }
 
-/// The sixteen Build submenus, in Chief's order.
+/// The seventeen Build submenus, in Chief's order.
 pub fn build_menu() -> Vec<MenuGroup> {
     vec![
         MenuGroup {
@@ -1797,6 +1933,7 @@ pub fn build_menu() -> Vec<MenuGroup> {
         },
         single(trim()),
         single(stairs()),
+        single(fireplace()),
         single(cabinet()),
         single(electrical()),
         single(solid_3d()),
@@ -1819,6 +1956,7 @@ pub fn terrain_menu() -> Vec<Flyout> {
         road(),
         driveway(),
         sidewalk(),
+        road_marking(),
         plant(),
         sprinkler(),
         site_objects(),
@@ -1852,6 +1990,7 @@ pub fn view_3d() -> Flyout {
             ),
             camera_tool("view_3d", "Perspective Floor Overview", V::FloorOverview),
             camera_tool("view_3d", "Doll House View", V::DollHouse),
+            camera_tool("view_3d", "Glass House View", V::GlassHouse),
             sep(view3d(
                 "view_plan",
                 "Orthographic Full Overview",
@@ -1871,6 +2010,7 @@ pub fn full_camera() -> Flyout {
                 camera_tool("camera_full", "Full Camera", V::FullCamera),
                 "\u{21E7}J",
             ),
+            camera_tool("camera_full", "Floor Camera", V::FloorCamera),
             camera_tool(
                 "cross_section",
                 "Cross Section/Elevation Camera",
@@ -1988,6 +2128,11 @@ fn row1_slots() -> Vec<Slot> {
         Sep,
         Slot::Button(with_hotkey(item("undo", "Undo", Action::Undo), "\u{2318}Z")),
         Slot::Button(with_hotkey(item("redo", "Redo", Action::Redo), "\u{2318}Y")),
+        Slot::Button(item(
+            "note",
+            "Check Spelling",
+            Action::Custom(crate::dialogs::spell_check::OPEN),
+        )),
         Sep,
         Slot::Button(item(
             "preferences",
@@ -2013,7 +2158,7 @@ fn row1_slots() -> Vec<Slot> {
         Slot::Button(item(
             "view_save_as",
             "Save Active View As",
-            Action::Custom(crate::dialogs::app_info::NEW_PLAN_VIEW),
+            Action::Custom(crate::dialogs::plan_views::SAVE_AS),
         )),
         Slot::ViewSelector,
         Sep,
@@ -2054,16 +2199,26 @@ fn row1_slots() -> Vec<Slot> {
             "Material Eyedropper",
             Action::Custom(crate::tools::materials::EYEDROPPER),
         )),
-        toggle("object_eyedropper", "Object Eyedropper"),
+        Slot::Toggle(item(
+            "object_eyedropper",
+            "Object Eyedropper",
+            Action::Custom(crate::tools::materials::OBJECT_EYEDROPPER),
+        )),
         Slot::Toggle(item(
             "delete_surface",
             "Delete Surface",
             Action::Custom(crate::tools::materials::ERASE),
         )),
-        Slot::Button(item(
+        Slot::Toggle(item(
             "adjust_material",
             "Adjust Material Definition",
-            Action::Custom(crate::tools::materials::BUILDER),
+            Action::Custom(crate::tools::materials::ADJUST_DEFINITION),
+        )),
+        // TODO parity: a dedicated icon (it borrows the Default Configuration glyph).
+        Slot::Toggle(item(
+            "config_default",
+            "Use Default Material",
+            Action::Custom(crate::tools::materials::USE_DEFAULT),
         )),
         Slot::Button(item(
             "material_editor",
@@ -2136,13 +2291,31 @@ fn row2_slots() -> Vec<Slot> {
             Action::SetTool(ToolId::CadVariant(crate::tools::cad::CadMode::Spline)),
         )),
         Sep,
-        button("auto_detail", "Auto Detail"),
+        Slot::Button(item(
+            "auto_detail",
+            "Auto Detail",
+            Action::Custom(crate::tools::details::AUTO_DETAIL),
+        )),
         Slot::Button(item(
             "cad_layer",
             "Current CAD Layer",
             Action::Custom(crate::dialogs::layer_sets::ACTIVE_LAYERS),
         )),
+        Sep,
+        painter_toggle("cad_layer", PainterMode::LayerPaint),
+        painter_toggle("material_eyedropper", PainterMode::LayerEyedropper),
+        painter_toggle("material_painter", PainterMode::ObjectPaint),
+        painter_toggle("object_eyedropper", PainterMode::ObjectEyedropper),
     ]
+}
+
+/// A toggle of the Layer / Object Painter family (Tools menu).
+fn painter_toggle(icon: &'static str, mode: PainterMode) -> Slot {
+    Slot::Toggle(item(
+        icon,
+        mode.toolbar_name(),
+        Action::SetTool(ToolId::PainterVariant(mode)),
+    ))
 }
 
 fn view_slots() -> Vec<Slot> {
@@ -2164,12 +2337,24 @@ fn view_slots() -> Vec<Slot> {
             Dock::LayerDisplay,
         ),
         Sep,
-        toggle("zoom", "Zoom"),
+        Slot::Toggle(item(
+            "zoom",
+            "Zoom",
+            Action::Custom(crate::shell::view_commands::ZOOM_WINDOW),
+        )),
         Slot::Button(item("zoom_in", "Zoom In", Action::ZoomIn)),
         Slot::Button(item("zoom_out", "Zoom Out", Action::ZoomOut)),
         Slot::Button(item("zoom_undo", "Undo Zoom", Action::UndoZoom)),
-        button("fill_selected", "Fill Window Selected Objects"),
-        button("fill_building", "Fill Window Building Only"),
+        Slot::Button(item(
+            "fill_selected",
+            "Fill Window Selected Objects",
+            Action::Custom(crate::dialogs::app_info::FILL_SELECTED),
+        )),
+        Slot::Button(item(
+            "fill_building",
+            "Fill Window Building Only",
+            Action::Custom(crate::shell::view_commands::FILL_BUILDING),
+        )),
         Slot::Button(with_hotkey(
             item("fill_window", "Fill Window", Action::FillWindow),
             "\u{2303}F",
@@ -2188,7 +2373,12 @@ fn view_slots() -> Vec<Slot> {
         Slot::Button(item(
             "reference_display",
             "Reference Display Options",
-            Action::ReferenceDisplayOptions,
+            Action::Custom(crate::dialogs::reference_display::CHANGE),
+        )),
+        Slot::Button(item(
+            "reference_display",
+            "Swap Floor/Reference",
+            Action::Custom(crate::dialogs::reference_display::SWAP),
         )),
         flag_toggle("crosshairs", "Crosshairs", ViewFlag::Crosshairs),
         Slot::Toggle(with_hotkey(
@@ -2298,7 +2488,77 @@ fn show_slot(
                 egui::Label::new(egui::RichText::new((state.floor + 1).to_string()).strong()),
             );
         }
+        Slot::LayerSetSelector => {
+            let bar = crate::dialogs::default_sets::bar();
+            default_control(
+                ui,
+                "layer_set_selector",
+                "Active Layer Set",
+                &bar.layer_sets,
+                &bar.shown_layer_set,
+                crate::dialogs::default_sets::Pick::LayerSet,
+                out,
+            );
+        }
+        Slot::DimensionDefaultsSelector => {
+            let bar = crate::dialogs::default_sets::bar();
+            default_control(
+                ui,
+                "dimension_defaults_selector",
+                "Active Dimension Defaults",
+                &bar.dimension_sets,
+                &bar.active_dimension_set,
+                crate::dialogs::default_sets::Pick::DimensionDefaults,
+                out,
+            );
+        }
+        Slot::DefaultSetSelector => {
+            let bar = crate::dialogs::default_sets::bar();
+            let shown = bar
+                .using_set
+                .clone()
+                .unwrap_or_else(|| crate::dialogs::default_sets::USING_ACTIVE.to_string());
+            default_control(
+                ui,
+                "default_set_selector",
+                "Active Default Set",
+                &bar.default_sets,
+                &shown,
+                crate::dialogs::default_sets::Pick::DefaultSet,
+                out,
+            );
+        }
     }
+}
+
+/// One of the drop-down controls of the defaults (Active Layer Set, Active
+/// Dimension Defaults, Active Default Set): a combo box that lists `names`
+/// and asks the application for a pick.
+fn default_control(
+    ui: &mut egui::Ui,
+    salt: &'static str,
+    tip: &'static str,
+    names: &[String],
+    shown: &str,
+    pick: impl Fn(String) -> crate::dialogs::default_sets::Pick,
+    out: &mut Vec<Action>,
+) {
+    egui::ComboBox::from_id_salt(salt)
+        .width(VIEW_SELECTOR_PX)
+        .selected_text(shown)
+        .show_ui(ui, |ui| {
+            for n in names {
+                if ui.selectable_label(n == shown, n).clicked() && n != shown {
+                    crate::dialogs::default_sets::request_pick(pick(n.clone()));
+                    out.push(Action::Custom(crate::dialogs::default_sets::PICK));
+                }
+            }
+            if names.is_empty() {
+                let _ = ui.selectable_label(true, shown);
+            }
+        })
+        .response
+        .on_hover_text(tip);
 }
 
 fn separator(ui: &mut egui::Ui) {
@@ -2480,7 +2740,11 @@ fn paint_glyph(ui: &egui::Ui, zone: Rect, id: &str, st: ZoneState, brightness: f
     let img = Image::new(icons::icon(id)).tint(icon_tint(dimmed, brightness));
     img.paint_at(
         ui,
-        Rect::from_center_size(zone.center(), Vec2::splat(ICON_PX)),
+        // Preferences > Appearance > Icon size.
+        Rect::from_center_size(
+            zone.center(),
+            Vec2::splat(crate::dialogs::preferences::pages::icon_px()),
+        ),
     );
 }
 
@@ -2513,7 +2777,35 @@ fn single_button(
     if resp.clicked() {
         out.push(it.action);
     }
+    if it.action == Action::PlanCheck {
+        code_badge(ui, rect);
+    }
     resp.on_hover_text(tooltip(it));
+}
+
+/// The live Plan Check count (errors and warnings) as a small red badge on
+/// the corner of the Plan Check button; nothing while the count is zero.
+fn code_badge(ui: &egui::Ui, rect: Rect) {
+    let n = crate::editor::code::badge_count();
+    if n == 0 {
+        return;
+    }
+    let text = if n > 99 {
+        "99+".to_string()
+    } else {
+        n.to_string()
+    };
+    let center = egui::pos2(rect.right() - 6.0, rect.top() + 6.0);
+    let r = if text.len() > 1 { 8.0 } else { 6.5 };
+    ui.painter()
+        .circle_filled(center, r, Color32::from_rgb(0xC6, 0x28, 0x28));
+    ui.painter().text(
+        center,
+        egui::Align2::CENTER_CENTER,
+        text,
+        egui::FontId::proportional(9.0),
+        Color32::WHITE,
+    );
 }
 
 fn show_flyout(
@@ -2590,6 +2882,12 @@ fn show_flyout(
 
     if icon_resp.clicked() {
         out.push(cur.action);
+    }
+    // Double-clicking an Electrical Tools button opens its defaults (manual p. 691).
+    if icon_resp.double_clicked() {
+        if let Action::SetTool(ToolId::ElectricalVariant(v)) = cur.action {
+            crate::dialogs::default_pages::electrical::request_open_for(v);
+        }
     }
     if arrow_resp.clicked() {
         ui.memory_mut(|m| m.toggle_popup(popup_id));

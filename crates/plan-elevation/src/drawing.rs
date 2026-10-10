@@ -173,6 +173,25 @@ impl Drawing {
         d
     }
 
+    /// Whether the drawing carries material hatch lines.
+    pub fn has_hatch(&self) -> bool {
+        self.lines.iter().any(|l| l.kind == EdgeKind::Hatch)
+    }
+
+    /// Makes the hatch again for a drawing scale of `scale_in_per_ft` paper
+    /// inches per foot (a hatch made for 1/4" is too fine at 1/8" and too
+    /// coarse at 1/2"), from the face regions. A drawing with no hatch lines
+    /// is left alone. Returns true when the hatch changed.
+    pub fn rehatch(&mut self, scale_in_per_ft: f64) -> bool {
+        if !self.has_hatch() {
+            return false;
+        }
+        self.lines.retain(|l| l.kind != EdgeKind::Hatch);
+        let hatch = crate::hatch::hatch_lines(&self.regions, scale_in_per_ft);
+        self.lines.extend(hatch);
+        true
+    }
+
     /// Recompute [`Drawing::bounds`] from the current lines.
     pub fn update_bounds(&mut self) {
         let mut pts = self.lines.iter().flat_map(|l| [l.a, l.b]);

@@ -14,6 +14,25 @@ pub enum TitleBlockStyle {
     Custom(Vec<CadObject>),
 }
 
+/// The page macros of one sheet: `%layout.label%`, `%layout.title%`,
+/// `%layout.description%`, `%layout.comments%`, `%page%`, `%page.print%`,
+/// `%numpages%` and `%lastpage%`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PageMacros {
+    pub label: String,
+    pub title: String,
+    pub description: String,
+    pub comments: String,
+    /// The absolute layout page number.
+    pub page: u32,
+    /// The printed page number (pages without data are not counted).
+    pub print: u32,
+    /// How many pages print.
+    pub num_pages: u32,
+    /// The layout page number of the last page that prints.
+    pub last_page: u32,
+}
+
 /// Values the macros expand to. The per-sheet fields (`sheet_number`,
 /// `sheet_title`, `scale`, `page_count`) are filled in by [`crate::render_pdf`]
 /// for each page.
@@ -45,6 +64,10 @@ pub struct MacroContext {
     /// `%custom.<key>%`.
     #[serde(default)]
     pub extra: Vec<(String, String)>,
+    /// The page macros of the sheet being drawn; without them
+    /// `%layout.label%`, `%page%` and the rest stay as written.
+    #[serde(default)]
+    pub page_info: Option<PageMacros>,
 }
 
 /// `2026-10-07` (or `10/7/2026`) as `October 7, 2026`; other text is returned as is.
@@ -127,6 +150,25 @@ impl MacroContext {
         ]
         .into_iter()
         .fold(text.to_string(), |acc, (k, v)| acc.replace(k, v));
+        let builtin = match &self.page_info {
+            Some(p) => {
+                let (page, print) = (p.page.to_string(), p.print.to_string());
+                let (num, last) = (p.num_pages.to_string(), p.last_page.to_string());
+                [
+                    ("%layout.label%", &p.label),
+                    ("%layout.title%", &p.title),
+                    ("%layout.description%", &p.description),
+                    ("%layout.comments%", &p.comments),
+                    ("%page.print%", &print),
+                    ("%page%", &page),
+                    ("%numpages%", &num),
+                    ("%lastpage%", &last),
+                ]
+                .into_iter()
+                .fold(builtin, |acc, (k, v)| acc.replace(k, v))
+            }
+            None => builtin,
+        };
         self.extra
             .iter()
             .fold(builtin, |acc, (k, v)| acc.replace(k.as_str(), v))
@@ -134,6 +176,48 @@ impl MacroContext {
 }
 
 impl MacroContext {
+    /// Fills the per-sheet fields for `page` of `layout`: the sheet number
+    /// (its label), title, the page macros, and the REVISIONS table. A page
+    /// with revisions of its own lists those (the ones included in the
+    /// table); a page without any takes Project Information's rows plus the
+    /// revision clouds of the layout ([`add_cloud_revisions`](Self::add_cloud_revisions)).
+    pub fn apply_page(&mut self, layout: &crate::model::Layout, page: &crate::model::LayoutPage) {
+        let Some(index) = layout.pages.iter().position(|p| p.number == page.number) else {
+            self.sheet_number = page.sheet_number();
+            self.sheet_title = page.title.clone();
+            return;
+        };
+        let nums = layout.page_numbers(index).unwrap_or_default();
+        self.sheet_number = nums.label.clone();
+        self.sheet_title = page.title.clone();
+        self.page_count = layout.content_pages().len();
+        self.page_info = Some(PageMacros {
+            label: nums.label,
+            title: page.title.clone(),
+            description: page.description.clone(),
+            comments: page.comments.clone(),
+            page: nums.page,
+            print: nums.print,
+            num_pages: nums.num_pages,
+            last_page: nums.last_page,
+        });
+        if page.revisions.is_empty() {
+            self.add_cloud_revisions(layout);
+        } else {
+            self.revisions = page
+                .revisions
+                .iter()
+                .filter(|r| r.include)
+                .map(|r| (r.label.clone(), r.date.clone(), r.description.clone()))
+                .collect();
+            self.revision = self
+                .revisions
+                .last()
+                .map(|r| r.0.clone())
+                .unwrap_or_default();
+        }
+    }
+
     /// Feeds the REVISIONS table from the revision clouds of `layout`: every
     /// mark a cloud carries that Project Information has no row for gets one
     /// (mark, no date, "Revision cloud on A-2, A-5"), after the existing rows
@@ -147,7 +231,7 @@ impl MacroContext {
                 if mark.is_empty() || self.revisions.iter().any(|(n, _, _)| n.trim() == mark) {
                     continue;
                 }
-                let sheet = page.sheet_number();
+                let sheet = layout.sheet_number_of(page);
                 match found.iter_mut().find(|(m, _)| m == mark) {
                     Some((_, sheets)) => {
                         if !sheets.contains(&sheet) {

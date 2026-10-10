@@ -133,3 +133,33 @@ fn the_mapping_is_continuous_and_scales_with_the_repeat_size() {
         prev = uv;
     }
 }
+
+#[test]
+fn the_tangent_frame_glsl_mirrors_the_rust_frame() {
+    let glsl = glsl_tangent_frame();
+    // Same flat-face cut-off, same up-the-slope vector, right = up x normal.
+    assert!(glsl.contains(&format!("{:?}", plan_materials::textures::FLAT_EPSILON)));
+    assert!(glsl.contains("up = vec3(-n.x * n.y / hl, hl, -n.z * n.y / hl);"));
+    assert!(glsl.contains("right = cross(up, n);"));
+    // The ground frame: u along +x, the image rising toward -z.
+    assert!(glsl.contains("right = vec3(1.0, 0.0, 0.0);"));
+    assert!(glsl.contains("up = vec3(0.0, 0.0, -1.0);"));
+    let (right, up) = plan_materials::pbr::tangent_frame([0.0, 0.0, 1.0], Projection::Auto);
+    assert_eq!((right, up), ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0]));
+}
+
+#[test]
+fn a_surface_texture_may_carry_package_maps() {
+    use std::sync::Arc;
+    let t = SurfaceTexture {
+        object_id: 1,
+        material: None,
+        key: 7,
+        width: 1,
+        height: 1,
+        rgba: Arc::new(vec![255; 4]),
+        scale_in: [12.0, 12.0],
+        pbr: Some(Arc::new(plan_materials::pbr::PbrSet::default())),
+    };
+    assert!(t.is_valid() && t.pbr.is_some());
+}

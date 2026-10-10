@@ -9,5 +9,6 @@ license.workspace = true
 plan-core = { path = "../plan-core" }
 plan-3d = { path = "../plan-3d" }
 plan-library = { path = "../plan-library" }
+plan-calib = { path = "../plan-calib" }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -1,5 +1,6 @@
 //! Framing defaults, the equivalent of Chief's framing defaults dialogs.
 
+use crate::floor::JoistDirection;
 use crate::lumber::{Lumber, TWO_BY_EIGHT, TWO_BY_FOUR, TWO_BY_SIX, TWO_BY_TEN, TWO_BY_TWELVE};
 use plan_core::Wall;
 use serde::{Deserialize, Serialize};
@@ -35,6 +36,30 @@ pub fn default_header_table() -> Vec<HeaderRow> {
             lumber: TWO_BY_TWELVE,
         },
     ]
+}
+
+/// Which walls the joists of a floor or ceiling platform bear on (the Floor
+/// tab of Build Framing).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum BearingMode {
+    /// Every wall bears: each room is framed on its own.
+    #[default]
+    AllWalls,
+    /// Only exterior walls bear, plus the Bearing Lines drawn on the floor.
+    /// Interior partitions do not split the platform, so joists run across
+    /// them and end on the exterior walls or a Bearing Line.
+    ExteriorAndBearingLines,
+}
+
+impl BearingMode {
+    pub const ALL: [BearingMode; 2] = [BearingMode::AllWalls, BearingMode::ExteriorAndBearingLines];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            BearingMode::AllWalls => "Every wall bears",
+            BearingMode::ExteriorAndBearingLines => "Exterior walls and Bearing Lines",
+        }
+    }
 }
 
 /// Parameters for [`crate::frame_wall`] and [`crate::frame_floor`].
@@ -82,6 +107,16 @@ pub struct FramingDefaults {
     pub wall_blocking_spacing: f64,
     /// Plies of the header and trimmer joists around a floor hole.
     pub hole_plies: u32,
+    /// Which way the floor joists run (`Auto` spans the short side).
+    pub joist_direction: JoistDirection,
+    /// Plies of a rim joist: 1 is single, 2 is a doubled rim.
+    pub rim_plies: u32,
+    /// Which walls the floor and ceiling joists bear on.
+    pub bearing: BearingMode,
+    pub ceiling_joist_size: Lumber,
+    pub ceiling_joist_spacing: f64,
+    /// Which way the ceiling joists run (`Auto` spans the short side).
+    pub ceiling_direction: JoistDirection,
 }
 
 impl Default for FramingDefaults {
@@ -106,6 +141,12 @@ impl Default for FramingDefaults {
             wall_blocking: false,
             wall_blocking_spacing: 48.0,
             hole_plies: 2,
+            joist_direction: JoistDirection::Auto,
+            rim_plies: 1,
+            bearing: BearingMode::AllWalls,
+            ceiling_joist_size: TWO_BY_SIX,
+            ceiling_joist_spacing: 16.0,
+            ceiling_direction: JoistDirection::Auto,
         }
     }
 }
@@ -150,5 +191,41 @@ impl FramingDefaults {
             .find(|r| opening_width <= r.up_to + 1e-9)
             .or_else(|| self.header_table.last())
             .map_or(TWO_BY_SIX, |r| r.lumber)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn header_size_follows_the_opening_width_and_the_last_row_covers_wider_openings() {
+        let d = FramingDefaults::default();
+        assert_eq!(d.header_lumber_for(36.0), TWO_BY_SIX);
+        assert_eq!(
+            d.header_lumber_for(48.0),
+            TWO_BY_SIX,
+            "a row includes its own width"
+        );
+        assert_eq!(d.header_lumber_for(54.0), TWO_BY_EIGHT);
+        assert_eq!(d.header_lumber_for(72.0), TWO_BY_TEN);
+        assert_eq!(d.header_lumber_for(200.0), TWO_BY_TWELVE);
+        assert_eq!(d.header_depth_for(54.0), 7.25);
+    }
+
+    #[test]
+    fn a_fixed_header_depth_overrides_the_table_and_an_edited_table_is_used() {
+        let mut d = FramingDefaults::default();
+        d.header_table[0].lumber = TWO_BY_EIGHT;
+        assert_eq!(d.header_lumber_for(30.0), TWO_BY_EIGHT);
+        d.header_depth = 11.25;
+        assert_eq!(d.header_lumber_for(30.0), TWO_BY_TWELVE);
+        d.header_table.clear();
+        d.header_depth = 0.0;
+        assert_eq!(
+            d.header_lumber_for(30.0),
+            TWO_BY_SIX,
+            "an empty table falls back to 2x6"
+        );
     }
 }

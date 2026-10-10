@@ -6,6 +6,7 @@
 //! (the first stud, joist or truss sits on the marker); a bearing line splits
 //! joists where it crosses them and adds a beam.
 
+use crate::build::{Splice, LAP_LENGTH};
 use crate::defaults::FramingDefaults;
 use crate::manual::{FramingMember, LumberSize, MemberKind, SUBFLOOR};
 use crate::member::Member;
@@ -28,9 +29,9 @@ fn unit_deg(deg: f64) -> Point {
 }
 
 macro_rules! direction_marker {
-    ($(#[$doc:meta])* $name:ident) => {
+    ($(#[$doc:meta])* $name:ident { $( $(#[$fdoc:meta])* $field:ident : $fty:ty = $fdefault:expr ),* $(,)? }) => {
         $(#[$doc])*
-        #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+        #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
         pub struct $name {
             /// The line as drawn.
             pub line: (Point, Point),
@@ -40,6 +41,11 @@ macro_rules! direction_marker {
             /// Direction of the spacing axis in degrees (counter-clockwise
             /// from plan +X). Authoritative: rotating the marker edits this.
             pub angle: f64,
+            $(
+                $(#[$fdoc])*
+                #[serde(default)]
+                pub $field: $fty,
+            )*
         }
 
         impl $name {
@@ -49,6 +55,7 @@ macro_rules! direction_marker {
                     line,
                     spacing,
                     angle: line_angle_deg(line),
+                    $( $field: $fdefault, )*
                 }
             }
 
@@ -66,20 +73,85 @@ macro_rules! direction_marker {
 }
 
 direction_marker!(
-    /// Joist Direction: joists run perpendicular to the line.
-    JoistDirection
+    /// Joist Direction: joists run perpendicular to the line. Its
+    /// Specification (manual p. 921) overrides the platform's joists: the
+    /// framing member Construction, the Depth and Width, and the Spacing.
+    JoistDirection {
+        /// Joist Construction: a framing member default by name; empty uses
+        /// the platform's.
+        construction: String = String::new(),
+        /// Depth of the joists; `0.0` uses the platform's.
+        depth: f64 = 0.0,
+        /// Width (thickness) of the joists; `0.0` uses the platform's.
+        width: f64 = 0.0,
+    }
 );
 direction_marker!(
     /// Roof Truss Direction: trusses span perpendicular to the line and are
-    /// spaced along it.
-    RoofTrussDirection
+    /// spaced along it. Its Specification (manual p. 960) sizes the trusses of
+    /// the area it covers.
+    RoofTrussDirection {
+        /// Top chord depth; `0.0` uses the Trusses tab's.
+        top_chord_depth: f64 = 0.0,
+        /// Bottom chord depth; `0.0` follows the top chord.
+        bottom_chord_depth: f64 = 0.0,
+        /// Webbing depth; `0.0` follows the top chord.
+        web_depth: f64 = 0.0,
+        /// Maximum Horizontal Span of the chords; `0.0` leaves the webbing.
+        max_span: f64 = 0.0,
+        /// Require Kingpost in the trusses.
+        require_kingpost: bool = false,
+    }
 );
 
-/// A bearing line: joists bear on it, so it splits their spans and carries a
-/// beam.
+/// A support the joists break over: a Bearing Line (which carries a beam of
+/// its own), or the centre line of a Bearing Wall or Bearing Beam that stands
+/// there already.
+///
+/// Joists lap or butt over a support that exists (the Bear Joists choice of
+/// the floor), and hang on the sides of a beam that stands more than an inch
+/// above them (`hang`); a plain Bearing Line splits the joists with a gap and
+/// adds a 4x10 beam.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct BearingLine {
     pub line: (Point, Point),
+    /// A wall or beam is there already: no beam is added.
+    #[serde(default)]
+    pub existing: bool,
+    /// Width of a beam the joists hang from (they stop at its sides); `0.0`
+    /// for a support the joists lap or butt over.
+    #[serde(default)]
+    pub hang: f64,
+}
+
+impl BearingLine {
+    /// A Bearing Line as drawn with the tool.
+    pub fn new(line: (Point, Point)) -> Self {
+        Self {
+            line,
+            existing: false,
+            hang: 0.0,
+        }
+    }
+
+    /// The centre line of a Bearing Wall.
+    pub fn wall(line: (Point, Point)) -> Self {
+        Self {
+            line,
+            existing: true,
+            hang: 0.0,
+        }
+    }
+
+    /// A Bearing Beam of `width`: the joists lap or butt over it, or hang on
+    /// its sides when `hang`.
+    pub fn beam(line: (Point, Point), width: f64, hang: bool) -> Self {
+        Self {
+            line,
+            existing: true,
+            hang: if hang { width } else { 0.0 },
+        }
+    }
 }
 
 /// A Framing Reference Marker. Layout grids are measured from `point`;
@@ -113,6 +185,20 @@ impl TrussBase {
             / 2.0)
             .abs()
     }
+}
+
+/// Move to Framing Reference (manual p. 919): the offset that carries a
+/// member whose centre is `centre`, running along `dir`, onto the grid of
+/// parallel members `spacing` apart that starts at `marker` (the marker's
+/// position is the centre of a grid member). The move is perpendicular to the
+/// members, to the nearest grid line.
+pub fn reference_delta(marker: Point, dir: Point, centre: Point, spacing: f64) -> Point {
+    let dir = dir.normalized();
+    let across = dir.perp();
+    let offset = (centre - marker).dot(across);
+    let spacing = spacing.max(1.0);
+    let target = (offset / spacing).round() * spacing;
+    across * (target - offset)
 }
 
 /// Frame a wall with the stud grid anchored at a Framing Reference Marker.
@@ -265,7 +351,8 @@ fn bounds_wh(poly: &[Point]) -> (f64, f64) {
 /// * Each [`BearingLine`] crossing the joists splits them, leaving half the
 ///   beam width each side, and adds one 4x10 `FloorCeilingBeam` along the
 ///   line over the joists it crosses. A bearing line parallel to the joists
-///   does nothing.
+///   does nothing. (A wall or beam that stands there already adds no beam and
+///   the joists lap or butt over it: see [`frame_floor_supported`].)
 ///
 /// Joists are clipped to the room polygon with no rim joist. Their tops sit
 /// 3/4" below `floor_elevation`. Member ids count up from `first_id`.
@@ -276,6 +363,41 @@ pub fn frame_floor_directed(
     direction: Option<&JoistDirection>,
     bearing: &[BearingLine],
     marker: Option<&ReferenceMarker>,
+    first_id: Id,
+) -> Vec<FramingMember> {
+    frame_floor_supported(
+        room,
+        floor_elevation,
+        d,
+        direction,
+        bearing,
+        marker,
+        Splice::Lap,
+        first_id,
+    )
+}
+
+/// [`frame_floor_directed`] with the way joists meet over a support that
+/// stands there already (a Bearing Wall, or a Bearing Beam: see
+/// [`BearingLine::wall`] and [`BearingLine::beam`]).
+///
+/// * [`Splice::Butt`]: the two joists meet end to end on the support's
+///   centre line.
+/// * [`Splice::Lap`]: they overlap by [`LAP_LENGTH`], centred on the
+///   support, side by side (the second joist stands one joist thickness over,
+///   toward the middle of the platform).
+/// * A beam with `hang` set stops the joists at its sides.
+///
+/// A [`JoistDirection`]'s Depth and Width override the platform's joists.
+#[allow(clippy::too_many_arguments)]
+pub fn frame_floor_supported(
+    room: &Room,
+    floor_elevation: f64,
+    d: &FramingDefaults,
+    direction: Option<&JoistDirection>,
+    bearing: &[BearingLine],
+    marker: Option<&ReferenceMarker>,
+    splice: Splice,
     first_id: Id,
 ) -> Vec<FramingMember> {
     let poly = &room.polygon;
@@ -301,7 +423,21 @@ pub fn frame_floor_directed(
             (Point::new(run.y, -run.x), d.joist_spacing)
         }
     };
-    let joist_size = dim_size(d.joist_size);
+    let mut joist_size = dim_size(d.joist_size);
+    if let Some(dir) = direction {
+        // The Specification's Depth and Width replace the platform's.
+        let nominal = |v: f64, fallback: u32| {
+            if v > 0.0 {
+                (v + 0.5).round() as u32
+            } else {
+                fallback
+            }
+        };
+        joist_size = LumberSize::dim(
+            nominal(dir.width, joist_size.nominal_thickness()),
+            nominal(dir.depth, joist_size.nominal_depth()),
+        );
+    }
     let t = joist_size.width();
     let origin = marker.map(|m| m.point.dot(axis));
     let (lines, run) = runs(poly, axis, spacing, t, origin);
@@ -322,12 +458,17 @@ pub fn frame_floor_directed(
         .collect();
     // Across range of joists each bearing line splits.
     let mut crossed: Vec<Option<(f64, f64)>> = vec![None; bearing.len()];
+    let (across_lo, across_hi) = lines
+        .iter()
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), l| {
+            (lo.min(l.across), hi.max(l.across))
+        });
 
     let mut out = Vec::new();
     let mut next = first_id;
     for line in &lines {
         for &(a, b) in &line.spans {
-            let mut cuts: Vec<f64> = Vec::new();
+            let mut cuts: Vec<(f64, usize)> = Vec::new();
             for (i, &((u0, v0), (u1, v1))) in local_bearing.iter().enumerate() {
                 if (v1 - v0).abs() < EPS
                     || (line.across < v0.min(v1) - EPS)
@@ -337,27 +478,50 @@ pub fn frame_floor_directed(
                 }
                 let s = u0 + (line.across - v0) / (v1 - v0) * (u1 - u0);
                 if s > a + MIN_LEN && s < b - MIN_LEN {
-                    cuts.push(s);
+                    cuts.push((s, i));
                     crossed[i] = Some(match crossed[i] {
                         Some((lo, hi)) => (lo.min(line.across), hi.max(line.across)),
                         None => (line.across, line.across),
                     });
                 }
             }
-            cuts.sort_by(f64::total_cmp);
+            cuts.sort_by(|x, y| x.0.total_cmp(&y.0));
+            // Pieces of the joist line as (from, to, offset across).
             let mut from = a;
-            let mut pieces = Vec::new();
-            for &s in &cuts {
-                pieces.push((from, s - half_gap));
-                from = s + half_gap;
+            let mut side = 0.0;
+            // Lapped joists stand over toward the middle of the platform.
+            let lap_dir = if line.across <= (across_lo + across_hi) / 2.0 {
+                1.0
+            } else {
+                -1.0
+            };
+            let mut pieces: Vec<(f64, f64, f64)> = Vec::new();
+            for &(s, i) in &cuts {
+                let sup = bearing[i];
+                let (end, begin, next_side) = if !sup.existing {
+                    (s - half_gap, s + half_gap, side)
+                } else if sup.hang > 0.0 {
+                    (s - sup.hang / 2.0, s + sup.hang / 2.0, side)
+                } else if splice == Splice::Butt {
+                    (s, s, side)
+                } else {
+                    (
+                        s + LAP_LENGTH / 2.0,
+                        s - LAP_LENGTH / 2.0,
+                        if side == 0.0 { lap_dir * t } else { 0.0 },
+                    )
+                };
+                pieces.push((from, end, side));
+                from = begin;
+                side = next_side;
             }
-            pieces.push((from, b));
-            for (p, q) in pieces.into_iter().filter(|&(p, q)| q - p > MIN_LEN) {
+            pieces.push((from, b, side));
+            for (p, q, off) in pieces.into_iter().filter(|&(p, q, _)| q - p > MIN_LEN) {
                 let mut m = FramingMember::new(
                     next,
                     MemberKind::Joist,
-                    to_plan(p, line.across),
-                    to_plan(q, line.across),
+                    to_plan(p, line.across + off),
+                    to_plan(q, line.across + off),
                 )
                 .with_lumber(joist_size)
                 .at_elevation(joist_z);
@@ -370,6 +534,9 @@ pub fn frame_floor_directed(
 
     for (i, range) in crossed.iter().enumerate() {
         let Some((lo, hi)) = *range else { continue };
+        if bearing[i].existing {
+            continue;
+        }
         let ((u0, v0), (u1, v1)) = local_bearing[i];
         let at = |c: f64| {
             let tau = ((c - v0) / (v1 - v0)).clamp(0.0, 1.0);
@@ -517,9 +684,7 @@ mod tests {
         let d = FramingDefaults::default();
         let dir = JoistDirection::new((Point::new(0.0, 0.0), Point::new(0.0, 50.0)), 0.0);
         let plain = frame_floor_directed(&rect(), 0.0, &d, Some(&dir), &[], None, 1);
-        let bl = BearingLine {
-            line: (Point::new(120.0, -10.0), Point::new(120.0, 160.0)),
-        };
+        let bl = BearingLine::new((Point::new(120.0, -10.0), Point::new(120.0, 160.0)));
         let split = frame_floor_directed(&rect(), 0.0, &d, Some(&dir), &[bl], None, 1);
         let (p, s) = (joists(&plain), joists(&split));
         assert_eq!(s.len(), 2 * p.len());
@@ -546,9 +711,7 @@ mod tests {
         );
         assert_eq!(b.lumber.name(), "4x10");
         // A bearing line parallel to the joists changes nothing.
-        let par = BearingLine {
-            line: (Point::new(-10.0, 60.0), Point::new(250.0, 60.0)),
-        };
+        let par = BearingLine::new((Point::new(-10.0, 60.0), Point::new(250.0, 60.0)));
         let same = frame_floor_directed(&rect(), 0.0, &d, Some(&dir), &[par], None, 1);
         assert_eq!(same.len(), plain.len());
     }
@@ -664,5 +827,161 @@ mod tests {
         let a = layout_trusses(&base, &dir, &spec, Some(&marker), 1);
         assert!(a.iter().any(|m| (m.start.y - 100.0).abs() < 1e-9));
         assert!(layout_trusses(&TrussBase::new(vec![], 0.0), &dir, &spec, None, 1).is_empty());
+    }
+
+    // ----- Round 16: supports, lap and butt, specification, reference -----
+
+    fn along_x() -> JoistDirection {
+        JoistDirection::new((Point::new(0.0, 0.0), Point::new(0.0, 50.0)), 0.0)
+    }
+
+    fn total(m: &[&FramingMember]) -> f64 {
+        m.iter().map(|j| j.plan_length()).sum()
+    }
+
+    fn wall_line() -> BearingLine {
+        BearingLine::wall((Point::new(120.0, -10.0), Point::new(120.0, 160.0)))
+    }
+
+    #[test]
+    fn joists_butt_or_lap_over_a_bearing_wall_and_a_wall_adds_no_beam() {
+        let d = FramingDefaults::default();
+        let dir = along_x();
+        let run = |splice| {
+            frame_floor_supported(
+                &rect(),
+                0.0,
+                &d,
+                Some(&dir),
+                &[wall_line()],
+                None,
+                splice,
+                1,
+            )
+        };
+        let plain = frame_floor_directed(&rect(), 0.0, &d, Some(&dir), &[], None, 1);
+        let lines = joists(&plain).len();
+        let butt = run(Splice::Butt);
+        let lap = run(Splice::Lap);
+        // Two joists per line either way, and no beam: the wall is there already.
+        assert_eq!(joists(&butt).len(), 2 * lines);
+        assert_eq!(joists(&lap).len(), 2 * lines);
+        assert!(!butt.iter().any(|m| m.kind == K::FloorCeilingBeam));
+        assert!(!lap.iter().any(|m| m.kind == K::FloorCeilingBeam));
+        // Butted joists meet on the wall's centre line and add up to the span.
+        assert!((total(&joists(&butt)) - 240.0 * lines as f64).abs() < 1e-6);
+        let on_line = joists(&butt)
+            .iter()
+            .filter(|j| (j.end.x - 120.0).abs() < 1e-9 || (j.start.x - 120.0).abs() < 1e-9)
+            .count();
+        assert_eq!(on_line, 2 * lines);
+        // Lapped joists overlap by 8" each, centred on the wall.
+        assert!((total(&joists(&lap)) - (240.0 + LAP_LENGTH) * lines as f64).abs() < 1e-6);
+        let lapped = joists(&lap);
+        let hi = |j: &FramingMember| j.start.x.max(j.end.x);
+        let lo = |j: &FramingMember| j.start.x.min(j.end.x);
+        assert!(lapped.iter().any(|j| (hi(j) - 124.0).abs() < 1e-9));
+        assert!(lapped.iter().any(|j| (lo(j) - 116.0).abs() < 1e-9));
+        // Side by side: the second joist of a line stands one thickness over.
+        for a in lapped.iter().filter(|j| (hi(j) - 124.0).abs() < 1e-9) {
+            assert!(
+                lapped.iter().any(|b| (lo(b) - 116.0).abs() < 1e-9
+                    && ((b.start.y - a.start.y).abs() - 1.5).abs() < 1e-9),
+                "{a:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_beam_that_stands_above_the_joists_holds_them_by_its_sides() {
+        let d = FramingDefaults::default();
+        let dir = along_x();
+        let hung = BearingLine::beam(
+            (Point::new(120.0, -10.0), Point::new(120.0, 160.0)),
+            3.5,
+            true,
+        );
+        let m = frame_floor_supported(&rect(), 0.0, &d, Some(&dir), &[hung], None, Splice::Lap, 1);
+        let lines = joists(&frame_floor_directed(
+            &rect(),
+            0.0,
+            &d,
+            Some(&dir),
+            &[],
+            None,
+            1,
+        ))
+        .len();
+        // The joists stop 1 3/4" short of the beam's centre line, no lap, no new beam.
+        assert!((total(&joists(&m)) - (240.0 - 3.5) * lines as f64).abs() < 1e-6);
+        assert!(!m.iter().any(|x| x.kind == K::FloorCeilingBeam));
+        // A bearing beam that does not hang takes the lap like a wall.
+        let bears = BearingLine::beam(
+            (Point::new(120.0, -10.0), Point::new(120.0, 160.0)),
+            3.5,
+            false,
+        );
+        let m = frame_floor_supported(
+            &rect(),
+            0.0,
+            &d,
+            Some(&dir),
+            &[bears],
+            None,
+            Splice::Butt,
+            1,
+        );
+        assert!((total(&joists(&m)) - 240.0 * lines as f64).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_joist_direction_specification_overrides_the_platforms_joists() {
+        let d = FramingDefaults::default();
+        let mut dir = along_x();
+        dir.depth = 11.25;
+        dir.width = 3.5;
+        dir.spacing = 24.0;
+        let m = frame_floor_directed(&rect(), 0.0, &d, Some(&dir), &[], None, 1);
+        let j = joists(&m);
+        assert!(j.iter().all(|x| x.lumber.name() == "4x12"));
+        assert!(
+            j.len()
+                < joists(&frame_floor_directed(
+                    &rect(),
+                    0.0,
+                    &d,
+                    Some(&along_x()),
+                    &[],
+                    None,
+                    1
+                ))
+                .len()
+        );
+        // Old plans have none of the new fields.
+        let old = r#"{"line":[{"x":0.0,"y":0.0},{"x":0.0,"y":50.0}],"spacing":16.0,"angle":90.0}"#;
+        let back: JoistDirection = serde_json::from_str(old).unwrap();
+        assert_eq!(
+            (back.depth, back.width, back.construction.as_str()),
+            (0.0, 0.0, "")
+        );
+        let bl: BearingLine =
+            serde_json::from_str(r#"{"line":[{"x":0.0,"y":0.0},{"x":1.0,"y":0.0}]}"#).unwrap();
+        assert!(!bl.existing && bl.hang == 0.0);
+    }
+
+    #[test]
+    fn move_to_framing_reference_snaps_to_the_nearest_grid_line() {
+        let marker = Point::new(100.0, 0.0);
+        // Members run along Y; the grid is 16" apart along X from x = 100.
+        let dir = Point::new(0.0, 1.0);
+        let d = reference_delta(marker, dir, Point::new(110.0, 40.0), 16.0);
+        assert!((d.x - 6.0).abs() < 1e-9 && d.y.abs() < 1e-9, "{d:?}");
+        let d = reference_delta(marker, dir, Point::new(87.0, 40.0), 16.0);
+        assert!((d.x - (-3.0)).abs() < 1e-9, "{d:?}");
+        let d = reference_delta(marker, dir, Point::new(116.0, 0.0), 16.0);
+        assert!(d.length() < 1e-9);
+        // A truss direction line's specification inherits nothing by default.
+        let t = RoofTrussDirection::new((Point::ZERO, Point::new(0.0, 10.0)), 24.0);
+        assert!(t.max_span == 0.0 && !t.require_kingpost);
     }
 }

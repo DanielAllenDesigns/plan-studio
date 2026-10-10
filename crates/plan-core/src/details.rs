@@ -21,11 +21,18 @@
 
 use crate::geometry::{dist_to_segment, point_in_polygon, polygon_area, polygon_centroid, Point};
 use crate::model::{Floor, Id, Project, Wall, WallKind};
+use crate::moldings::{
+    MoldingEntry, MoldingTable, MoldingType, ProfileDef, ResolvedEntry, RoomMoldings,
+    EXTERIOR_TRIM, INTERIOR_TRIM,
+};
 use crate::rooms::Room;
 use crate::walls::{Side, WallClass};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::f64::consts::PI;
+
+mod cad_detail;
+pub use cad_detail::*;
 
 /// Layer corner boards and quoins are drawn on.
 pub const CORNER_TRIM_LAYER: &str = "Corner Trim";
@@ -286,8 +293,21 @@ pub struct CornerBoard {
     pub base: f64,
     /// Height of the board, floor to top plate by default, inches.
     pub height: f64,
+    /// Set Top: the top of the board is `base + height` as set, not the top
+    /// plate of the walls it stands on.
+    pub set_top: bool,
+    /// Set Bottom: the bottom of the board is `base` as set, not the bottom
+    /// of the floor platform.
+    pub set_bottom: bool,
+    /// Recessed To Sheathing Layer: the board stands on the sheathing, not on
+    /// the siding, so it sits `siding` inches closer to the wall.
+    pub recessed: bool,
+    /// The board is at an inside corner (it goes in the notch of the plan).
+    pub inside: bool,
     pub material: String,
     pub layer: String,
+    /// Names of the components (the Components panel), one per board.
+    pub components: Vec<String>,
     /// Own line look (color, weight, dash) when it differs from the layer's.
     pub style: DetailStyle,
 }
@@ -302,12 +322,20 @@ impl Default for CornerBoard {
             thickness: DEFAULT_CORNER_BOARD_THICKNESS,
             base: 0.0,
             height: 96.0,
+            set_top: false,
+            set_bottom: false,
+            recessed: false,
+            inside: false,
             material: default_trim_material(),
             layer: default_corner_layer(),
+            components: Vec::new(),
             style: DetailStyle::default(),
         }
     }
 }
+
+/// How far a recessed trim sits back from the siding, inches.
+pub const SIDING_RECESS: f64 = 0.75;
 
 impl CornerBoard {
     pub fn at(id: Id, c: &ExteriorCorner) -> Self {
@@ -316,20 +344,47 @@ impl CornerBoard {
             wall_corner: c.apex,
             axes: c.axes,
             height: c.height,
+            inside: !c.convex,
             ..Self::default()
+        }
+    }
+
+    /// Top of the board above the floor, inches.
+    pub fn top(&self) -> f64 {
+        self.base + self.height
+    }
+
+    /// Follows the walls it stands on: unless Set Top / Set Bottom hold it,
+    /// the top is the corner's top plate and the bottom is the floor.
+    pub fn follow_corner(&mut self, c: &ExteriorCorner) {
+        if !self.set_bottom {
+            self.base = 0.0;
+        }
+        if !self.set_top {
+            self.height = (c.height - self.base).max(1.0);
+        }
+    }
+
+    /// The apex of the board as built: moved toward the wall by
+    /// [`SIDING_RECESS`] along both faces when recessed.
+    pub fn built_corner(&self) -> Point {
+        if self.recessed {
+            self.wall_corner - self.axes.out_a * SIDING_RECESS - self.axes.out_b * SIDING_RECESS
+        } else {
+            self.wall_corner
         }
     }
 
     /// The plan outline: the "L" of the two boards.
     pub fn outline(&self) -> Vec<Point> {
         self.axes
-            .l_polygon(self.wall_corner, self.width, self.width, self.thickness)
+            .l_polygon(self.built_corner(), self.width, self.width, self.thickness)
     }
 
     /// The three convex pieces for 3D.
     pub fn parts(&self) -> [[Point; 4]; 3] {
         self.axes
-            .l_parts(self.wall_corner, self.width, self.width, self.thickness)
+            .l_parts(self.built_corner(), self.width, self.width, self.thickness)
     }
 
     /// Wood in the two boards, cubic inches.
@@ -351,16 +406,64 @@ pub struct Quoin {
     pub height: f64,
     /// How far the blocks stand off the wall, inches.
     pub depth: f64,
-    /// Long and short blocks swap faces on every course.
+    /// Long and short blocks swap faces on every course (the Staggered
+    /// style; `style` says it when it is set).
     pub alternating: bool,
+    /// Quoin Style; `None` is Staggered when `alternating` and Uniform when
+    /// not (plans from before the style was a choice).
+    pub style_kind: Option<QuoinStyle>,
+    /// Swap Start Block: the first course starts with the short block on
+    /// face A.
+    pub swap_start: bool,
+    /// Quoin Gap between courses, inches.
+    pub gap: f64,
     /// Bottom of the stack above the floor, inches.
     pub base: f64,
     /// Height of the whole stack, inches.
     pub total_height: f64,
+    /// Set Top / Set Bottom: the stack's top and bottom are as set, not the
+    /// top plate and the floor.
+    pub set_top: bool,
+    pub set_bottom: bool,
+    /// Recessed To Sheathing Layer.
+    pub recessed: bool,
+    /// The stack is at an inside corner.
+    pub inside: bool,
     pub material: String,
     pub layer: String,
+    /// Names of the components (the Components panel).
+    pub components: Vec<String>,
     /// Own line look (color, weight, dash) when it differs from the layer's.
     pub style: DetailStyle,
+}
+
+/// The Style of a quoin stack.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum QuoinStyle {
+    /// Every course has the long block on face A.
+    Uniform,
+    /// Long and short blocks swap faces on every course.
+    #[default]
+    Staggered,
+    /// The pattern is symmetrical about the middle of the stack: the top
+    /// course matches the bottom one.
+    Mirrored,
+}
+
+impl QuoinStyle {
+    pub const ALL: [QuoinStyle; 3] = [
+        QuoinStyle::Uniform,
+        QuoinStyle::Staggered,
+        QuoinStyle::Mirrored,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            QuoinStyle::Uniform => "Uniform",
+            QuoinStyle::Staggered => "Staggered",
+            QuoinStyle::Mirrored => "Mirrored",
+        }
+    }
 }
 
 impl Default for Quoin {
@@ -373,10 +476,18 @@ impl Default for Quoin {
             height: DEFAULT_QUOIN_HEIGHT,
             depth: DEFAULT_QUOIN_DEPTH,
             alternating: true,
+            style_kind: None,
+            swap_start: false,
+            gap: 0.0,
             base: 0.0,
             total_height: 96.0,
+            set_top: false,
+            set_bottom: false,
+            recessed: false,
+            inside: false,
             material: DEFAULT_QUOIN_MATERIAL.to_string(),
             layer: default_corner_layer(),
+            components: Vec::new(),
             style: DetailStyle::default(),
         }
     }
@@ -389,37 +500,91 @@ impl Quoin {
             corner: c.apex,
             axes: c.axes,
             total_height: c.height,
+            inside: !c.convex,
             ..Self::default()
         }
     }
 
-    /// Number of courses in the stack (at least one).
+    /// The Quoin Style in force.
+    pub fn quoin_style(&self) -> QuoinStyle {
+        self.style_kind.unwrap_or(if self.alternating {
+            QuoinStyle::Staggered
+        } else {
+            QuoinStyle::Uniform
+        })
+    }
+
+    /// Chooses the Quoin Style (keeps `alternating` in step for readers of
+    /// the older field).
+    pub fn set_quoin_style(&mut self, s: QuoinStyle) {
+        self.style_kind = Some(s);
+        self.alternating = s == QuoinStyle::Staggered;
+    }
+
+    /// Number of courses in the stack (at least one): blocks `height` high
+    /// with `gap` between them.
     pub fn courses(&self) -> usize {
         if self.height <= 1e-6 {
             return 1;
         }
-        ((self.total_height / self.height + 1e-9).floor() as usize).max(1)
+        let gap = self.gap.max(0.0);
+        (((self.total_height + gap) / (self.height + gap) + 1e-9).floor() as usize).max(1)
+    }
+
+    /// Blocks in the stack (two per course).
+    pub fn block_count(&self) -> usize {
+        self.courses() * 2
     }
 
     /// Lengths `(face A, face B)` of the blocks of course `i`.
     pub fn course_lengths(&self, i: usize) -> (f64, f64) {
         let (long, short) = (self.width, self.width * QUOIN_SHORT_RATIO);
-        if self.alternating && i % 2 == 1 {
-            (short, long)
-        } else {
+        let n = self.courses();
+        let long_on_a = match self.quoin_style() {
+            QuoinStyle::Uniform => true,
+            QuoinStyle::Staggered => i.is_multiple_of(2),
+            QuoinStyle::Mirrored => i.min(n.saturating_sub(1 + i)).is_multiple_of(2),
+        } != self.swap_start;
+        if long_on_a {
             (long, short)
+        } else {
+            (short, long)
         }
     }
 
     /// The plan outline of the top course: the "L" of the blocks.
     pub fn outline(&self) -> Vec<Point> {
         let (la, lb) = self.course_lengths(0);
-        self.axes.l_polygon(self.corner, la, lb, self.depth)
+        self.axes.l_polygon(self.built_corner(), la, lb, self.depth)
     }
 
     /// Elevation of the bottom of course `i`.
     pub fn course_base(&self, i: usize) -> f64 {
-        self.base + self.height * i as f64
+        self.base + (self.height + self.gap.max(0.0)) * i as f64
+    }
+
+    /// Top of the stack above the floor, inches.
+    pub fn top(&self) -> f64 {
+        self.base + self.total_height
+    }
+
+    /// Follows the walls it stands on (see [`CornerBoard::follow_corner`]).
+    pub fn follow_corner(&mut self, c: &ExteriorCorner) {
+        if !self.set_bottom {
+            self.base = 0.0;
+        }
+        if !self.set_top {
+            self.total_height = (c.height - self.base).max(1.0);
+        }
+    }
+
+    /// The corner as built: moved toward the wall when recessed.
+    pub fn built_corner(&self) -> Point {
+        if self.recessed {
+            self.corner - self.axes.out_a * SIDING_RECESS - self.axes.out_b * SIDING_RECESS
+        } else {
+            self.corner
+        }
     }
 }
 
@@ -476,9 +641,64 @@ impl MoldingProfile {
     }
 }
 
+/// Which side of the drawing direction a molding projects to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum MoldingSide {
+    /// To the left (rooms are drawn counter-clockwise, so into the room).
+    #[default]
+    Left,
+    /// To the right: a clockwise polyline has its profile inside (the
+    /// Molding Polyline tool).
+    Right,
+}
+
+/// Where a molding line came from.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub enum MoldingSource {
+    /// Drawn with the Molding Line or Molding Polyline tool.
+    #[default]
+    Manual,
+    /// A room's molding turned into a polyline (Make Room Molding Polyline),
+    /// or generated for it.
+    Room { anchor: Point, kind: MoldingType },
+    /// A cabinet's molding turned into a polyline (Make Cabinet Molding
+    /// Polyline).
+    Cabinet(Id),
+}
+
+/// A profile part of a molding line placed in space.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlacedPart {
+    pub name: String,
+    pub kind: MoldingType,
+    /// Section, `(projection, height)` from the molding's bottom edge at the
+    /// wall.
+    pub section: Vec<Point>,
+    pub material: String,
+    /// Height of the part's bottom above the molding's own bottom, inches.
+    pub dz: f64,
+    /// Repeat Distance of a 3D molding (0 is a continuous molding).
+    pub repeat: f64,
+    /// Length of one repeated element, inches.
+    pub element: f64,
+}
+
+/// The path a molding is swept along, in sweeping order: the profile always
+/// projects to the left of it.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct SweepPath {
+    pub points: Vec<Point>,
+    /// Elevation of the molding's bottom at each point, inches.
+    pub bottoms: Vec<f64>,
+    /// One flag per edge: the molding is on.
+    pub on: Vec<bool>,
+    pub closed: bool,
+}
+
 /// A molding along a line or polyline (Molding Line, Molding Polyline). The
-/// molding projects to the left of the drawing direction, from the bottom
-/// edge at `elevation` up by `height`.
+/// molding projects to the left of the drawing direction (to the right for
+/// `side` [`MoldingSide::Right`]), from the bottom edge at `elevation` up by
+/// `height`. With `heights` every point has its own height: a 3D line.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MoldingLine {
@@ -495,6 +715,32 @@ pub struct MoldingLine {
     pub layer: String,
     /// Own line look (color, weight, dash) when it differs from the layer's.
     pub style: DetailStyle,
+    /// Elevation of the bottom edge at each point; used only when there is
+    /// one per point.
+    pub heights: Vec<f64>,
+    pub side: MoldingSide,
+    /// Extrude Inside Polyline: a closed polyline puts the profile inside
+    /// whichever way it was drawn.
+    pub extrude_inside: bool,
+    /// One flag per edge; true takes the molding off that edge.
+    pub edges_off: Vec<bool>,
+    /// Auto Calc Orientation at Twisted Joints.
+    pub auto_orient: bool,
+    /// Mitre Molding at Twisted Joints.
+    pub mitre_twisted: bool,
+    /// Mitre Molding If Next Edge Turned Off.
+    pub mitre_if_next_off: bool,
+    /// Automatically Generated (cleared when the polyline is edited).
+    pub automatic: bool,
+    pub source: MoldingSource,
+    /// The Moldings panel: stacked and recessed profiles. Empty uses
+    /// `profile`, `width`, `height` and `material` as one profile.
+    pub table: MoldingTable,
+    /// Custom label text; empty is the profile name.
+    pub label: String,
+    pub show_label: bool,
+    /// Names of the components (the Components panel).
+    pub components: Vec<String>,
 }
 
 impl Default for MoldingLine {
@@ -511,6 +757,19 @@ impl Default for MoldingLine {
             material: default_trim_material(),
             layer: MOLDING_LAYER.to_string(),
             style: DetailStyle::default(),
+            heights: Vec::new(),
+            side: MoldingSide::Left,
+            extrude_inside: false,
+            edges_off: Vec::new(),
+            auto_orient: true,
+            mitre_twisted: true,
+            mitre_if_next_off: false,
+            automatic: false,
+            source: MoldingSource::Manual,
+            table: MoldingTable::default(),
+            label: String::new(),
+            show_label: false,
+            components: Vec::new(),
         }
     }
 }
@@ -529,9 +788,352 @@ impl MoldingLine {
         }
     }
 
-    /// Length of the line, inches.
+    /// A molding polyline with a library profile (the Molding Polyline tool):
+    /// the profile is the table's only row, the polyline is drawn at
+    /// `elevation` and a clockwise path puts the profile inside.
+    pub fn with_profile(id: Id, polyline: Vec<Point>, profile: ProfileDef, elevation: f64) -> Self {
+        let row = MoldingEntry::new(profile);
+        Self {
+            id,
+            polyline,
+            profile: MoldingProfile::Custom(row.profile.section().to_vec()),
+            height: row.height,
+            width: row.width,
+            elevation,
+            side: MoldingSide::Right,
+            table: MoldingTable {
+                rows: vec![row],
+                ..MoldingTable::default()
+            },
+            ..Self::default()
+        }
+    }
+
+    /// Gives a line that still uses the single `profile` a Moldings table of
+    /// one row with that profile (the Moldings panel edits the table).
+    pub fn ensure_table(&mut self) {
+        if !self.table.is_empty() {
+            return;
+        }
+        let section = self.section();
+        let name = match &self.profile {
+            MoldingProfile::Custom(_) => "Custom Molding".to_string(),
+            p => p.name().to_string(),
+        };
+        let kind = match &self.profile {
+            MoldingProfile::Crown => MoldingType::Crown,
+            MoldingProfile::Base => MoldingType::Base,
+            MoldingProfile::Chair => MoldingType::ChairRail,
+            MoldingProfile::Casing => MoldingType::Casing,
+            MoldingProfile::Custom(_) => MoldingType::Other,
+        };
+        if let Ok(mut def) = ProfileDef::from_polyline(name, kind, &section) {
+            for part in &mut def.parts {
+                part.material = String::new();
+            }
+            self.table = MoldingTable::single(def);
+            self.table.rows[0].kind = kind;
+        }
+    }
+
+    /// Length of the line in plan, inches.
     pub fn length(&self) -> f64 {
         self.polyline.windows(2).map(|s| s[0].dist(s[1])).sum()
+    }
+
+    /// Does the line end where it starts?
+    pub fn is_closed(&self) -> bool {
+        self.polyline.len() > 2
+            && self.polyline[0].dist(self.polyline[self.polyline.len() - 1]) < 1e-6
+    }
+
+    /// Number of edges.
+    pub fn edge_count(&self) -> usize {
+        self.polyline.len().saturating_sub(1)
+    }
+
+    /// Does the molding run on edge `i`?
+    pub fn edge_on(&self, i: usize) -> bool {
+        i < self.edge_count() && !self.edges_off.get(i).copied().unwrap_or(false)
+    }
+
+    /// Remove Molding from Selected Edge / Add Molding to Selected Edge.
+    /// Returns whether anything changed.
+    pub fn set_edge_on(&mut self, i: usize, on: bool) -> bool {
+        if i >= self.edge_count() || self.edge_on(i) == on {
+            return false;
+        }
+        self.edges_off.resize(self.edge_count(), false);
+        self.edges_off[i] = !on;
+        if self.edges_off.iter().all(|o| !*o) {
+            self.edges_off.clear();
+        }
+        self.automatic = false;
+        true
+    }
+
+    /// Does every point have a height of its own?
+    pub fn has_heights(&self) -> bool {
+        !self.heights.is_empty() && self.heights.len() == self.polyline.len()
+    }
+
+    /// Elevation of the bottom edge at point `i`, inches.
+    pub fn vertex_bottom(&self, i: usize) -> f64 {
+        if self.has_heights() {
+            self.heights.get(i).copied().unwrap_or(self.elevation)
+        } else {
+            self.elevation
+        }
+    }
+
+    /// Gives point `i` its own height (a 3D line); the other points keep the
+    /// heights they have.
+    pub fn set_vertex_bottom(&mut self, i: usize, h: f64) -> bool {
+        if i >= self.polyline.len() {
+            return false;
+        }
+        if !self.has_heights() {
+            self.heights = vec![self.elevation; self.polyline.len()];
+        }
+        self.heights[i] = h;
+        self.collapse_heights();
+        self.automatic = false;
+        true
+    }
+
+    /// Points that all have the same height are a flat line again.
+    fn collapse_heights(&mut self) {
+        if !self.heights.is_empty()
+            && self
+                .heights
+                .iter()
+                .all(|v| (*v - self.heights[0]).abs() < 1e-9)
+        {
+            self.elevation = self.heights[0];
+            self.heights.clear();
+        }
+    }
+
+    /// Does any edge rise or fall?
+    pub fn is_sloped(&self) -> bool {
+        self.has_heights()
+            && self
+                .heights
+                .iter()
+                .any(|h| (*h - self.heights[0]).abs() > 1e-9)
+    }
+
+    /// The path in 3D: plan x, plan y, bottom elevation.
+    pub fn path3(&self) -> Vec<[f64; 3]> {
+        self.polyline
+            .iter()
+            .enumerate()
+            .map(|(i, p)| [p.x, p.y, self.vertex_bottom(i)])
+            .collect()
+    }
+
+    /// 3D length of edge `i`, inches.
+    pub fn edge_length_3d(&self, i: usize) -> f64 {
+        if i >= self.edge_count() {
+            return 0.0;
+        }
+        let (a, b) = (self.path3()[i], self.path3()[i + 1]);
+        ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2) + (b[2] - a[2]).powi(2)).sqrt()
+    }
+
+    /// `(angle in the XY plane, angle from the XY plane)` of edge `i`,
+    /// degrees (the Selected Line panel).
+    pub fn edge_angles(&self, i: usize) -> (f64, f64) {
+        if i >= self.edge_count() {
+            return (0.0, 0.0);
+        }
+        let (a, b) = (self.polyline[i], self.polyline[i + 1]);
+        let dz = self.vertex_bottom(i + 1) - self.vertex_bottom(i);
+        let flat = a.dist(b);
+        ((b - a).angle().to_degrees(), dz.atan2(flat).to_degrees())
+    }
+
+    /// Sets the end of edge `i` from a 3D length and the two angles (the
+    /// Selected Line panel); the start stays. A closed polyline's last edge
+    /// moves the closing point and the first point together.
+    pub fn set_edge_3d(&mut self, i: usize, length: f64, in_xy: f64, from_xy: f64) -> bool {
+        if i >= self.edge_count() || length <= 1e-9 {
+            return false;
+        }
+        let (xy, el) = (in_xy.to_radians(), from_xy.to_radians());
+        let flat = length * el.cos();
+        let start = self.polyline[i];
+        let z0 = self.vertex_bottom(i);
+        let end = start + Point::new(xy.cos(), xy.sin()) * flat;
+        let z1 = z0 + length * el.sin();
+        let last = i + 1 == self.polyline.len() - 1;
+        let closing = self.is_closed() && last;
+        self.polyline[i + 1] = end;
+        if closing {
+            self.polyline[0] = end;
+        }
+        self.set_vertex_bottom(i + 1, z1);
+        if closing {
+            self.set_vertex_bottom(0, z1);
+        }
+        self.automatic = false;
+        true
+    }
+
+    /// Select Edit Plane: moves edge `i` (both of its points) by `d` plan
+    /// inches and `dz` inches up. In the plane of the edge a move runs along
+    /// the edge or up and down; perpendicular to it the move is across the
+    /// edge, toward the side the profile projects to for a positive `across`.
+    pub fn move_edge(&mut self, i: usize, along: f64, across: f64, dz: f64) -> bool {
+        if i >= self.edge_count() {
+            return false;
+        }
+        let dir = (self.polyline[i + 1] - self.polyline[i]).normalized();
+        let side = match self.side {
+            MoldingSide::Left => dir.perp(),
+            MoldingSide::Right => -dir.perp(),
+        };
+        let d = dir * along + side * across;
+        let n = self.polyline.len();
+        let closed = self.is_closed();
+        let bottoms: Vec<f64> = (0..n).map(|k| self.vertex_bottom(k)).collect();
+        let mut moved = vec![i, i + 1];
+        if closed {
+            if i == 0 {
+                moved.push(n - 1);
+            }
+            if i + 1 == n - 1 {
+                moved.push(0);
+            }
+        }
+        for k in &moved {
+            self.polyline[*k] = self.polyline[*k] + d;
+        }
+        if dz.abs() > 1e-12 {
+            let mut h = bottoms;
+            for k in &moved {
+                h[*k] += dz;
+            }
+            self.heights = h;
+            self.collapse_heights();
+        }
+        self.automatic = false;
+        true
+    }
+
+    /// Reverse Direction: the polyline runs the other way, which swaps the
+    /// side its profile lies on.
+    pub fn reverse_direction(&mut self) {
+        self.polyline.reverse();
+        self.heights.reverse();
+        self.edges_off.reverse();
+        self.automatic = false;
+    }
+
+    /// Sum of the 3D lengths of the edges the molding runs on, inches.
+    pub fn edge_lengths_on(&self) -> f64 {
+        (0..self.edge_count())
+            .filter(|i| self.edge_on(*i))
+            .map(|i| self.edge_length_3d(i))
+            .sum()
+    }
+
+    /// The path to sweep along, in sweeping order (the profile projects to
+    /// its left): reversed for a molding on the right, and for a closed
+    /// polyline with Extrude Inside Polyline that was drawn clockwise.
+    pub fn sweep_path(&self) -> SweepPath {
+        let n = self.polyline.len();
+        let closed = self.is_closed();
+        let mut points = self.polyline.clone();
+        let mut bottoms: Vec<f64> = (0..n).map(|i| self.vertex_bottom(i)).collect();
+        let mut on: Vec<bool> = (0..self.edge_count()).map(|i| self.edge_on(i)).collect();
+        let flip = if self.extrude_inside && closed {
+            polygon_area(&points[..n - 1]) < 0.0
+        } else {
+            self.side == MoldingSide::Right
+        };
+        if flip {
+            points.reverse();
+            bottoms.reverse();
+            on.reverse();
+        }
+        SweepPath {
+            points,
+            bottoms,
+            on,
+            closed,
+        }
+    }
+
+    /// The profile parts to sweep, placed above the molding's bottom edge.
+    pub fn placed_parts(&self) -> Vec<PlacedPart> {
+        if self.table.is_empty() {
+            return vec![PlacedPart {
+                name: self.profile.name().to_string(),
+                kind: MoldingType::Other,
+                section: self.section(),
+                material: self.material.clone(),
+                dz: 0.0,
+                repeat: 0.0,
+                element: 0.0,
+            }];
+        }
+        let mut out = Vec::new();
+        for r in self.table.resolve_from(self.elevation) {
+            if r.edge == crate::moldings::EdgeMode::Off {
+                continue;
+            }
+            let element = r.element();
+            for part in &r.parts {
+                out.push(PlacedPart {
+                    name: r.name.clone(),
+                    kind: r.kind,
+                    section: part.section.clone(),
+                    material: if part.material.is_empty() {
+                        self.material.clone()
+                    } else {
+                        part.material.clone()
+                    },
+                    dz: r.bottom - self.elevation,
+                    repeat: r.repeat_distance,
+                    element,
+                });
+            }
+        }
+        out
+    }
+
+    /// The rows of the Materials List this molding adds: `(profile name,
+    /// material, category, linear length)`.
+    pub fn takeoff_rows(&self) -> Vec<(String, String, &'static str, f64)> {
+        let len = self.edge_lengths_on();
+        if len <= 1e-9 {
+            return Vec::new();
+        }
+        if self.table.is_empty() {
+            let name = match &self.profile {
+                MoldingProfile::Custom(_) => "Custom Molding".to_string(),
+                p => format!("{} Molding", p.name()),
+            };
+            return vec![(name, self.material.clone(), INTERIOR_TRIM, len)];
+        }
+        let mut rows: Vec<ResolvedEntry> = self.table.resolve_from(self.elevation);
+        rows.retain(|r| r.edge != crate::moldings::EdgeMode::Off);
+        rows.into_iter()
+            .map(|r| {
+                let material = r
+                    .parts
+                    .iter()
+                    .find(|p| !p.material.is_empty())
+                    .map_or_else(|| self.material.clone(), |p| p.material.clone());
+                let category = if r.kind.is_exterior() {
+                    EXTERIOR_TRIM
+                } else {
+                    INTERIOR_TRIM
+                };
+                (r.name, material, category, len)
+            })
+            .collect()
     }
 
     /// The cross section as `(projection, height)` points, counter-clockwise:
@@ -560,7 +1162,12 @@ impl MoldingLine {
 
     /// Volume of material, cubic inches (section area times length).
     pub fn volume(&self) -> f64 {
-        polygon_area(&self.section()).abs() * self.length()
+        let area: f64 = self
+            .placed_parts()
+            .iter()
+            .map(|p| polygon_area(&p.section).abs())
+            .sum();
+        area * self.edge_lengths_on()
     }
 }
 
@@ -1072,6 +1679,23 @@ pub struct DetailsLayer {
     pub hatches: Vec<WallHatch>,
     pub decks: Vec<DeckPolygon>,
     pub solids: Vec<Solid3d>,
+    /// Molding profiles the plan has added to its library (Add to Library),
+    /// closed polylines at actual size; built-in ones are in
+    /// [`crate::moldings::builtin_profiles`].
+    pub profiles: Vec<ProfileDef>,
+    /// The molding table of the Floor Defaults: what rooms with no table of
+    /// their own (or Use Floor Default) get.
+    pub floor_moldings: MoldingTable,
+    /// Molding tables of single rooms, by room anchor.
+    pub room_moldings: Vec<RoomMoldings>,
+    /// Molding tables of room types (Room Type Defaults, Moldings).
+    pub type_moldings: Vec<crate::moldings::TypeMoldings>,
+    /// Walls room moldings stop at (the wall flag stand-in of Suppress
+    /// Adjacent Room Moldings).
+    pub molding_free_walls: Vec<Id>,
+    /// Auto Place Corner Boards and Auto Place Quoins also take inside
+    /// corners (Include Inside Corners of the Default Settings).
+    pub include_inside_corners: bool,
 }
 
 macro_rules! lookup {
@@ -1088,6 +1712,54 @@ macro_rules! lookup {
 impl DetailsLayer {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+            && self.profiles.is_empty()
+            && self.floor_moldings == MoldingTable::default()
+            && self.room_moldings.is_empty()
+            && self.type_moldings.is_empty()
+            && self.molding_free_walls.is_empty()
+            && !self.include_inside_corners
+    }
+
+    /// The record of the room whose label anchor is `anchor`.
+    pub fn room_moldings_at(&self, anchor: Point) -> Option<&RoomMoldings> {
+        self.room_moldings
+            .iter()
+            .find(|r| r.anchor.dist(anchor) < 1.0)
+    }
+
+    /// The record of the room at `anchor`, added when it has none.
+    pub fn room_moldings_mut(&mut self, anchor: Point) -> &mut RoomMoldings {
+        let at = self
+            .room_moldings
+            .iter()
+            .position(|r| r.anchor.dist(anchor) < 1.0);
+        let i = at.unwrap_or_else(|| {
+            self.room_moldings.push(RoomMoldings {
+                anchor,
+                ..RoomMoldings::default()
+            });
+            self.room_moldings.len() - 1
+        });
+        &mut self.room_moldings[i]
+    }
+
+    /// A profile of the plan's library by name (case-insensitive).
+    pub fn profile(&self, name: &str) -> Option<&ProfileDef> {
+        self.profiles
+            .iter()
+            .find(|p| p.name.eq_ignore_ascii_case(name.trim()))
+    }
+
+    /// Adds `p` to the plan's library, replacing one of the same name.
+    pub fn add_profile(&mut self, p: ProfileDef) {
+        match self
+            .profiles
+            .iter_mut()
+            .find(|q| q.name.eq_ignore_ascii_case(&p.name))
+        {
+            Some(q) => *q = p,
+            None => self.profiles.push(p),
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -1108,21 +1780,14 @@ impl DetailsLayer {
         floor
             .details
             .as_ref()
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .map(crate::foreign::read_layer)
             .unwrap_or_default()
     }
 
     /// Stores the layer on `floor`; an empty layer clears the slot.
     pub fn store(&self, floor: &mut Floor) {
-        floor.details = if self.is_empty() {
-            None
-        } else {
-            match serde_json::to_value(self) {
-                Ok(v) => Some(v),
-                // Plain data always serializes; keep the old slot on the impossible error.
-                Err(_) => floor.details.take(),
-            }
-        };
+        // Records this build cannot read stay in the slot (QA-28).
+        floor.details = crate::foreign::layer_slot(self, self.is_empty(), floor.details.as_ref());
     }
 
     // ----- lookup -----
@@ -1313,16 +1978,21 @@ impl DetailsLayer {
     // ----- auto placement -----
 
     /// Auto Place Corner Boards: a board on every convex exterior corner of
-    /// `floor` that has none yet. `alloc` hands out ids. Returns how many
-    /// were added.
+    /// `floor` that has none yet (inside corners too when
+    /// [`DetailsLayer::include_inside_corners`] is on). `alloc` hands out
+    /// ids. Returns how many were added.
     pub fn auto_corner_boards(
         &mut self,
         floor: &Floor,
         rooms: &[Room],
         alloc: &mut dyn FnMut() -> Id,
     ) -> usize {
+        let inside = self.include_inside_corners;
         let mut n = 0;
-        for c in exterior_corners(floor, rooms).iter().filter(|c| c.convex) {
+        for c in exterior_corners(floor, rooms)
+            .iter()
+            .filter(|c| c.convex || inside)
+        {
             if self
                 .corner_boards
                 .iter()
@@ -1337,15 +2007,20 @@ impl DetailsLayer {
     }
 
     /// Auto Place Quoins: a stack on every convex exterior corner that has
-    /// none yet. Returns how many were added.
+    /// none yet (inside corners too with Include Inside Corners). Returns how
+    /// many were added.
     pub fn auto_quoins(
         &mut self,
         floor: &Floor,
         rooms: &[Room],
         alloc: &mut dyn FnMut() -> Id,
     ) -> usize {
+        let inside = self.include_inside_corners;
         let mut n = 0;
-        for c in exterior_corners(floor, rooms).iter().filter(|c| c.convex) {
+        for c in exterior_corners(floor, rooms)
+            .iter()
+            .filter(|c| c.convex || inside)
+        {
             if self
                 .quoins
                 .iter()
@@ -1357,6 +2032,35 @@ impl DetailsLayer {
             n += 1;
         }
         n
+    }
+
+    /// Lets the corner boards and quoins that are not held by Set Top /
+    /// Set Bottom take the top plate and the floor of the walls at their
+    /// corner now. Returns whether anything changed.
+    pub fn refresh_trim_heights(&mut self, floor: &Floor, rooms: &[Room]) -> bool {
+        let corners = exterior_corners(floor, rooms);
+        let mut changed = false;
+        for b in &mut self.corner_boards {
+            if b.set_top && b.set_bottom {
+                continue;
+            }
+            if let Some(c) = corner_near(&corners, b.wall_corner, SAME_CORNER) {
+                let before = (b.base, b.height);
+                b.follow_corner(&c);
+                changed |= before != (b.base, b.height);
+            }
+        }
+        for q in &mut self.quoins {
+            if q.set_top && q.set_bottom {
+                continue;
+            }
+            if let Some(c) = corner_near(&corners, q.corner, SAME_CORNER) {
+                let before = (q.base, q.total_height);
+                q.follow_corner(&c);
+                changed |= before != (q.base, q.total_height);
+            }
+        }
+        changed
     }
 }
 
@@ -2027,5 +2731,306 @@ mod tests {
         assert!(l.move_vertex(DetailRef::Solid(5), 1, target));
         let foot = l.solid(5).unwrap().footprint();
         assert!(foot[1].dist(target) < 1e-9, "{:?}", foot[1]);
+    }
+
+    // ----- moldings system, corner boards and quoins (brief 31) -----
+
+    fn l_project() -> Project {
+        let mut p = Project::new("t");
+        let c = [
+            Point::new(0.0, 0.0),
+            Point::new(240.0, 0.0),
+            Point::new(240.0, 96.0),
+            Point::new(120.0, 96.0),
+            Point::new(120.0, 192.0),
+            Point::new(0.0, 192.0),
+        ];
+        for i in 0..c.len() {
+            p.add_wall(
+                0,
+                c[i],
+                c[(i + 1) % c.len()],
+                6.5,
+                108.0,
+                WallKind::Exterior,
+            );
+        }
+        p
+    }
+
+    #[test]
+    fn auto_placement_takes_inside_corners_only_when_asked() {
+        let mut p = l_project();
+        let rooms = detect_rooms(&p.floors[0].walls, 0.5);
+        let floor = p.floors[0].clone();
+        let mut l = DetailsLayer::default();
+        let n = l.auto_corner_boards(&floor, &rooms, &mut alloc_from(&mut p));
+        assert_eq!(n, 5, "five outside corners");
+        assert!(l.corner_boards.iter().all(|b| !b.inside));
+        // Turning the option on adds the notch, once.
+        l.include_inside_corners = true;
+        assert_eq!(
+            l.auto_corner_boards(&floor, &rooms, &mut alloc_from(&mut p)),
+            1
+        );
+        assert_eq!(l.corner_boards.len(), 6);
+        assert_eq!(l.corner_boards.iter().filter(|b| b.inside).count(), 1);
+        assert_eq!(
+            l.auto_corner_boards(&floor, &rooms, &mut alloc_from(&mut p)),
+            0
+        );
+        // Quoins follow the same rule.
+        let mut q = DetailsLayer::default();
+        assert_eq!(q.auto_quoins(&floor, &rooms, &mut alloc_from(&mut p)), 5);
+        q.include_inside_corners = true;
+        assert_eq!(q.auto_quoins(&floor, &rooms, &mut alloc_from(&mut p)), 1);
+        assert_eq!(q.quoins.iter().filter(|x| x.inside).count(), 1);
+        // The option alone keeps the slot alive and round-trips.
+        let only = DetailsLayer {
+            include_inside_corners: true,
+            ..Default::default()
+        };
+        assert!(!only.is_empty());
+        only.store(&mut p.floors[0]);
+        assert!(DetailsLayer::load(&p.floors[0]).include_inside_corners);
+    }
+
+    #[test]
+    fn corner_trim_follows_the_walls_unless_top_and_bottom_are_set() {
+        let mut p = box_project();
+        let rooms = detect_rooms(&p.floors[0].walls, 0.5);
+        let floor = p.floors[0].clone();
+        let mut l = DetailsLayer::default();
+        l.auto_corner_boards(&floor, &rooms, &mut alloc_from(&mut p));
+        l.auto_quoins(&floor, &rooms, &mut alloc_from(&mut p));
+        assert!(l
+            .corner_boards
+            .iter()
+            .all(|b| (b.height - 108.0).abs() < 1e-9));
+        l.corner_boards[0].set_top = true;
+        l.corner_boards[0].height = 80.0;
+        l.quoins[0].set_bottom = true;
+        l.quoins[0].base = 12.0;
+        for w in &mut p.floors[0].walls {
+            w.height = 120.0;
+        }
+        let floor = p.floors[0].clone();
+        assert!(l.refresh_trim_heights(&floor, &rooms));
+        assert_eq!(l.corner_boards[0].height, 80.0, "Set Top holds");
+        assert!(l.corner_boards[1..]
+            .iter()
+            .all(|b| (b.height - 120.0).abs() < 1e-9));
+        assert_eq!(l.quoins[0].base, 12.0, "Set Bottom holds");
+        assert!(
+            (l.quoins[0].total_height - 108.0).abs() < 1e-9,
+            "top plate - base"
+        );
+        assert!((l.quoins[1].total_height - 120.0).abs() < 1e-9);
+        assert!(
+            !l.refresh_trim_heights(&floor, &rooms),
+            "nothing left to change"
+        );
+    }
+
+    #[test]
+    fn a_recessed_board_sits_back_toward_the_wall() {
+        let mut p = box_project();
+        let rooms = detect_rooms(&p.floors[0].walls, 0.5);
+        let floor = p.floors[0].clone();
+        let mut l = DetailsLayer::default();
+        l.auto_corner_boards(&floor, &rooms, &mut alloc_from(&mut p));
+        let mut b = l.corner_boards[0].clone();
+        let plain = b.outline();
+        b.recessed = true;
+        let back = b.outline();
+        // Moved diagonally toward the building by the siding thickness.
+        let shift = back[0] - plain[0];
+        assert!(
+            (shift.length() - SIDING_RECESS * 2.0_f64.sqrt()).abs() < 1e-6,
+            "{shift:?}"
+        );
+        let toward = b.axes.out_a * -1.0 + b.axes.out_b * -1.0;
+        assert!(shift.dot(toward) > 0.0);
+    }
+
+    #[test]
+    fn quoin_styles_gap_and_swap() {
+        let mut q = Quoin {
+            total_height: 36.0,
+            height: 8.0,
+            ..Quoin::default()
+        };
+        // Four 8" blocks fit in 36"; with a 2" gap only three do.
+        assert_eq!(q.courses(), 4);
+        assert_eq!(q.block_count(), 8);
+        q.gap = 2.0;
+        assert_eq!(q.courses(), 3);
+        assert!((q.course_base(2) - 20.0).abs() < 1e-9);
+        q.gap = 0.0;
+        let long = q.width;
+        let short = q.width * QUOIN_SHORT_RATIO;
+        // Staggered swaps every course.
+        q.set_quoin_style(QuoinStyle::Staggered);
+        assert_eq!(q.course_lengths(0), (long, short));
+        assert_eq!(q.course_lengths(1), (short, long));
+        assert!(q.alternating);
+        // Uniform never swaps.
+        q.set_quoin_style(QuoinStyle::Uniform);
+        assert_eq!(q.course_lengths(1), (long, short));
+        assert!(!q.alternating);
+        // Mirrored is symmetrical about the middle of the stack.
+        q.set_quoin_style(QuoinStyle::Mirrored);
+        let n = q.courses();
+        for i in 0..n {
+            assert_eq!(
+                q.course_lengths(i),
+                q.course_lengths(n - 1 - i),
+                "course {i}"
+            );
+        }
+        assert_ne!(q.course_lengths(0), q.course_lengths(1));
+        // Swap Start Block flips the first course.
+        q.swap_start = true;
+        assert_eq!(q.course_lengths(0), (short, long));
+        // An older plan (only `alternating`) reads as before.
+        let old: Quoin = serde_json::from_str(r#"{"id":1,"alternating":false}"#).unwrap();
+        assert_eq!(old.quoin_style(), QuoinStyle::Uniform);
+        assert_eq!(old.gap, 0.0);
+        let old: Quoin = serde_json::from_str(r#"{"id":1}"#).unwrap();
+        assert_eq!(old.quoin_style(), QuoinStyle::Staggered);
+    }
+
+    #[test]
+    fn a_molding_line_edits_edges_heights_and_direction() {
+        let mut m = MoldingLine::with_profile(
+            1,
+            vec![
+                Point::new(0.0, 0.0),
+                Point::new(100.0, 0.0),
+                Point::new(100.0, 50.0),
+                Point::new(0.0, 50.0),
+                Point::new(0.0, 0.0),
+            ],
+            crate::moldings::square_profile(),
+            30.0,
+        );
+        assert!(m.is_closed());
+        assert_eq!(m.edge_count(), 4);
+        assert!((m.edge_lengths_on() - 300.0).abs() < 1e-9);
+        // Edges come off and go on; all on again clears the list.
+        assert!(m.set_edge_on(2, false));
+        assert!(!m.set_edge_on(2, false));
+        assert!((m.edge_lengths_on() - 200.0).abs() < 1e-9);
+        assert!(m.set_edge_on(2, true));
+        assert!(m.edges_off.is_empty());
+        assert!(!m.set_edge_on(9, false));
+        // Heights per point: a 3D line, collapsing back when equal again.
+        assert!(!m.has_heights());
+        assert!(m.set_vertex_bottom(1, 54.0));
+        assert!(m.has_heights() && m.is_sloped());
+        assert_eq!(m.vertex_bottom(0), 30.0);
+        assert!(m.edge_length_3d(0) > 100.0);
+        m.set_vertex_bottom(1, 30.0);
+        assert!(!m.has_heights() && m.elevation == 30.0);
+        // Selected Line: 3D length and angles.
+        assert!(m.set_edge_3d(1, 50.0, 90.0, 0.0));
+        let (xy, from) = m.edge_angles(1);
+        assert!((xy - 90.0).abs() < 1e-9 && from.abs() < 1e-9);
+        assert!(!m.set_edge_3d(1, 0.0, 0.0, 0.0));
+        // Select Edit Plane: along, across and up.
+        let mut e = m.clone();
+        assert!(e.move_edge(0, 5.0, 0.0, 0.0));
+        assert_eq!(e.polyline[0].x, 5.0);
+        assert!(e.is_closed(), "the closing point moved with the first");
+        let mut e = m.clone();
+        assert!(e.move_edge(0, 0.0, 4.0, 6.0));
+        // Right of the drawing direction is the default side of the tool, so
+        // "across" toward the profile is down in y for the +x edge.
+        assert!((e.polyline[0].y + 4.0).abs() < 1e-9);
+        assert!((e.vertex_bottom(0) - 36.0).abs() < 1e-9);
+        // Reverse Direction.
+        let before = m.polyline.clone();
+        m.reverse_direction();
+        assert_eq!(m.polyline[0], before[before.len() - 1]);
+        assert!(!m.automatic);
+    }
+
+    #[test]
+    fn the_sweep_path_puts_the_profile_where_the_flags_say() {
+        let cw = vec![
+            Point::new(0.0, 0.0),
+            Point::new(0.0, 60.0),
+            Point::new(100.0, 60.0),
+            Point::new(100.0, 0.0),
+            Point::new(0.0, 0.0),
+        ];
+        let mut m =
+            MoldingLine::with_profile(1, cw.clone(), crate::moldings::square_profile(), 0.0);
+        // Right side, clockwise: the path is turned round so the profile (on
+        // the left of the swept path) is inside.
+        let p = m.sweep_path();
+        assert!(polygon_area(&p.points[..4]) > 0.0);
+        m.side = MoldingSide::Left;
+        let p = m.sweep_path();
+        assert!(
+            polygon_area(&p.points[..4]) < 0.0,
+            "left of a clockwise path is outside"
+        );
+        // Extrude Inside Polyline makes it inside whichever way it is drawn.
+        m.extrude_inside = true;
+        assert!(polygon_area(&m.sweep_path().points[..4]) > 0.0);
+        m.side = MoldingSide::Right;
+        assert!(polygon_area(&m.sweep_path().points[..4]) > 0.0);
+        // An open line is not flipped by it.
+        let open = MoldingLine {
+            polyline: vec![Point::ZERO, Point::new(10.0, 0.0)],
+            extrude_inside: true,
+            ..MoldingLine::default()
+        };
+        assert_eq!(open.sweep_path().points[0], Point::ZERO);
+    }
+
+    #[test]
+    fn molding_data_round_trips_and_old_lines_still_load() {
+        let mut m = MoldingLine::with_profile(
+            9,
+            vec![Point::ZERO, Point::new(50.0, 0.0), Point::new(50.0, 50.0)],
+            crate::moldings::builtin_profiles()[0].clone(),
+            12.0,
+        );
+        m.set_edge_on(1, false);
+        m.set_vertex_bottom(2, 40.0);
+        m.label = "Ledge".into();
+        m.components = vec!["Cap".into()];
+        m.source = MoldingSource::Cabinet(77);
+        let mut l = DetailsLayer::default();
+        l.moldings.push(m);
+        l.add_profile(crate::moldings::square_profile());
+        l.floor_moldings.add_new(crate::moldings::square_profile());
+        l.room_moldings_mut(Point::new(5.0, 5.0)).off_edges = vec![1];
+        l.molding_free_walls = vec![3];
+        let json = serde_json::to_string(&l).unwrap();
+        let back: DetailsLayer = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, l);
+        // A molding stored before the system had these fields.
+        let old: MoldingLine = serde_json::from_str(
+            r#"{"id":4,"polyline":[{"x":0,"y":0},{"x":9,"y":0}],"profile":"Base","height":5.5,"width":0.75,"elevation":0,"material":"Painted White Trim","layer":"Moldings"}"#,
+        )
+        .unwrap();
+        assert!(old.table.is_empty() && old.edges_off.is_empty() && !old.has_heights());
+        assert_eq!(
+            old.side,
+            MoldingSide::Left,
+            "old lines keep projecting left"
+        );
+        assert!(old.auto_orient && old.mitre_twisted && !old.automatic);
+        // The Moldings panel turns the single profile into a one-row table.
+        let mut e = old.clone();
+        e.ensure_table();
+        assert_eq!(e.table.len(), 1);
+        assert_eq!(e.table.rows[0].profile.name, "Base");
+        assert!((e.table.rows[0].width - 0.75).abs() < 1e-9);
+        assert!((e.table.rows[0].height - 5.5).abs() < 1e-9);
+        assert_eq!(e.placed_parts().len(), 1);
     }
 }

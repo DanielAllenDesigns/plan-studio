@@ -13,12 +13,14 @@ use plan_terrain::{
         LAYER_BEDS, LAYER_BREAKS, LAYER_FEATURES, LAYER_GRASS, LAYER_PLANTS, LAYER_SPRINKLERS,
         LAYER_STONES, LAYER_WALLS, LAYER_WATER,
     },
-    landscape_meshes, terrain_object_id, terrain_object_of, ElevationLine, Feature, Landscape,
-    PlanItem, PlanShape, RoadStrip, Terrain, TerrainBreak, TerrainPart, TerrainWall,
+    landscape_meshes, terrain_object_id, terrain_object_of, ElevationLine, ElevationPoint,
+    ElevationRegion, Feature, Landscape, Modifier, ModifierKind, ObjectExtras, ObjectKey, PlanItem,
+    PlanShape, RoadStrip, Terrain, TerrainBreak, TerrainPart, TerrainWall,
 };
 
 /// An element of the terrain that has its own specification dialog.
 #[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 pub enum TerrainObject {
     Feature(Feature),
     Break(TerrainBreak),
@@ -26,12 +28,50 @@ pub enum TerrainObject {
     Landscape(Landscape),
     Road(RoadStrip),
     Line(ElevationLine),
+    /// Points, regions and modifiers keep their label, schedule and
+    /// information panels in the terrain's side table; the dialog edits them
+    /// with the object.
+    Point(ElevationPoint, ObjectExtras),
+    Region(ElevationRegion, ObjectExtras),
+    Modifier(Modifier, ObjectExtras),
 }
 
 impl TerrainObject {
+    /// The label, schedule and object information panels' data of the object.
+    pub fn extras_mut(&mut self) -> &mut ObjectExtras {
+        match self {
+            TerrainObject::Feature(o) => &mut o.extras,
+            TerrainObject::Break(o) => &mut o.extras,
+            TerrainObject::Wall(o) => &mut o.extras,
+            TerrainObject::Landscape(o) => &mut o.extras,
+            TerrainObject::Road(o) => &mut o.extras,
+            TerrainObject::Line(o) => &mut o.extras,
+            TerrainObject::Point(_, x)
+            | TerrainObject::Region(_, x)
+            | TerrainObject::Modifier(_, x) => x,
+        }
+    }
+
+    pub fn extras(&self) -> &ObjectExtras {
+        match self {
+            TerrainObject::Feature(o) => &o.extras,
+            TerrainObject::Break(o) => &o.extras,
+            TerrainObject::Wall(o) => &o.extras,
+            TerrainObject::Landscape(o) => &o.extras,
+            TerrainObject::Road(o) => &o.extras,
+            TerrainObject::Line(o) => &o.extras,
+            TerrainObject::Point(_, x)
+            | TerrainObject::Region(_, x)
+            | TerrainObject::Modifier(_, x) => x,
+        }
+    }
+
     /// The title of its specification.
     pub fn title(&self) -> &'static str {
         match self {
+            TerrainObject::Feature(f) if f.kind == plan_terrain::FeatureKind::Hole => {
+                "Terrain Hole Specification"
+            }
             TerrainObject::Feature(_) => "Terrain Feature Specification",
             TerrainObject::Break(_) => "Terrain Break Specification",
             TerrainObject::Wall(w) if w.kind == plan_terrain::WallKind::Curb => {
@@ -45,23 +85,50 @@ impl TerrainObject {
                 plan_terrain::LandscapeKind::SteppingStones => "Stepping Stone Specification",
                 plan_terrain::LandscapeKind::Plants => "Plant Specification",
                 plan_terrain::LandscapeKind::Sprinklers => "Sprinkler Specification",
+                plan_terrain::LandscapeKind::SprinklerLine => "Sprinkler Line Specification",
             },
-            TerrainObject::Road(_) => "Road Specification",
+            TerrainObject::Road(r) => match r.kind {
+                plan_terrain::RoadKind::Road => "Road Specification",
+                plan_terrain::RoadKind::Driveway => "Driveway Specification",
+                plan_terrain::RoadKind::Sidewalk => "Sidewalk Specification",
+                plan_terrain::RoadKind::Marking => "Road Marking Specification",
+                plan_terrain::RoadKind::Median => "Median Specification",
+                plan_terrain::RoadKind::CulDeSac => "Cul-de-sac Specification",
+            },
             TerrainObject::Line(_) => "Elevation Line Specification",
+            TerrainObject::Point(..) => "Elevation Point Specification",
+            TerrainObject::Region(..) => "Elevation Region Specification",
+            TerrainObject::Modifier(m, _) => match m.kind {
+                ModifierKind::Hill => "Hill Specification",
+                ModifierKind::Valley => "Valley Specification",
+                ModifierKind::RaisedRegion => "Raised Region Specification",
+                ModifierKind::LoweredRegion => "Lowered Region Specification",
+                ModifierKind::FlatRegion => "Flat Region Specification",
+            },
         }
     }
 }
 
-/// The element a hit names, as an editable copy (`None` for elements without
-/// a dialog of their own: the perimeter, points, regions and modifiers).
+/// The element a hit names, as an editable copy (`None` for the perimeter,
+/// whose specification is the Terrain Specification itself).
 pub fn object_at(t: &Terrain, hit: TerrainHit) -> Option<TerrainObject> {
     match hit {
-        TerrainHit::Feature(i) => t
-            .features
+        TerrainHit::Feature(i) => t.features.get(i).cloned().map(TerrainObject::Feature),
+        TerrainHit::Point(i) => t
+            .elevation_points
             .get(i)
-            .filter(|f| f.kind != plan_terrain::FeatureKind::Hole)
             .cloned()
-            .map(TerrainObject::Feature),
+            .map(|p| TerrainObject::Point(p, t.extras(ObjectKey::Point(i)))),
+        TerrainHit::Region(i) => t
+            .elevation_regions
+            .get(i)
+            .cloned()
+            .map(|r| TerrainObject::Region(r, t.extras(ObjectKey::Region(i)))),
+        TerrainHit::Modifier(i) => t
+            .modifiers
+            .get(i)
+            .cloned()
+            .map(|m| TerrainObject::Modifier(m, t.extras(ObjectKey::Modifier(i)))),
         TerrainHit::Break(i) => t.breaks.get(i).cloned().map(TerrainObject::Break),
         TerrainHit::Wall(i) => t.walls.get(i).cloned().map(TerrainObject::Wall),
         TerrainHit::Landscape(i) => t.landscape.get(i).cloned().map(TerrainObject::Landscape),
@@ -83,6 +150,21 @@ pub fn replace_object(t: &mut Terrain, hit: TerrainHit, obj: TerrainObject) -> b
         (TerrainHit::Landscape(i), TerrainObject::Landscape(x)) => put(&mut t.landscape, i, x),
         (TerrainHit::Road(i), TerrainObject::Road(x)) => put(&mut t.roads, i, x),
         (TerrainHit::Line(i), TerrainObject::Line(x)) => put(&mut t.elevation_lines, i, x),
+        (TerrainHit::Point(i), TerrainObject::Point(x, ex)) => {
+            let ok = put(&mut t.elevation_points, i, x);
+            t.set_extras(ObjectKey::Point(i), ex);
+            ok
+        }
+        (TerrainHit::Region(i), TerrainObject::Region(x, ex)) => {
+            let ok = put(&mut t.elevation_regions, i, x);
+            t.set_extras(ObjectKey::Region(i), ex);
+            ok
+        }
+        (TerrainHit::Modifier(i), TerrainObject::Modifier(x, ex)) => {
+            let ok = put(&mut t.modifiers, i, x);
+            t.set_extras(ObjectKey::Modifier(i), ex);
+            ok
+        }
         _ => false,
     }
 }
@@ -128,12 +210,17 @@ pub fn move_terrain_element(t: &mut Terrain, hit: TerrainHit, delta: Point) -> b
             .map(|f| {
                 shift(&mut f.polygon, delta);
                 shift(&mut f.control, delta);
+                f.center = f.center + delta;
             })
             .is_some(),
         TerrainHit::Road(i) => t
             .roads
             .get_mut(i)
-            .map(|r| shift(&mut r.centerline, delta))
+            .map(|r| {
+                shift(&mut r.centerline, delta);
+                shift(&mut r.outline, delta);
+                r.center = r.center + delta;
+            })
             .is_some(),
         TerrainHit::Break(i) => t
             .breaks
@@ -236,7 +323,13 @@ pub fn hit_points(t: &Terrain, hit: TerrainHit) -> Vec<Point> {
         TerrainHit::Road(i) => t
             .roads
             .get(i)
-            .map(|r| r.centerline.clone())
+            .map(|r| {
+                if r.outline.len() >= 3 {
+                    r.outline.clone()
+                } else {
+                    r.centerline.clone()
+                }
+            })
             .unwrap_or_default(),
         TerrainHit::Break(i) => t
             .breaks
@@ -266,6 +359,7 @@ pub fn hit_is_closed(t: &Terrain, hit: TerrainHit) -> bool {
         | TerrainHit::Modifier(_)
         | TerrainHit::Feature(_) => true,
         TerrainHit::Landscape(i) => t.landscape.get(i).is_some_and(Landscape::is_region),
+        TerrainHit::Road(i) => t.roads.get(i).is_some_and(|r| r.outline.len() >= 3),
         _ => false,
     }
 }
@@ -299,7 +393,11 @@ pub fn move_terrain_vertex(t: &mut Terrain, hit: TerrainHit, n: usize, to: Point
             .get_mut(i)
             .is_some_and(|m| put(&mut m.polygon, n, to)),
         TerrainHit::Feature(i) => t.features.get_mut(i).is_some_and(|f| {
-            if f.control.is_empty() {
+            if f.kind == plan_terrain::FeatureKind::Round {
+                // A round feature: a handle drags the edge, which sets the radius.
+                f.set_radius_through(to);
+                n < f.polygon.len()
+            } else if f.control.is_empty() {
                 put(&mut f.polygon, n, to)
             } else {
                 let moved = put(&mut f.control, n, to);
@@ -307,10 +405,19 @@ pub fn move_terrain_vertex(t: &mut Terrain, hit: TerrainHit, n: usize, to: Point
                 moved
             }
         }),
-        TerrainHit::Road(i) => t
-            .roads
-            .get_mut(i)
-            .is_some_and(|r| put(&mut r.centerline, n, to)),
+        TerrainHit::Road(i) => t.roads.get_mut(i).is_some_and(|r| {
+            if r.kind == plan_terrain::RoadKind::CulDeSac {
+                // A handle drags the edge of the circle, which sets the radius.
+                r.radius = r.center.dist(to).max(12.0);
+                r.outline =
+                    plan_terrain::road_polygon(&plan_terrain::cul_de_sac(r.center, r.radius));
+                n < r.outline.len()
+            } else if r.outline.len() >= 3 {
+                put(&mut r.outline, n, to)
+            } else {
+                put(&mut r.centerline, n, to)
+            }
+        }),
         TerrainHit::Break(i) => t
             .breaks
             .get_mut(i)
@@ -349,6 +456,11 @@ pub fn hit_layer(t: &Terrain, hit: TerrainHit) -> Option<String> {
             .get(i)
             .map(|w| w.style.layer_or(w.default_layer()).to_string()),
         TerrainHit::Landscape(i) => t.landscape.get(i).map(|l| l.layer().to_string()),
+        TerrainHit::Road(i) => t
+            .roads
+            .get(i)
+            .and_then(|r| r.own_layer())
+            .map(str::to_string),
         _ => None,
     }
 }
@@ -362,7 +474,9 @@ pub fn hit_type_name(t: Option<&Terrain>, hit: TerrainHit) -> &'static str {
         TerrainHit::Region(_) => "Elevation Region",
         TerrainHit::Modifier(_) => "Terrain Modifier",
         TerrainHit::Feature(_) => "Terrain Feature",
-        TerrainHit::Road(_) => "Road",
+        TerrainHit::Road(i) => t
+            .and_then(|t| t.roads.get(i))
+            .map_or("Road", |r| r.kind.name()),
         TerrainHit::Break(_) => "Terrain Break",
         TerrainHit::Wall(i) => match t.and_then(|t| t.walls.get(i)) {
             Some(w) if w.kind == plan_terrain::WallKind::Curb => "Terrain Curb",
@@ -432,7 +546,10 @@ pub fn hit_for_mesh_id(id: u64) -> Option<TerrainHit> {
 /// Adds the Chief layers of the landscape objects to the plan's layer list
 /// when they are missing (no undo step of their own: call it inside the edit).
 pub fn ensure_landscape_layers(project: &mut Project) {
-    const LAYERS: [(&str, [u8; 3], u32); 9] = [
+    const LAYERS: [(&str, [u8; 3], u32); 12] = [
+        (plan_terrain::LAYER_PRIMARY_CONTOURS, [122, 85, 43], 18),
+        (plan_terrain::LAYER_SECONDARY_CONTOURS, [168, 139, 99], 13),
+        (plan_terrain::LAYER_TERRAIN_LABELS, [176, 64, 48], 13),
         (LAYER_FEATURES, [60, 127, 168], 18),
         (LAYER_BREAKS, [176, 64, 48], 13),
         (LAYER_WALLS, [96, 96, 102], 25),
@@ -456,7 +573,12 @@ pub fn terrain_feature_meshes(project: &Project) -> Vec<plan_3d::Mesh> {
     let Some(view) = terrain_view(project) else {
         return Vec::new();
     };
-    landscape_meshes(&view.record.terrain, view.surface.as_ref())
+    let mut meshes = landscape_meshes(&view.record.terrain, view.surface.as_ref());
+    // The skirt around the terrain edge (Terrain Specification > Skirt).
+    if let Some(surface) = view.surface.as_ref() {
+        meshes.extend(plan_terrain::skirt_mesh(&view.record.terrain, surface));
+    }
+    meshes
 }
 
 fn color(c: [u8; 3]) -> Color32 {
@@ -641,13 +763,14 @@ mod tests {
             TerrainObject::Wall(w)
         ));
         assert_eq!(t.walls[0].height, 60.0);
-        // A mismatch changes nothing; holes and perimeter have no dialog.
+        // A mismatch changes nothing; the perimeter has no object dialog.
         let b = object_at(&t, TerrainHit::Break(0)).unwrap();
         assert!(!replace_object(&mut t, TerrainHit::Wall(0), b));
         assert!(object_at(&t, TerrainHit::Perimeter).is_none());
         assert!(object_at(&t, TerrainHit::Wall(9)).is_none());
+        // A hole opens the Terrain Feature dialog with its general page only.
         t.features[0].kind = plan_terrain::FeatureKind::Hole;
-        assert!(object_at(&t, TerrainHit::Feature(0)).is_none());
+        assert!(object_at(&t, TerrainHit::Feature(0)).is_some());
         assert!(TerrainObject::Break(TerrainBreak::default())
             .title()
             .contains("Break"));

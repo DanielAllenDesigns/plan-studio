@@ -13,25 +13,39 @@ use eframe::egui::{self, Key, Modifiers, PointerButton, Pos2, Vec2};
 use plan_core::geometry::Point;
 use plan_core::WallKind;
 
+pub mod arch_block;
 pub mod cabinet;
 pub mod cad;
+pub mod cad_ops;
 pub mod camera;
+pub mod construction_line;
 pub mod details;
 pub mod dimension;
+pub mod distribution;
 pub mod electrical;
+pub mod fireplace;
 pub mod foundation;
 pub mod framing;
+pub mod gable_line;
 pub mod images;
 pub mod library;
 pub mod materials;
+pub mod materials_list_polyline;
+pub mod molding;
 pub mod opening;
+pub mod painters;
 pub mod pan;
+pub mod regions;
 pub mod roof;
+pub mod roof_baseline;
+pub mod roof_trim;
 pub mod schedule;
 pub mod select;
+pub mod solids;
 pub mod stairs;
 pub mod terrain;
 pub mod text;
+pub mod tray_ceiling;
 pub mod underlay;
 pub mod wall;
 
@@ -102,6 +116,24 @@ pub enum ToolId {
     ImagesVariant(images::ImageMode),
     /// The Underlay tool (move a plan underlay, two-point calibration).
     Underlay,
+    /// The Fireplace tools (Fireplace, in Wall, Prefab, Chimney).
+    Fireplace,
+    /// A flavor of the fireplace tool (the flyout entry picked).
+    FireplaceVariant(fireplace::FireplaceMode),
+    /// The Layer and Object Painters and Eyedroppers.
+    Painter,
+    /// One of the four painter tools.
+    PainterVariant(painters::PainterMode),
+    /// Tools > Materials List > Materials List Polyline.
+    MaterialsPolyline,
+    /// CAD > Line > Construction Line.
+    ConstructionLine,
+    /// Tools > Floor/Reference Display > Edit Reference Document Offset.
+    ReferenceOffset,
+    /// Build > Roof > Tray Ceiling Polyline.
+    TrayCeiling,
+    /// Build > Roof > Roof Baseline Polyline.
+    RoofBaseline,
 }
 
 impl ToolId {
@@ -145,6 +177,8 @@ impl ToolId {
             ToolId::FramingVariant(_) => ToolId::Framing,
             ToolId::ScheduleVariant(_) => ToolId::Schedule,
             ToolId::ImagesVariant(_) => ToolId::Images,
+            ToolId::FireplaceVariant(_) => ToolId::Fireplace,
+            ToolId::PainterVariant(_) => ToolId::Painter,
             other => other,
         }
     }
@@ -298,6 +332,12 @@ pub trait Tool {
     fn double_click(&mut self, _cx: &mut EditorContext, _p: PointerEvent) -> ToolResult {
         ToolResult::ignored()
     }
+    /// A right click on the canvas of a tool that has no context menu. The
+    /// default is the tool's Esc; the wall tool keeps its chain instead
+    /// (W-3).
+    fn secondary_click(&mut self, cx: &mut EditorContext) -> ToolResult {
+        self.key(cx, KeyEvent::escape())
+    }
     /// Esc, Tab, Enter, Delete, arrows and typed text.
     fn key(&mut self, _cx: &mut EditorContext, _k: KeyEvent) -> ToolResult {
         ToolResult::ignored()
@@ -332,6 +372,13 @@ pub fn registry() -> Vec<Box<dyn Tool>> {
         Box::new(schedule::ScheduleTool::default()),
         Box::new(images::ImagesTool::default()),
         Box::new(underlay::UnderlayTool::default()),
+        Box::new(fireplace::FireplaceTool::default()),
+        Box::new(painters::PaintersTool::default()),
+        Box::new(materials_list_polyline::MaterialsListPolylineTool::default()),
+        Box::new(construction_line::ConstructionLineTool::default()),
+        Box::new(construction_line::ReferenceOffsetTool::default()),
+        Box::new(tray_ceiling::TrayCeilingTool::default()),
+        Box::new(roof_baseline::RoofBaselineTool::default()),
     ]
 }
 
@@ -365,6 +412,25 @@ impl ToolSet {
 
     /// Runs the active tool's per-frame hook.
     pub fn frame(&mut self, cx: &mut EditorContext, ctx: &egui::Context) {
+        // The construction line and reference dialogs open from menus and
+        // edit buttons whichever tool is active.
+        crate::dialogs::construction_line::host_frame(cx, ctx);
+        crate::dialogs::construction_order::host_frame(cx, ctx);
+        // The Tray Ceiling Specification opens from the Edit toolbar.
+        crate::dialogs::tray_ceiling::host_frame(cx, ctx);
+        // The Framing Group question and the Truss Detail window.
+        crate::dialogs::framing::host_frame(cx, ctx);
+        // The Roof Baseline Specification and Join Curved Roof Plane dialogs.
+        crate::dialogs::roof_baseline::host_frame(cx, ctx);
+        // The Gable Line Specification.
+        crate::dialogs::roof_trim::host_frame(cx, ctx);
+        // The Skylight Specification.
+        crate::dialogs::skylight::host_frame(cx, ctx);
+        crate::dialogs::reference_display::host_frame(cx, ctx);
+        // Line Style Management, the Fill Style dialogs and the Pattern window.
+        crate::dialogs::line_style::host_frame(cx, ctx);
+        crate::dialogs::fill_style::host_frame(cx, ctx);
+        crate::dialogs::pattern_editor::host_frame(cx, ctx);
         self.tools[self.active].frame(cx, ctx);
     }
 
@@ -443,6 +509,13 @@ mod tests {
             ToolId::Framing,
             ToolId::Schedule,
             ToolId::Underlay,
+            ToolId::Fireplace,
+            ToolId::Painter,
+            ToolId::MaterialsPolyline,
+            ToolId::ConstructionLine,
+            ToolId::ReferenceOffset,
+            ToolId::TrayCeiling,
+            ToolId::RoofBaseline,
         ] {
             assert_eq!(ids.iter().filter(|i| i.same_tool(id)).count(), 1, "{id:?}");
         }

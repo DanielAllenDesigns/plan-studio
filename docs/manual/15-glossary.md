@@ -64,6 +64,8 @@ including the counter, in Daniel's template.
 
 **Bottom height.** Where a wall starts above the floor it is drawn on, in inches (0 by default). See 2.1 and 2.6.
 
+**Break line.** The zigzag across a stair in plan where the floor above would cut it. Chief draws it two thirds of the way up; here it is set per stair on the Line Style tab (Break Line At). See 7.3.
+
 **Bulge.** How far a curved wall's arc stands off its chord at the middle, measured from the chord to the apex (positive toward the left of start-to-end). The arc's radius, arc angle and rise all follow from the chord and the bulge. See 2.2.
 
 **Bumping.** A rule that makes a moved cabinet stop against a wall or slide up against its neighbor instead of
@@ -135,7 +137,9 @@ dimension**: a measurement that appears while you draw or select something and i
 **Door types.** Hinged (swings on hinges), doorway (a cased opening with no door), sliding, pocket (slides into the wall),
 bifold, barn, garage, fixed and shower. Every one is a tool in the Door flyout, with its own plan symbol and 3D leaf (3.2).
 
-**Dormer.** A small structure that sticks out of a sloped roof and holds a vertical window. Auto Dormer builds a gable, shed or hip dormer on a roof plane; Explode Dormer turns it into plain roof planes and real walls (8.2, 8.6).
+**Dormer.** A small structure that sticks out of a sloped roof and holds a vertical window. Auto Dormer builds a gable, shed or hip dormer on a roof plane; Explode Dormer turns it into plain roof planes and real walls (8.2, 8.6). A dormer's roof can overhang, with fascia, rake boards, soffit and gutters.
+
+**Dutch gable.** A hip roof whose ridge end is cut off by a small vertical gable. Set a wall to Dutch Gable on the Roof tab; Build Roof makes the vertical face as a **face** record that 3D draws like wall, not as a roof plane (8.7, 8.8).
 
 ## E
 
@@ -172,6 +176,8 @@ code limits are in 4.8.
 
 **Floor platform.** The structure of a floor: finish, subfloor and joists. Its thickness (10 1/4" by default) adds
 to the ceiling height to give the floor-to-floor rise.
+
+**Font, installed font.** A text style names a font family (Avenir, Arial ...). The program draws and prints that text in the font of that name installed on this computer, and embeds a subset of it in PDFs the font's licence allows. **Replace Fonts** swaps one family for another in every text style. See 5.9, 12.6.
 
 **Foundation.** What the building sits on. Types in Plan Studio: **walls with footings** (a stem wall on a wider
 footing), **monolithic slab** (one concrete pour with thickened edges) and **piers** (posts under the building).
@@ -266,7 +272,7 @@ and Dimensions each have their own. See 5.5.
 
 **Layout edge.** The weight of the border line around a layout page. See 11.3.
 
-**Leader.** A line with an arrowhead that points from a note to the thing it names. On a layout page, a leader is one line to an elbow with the text on a landing line; on the plan, Leader Line is a text tool. See 5.3, 11.3.
+**Leader.** A line with an arrowhead that points from a note to the thing it names. On a layout page, a leader runs from its arrowhead through any bends you click to an elbow, with the text on a landing line; on the plan, Leader Line is a text tool. See 5.3, 11.3.
 
 **Library type.** A cabinet Chief's library offers as an entry of its own (Vanity, Pantry, Tall Oven, Refrigerator) that Plan Studio builds from a plain cabinet kind with its own size and face. Shift+Tab walks them in the Cabinet tool. See 6.2.
 
@@ -368,9 +374,13 @@ and Dimensions each have their own. See 5.5.
 
 **Project Information.** The client, designer, job number, date, revisions and custom fields of a plan, which fill the layout's title block. Tools > Project Information. See 11.4.
 
+**Radius to.** Which line of a curved wall its Radius is measured to: the Outer Surface, Main Layer Outside, Wall Center, Main Layer Inside or Inner Surface. See 2.6.
+
 **Rafter.** A sloping beam that carries the roof from the ridge down to the wall.
 
 **Rafter tail.** The end of a rafter that sticks out past the wall under the eave. With Exposed Rafter Tails on (Roof Defaults), Plan Studio draws them every 24" (by default) in place of a soffit. See 8.3.
+
+**Raised wall.** A wall whose bottom is 48" or more above the floor. The plan draws it dashed and unfilled, and it does not close a room. See 2.1.
 
 **Rake.** The sloping edge of a gable roof at the end of the building. Drawn in 3D with a rake fascia and a rake soffit (8.3).
 
@@ -422,6 +432,8 @@ and Dimensions each have their own. See 5.5.
 
 **Specification dialog.** Chief's name for the dialog you open by double-clicking an object, with tabs for every setting.
 
+**Spiral stair.** A stair of wedge-shaped treads winding round a centre pole, checked against the spiral-stair code (IRC R311.7.10.1: 9 1/2" risers, 6 3/4" treads, 26" clear width). The Spiral Stairs tool is in the Stairs flyout. See 7.2.
+
 **SSAO (screen-space ambient occlusion).** Darkening of creases and the places where surfaces meet, worked out from the depth of the picture. It is the "Ambient occlusion" switch of the 3D Shading menu. See 10.4a.
 
 **Stem wall.** A short foundation wall that rises from the footing to the floor. A garage whose floor is dropped below the house, and a room with a Stem Wall height, get one in the 3D view (4.4).
@@ -455,6 +467,8 @@ and Dimensions each have their own. See 5.5.
 **Text fit.** How text sits in a layout text box: Wrap, Shrink to fit or As typed. See 11.3.
 
 **Toolbar set.** The buttons and rows the toolbars show for one kind of view (floor plan, 3D view, vector elevation or layout). Customize Toolbars edits them. See 1.4a.
+
+**Transom.** A fixed window over a door or another window, mulled into the same unit so it shares one frame and casing. Add Transom on the Edit toolbar, or drop a window onto a door. See 3.2, 3.9.
 
 **Tread.** The flat part of a stair step you stand on. 10" deep or more by the code.
 
@@ -514,6 +528,7 @@ and Dimensions each have their own. See 5.5.
 | PCF | Percentage-closer filtering, the soft shadow edge (10.4a) |
 | OSB | Oriented strand board, a common sheathing |
 | psplan | Plan Studio plan file |
+| XLSX | An Excel workbook; the schedule and layout-table Export Excel buttons write one (11.2, 11.3) |
 | QA | Quality assurance; the scenario tests and `docs/qa-findings.md` (14.8) |
 | sq ft | Square feet |
 | SSAO | Screen-space ambient occlusion (10.4a) |

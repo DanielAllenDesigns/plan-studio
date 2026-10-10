@@ -29,6 +29,10 @@ pub enum ObjectRef {
     Framing(Id),
     Detail(Id),
     Schedule(Id),
+    /// An architectural block (`Floor::blocks`).
+    Block(Id),
+    /// A compound 3D solid made by a Boolean operation (`Floor::solid_layer`).
+    Solid(Id),
 }
 
 /// A set of objects that select and move together (S-35).
@@ -239,13 +243,17 @@ impl Project {
             self.floors[floor].openings.push(o);
             out.push(ObjectRef::Opening(id));
         }
+        // The copies are free until the objects they were tied to are known
+        // (DIM-38, below).
+        let mut pasted_dims: Vec<(Id, [Option<crate::dim_assoc::DimAnchor>; 2])> = Vec::new();
         for d in &clip.dimensions {
             let id = self.alloc_id();
             let mut d = d.clone();
             map.insert(ObjectRef::Dimension(d.id), ObjectRef::Dimension(id));
+            pasted_dims.push((id, d.anchors));
             d.id = id;
-            d.start = d.start + offset;
-            d.end = d.end + offset;
+            d.anchors = [None, None];
+            d.translate(offset);
             self.floors[floor].dimensions.push(d);
             out.push(ObjectRef::Dimension(id));
         }
@@ -277,6 +285,36 @@ impl Project {
             self.cameras.push(c);
             out.push(ObjectRef::Camera(id));
         }
+        // DIM-38: a dimension pasted with every object it was tied to stays
+        // tied to the copies (it follows them); if any of those was not
+        // copied it pastes free.
+        for (id, old) in pasted_dims {
+            let anchors = retie_anchors(&old, &map, offset);
+            if let Some(d) = self.floors[floor]
+                .dimensions
+                .iter_mut()
+                .find(|d| d.id == id)
+            {
+                d.anchors = anchors;
+            }
+        }
+        // Strings stay strings among the copies; curved dimensions follow the
+        // copies of their walls.
+        let pairs: Vec<(Id, Id)> = clip
+            .dimensions
+            .iter()
+            .filter_map(|d| match map.get(&ObjectRef::Dimension(d.id)) {
+                Some(ObjectRef::Dimension(n)) => Some((d.id, *n)),
+                _ => None,
+            })
+            .collect();
+        self.floors[floor].repair_pasted_dimensions(
+            &pairs,
+            &|w| match map.get(&ObjectRef::Wall(w)) {
+                Some(ObjectRef::Wall(n)) => Some(*n),
+                _ => None,
+            },
+        );
         for g in &clip.groups {
             let members: Vec<ObjectRef> = g.iter().filter_map(|m| map.get(m).copied()).collect();
             if members.len() >= 2 {
@@ -286,6 +324,47 @@ impl Project {
         }
         out
     }
+}
+
+/// The anchors of a pasted dimension: each tied end moved to the copy of its
+/// object, or both ends free when an object it was tied to was not copied
+/// (the same rule as the editor's clipboard).
+fn retie_anchors(
+    old: &[Option<crate::dim_assoc::DimAnchor>; 2],
+    map: &HashMap<ObjectRef, ObjectRef>,
+    offset: Point,
+) -> [Option<crate::dim_assoc::DimAnchor>; 2] {
+    use crate::dim_assoc::AnchorTarget;
+    let mut out = [None, None];
+    for (k, a) in old.iter().enumerate() {
+        let Some(a) = a else { continue };
+        let was = match a.target {
+            AnchorTarget::Wall => ObjectRef::Wall(a.wall),
+            AnchorTarget::Opening => ObjectRef::Opening(a.wall),
+            AnchorTarget::Cabinet => ObjectRef::Cabinet(a.wall),
+            AnchorTarget::Symbol => ObjectRef::Symbol(a.wall),
+            AnchorTarget::Cad => ObjectRef::Cad(a.wall),
+            AnchorTarget::Stair => ObjectRef::Stair(a.wall),
+            AnchorTarget::Device => ObjectRef::Device(a.wall),
+        };
+        let now = match map.get(&was) {
+            Some(
+                ObjectRef::Wall(id)
+                | ObjectRef::Opening(id)
+                | ObjectRef::Cabinet(id)
+                | ObjectRef::Symbol(id)
+                | ObjectRef::Cad(id)
+                | ObjectRef::Stair(id)
+                | ObjectRef::Device(id),
+            ) => *id,
+            _ => return [None, None],
+        };
+        let mut copy = *a;
+        copy.wall = now;
+        copy.last = copy.last + offset;
+        out[k] = Some(copy);
+    }
+    out
 }
 
 #[cfg(test)]
@@ -491,5 +570,73 @@ mod tests {
         assert_eq!(f.groups[0].members.len(), 2);
         assert_eq!(f.prune_groups(|r| r != ObjectRef::Wall(b)), 1);
         assert!(f.groups.is_empty());
+    }
+
+    /// A dimension tied to a wall follows the copy of that wall when both
+    /// are pasted, and pastes free when only the dimension is (DIM-38).
+    #[test]
+    fn a_pasted_dimension_is_tied_to_the_copies_of_its_walls() {
+        use crate::dim_assoc::{AnchorTarget, DimAnchor, DimAttach};
+        let (mut p, a, b) = plan();
+        let mut d = Dimension::new(
+            0,
+            crate::dimension::DimensionKind::Manual,
+            Point::ZERO,
+            Point::new(10.0, 0.0),
+            6.0,
+        );
+        let anchor = |wall, at| DimAnchor {
+            wall,
+            target: AnchorTarget::Wall,
+            at,
+            side: 0.0,
+            last: Point::ZERO,
+            axis: Default::default(),
+            extra: 0.0,
+        };
+        d.anchors = [
+            Some(anchor(a, DimAttach::Start)),
+            Some(anchor(b, DimAttach::End)),
+        ];
+        let dim = p.add_dimension(0, d);
+        let both = p.copy_objects(
+            0,
+            &[
+                ObjectRef::Wall(a),
+                ObjectRef::Wall(b),
+                ObjectRef::Dimension(dim),
+            ],
+        );
+        let new = p.paste(0, &both, Point::new(0.0, 500.0));
+        let pasted_walls: Vec<Id> = new
+            .iter()
+            .filter_map(|r| match r {
+                ObjectRef::Wall(id) => Some(*id),
+                _ => None,
+            })
+            .collect();
+        let pasted = new
+            .iter()
+            .find_map(|r| match r {
+                ObjectRef::Dimension(id) => p.floors[0].dimensions.iter().find(|d| d.id == *id),
+                _ => None,
+            })
+            .unwrap();
+        let tied: Vec<Id> = pasted.anchors.iter().flatten().map(|x| x.wall).collect();
+        assert_eq!(tied.len(), 2);
+        assert!(tied
+            .iter()
+            .all(|w| pasted_walls.contains(w) && *w != a && *w != b));
+        // Alone, the copy has nothing to follow.
+        let alone = p.copy_objects(0, &[ObjectRef::Dimension(dim)]);
+        let new = p.paste(0, &alone, Point::new(0.0, 900.0));
+        let free = new
+            .iter()
+            .find_map(|r| match r {
+                ObjectRef::Dimension(id) => p.floors[0].dimensions.iter().find(|d| d.id == *id),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(free.anchors, [None, None]);
     }
 }

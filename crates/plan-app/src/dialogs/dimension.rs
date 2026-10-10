@@ -7,8 +7,12 @@
 //! points and offset on General (with the objects each point is located on
 //! and whether its extension line shows), the layer (Manual or Automatic) on
 //! Layer, the value text on Label and the text style on Text Style (a
-//! character-height or printed-size style, DIM-7). The format and arrow of a
-//! dimension come from the Dimension Defaults in force and are shown disabled.
+//! character-height or printed-size style, DIM-7). The Primary Format and
+//! Arrow tabs follow the Dimension Defaults in force until their "use the
+//! defaults" box is unticked; then the dimension keeps its own units,
+//! fractions, decimal places, unit indicators and zero-feet suppression, its
+//! own arrow style, size and fill, and its own extension line gap, overshoot
+//! and fixed length (`plan_core::dimension::DimOverrides`, DIM-31, DIM-39).
 //!
 //! Use [`open_for`] to build the dialog for an `ObjectRef::Dimension` (the
 //! shell's `EditorRequest::OpenSpec` handler), call [`DimensionDialog::show`]
@@ -17,21 +21,50 @@
 #![allow(dead_code)]
 
 use super::{
-    dis_check, dis_combo, dis_radio, fmt_short, on, pv_text, row, section, Fields, Outcome,
-    SpecDialog, SpecPages, Tab, PV_ACCENT, PV_FAINT, PV_INK,
+    dis_combo, dis_radio, fmt_short, on, pv_text, row, section, Fields, Outcome, SpecDialog,
+    SpecPages, Tab, PV_ACCENT, PV_FAINT, PV_INK,
 };
 use crate::editor::{EditorContext, ObjectRef};
 use eframe::egui::{self, Align2, Painter, Pos2, Rect, Stroke, Ui};
+use plan_core::dimension::{DimArrow, LeaderStyle, SecondFormat, TextPos, TolMode, Tolerance};
+use plan_core::text_styles::{runs_from_markup, runs_plain, runs_to_markup};
+use plan_core::units::LengthUnit;
 use plan_core::{AutoGroup, DimFormat, Dimension, DimensionKind, Id, PlanDefaults};
 
 const DIM_TABS: &[Tab] = &[
     on("General"),
     on("Primary Format"),
+    on("Secondary Format"),
     on("Arrow"),
+    on("Extensions"),
     on("Text Style"),
+    on("Segments"),
     on("Layer"),
     on("Label"),
 ];
+
+/// Units a dimension can be written in.
+const UNITS: [LengthUnit; 6] = [
+    LengthUnit::FeetInches,
+    LengthUnit::Inches,
+    LengthUnit::DecimalFeet,
+    LengthUnit::Millimeters,
+    LengthUnit::Centimeters,
+    LengthUnit::Meters,
+];
+/// Smallest fractions on offer.
+const FRACTIONS: [u32; 6] = [2, 4, 8, 16, 32, 64];
+
+fn unit_label(u: LengthUnit) -> &'static str {
+    match u {
+        LengthUnit::FeetInches => "Feet and Inches",
+        LengthUnit::Inches => "Inches",
+        LengthUnit::DecimalFeet => "Decimal Feet",
+        LengthUnit::Millimeters => "Millimeters",
+        LengthUnit::Centimeters => "Centimeters",
+        LengthUnit::Meters => "Meters",
+    }
+}
 
 const MANUAL_LAYER: &str = "Dimensions, Manual";
 const AUTO_LAYER: &str = "Dimensions, Automatic";
@@ -46,6 +79,8 @@ struct DimForm {
     draft: Dimension,
     fmt: DimFormat,
     arrow_size: f64,
+    /// The mark the Dimension Defaults draw.
+    arrow_default: DimArrow,
     ext_gap: f64,
     ext_past: f64,
     text_height: f64,
@@ -62,6 +97,11 @@ struct DimForm {
     use_override: bool,
     override_text: String,
     fields: Fields,
+    /// The label as Rich Text markup, and whether the label is formatted.
+    markup: String,
+    use_rich: bool,
+    bar: super::text::editbar::EditBarState,
+    families: Vec<String>,
 }
 
 impl DimensionDialog {
@@ -70,6 +110,8 @@ impl DimensionDialog {
             Some(t) => (true, t.clone()),
             None => (false, String::new()),
         };
+        let use_rich = !dim.look.seg.runs.is_empty();
+        let markup = runs_to_markup(&dim.look.seg.runs);
         Self {
             frame: SpecDialog::new("Dimension Specification", "dimension"),
             form: DimForm {
@@ -77,6 +119,7 @@ impl DimensionDialog {
                 draft: dim,
                 fmt: defaults.dim_format(),
                 arrow_size: defaults.dimensions.arrow_size,
+                arrow_default: DimArrow::from_name(&defaults.dimensions.arrow_style),
                 ext_gap: defaults.dimensions.extension_gap,
                 ext_past: defaults.dimensions.extension_past,
                 text_height: defaults.text.height,
@@ -95,8 +138,18 @@ impl DimensionDialog {
                 use_override,
                 override_text,
                 fields: Fields::default(),
+                markup,
+                use_rich,
+                bar: Default::default(),
+                families: Vec::new(),
             },
         }
+    }
+
+    /// The font families the Rich Text Edit Bar offers.
+    pub fn with_families(mut self, families: Vec<String>) -> Self {
+        self.form.families = families;
+        self
     }
 
     /// The text styles of the plan and the sheet scale (inches per foot)
@@ -166,7 +219,8 @@ pub fn open_for(cx: &EditorContext, o: ObjectRef) -> Option<DimensionDialog> {
     let d = cx.floor().dimensions.iter().find(|d| d.id == id)?.clone();
     Some(
         DimensionDialog::new(d, &cx.defaults)
-            .with_styles(&cx.project.text_styles, cx.sheet.scale.inches_per_foot()),
+            .with_styles(&cx.project.text_styles, cx.sheet.scale.inches_per_foot())
+            .with_families(crate::fonts::catalog().families()),
     )
 }
 
@@ -177,6 +231,12 @@ impl DimForm {
         let mut d = self.draft.clone();
         d.text_override = (self.use_override && !self.override_text.is_empty())
             .then(|| self.override_text.clone());
+        d.look.seg.runs =
+            if self.use_rich && !runs_plain(&runs_from_markup(&self.markup)).is_empty() {
+                runs_from_markup(&self.markup)
+            } else {
+                Vec::new()
+            };
         let moved =
             d.start != self.orig.start || d.end != self.orig.end || d.offset != self.orig.offset;
         if moved && d.kind == DimensionKind::AutoExterior && self.orig.kind == d.kind {
@@ -251,32 +311,400 @@ impl DimForm {
     }
 
     fn primary_format(&mut self, ui: &mut Ui) {
-        section(ui, "Format (from the active Dimension Defaults)");
+        let mut follow = !self.draft.look.has_format();
+        if ui
+            .checkbox(&mut follow, "Use the Dimension Defaults' format")
+            .changed()
+        {
+            if follow {
+                let l = &mut self.draft.look;
+                l.units = None;
+                l.fraction = None;
+                l.decimals = None;
+                l.unit_indicators = None;
+                l.trailing_zeroes = None;
+                l.suppress_zero_feet = None;
+            } else {
+                // Start from what the defaults show now.
+                let base = self.fmt.length.unwrap_or_default();
+                let l = &mut self.draft.look;
+                l.units = Some(base.unit);
+                l.fraction = Some(self.fmt.smallest_fraction.max(1));
+                l.decimals = Some(base.decimals);
+                l.unit_indicators = Some(self.fmt.unit_indicators);
+                l.trailing_zeroes = Some(base.trailing_zeroes);
+                l.suppress_zero_feet = Some(false);
+            }
+        }
+        if follow {
+            section(ui, "Format (from the active Dimension Defaults)");
+            row(ui, "Units", |ui| {
+                ui.label(
+                    unit_label(self.fmt.length.map_or(LengthUnit::FeetInches, |l| l.unit))
+                        .to_string(),
+                )
+            });
+            row(ui, "Smallest Fraction", |ui| {
+                ui.label(format!("1/{}", self.fmt.smallest_fraction));
+            });
+            ui.weak("Untick the box above to set this dimension's own format.");
+            return;
+        }
+        section(ui, "Units");
+        let l = &mut self.draft.look;
+        let mut unit = l.units.unwrap_or_default();
         row(ui, "Units", |ui| {
-            dis_combo(ui, "dim_units", "' \u{2013} \"")
+            egui::ComboBox::from_id_salt("dim_units")
+                .selected_text(unit_label(unit))
+                .show_ui(ui, |ui| {
+                    for u in UNITS {
+                        ui.selectable_value(&mut unit, u, unit_label(u));
+                    }
+                });
         });
-        dis_check(ui, "Show Unit Indicators", self.fmt.unit_indicators);
+        l.units = Some(unit);
+        let imperial = matches!(unit, LengthUnit::FeetInches | LengthUnit::Inches);
         section(ui, "Accuracy");
-        row(ui, "Smallest Fraction", |ui| {
-            ui.label(format!("1/{}", self.fmt.smallest_fraction));
-        });
-        dis_check(ui, "Show Denominator", true);
-        dis_check(ui, "Reduce Fractions", true);
+        if imperial {
+            let mut frac = l.fraction.unwrap_or(16);
+            row(ui, "Smallest Fraction", |ui| {
+                egui::ComboBox::from_id_salt("dim_fraction")
+                    .selected_text(format!("1/{frac}"))
+                    .show_ui(ui, |ui| {
+                        for d in FRACTIONS {
+                            ui.selectable_value(&mut frac, d, format!("1/{d}"));
+                        }
+                    });
+            });
+            l.fraction = Some(frac);
+        } else {
+            let mut places = l.decimals.unwrap_or(2);
+            row(ui, "Decimal Places", |ui| {
+                ui.add(egui::DragValue::new(&mut places).range(0..=6))
+            });
+            l.decimals = Some(places);
+            let mut zeroes = l.trailing_zeroes.unwrap_or(false);
+            ui.checkbox(&mut zeroes, "Show Trailing Zeroes");
+            l.trailing_zeroes = Some(zeroes);
+        }
+        section(ui, "Display");
+        let mut marks = l.unit_indicators.unwrap_or(true);
+        ui.checkbox(&mut marks, "Show Unit Indicators");
+        l.unit_indicators = Some(marks);
+        if unit == LengthUnit::FeetInches {
+            let mut suppress = l.suppress_zero_feet.unwrap_or(false);
+            ui.checkbox(&mut suppress, "Suppress Zero Feet (6\" rather than 0'-6\")");
+            l.suppress_zero_feet = Some(suppress);
+        }
+        ui.weak(format!(
+            "Reads: {}",
+            self.draft.look.format_len(&self.fmt, self.draft.length())
+        ));
     }
 
     fn arrow(&mut self, ui: &mut Ui) {
-        section(ui, "Arrow");
-        row(ui, "Style", |ui| dis_combo(ui, "dim_arrow", "Tick"));
-        row(ui, "Size", |ui| {
-            ui.label(fmt_short(self.arrow_size));
+        let mut follow = self.draft.look.arrow.is_none()
+            && self.draft.look.arrow_size.is_none()
+            && self.draft.look.arrow_filled.is_none();
+        if ui
+            .checkbox(&mut follow, "Use the Dimension Defaults' arrows")
+            .changed()
+        {
+            let l = &mut self.draft.look;
+            if follow {
+                l.arrow = None;
+                l.arrow_size = None;
+                l.arrow_filled = None;
+            } else {
+                l.arrow = Some(self.arrow_default);
+                l.arrow_size = Some(self.arrow_size);
+                l.arrow_filled = Some(true);
+            }
+        }
+        if follow {
+            section(ui, "Arrow (from the active Dimension Defaults)");
+            row(ui, "Style", |ui| ui.label(self.arrow_default.label()));
+            row(ui, "Size", |ui| {
+                ui.label(fmt_short(self.arrow_size));
+            });
+        } else {
+            section(ui, "Arrow");
+            let l = &mut self.draft.look;
+            let mut mark = l.arrow.unwrap_or(self.arrow_default);
+            row(ui, "Style", |ui| {
+                egui::ComboBox::from_id_salt("dim_arrow")
+                    .selected_text(mark.label())
+                    .show_ui(ui, |ui| {
+                        for a in DimArrow::ALL {
+                            ui.selectable_value(&mut mark, a, a.label());
+                        }
+                    });
+            });
+            l.arrow = Some(mark);
+            let mut size = l.arrow_size.unwrap_or(self.arrow_size);
+            if self.fields.length_row(ui, "Size", "arrow_size", &mut size) {
+                l.arrow_size = Some(size.max(0.0));
+            }
+            let mut filled = l.arrow_filled.unwrap_or(true);
+            ui.add_enabled(
+                matches!(mark, DimArrow::Arrow | DimArrow::Dot),
+                egui::Checkbox::new(&mut filled, "Filled"),
+            );
+            l.arrow_filled = Some(filled);
+        }
+    }
+
+    /// The Extensions tab: the extension lines' gap, overshoot and fixed
+    /// length, and a centerline mark on either extension line (Mark as
+    /// Centerline).
+    fn extensions(&mut self, ui: &mut Ui) {
+        self.extension_lines(ui);
+        section(ui, "Centerline Marks");
+        for (k, name) in ["Start", "End"].into_iter().enumerate() {
+            ui.checkbox(
+                &mut self.draft.look.seg.centerline[k],
+                format!("Mark the {name} Extension Line as a Centerline"),
+            );
+        }
+    }
+
+    /// Secondary Format and tolerance: a second number for the same
+    /// distance in another unit or accuracy, a plus-minus tolerance, the
+    /// rounded value indicators and where the number sits on the line.
+    fn secondary_format(&mut self, ui: &mut Ui) {
+        let base = self.fmt.label;
+        let l = &mut self.draft.look;
+        let mut follow = l.second.is_none()
+            && l.tolerance.is_none()
+            && l.indicators.is_none()
+            && l.text_pos.is_none();
+        if ui
+            .checkbox(
+                &mut follow,
+                "Use the Dimension Defaults' second format and tolerance",
+            )
+            .changed()
+        {
+            if follow {
+                l.second = None;
+                l.tolerance = None;
+                l.indicators = None;
+                l.text_pos = None;
+            } else {
+                l.second = Some(base.second);
+                l.tolerance = Some(base.tolerance);
+                l.indicators = Some((base.plus_minus_after, base.tilde_before));
+                l.text_pos = Some(base.position);
+            }
+        }
+        if follow {
+            section(ui, "From the active Dimension Defaults");
+            row(ui, "Second Format", |ui| {
+                ui.label(if base.second.include {
+                    "Included"
+                } else {
+                    "Not included"
+                })
+            });
+            row(ui, "Tolerance", |ui| ui.label(base.tolerance.mode.label()));
+            row(ui, "Text Position", |ui| ui.label(base.position.label()));
+            return;
+        }
+        section(ui, "Second Format");
+        let mut s: SecondFormat = l.second.unwrap_or(base.second);
+        ui.checkbox(&mut s.include, "Include Second Format");
+        row(ui, "Units", |ui| {
+            egui::ComboBox::from_id_salt("dim_second_units")
+                .selected_text(unit_label(s.format.unit))
+                .show_ui(ui, |ui| {
+                    for u in UNITS {
+                        ui.selectable_value(&mut s.format.unit, u, unit_label(u));
+                    }
+                });
         });
+        if matches!(s.format.unit, LengthUnit::FeetInches | LengthUnit::Inches) {
+            let mut frac = s.format.fraction_denominator.max(1);
+            row(ui, "Smallest Fraction", |ui| {
+                egui::ComboBox::from_id_salt("dim_second_fraction")
+                    .selected_text(format!("1/{frac}"))
+                    .show_ui(ui, |ui| {
+                        for d in FRACTIONS {
+                            ui.selectable_value(&mut frac, d, format!("1/{d}"));
+                        }
+                    });
+            });
+            s.format.fraction_denominator = frac;
+        } else {
+            row(ui, "Decimal Places", |ui| {
+                ui.add(egui::DragValue::new(&mut s.format.decimals).range(0..=6))
+            });
+            ui.checkbox(&mut s.format.trailing_zeroes, "Show Trailing Zeroes");
+        }
+        ui.checkbox(&mut s.format.unit_indicators, "Show Unit Indicators");
+        l.second = Some(s);
+
+        section(ui, "Tolerance");
+        let mut t: Tolerance = l.tolerance.unwrap_or(base.tolerance);
+        row(ui, "Style", |ui| {
+            egui::ComboBox::from_id_salt("dim_tolerance")
+                .selected_text(t.mode.label())
+                .show_ui(ui, |ui| {
+                    for m in TolMode::ALL {
+                        ui.selectable_value(&mut t.mode, m, m.label());
+                    }
+                });
+        });
+        if t.mode != TolMode::None {
+            self.fields.length_row(ui, "Plus", "tol_plus", &mut t.plus);
+            if t.mode != TolMode::Symmetric {
+                self.fields
+                    .length_row(ui, "Minus", "tol_minus", &mut t.minus);
+            }
+            t.plus = t.plus.abs();
+            t.minus = t.minus.abs();
+        }
+        l.tolerance = Some(t);
+
+        section(ui, "Rounded Value Indicators");
+        let (mut after, mut tilde) = l.indicators.unwrap_or((false, false));
+        ui.checkbox(&mut after, "+ or - After the Number");
+        ui.checkbox(&mut tilde, "~ Before the Number");
+        l.indicators = Some((after, tilde));
+
+        section(ui, "Dimension Text Position");
+        let mut pos = l.text_pos.unwrap_or(base.position);
+        row(ui, "Position", |ui| {
+            egui::ComboBox::from_id_salt("dim_text_pos")
+                .selected_text(pos.label())
+                .show_ui(ui, |ui| {
+                    for p in TextPos::ALL {
+                        ui.selectable_value(&mut pos, p, p.label());
+                    }
+                });
+        });
+        l.text_pos = Some(pos);
+        ui.weak(format!("Reads: {}", self.draft.label(&self.fmt)));
+    }
+
+    /// The Segments tab: additional text, the label's place and turn, its
+    /// leader line and the string the segment belongs to.
+    fn segments(&mut self, ui: &mut Ui) {
+        section(ui, "Dimension String");
+        match self.draft.string_id() {
+            Some(s) => {
+                row(ui, "String", |ui| {
+                    ui.label(format!("Segment of the string starting at #{s}"))
+                });
+                if ui.button("Take This Segment Out of the String").clicked() {
+                    self.draft.look.seg.string = None;
+                }
+            }
+            None => {
+                ui.weak("A single dimension segment.");
+            }
+        }
+        section(ui, "Additional Text");
+        let seg = &mut self.draft.look.seg;
+        row(ui, "Leading Text", |ui| {
+            ui.add(egui::TextEdit::singleline(&mut seg.leading).desired_width(180.0))
+        });
+        row(ui, "Trailing Text", |ui| {
+            ui.add(egui::TextEdit::singleline(&mut seg.trailing).desired_width(180.0))
+        });
+        ui.checkbox(&mut seg.suppress_value, "Suppress Dimension Value");
+        ui.checkbox(&mut seg.blank, "Blank Segment (no label)");
+        section(ui, "Label");
+        let mut turned = seg.label_angle.is_some();
+        if ui.checkbox(&mut turned, "Turn the Label").changed() {
+            seg.label_angle = turned.then_some(0.0);
+        }
+        if let Some(a) = &mut seg.label_angle {
+            self.fields.degrees_row(ui, "Angle", "deg_label_angle", a);
+        }
+        let mut moved = seg.label_move.is_some();
+        if ui
+            .checkbox(&mut moved, "Move the Label Off the Line")
+            .changed()
+        {
+            seg.label_move = moved.then(|| plan_core::geometry::Point::new(0.0, 18.0));
+        }
+        if let Some(m) = &mut seg.label_move {
+            self.fields
+                .length_row(ui, "Along the Line", "label_along", &mut m.x);
+            self.fields
+                .length_row(ui, "Across the Line", "label_across", &mut m.y);
+            let mut style = seg.leader;
+            row(ui, "Leader Line", |ui| {
+                egui::ComboBox::from_id_salt("dim_leader")
+                    .selected_text(style.map_or("From Dimension Defaults", LeaderStyle::label))
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut style, None, "From Dimension Defaults");
+                        for s in LeaderStyle::ALL {
+                            ui.selectable_value(&mut style, Some(s), s.label());
+                        }
+                    });
+            });
+            seg.leader = style;
+            let mut second = seg.leader_second_segment.unwrap_or(false);
+            if ui.checkbox(&mut second, "Include Second Segment").changed() {
+                seg.leader_second_segment = Some(second);
+            }
+        }
+    }
+
+    /// Gap, overshoot and fixed length of the extension lines.
+    fn extension_lines(&mut self, ui: &mut Ui) {
         section(ui, "Extension Lines");
-        row(ui, "Gap From Marked Object", |ui| {
-            ui.label(fmt_short(self.ext_gap));
-        });
-        row(ui, "Length Past Dimension Line", |ui| {
-            ui.label(fmt_short(self.ext_past));
-        });
+        let l = &mut self.draft.look;
+        let mut follow = l.ext_gap.is_none() && l.ext_past.is_none() && l.ext_length.is_none();
+        if ui
+            .checkbox(&mut follow, "Use the Dimension Defaults' extension lines")
+            .changed()
+        {
+            if follow {
+                l.ext_gap = None;
+                l.ext_past = None;
+                l.ext_length = None;
+            } else {
+                l.ext_gap = Some(self.ext_gap);
+                l.ext_past = Some(self.ext_past);
+            }
+        }
+        if follow {
+            row(ui, "Gap From Marked Object", |ui| {
+                ui.label(fmt_short(self.ext_gap));
+            });
+            row(ui, "Length Past Dimension Line", |ui| {
+                ui.label(fmt_short(self.ext_past));
+            });
+            return;
+        }
+        let mut gap = l.ext_gap.unwrap_or(self.ext_gap);
+        if self
+            .fields
+            .length_row(ui, "Gap From Marked Object", "ext_gap", &mut gap)
+        {
+            l.ext_gap = Some(gap.max(0.0));
+        }
+        let mut past = l.ext_past.unwrap_or(self.ext_past);
+        if self
+            .fields
+            .length_row(ui, "Length Past Dimension Line", "ext_past", &mut past)
+        {
+            l.ext_past = Some(past.max(0.0));
+        }
+        let mut fixed = l.ext_length.is_some();
+        if ui
+            .checkbox(&mut fixed, "Fixed Extension Line Length")
+            .changed()
+        {
+            l.ext_length = fixed.then_some(self.draft.offset.abs().max(12.0));
+        }
+        if let Some(len) = &mut l.ext_length {
+            self.fields
+                .length_row(ui, "Length From Dimension Line", "ext_length", len);
+            *len = len.max(0.0);
+        }
     }
 
     /// The style this dimension's number is set in: its own, else the
@@ -375,6 +803,35 @@ impl DimForm {
             "Measured value: {}",
             self.fmt.fmt_len(self.draft.length())
         ));
+        section(ui, "Rich Text");
+        let mut rich = self.use_rich;
+        if ui
+            .checkbox(&mut rich, "Format the label (bold, italic, size, colour)")
+            .changed()
+        {
+            if rich && self.markup.is_empty() {
+                self.markup = if self.use_override {
+                    self.override_text.clone()
+                } else {
+                    self.draft.label_parts(&self.fmt).primary
+                };
+            }
+            self.use_rich = rich;
+        }
+        if self.use_rich {
+            let env = super::text::editbar::BarEnv {
+                base: self.text_height,
+                ipf: self.ipf,
+                families: &self.families,
+            };
+            let mut halign = plan_core::text_box::HAlign::Left;
+            super::text::editbar::show(ui, &mut self.markup, &mut halign, &mut self.bar, &env);
+            ui.add(
+                egui::TextEdit::multiline(&mut self.markup)
+                    .desired_rows(3)
+                    .desired_width(f32::INFINITY),
+            );
+        }
     }
 }
 
@@ -397,7 +854,10 @@ impl SpecPages for DimForm {
         match DIM_TABS[tab].name {
             "General" => self.general(ui),
             "Primary Format" => self.primary_format(ui),
+            "Secondary Format" => self.secondary_format(ui),
             "Arrow" => self.arrow(ui),
+            "Extensions" => self.extensions(ui),
+            "Segments" => self.segments(ui),
             "Text Style" => self.text_style(ui),
             "Layer" => self.layer(ui),
             "Label" => self.label(ui),
@@ -608,5 +1068,80 @@ mod tests {
         let _ = ctx.run(egui::RawInput::default(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| d.form.page(ui, 3));
         });
+    }
+    #[test]
+    fn the_format_and_arrow_tabs_store_the_dimensions_own_look() {
+        use plan_core::units::LengthUnit;
+        let mut cx = EditorContext::new(plan_defaults::embedded());
+        let id = cx.project.add_dimension(
+            0,
+            Dimension::new(
+                0,
+                DimensionKind::Manual,
+                Point::ZERO,
+                Point::new(78.25, 0.0),
+                24.0,
+            ),
+        );
+        let fmt = cx.dim_format();
+        assert_eq!(cx.floor().dimensions[0].label(&fmt), "6'-6 1/4\"");
+        let mut d = open_for(&cx, ObjectRef::Dimension(id)).unwrap();
+        assert!(d.form.draft.look.is_default());
+        // Format: inches to the eighth, no zero feet.
+        d.form.draft.look.units = Some(LengthUnit::FeetInches);
+        d.form.draft.look.fraction = Some(2);
+        d.form.draft.look.suppress_zero_feet = Some(true);
+        // Arrow: a hollow arrow, 5" long; extension lines of its own.
+        d.form.draft.look.arrow = Some(DimArrow::Arrow);
+        d.form.draft.look.arrow_size = Some(5.0);
+        d.form.draft.look.arrow_filled = Some(false);
+        d.form.draft.look.ext_gap = Some(1.5);
+        d.form.draft.look.ext_past = Some(2.5);
+        d.form.draft.look.ext_length = Some(9.0);
+        assert!(d.apply(&mut cx));
+        let got = &cx.floor().dimensions[0];
+        assert_eq!(got.label(&fmt), "6'-6 1/2\"");
+        assert_eq!(got.look.arrow, Some(DimArrow::Arrow));
+        assert_eq!(got.look.ext_length, Some(9.0));
+        // The plan draws with that look.
+        let look = crate::editor::render::DimLook::of(&cx, got);
+        assert_eq!((look.arrow, look.gap, look.past), (5.0, 1.5, 2.5));
+        assert_eq!(look.ext_length, Some(9.0));
+        assert!(!look.filled);
+        // The tabs draw both ways: following the defaults, and with a look.
+        let ctx = egui::Context::default();
+        for tab in [1, 2] {
+            let mut open = open_for(&cx, ObjectRef::Dimension(id)).unwrap();
+            for follow in [false, true] {
+                if follow {
+                    open.form.draft.look = Default::default();
+                }
+                let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| open.form.page(ui, tab));
+                });
+            }
+        }
+        // Reopened, the dialog shows what the dimension keeps; one undo step.
+        let again = open_for(&cx, ObjectRef::Dimension(id)).unwrap();
+        assert_eq!(again.form.draft.look.fraction, Some(2));
+        assert_eq!(cx.undo().as_deref(), Some("Change Dimension"));
+        assert!(cx.floor().dimensions[0].look.is_default());
+    }
+
+    #[test]
+    fn decimal_units_show_decimal_places_and_metric_drops_the_feet() {
+        use plan_core::units::LengthUnit;
+        let (cx, id) = cx_with_dim(DimensionKind::Manual);
+        let mut d = open_for(&cx, ObjectRef::Dimension(id)).unwrap();
+        d.form.draft.look.units = Some(LengthUnit::Millimeters);
+        d.form.draft.look.decimals = Some(0);
+        d.form.draft.look.unit_indicators = Some(true);
+        let fmt = cx.dim_format();
+        assert_eq!(d.draft().label(&fmt), "3048 mm");
+        d.form.draft.look.units = Some(LengthUnit::DecimalFeet);
+        d.form.draft.look.decimals = Some(1);
+        assert_eq!(d.draft().label(&fmt), "10'");
+        d.form.draft.look.trailing_zeroes = Some(true);
+        assert_eq!(d.draft().label(&fmt), "10.0'");
     }
 }

@@ -36,13 +36,38 @@
 //! lavatory gives the sink-base face, a dishwasher an open bay with the
 //! appliance name `Dishwasher`.
 //!
+//! # Corner cabinets (stage 3)
+//!
+//! A corner cabinet is stored as its square bounding box like any other box,
+//! with nothing that marks it: no line records of its own (0 of 555 cabinets
+//! of 11 projects), no `corner`/`blind` string among the 262 distinct strings
+//! of the class, and the bytes of equal-size cabinets differ only in GUID and
+//! id. What marks it is where it stands. Of 495 boxes, three are square (36"
+//! x 36", 30" to 36" high), and all three have their back-right corner within
+//! 3.5" of two perpendicular walls (half a 6.5" wall plus the 0.25" the
+//! healing leaves): the inside corner of a kitchen. The importer therefore
+//! reads a base or wall box that is square (within 1.5"), 30" to 60" a side
+//! and has a back corner on two perpendicular walls as `CornerBase` /
+//! `CornerWall` (Low: geometry only, a 36" square cabinet that happens to
+//! stand in a corner without being an L would be misread; flagged "verify in
+//! Chief"). The legs are the box's sides, the arms 24" (12" for a wall
+//! cabinet), the notch opposite the wall corner, a diagonal front. A box
+//! whose corner is the back-right one is placed with its origin there and
+//! turned a quarter turn, so Plan Studio's corner (the origin) is at the walls.
+//!
+//! Blind cabinets have no such mark (a blind base is a plain rectangle that
+//! tucks behind its neighbour): they stay plain boxes. A cabinet's label is
+//! not stored either (`=label` is one of the material list's macros, not a
+//! value), so labels stay automatic.
+//!
 //! Not decoded: the cabinet's catalog name, per-cabinet materials, handle
-//! style, corner and blind cabinets (they import as plain boxes), appliance
-//! cutouts, moldings.
+//! style, blind cabinets, appliance cutouts, moldings.
 
 use super::blocks::{own_block, BoxBlock};
 use super::lines::{chain, find_edges, is_closed, polygon_of};
 use super::tree::{f64_at, strings_in, ObjectTree};
+use plan_core::geometry::{dist_to_segment, Point};
+use plan_core::model::Wall;
 use serde_json::{json, Value};
 
 /// Cabinet / box class id.
@@ -320,6 +345,81 @@ pub fn cabinet_json(c: &ChiefCabinet, id: u64) -> Value {
         "label": "",
         "appliance": appliance,
     })
+}
+
+/// Which back corner of a square box stands in the corner of two walls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CornerAt {
+    BackLeft,
+    BackRight,
+}
+
+/// Whether `corner` touches two perpendicular walls (within half the wall's
+/// thickness plus 3").
+fn in_wall_corner(corner: (f64, f64), walls: &[Wall]) -> bool {
+    let p = Point::new(corner.0, corner.1);
+    let near: Vec<&Wall> = walls
+        .iter()
+        .filter(|w| w.start.dist(w.end) > 1.0)
+        .filter(|w| dist_to_segment(p, w.start, w.end) <= w.thickness / 2.0 + 3.0)
+        .collect();
+    near.iter().enumerate().any(|(i, a)| {
+        near[i + 1..].iter().any(|b| {
+            let (da, db) = (a.end.sub(a.start), b.end.sub(b.start));
+            let cross = (da.x * db.y - da.y * db.x) / (da.x.hypot(da.y) * db.x.hypot(db.y));
+            cross.abs() > 0.5
+        })
+    })
+}
+
+/// The back corner of a square base or wall box that stands in the corner of
+/// two walls: a corner cabinet (see the module notes; Low).
+pub fn corner_at(c: &ChiefCabinet, walls: &[Wall]) -> Option<CornerAt> {
+    let b = &c.block;
+    if !matches!(c.kind, BoxKind::Base | BoxKind::Wall)
+        || (b.depth - b.width).abs() > 1.5
+        || !(30.0..=60.0).contains(&b.width)
+    {
+        return None;
+    }
+    let corners = b.corners();
+    match (
+        in_wall_corner(corners[0], walls),
+        in_wall_corner(corners[1], walls),
+    ) {
+        (true, false) => Some(CornerAt::BackLeft),
+        (false, true) => Some(CornerAt::BackRight),
+        _ => None,
+    }
+}
+
+/// Turns the `Floor.cabinets` entry of a box into a corner cabinet standing
+/// at `at`: kind `CornerBase`/`CornerWall`, both legs the box's side, the
+/// origin at the wall corner.
+pub fn make_corner(v: &mut Value, c: &ChiefCabinet, at: CornerAt) {
+    let b = &c.block;
+    let leg = (b.width + b.depth) / 2.0;
+    let wall = c.kind == BoxKind::Wall;
+    let (px, py, angle) = match at {
+        CornerAt::BackLeft => {
+            let (x, y) = b.back_left();
+            (x, y, b.angle())
+        }
+        CornerAt::BackRight => {
+            let (x, y) = b.corners()[1];
+            (x, y, b.angle() + std::f64::consts::FRAC_PI_2)
+        }
+    };
+    v["kind"] = json!(if wall { "CornerWall" } else { "CornerBase" });
+    v["position"] = json!({"x": px, "y": py});
+    v["angle"] = json!(angle);
+    v["width"] = json!(leg);
+    v["depth"] = json!(leg);
+    v["corner"] = json!({
+        "style": "Diagonal",
+        "lazy_susan": false,
+        "arm_depth": if wall { 12.0_f64 } else { 24.0_f64 }.min(leg),
+    });
 }
 
 /// A free-form countertop on a floor.
@@ -622,5 +722,97 @@ pub(crate) mod tests {
         let tree = ObjectTree::build(&small);
         let i = tree.of_kind(COUNTERTOP, 0).next().unwrap();
         assert!(decode_countertop(&small, &tree, i).is_none());
+    }
+
+    fn corner_walls() -> Vec<Wall> {
+        use plan_core::model::WallKind;
+        // The inside faces of a room corner at (0, 0): wall centrelines 3.25"
+        // outside of it, 6.5" thick.
+        vec![
+            Wall::new(
+                Point::new(-3.25, -3.25),
+                Point::new(400.0, -3.25),
+                6.5,
+                96.0,
+                WallKind::Interior,
+            ),
+            Wall::new(
+                Point::new(-3.25, -3.25),
+                Point::new(-3.25, 300.0),
+                6.5,
+                96.0,
+                WallKind::Interior,
+            ),
+        ]
+    }
+
+    fn decoded(v: [f64; 8]) -> ChiefCabinet {
+        let obj = cabinet_obj(0x300, v, 2, &["Lincoln Door"], false);
+        let tree = ObjectTree::build(&obj);
+        let i = tree.of_kind(CABINET, 0).next().unwrap();
+        decode_cabinet(&obj, &tree, i).unwrap()
+    }
+
+    #[test]
+    fn a_square_box_in_a_wall_corner_is_a_corner_cabinet() {
+        let walls = corner_walls();
+        // Back against the south wall, facing +y: its back-left corner is the
+        // room corner.
+        let a = decoded([18.0, 0.0, 0.0, 1.0, 36.0, 36.0, 36.0, 36.0]);
+        assert_eq!(corner_at(&a, &walls), Some(CornerAt::BackLeft));
+        let mut j = cabinet_json(&a, 5);
+        make_corner(&mut j, &a, CornerAt::BackLeft);
+        assert_eq!(j["kind"], "CornerBase");
+        assert_eq!(
+            (
+                j["position"]["x"].as_f64().unwrap(),
+                j["position"]["y"].as_f64().unwrap()
+            ),
+            (0.0, 0.0)
+        );
+        assert_eq!(
+            (j["width"].as_f64().unwrap(), j["depth"].as_f64().unwrap()),
+            (36.0, 36.0)
+        );
+        assert_eq!(j["corner"]["arm_depth"], 24.0);
+        assert_eq!(j["corner"]["style"], "Diagonal");
+        // Back against the west wall, facing +x: the room corner is its
+        // back-right one, so the origin goes there and the cabinet turns 90
+        // degrees.
+        let b = decoded([0.0, 18.0, 1.0, 0.0, 36.0, 36.0, 36.0, 36.0]);
+        assert_eq!(corner_at(&b, &walls), Some(CornerAt::BackRight));
+        let mut j = cabinet_json(&b, 6);
+        let before = j["angle"].as_f64().unwrap();
+        make_corner(&mut j, &b, CornerAt::BackRight);
+        assert!((j["position"]["x"].as_f64().unwrap()).abs() < 1e-9);
+        assert!((j["position"]["y"].as_f64().unwrap()).abs() < 1e-9);
+        assert!((j["angle"].as_f64().unwrap() - before - std::f64::consts::FRAC_PI_2).abs() < 1e-9);
+        // A wall box becomes a corner wall cabinet with 12" arms.
+        let w = decoded([18.0, 0.0, 0.0, 1.0, 36.0, 36.0, 30.0, 84.0]);
+        assert_eq!(w.kind, BoxKind::Wall);
+        let mut j = cabinet_json(&w, 7);
+        make_corner(&mut j, &w, corner_at(&w, &walls).unwrap());
+        assert_eq!(j["kind"], "CornerWall");
+        assert_eq!(j["corner"]["arm_depth"], 12.0);
+    }
+
+    #[test]
+    fn other_boxes_stay_plain() {
+        let walls = corner_walls();
+        // Not square.
+        let a = decoded([18.0, 0.0, 0.0, 1.0, 24.0, 36.0, 36.0, 36.0]);
+        assert_eq!(corner_at(&a, &walls), None);
+        // Square but in the middle of a wall (neither back corner at two walls).
+        let b = decoded([100.0, 0.0, 0.0, 1.0, 36.0, 36.0, 36.0, 36.0]);
+        assert_eq!(corner_at(&b, &walls), None);
+        // Square and in the corner, but too small to be a corner cabinet.
+        let c = decoded([9.0, 0.0, 0.0, 1.0, 18.0, 18.0, 36.0, 36.0]);
+        assert_eq!(corner_at(&c, &walls), None);
+        // A tall cabinet is never read as a corner.
+        let d = decoded([18.0, 0.0, 0.0, 1.0, 36.0, 36.0, 84.0, 84.0]);
+        assert_eq!(d.kind, BoxKind::FullHeight);
+        assert_eq!(corner_at(&d, &walls), None);
+        // No walls, no corner.
+        assert_eq!(corner_at(&a, &[]), None);
     }
 }

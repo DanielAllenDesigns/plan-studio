@@ -25,13 +25,45 @@
 //! device is not stored either (the angle field is the constant above); the
 //! importer computes it from the wall it sits on (`walls::host_of`).
 //!
-//! Not decoded: circuit and switch-to-load connections (the objects hold lists
-//! of object ids that were not matched to devices).
+//! # Gang boxes and connections (stage 3)
+//!
+//! **Multi-gang boxes.** A class 150 object directly on a floor holds two or
+//! three class 21 devices (a switch pair, a `Duplex` with a `GFCI`, a
+//! `Single Pole` with a `Four Way`): 36 of them in a job with 354 loose
+//! devices, 3.3" to 5.25" apart. They decode like loose devices; stage 2 left
+//! them out because their parent is not a floor (34 of 36 have a position).
+//!
+//! **Connections.** Class 34 version 1, directly on a floor, is the dashed arc
+//! between two devices (`Connect Devices`; 128 on a floor set of 354 devices).
+//! Its first line record starts on a device and the object holds the arc twice:
+//! two line records, start to the arc's middle point to the end (the legs of a
+//! three-point arc), then the same arc sampled in 10" chords. The end of the
+//! last chord lies on the other device. Checked on six projects: for 251 of 295
+//! arc ends of one job the nearest device is within 0.5" (lights end on the
+//! light's own point; a wall switch's arc starts 10" to 18" off its point, on
+//! the symbol's edge), and the pairs are light to light (`Recessed Down Light 6`
+//! to `Recessed Down Light 6`, `flush mount` to `flush mount`: the daisy chain
+//! of a lighting run) and switch to light (`Single Pole`, `Three Way`, `Four Way`
+//! to a light), 3-way to 3-way (travelers). The bend is the middle point's
+//! distance from the chord, as in `ElectricalLayer::bend_connection`.
+//! Confidence: High for the two ends, Medium for which end is the switch (the
+//! importer takes the switch end as `from`).
+//!
+//! Not decoded: circuit numbers (nothing in a device or a connection holds one;
+//! the objects that could, classes 36, 38 and 41, hold bounding boxes and pen
+//! values) and device facing (the angle at +28 is axis-aligned for a third of
+//! the devices and unrelated to the wall they sit on, so the importer still
+//! derives it from the host wall).
 
+use super::lines::find_edges;
 use super::tree::{f64_at, strings_in, ObjectTree};
 
 /// Electrical device class id.
 pub const DEVICE: u8 = 21;
+/// A group of devices sharing one box (a gang box).
+pub const GANG_BOX: u8 = 150;
+/// The dashed arc between two devices.
+pub const CONNECTION: u8 = 34;
 /// Where the position search starts and ends, from the `CD` byte.
 const SEARCH_FROM: usize = 0x100;
 const SEARCH_TO: usize = 0x1800;
@@ -66,8 +98,17 @@ pub fn kind_of(name: &str, tags: &[String], mount: Mount) -> Option<&'static str
         "Gfci"
     } else if n.contains("quad") {
         "Outlet110Quad"
-    } else if n == "220v" || has("220v") {
+    } else if n == "220v" || has("220v") || (n.contains("220") && n.contains("outlet")) {
         "Outlet220"
+    } else if n.contains("weatherproof")
+        || n.contains("waterproof")
+        || (n.contains("outdoor") && (n.contains("outlet") || n.contains("receptacle")))
+        || has("weatherproof")
+        || n.split_whitespace().any(|w| w == "wp")
+    {
+        "OutletWp"
+    } else if n.contains("dedicated") || has("dedicated") {
+        "OutletDedicated"
     } else if n.contains("duplex") || n.contains("outlet") || n.contains("receptacle") {
         if n.contains("floor") {
             "OutletFloor"
@@ -130,6 +171,8 @@ pub fn kind_is_wall_mounted(kind: &str) -> bool {
         "Outlet110"
             | "Outlet110Quad"
             | "Outlet220"
+            | "OutletWp"
+            | "OutletDedicated"
             | "Gfci"
             | "Switch"
             | "Switch3Way"
@@ -149,7 +192,9 @@ pub fn kind_is_wall_mounted(kind: &str) -> bool {
 /// `DeviceKind::default_height`); `ceiling` is the floor's ceiling height.
 pub fn default_height(kind: &str, ceiling: f64) -> f64 {
     match kind {
-        "Outlet110" | "Outlet110Quad" | "Outlet220" | "Gfci" | "DataJack" | "PhoneJack" => 12.0,
+        "Outlet110" | "Outlet110Quad" | "Outlet220" | "OutletDedicated" | "Gfci" | "DataJack"
+        | "PhoneJack" => 12.0,
+        "OutletWp" => 18.0,
         "OutletFloor" => 0.0,
         "Switch" | "Switch3Way" | "Switch4Way" | "SwitchDimmer" | "Doorbell" | "TvJack" => 48.0,
         "Thermostat" => 52.0,
@@ -228,6 +273,62 @@ pub fn decode_device(
     })
 }
 
+/// One decoded connection arc.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChiefConnection {
+    pub node: usize,
+    pub start: (f64, f64),
+    /// The middle point of the three-point arc.
+    pub mid: (f64, f64),
+    pub end: (f64, f64),
+}
+
+impl ChiefConnection {
+    /// Signed distance of the middle point from the chord `start -> end`,
+    /// positive to the left (the `arc_bulge` of `plan_electrical::Connection`),
+    /// clamped to half the chord.
+    pub fn bulge(&self) -> f64 {
+        let (dx, dy) = (self.end.0 - self.start.0, self.end.1 - self.start.1);
+        let chord = dx.hypot(dy);
+        if chord < 1e-6 {
+            return 0.0;
+        }
+        let (nx, ny) = (-dy / chord, dx / chord);
+        let m = (
+            (self.start.0 + self.end.0) / 2.0,
+            (self.start.1 + self.end.1) / 2.0,
+        );
+        ((self.mid.0 - m.0) * nx + (self.mid.1 - m.1) * ny).clamp(-chord / 2.0, chord / 2.0)
+    }
+}
+
+/// Decodes the class 34 (version 1) object at `node`: the start of the first
+/// line record, the end of the second (the arc's middle point) and the end of
+/// the last one. `None` for an object with fewer than two line records or a
+/// zero-length chord.
+pub fn decode_connection(bytes: &[u8], tree: &ObjectTree, node: usize) -> Option<ChiefConnection> {
+    let n = tree.node(node);
+    let edges = find_edges(bytes, n.marker, n.marker + 0x40, n.end);
+    let first = edges.first()?;
+    let second = edges.get(1)?;
+    let last = edges.last()?;
+    let (start, mid, end) = (first.start(), second.start(), last.end());
+    // The second record starts where the first ended (the arc's middle point).
+    let joint = first.end();
+    if (joint.0 - mid.0).hypot(joint.1 - mid.1) > 0.1 {
+        return None;
+    }
+    if (start.0 - end.0).hypot(start.1 - end.1) < 1.0 {
+        return None;
+    }
+    Some(ChiefConnection {
+        node,
+        start,
+        mid,
+        end,
+    })
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -249,6 +350,89 @@ pub(crate) mod tests {
     }
 
     const BOX: (f64, f64, f64, f64) = (0.0, 0.0, 1000.0, 800.0);
+
+    /// A connection arc: the legs start -> mid -> end as the first two line
+    /// records, then the arc again as 10" chords ending on `end`.
+    pub fn connection_obj(start: (f64, f64), mid: (f64, f64), end: (f64, f64)) -> Vec<u8> {
+        use crate::import::lines::tests::put_edge;
+        let leg = |a: (f64, f64), b: (f64, f64)| {
+            let len = (b.0 - a.0).hypot(b.1 - a.1);
+            (a.0, a.1, (b.0 - a.0) / len, (b.1 - a.1) / len, len)
+        };
+        sized(CONNECTION, 1, 3000, |b| {
+            put_edge(b, 671, leg(start, mid));
+            put_edge(b, 671 + 388, leg(mid, end));
+            // Sampled chords: the arc's mid point and the last chord.
+            put_edge(b, 2448, leg(start, mid));
+            put_edge(b, 2448 + 388, leg(mid, end));
+        })
+    }
+
+    /// A gang box holding the given device objects.
+    pub fn gang_obj(children: &[Vec<u8>]) -> Vec<u8> {
+        let kids: usize = children.iter().map(|c| c.len() - 1).sum();
+        sized(GANG_BOX, 0, 0x100 + kids, |b| {
+            let mut at = 0x100;
+            for c in children {
+                b[at..at + c.len() - 1].copy_from_slice(&c[1..]);
+                at += c.len() - 1;
+            }
+        })
+    }
+
+    #[test]
+    fn decodes_a_connection_arc_and_its_bulge() {
+        // Switch side at (213, 100), light at (300, 150), the arc passes
+        // through (250, 140): left of the chord, so the bulge is positive.
+        let obj = connection_obj((213.0, 100.0), (250.0, 140.0), (300.0, 150.0));
+        let tree = ObjectTree::build(&obj);
+        let i = tree.of_kind(CONNECTION, 1).next().unwrap();
+        let c = decode_connection(&obj, &tree, i).unwrap();
+        assert_eq!(c.start, (213.0, 100.0));
+        assert_eq!(c.mid, (250.0, 140.0));
+        assert!((c.end.0 - 300.0).abs() < 1e-9 && (c.end.1 - 150.0).abs() < 1e-9);
+        assert!(c.bulge() > 15.0 && c.bulge() < 17.0, "{}", c.bulge());
+        // Reversed, the same arc bulges to the other side.
+        let rev = ChiefConnection {
+            node: c.node,
+            start: c.end,
+            mid: c.mid,
+            end: c.start,
+        };
+        assert!((rev.bulge() + c.bulge()).abs() < 1e-9);
+        // The bulge is limited to half the chord.
+        let far = ChiefConnection {
+            node: 0,
+            start: (0.0, 0.0),
+            mid: (5.0, 900.0),
+            end: (10.0, 0.0),
+        };
+        assert_eq!(far.bulge(), 5.0);
+    }
+
+    #[test]
+    fn connections_need_two_joined_records_and_a_real_chord() {
+        use crate::import::lines::tests::put_edge;
+        let one = sized(CONNECTION, 1, 3000, |b| {
+            put_edge(b, 671, (0.0, 0.0, 1.0, 0.0, 50.0))
+        });
+        let tree = ObjectTree::build(&one);
+        let i = tree.of_kind(CONNECTION, 1).next().unwrap();
+        assert!(decode_connection(&one, &tree, i).is_none());
+        // The second record does not start where the first ends.
+        let gap = sized(CONNECTION, 1, 3000, |b| {
+            put_edge(b, 671, (0.0, 0.0, 1.0, 0.0, 50.0));
+            put_edge(b, 671 + 388, (80.0, 0.0, 1.0, 0.0, 50.0));
+        });
+        let tree = ObjectTree::build(&gap);
+        let i = tree.of_kind(CONNECTION, 1).next().unwrap();
+        assert!(decode_connection(&gap, &tree, i).is_none());
+        // Start and end on the same spot.
+        let loopy = connection_obj((10.0, 10.0), (30.0, 20.0), (10.0, 10.5));
+        let tree = ObjectTree::build(&loopy);
+        let i = tree.of_kind(CONNECTION, 1).next().unwrap();
+        assert!(decode_connection(&loopy, &tree, i).is_none());
+    }
 
     #[test]
     fn decodes_position_name_tags_and_mount() {
@@ -350,6 +534,29 @@ pub(crate) mod tests {
             Some("WallSconce")
         );
         assert_eq!(kind_of("220V", &t("220V"), Mount::Wall), Some("Outlet220"));
+        // Weatherproof and dedicated receptacles have kinds of their own.
+        assert_eq!(
+            kind_of("Weatherproof Duplex", &t("110V"), Mount::Wall),
+            Some("OutletWp")
+        );
+        assert_eq!(
+            kind_of("WP Outlet", &t("Outlets"), Mount::Wall),
+            Some("OutletWp")
+        );
+        assert_eq!(
+            kind_of("Dedicated Outlet", &t("110V"), Mount::Wall),
+            Some("OutletDedicated")
+        );
+        assert_eq!(
+            kind_of("220V Outlet", &t("Outlets"), Mount::Wall),
+            Some("Outlet220")
+        );
+        assert_eq!(
+            kind_of("Duplex", &t("110V"), Mount::Wall),
+            Some("Outlet110")
+        );
+        assert!(kind_is_wall_mounted("OutletWp") && kind_is_wall_mounted("OutletDedicated"));
+        assert_eq!(default_height("OutletWp", 109.0), 18.0);
         assert_eq!(kind_of("Mystery", &[], Mount::Other), None);
         assert!(kind_is_wall_mounted("Gfci") && !kind_is_wall_mounted("RecessedCan"));
         assert_eq!(default_height("Outlet110", 109.0), 12.0);

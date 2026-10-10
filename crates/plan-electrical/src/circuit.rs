@@ -98,21 +98,18 @@ pub fn circuits(layer: &ElectricalLayer, opts: &CircuitOptions) -> Vec<Circuit> 
         number += 1;
     };
 
-    for d in layer
-        .devices
-        .iter()
-        .filter(|d| d.kind == DeviceKind::Outlet220)
-    {
+    for d in layer.devices.iter().filter(|d| d.kind.is_dedicated()) {
         let name = if d.label.is_empty() {
             format!("#{}", d.id)
         } else {
             d.label.clone()
         };
-        push(
-            opts.dedicated_amps,
-            vec![d.id],
-            format!("Dedicated 220V {name}"),
-        );
+        let (amps, volts) = if d.kind == DeviceKind::Outlet220 {
+            (opts.dedicated_amps, "220V")
+        } else {
+            (opts.outlet_amps, "110V")
+        };
+        push(amps, vec![d.id], format!("Dedicated {volts} {name}"));
     }
 
     let is_counter = |d: &&Device| {
@@ -136,7 +133,7 @@ pub fn circuits(layer: &ElectricalLayer, opts: &CircuitOptions) -> Vec<Circuit> 
     let general: Vec<&Device> = layer
         .devices
         .iter()
-        .filter(|d| d.kind.is_outlet() && d.kind != DeviceKind::Outlet220 && !is_counter(d))
+        .filter(|d| d.kind.is_outlet() && !d.kind.is_dedicated() && !is_counter(d))
         .collect();
     for (i, ids) in cluster(&general, opts.outlets_per_circuit)
         .into_iter()
@@ -202,5 +199,38 @@ pub fn legend() -> Vec<(DeviceKind, &'static str)> {
     DeviceKind::all()
         .into_iter()
         .map(|k| (k, k.description()))
+        .collect()
+}
+
+/// One line of the electrical schedule.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScheduleRow {
+    pub id: Id,
+    /// Mark, `E-01`, `E-02`, ... in device order.
+    pub mark: String,
+    /// The device type, e.g. `GFCI Outlet`.
+    pub kind: String,
+    /// Mount height, inches.
+    pub height: f64,
+    /// Circuit number, or empty.
+    pub circuit: String,
+    /// `110V`, `220V`, `GFCI`, `WP` and `Dedicated`, comma separated.
+    pub flags: String,
+}
+
+/// The device schedule: mark, type, height, circuit and flags of every device.
+pub fn schedule_rows(layer: &ElectricalLayer) -> Vec<ScheduleRow> {
+    layer
+        .devices
+        .iter()
+        .enumerate()
+        .map(|(i, d)| ScheduleRow {
+            id: d.id,
+            mark: format!("E-{:02}", i + 1),
+            kind: d.kind.name().to_string(),
+            height: d.height,
+            circuit: d.circuit.map(|c| c.to_string()).unwrap_or_default(),
+            flags: d.kind.flags().join(", "),
+        })
         .collect()
 }

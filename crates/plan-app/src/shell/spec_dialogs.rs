@@ -1,22 +1,28 @@
-//! Hosts the specification dialogs of every object kind except walls and
-//! openings (those two keep their extras in `main.rs`): stairs, cabinets,
+//! Hosts the specification dialogs of every object kind except a single wall
+//! and openings (those keep their extras in `main.rs`; several walls open one
+//! dialog here, W-83): stairs, cabinets,
 //! symbols, roof planes, ceiling planes and dormers, framing members, slabs and other foundation objects,
 //! corner trim, moldings, material regions, hatching, decks and 3D solids,
 //! electrical devices, terrain, dimensions, text and CAD. [`SpecDialogs::open`] is the one place that maps an [`ObjectRef`] to
 //! its dialog; OK applies the draft as one undo step.
 
 use crate::dialogs::cabinet::CabinetDialog;
+use crate::dialogs::cabinet_multi::CabinetMultiDialog;
 use crate::dialogs::cad::CadDialog;
 use crate::dialogs::details::DetailsDialog;
 use crate::dialogs::dimension::{self, DimensionDialog};
 use crate::dialogs::electrical::ElectricalDialog;
 use crate::dialogs::foundation::FoundationDialog;
 use crate::dialogs::framing::FramingMemberDialog;
+use crate::dialogs::object_info::{self, InfoSession, SharedInfo};
+use crate::dialogs::property_manager::{self, PropSession, SharedSession};
 use crate::dialogs::roof::{CeilingDialog, DormerDialog, RoofPlaneDialog};
 use crate::dialogs::stairs::StairDialog;
 use crate::dialogs::symbol::SymbolDialog;
 use crate::dialogs::terrain::{ObjectDialog, TerrainDialog};
+use crate::dialogs::text::annot::AnnotDialog;
 use crate::dialogs::text::TextDialog;
+use crate::dialogs::WallDialog;
 use crate::dialogs::{cad, text, Outcome};
 use crate::editor::{
     details_view, foundation_view, framing_view, placed, roof_view, rooms_edit, schedule_view,
@@ -30,6 +36,8 @@ use plan_core::Id;
 enum Active {
     Stair(Box<StairDialog>),
     Cabinet(Box<CabinetDialog>),
+    /// The Cabinet Specification over several selected cabinets (CB-631).
+    Cabinets(Box<CabinetMultiDialog>),
     Symbol(Box<SymbolDialog>),
     RoofPlane(Box<RoofPlaneDialog>),
     /// A dormer: its id, the plane it stands on and the dialog.
@@ -45,18 +53,82 @@ enum Active {
     TerrainObject(site_view::TerrainHit, Box<ObjectDialog>),
     Dimension(Box<DimensionDialog>),
     Text(Box<TextDialog>),
+    /// A callout, marker or note (Callout, Marker or Note Specification).
+    Annot(Box<AnnotDialog>),
     Cad(Box<CadDialog>),
+    /// The Wall Specification over several selected walls (W-83).
+    Walls(Box<WallDialog>),
 }
 
 /// The open specification dialog, if any (one at a time).
 #[derive(Default)]
 pub struct SpecDialogs {
     active: Option<Active>,
+    /// The Properties tab of the open dialog (`property_manager`).
+    props: Option<SharedSession>,
+    /// The Properties tab of the wall or opening dialog `main.rs` hosts.
+    main_props: Option<SharedSession>,
+    /// The Components and Object Information tabs of the open dialog.
+    info: Option<SharedInfo>,
+    /// The same for the wall or opening dialog `main.rs` hosts.
+    main_info: Option<SharedInfo>,
 }
 
 impl SpecDialogs {
     pub fn is_open(&self) -> bool {
         self.active.is_some()
+    }
+
+    /// Arms the Properties tab for the wall or opening dialog that `main.rs`
+    /// hosts (none when the object's kind has no custom properties).
+    pub fn arm_main_props(&mut self, cx: &EditorContext, o: ObjectRef) {
+        self.main_props = PropSession::for_object(cx, o);
+        self.main_info = InfoSession::for_object(cx, o);
+    }
+
+    /// Test access to the shared panels (Components, Object Information,
+    /// Label, Schedule, Manufacturer, Elevation) of the open dialog.
+    #[cfg(test)]
+    pub fn info_session(&self) -> Option<&SharedInfo> {
+        self.info.as_ref()
+    }
+
+    /// The Materials List tabs armed for the hosted wall / opening dialog.
+    pub fn main_info(&self) -> Option<&SharedInfo> {
+        self.main_info.as_ref()
+    }
+
+    /// Takes the armed Materials List tabs (OK) or drops them (Cancel).
+    pub fn take_main_info(&mut self) -> Option<SharedInfo> {
+        self.main_info.take()
+    }
+
+    /// The armed session of the hosted wall / opening dialog.
+    pub fn main_props(&self) -> Option<&SharedSession> {
+        self.main_props.as_ref()
+    }
+
+    /// Takes the armed session (OK) or drops it (Cancel).
+    pub fn take_main_props(&mut self) -> Option<SharedSession> {
+        // A default dialog or a cancelled one has no Materials List tabs
+        // either; OK takes them first with `take_main_info`.
+        self.main_info = None;
+        self.main_props.take()
+    }
+
+    /// The Properties session of the open dialog.
+    #[cfg(test)]
+    pub fn props_mut(&mut self) -> Option<&SharedSession> {
+        self.props.as_ref()
+    }
+
+    /// Test access to the open multi-wall Wall Specification.
+    #[cfg(test)]
+    pub fn walls_dialog_mut(&mut self) -> Option<&mut WallDialog> {
+        match self.active.as_mut()? {
+            Active::Walls(d) => Some(d),
+            _ => None,
+        }
     }
 
     /// Test access to the open Dimension Specification's draft.
@@ -77,6 +149,15 @@ impl SpecDialogs {
         }
     }
 
+    /// Test access to the open Callout, Marker or Note Specification.
+    #[cfg(test)]
+    pub fn annot_dialog_mut(&mut self) -> Option<&mut AnnotDialog> {
+        match self.active.as_mut()? {
+            Active::Annot(d) => Some(d),
+            _ => None,
+        }
+    }
+
     /// Test access to the open CAD Specification's draft.
     #[cfg(test)]
     pub fn cad_draft_mut(&mut self) -> Option<&mut plan_core::CadObject> {
@@ -86,23 +167,133 @@ impl SpecDialogs {
         }
     }
 
+    /// Opens one Wall Specification over the walls `ids` of the active floor
+    /// (Open Object with several walls selected, W-83). Fields whose values
+    /// differ show the mixed state; only the fields edited are written to all
+    /// the walls, as one undo step. Returns false for fewer than two walls.
+    pub fn open_walls(&mut self, cx: &mut EditorContext, ids: &[Id]) -> bool {
+        let walls: Vec<_> = ids
+            .iter()
+            .filter_map(|id| cx.floor().wall(*id).cloned())
+            .collect();
+        if walls.len() < 2 {
+            return false;
+        }
+        let heights = [
+            cx.wall_height(plan_core::WallKind::Exterior),
+            cx.wall_height(plan_core::WallKind::Interior),
+        ];
+        let retained: Vec<bool> = walls
+            .iter()
+            .map(|w| framing_view::wall_retained(&cx.project, w.id))
+            .collect();
+        let mut dialog = WallDialog::multi(walls, heights, cx.wall_types().to_vec());
+        dialog.set_framing_retained(&retained);
+        self.active = Some(Active::Walls(Box::new(dialog)));
+        true
+    }
+
+    /// The cabinets of the active floor that are all there is in the
+    /// selection, when it holds two or more cabinets and nothing else.
+    pub fn selected_cabinets(cx: &EditorContext) -> Option<Vec<Id>> {
+        let ids: Vec<Id> = cx
+            .selection
+            .items
+            .iter()
+            .map(|o| match o {
+                ObjectRef::Cabinet(id) => Some(*id),
+                _ => None,
+            })
+            .collect::<Option<_>>()?;
+        (ids.len() >= 2).then_some(ids)
+    }
+
+    /// Test access to the open one-cabinet Cabinet Specification.
+    #[cfg(test)]
+    pub fn cabinet_dialog_mut(&mut self) -> Option<&mut CabinetDialog> {
+        match self.active.as_mut()? {
+            Active::Cabinet(d) => Some(d),
+            _ => None,
+        }
+    }
+
+    /// Test access to the open multi-cabinet Cabinet Specification.
+    #[cfg(test)]
+    pub fn cabinets_dialog_mut(&mut self) -> Option<&mut CabinetMultiDialog> {
+        match self.active.as_mut()? {
+            Active::Cabinets(d) => Some(d),
+            _ => None,
+        }
+    }
+
+    /// The walls of the active floor that are all there is in the selection,
+    /// when it holds two or more walls and nothing else.
+    pub fn selected_walls(cx: &EditorContext) -> Option<Vec<Id>> {
+        let ids: Vec<Id> = cx
+            .selection
+            .items
+            .iter()
+            .map(|o| match o {
+                ObjectRef::Wall(id) => Some(*id),
+                _ => None,
+            })
+            .collect::<Option<_>>()?;
+        (ids.len() >= 2).then_some(ids)
+    }
+
     /// Opens the dialog of `o`. Returns false when the object has none (or
     /// no longer exists). Rooms and cameras are handed to the owners of
     /// their dialogs (`dialogs::build_tools`, the 3D panel).
     pub fn open(&mut self, cx: &mut EditorContext, o: ObjectRef) -> bool {
+        // A Materials List Polyline is a CAD polyline with a specification of
+        // its own (the Included Floors/Categories grid).
+        if let ObjectRef::Cad(id) = o {
+            if crate::dialogs::materials_list::open_polyline_spec(cx, id) {
+                return true;
+            }
+        }
+        // A fireplace symbol opens the Fireplace Specification: the Fireplace
+        // tool hosts that dialog and goes back to Select Objects when it closes.
+        if let ObjectRef::Symbol(id) = o {
+            if crate::editor::fireplace_view::is_fireplace(cx.floor(), id) {
+                crate::editor::fireplace_view::request_open(id);
+                cx.requests.push(crate::editor::EditorRequest::SetTool(
+                    crate::tools::ToolId::Fireplace,
+                ));
+                return true;
+            }
+        }
         let layer_names = |cx: &EditorContext| -> Vec<String> {
             cx.layers().layers.iter().map(|l| l.name.clone()).collect()
         };
         let dialog = match o {
             ObjectRef::Stair(id) => stairs_view::find(cx.floor(), id)
                 .map(|s| Active::Stair(Box::new(StairDialog::new(s)))),
-            ObjectRef::Cabinet(id) => placed::cabinet_by_id(cx.floor(), id)
-                .map(|c| Active::Cabinet(Box::new(CabinetDialog::new(c)))),
-            ObjectRef::Symbol(id) => cx
-                .floor()
-                .symbol(id)
-                .cloned()
-                .map(|s| Active::Symbol(Box::new(SymbolDialog::new(s, layer_names(cx))))),
+            ObjectRef::Cabinet(id) => match Self::selected_cabinets(cx).filter(|v| v.contains(&id))
+            {
+                // Open Object over several cabinets: one dialog, No Change
+                // where the values differ (CB-631).
+                Some(ids) => {
+                    let cabs: Vec<_> = ids
+                        .iter()
+                        .filter_map(|i| placed::cabinet_by_id(cx.floor(), *i))
+                        .collect();
+                    if cabs.len() >= 2 {
+                        Some(Active::Cabinets(Box::new(CabinetMultiDialog::new(cabs))))
+                    } else {
+                        placed::cabinet_by_id(cx.floor(), id)
+                            .map(|c| Active::Cabinet(Box::new(CabinetDialog::new(c))))
+                    }
+                }
+                None => placed::cabinet_by_id(cx.floor(), id)
+                    .map(|c| Active::Cabinet(Box::new(CabinetDialog::new(c)))),
+            },
+            ObjectRef::Symbol(id) => cx.floor().symbol(id).cloned().map(|s| {
+                let paint = crate::tools::materials::symbol_material(&cx.project, s.id);
+                Active::Symbol(Box::new(
+                    SymbolDialog::new(s, layer_names(cx)).with_material(paint),
+                ))
+            }),
             ObjectRef::RoofPlane(id) => {
                 let set = roof_view::load(cx.floor());
                 match (set.plane(id), set.dormer(id)) {
@@ -124,8 +315,10 @@ impl SpecDialogs {
             ObjectRef::Foundation(id) => {
                 let layer = foundation_view::load(cx);
                 layer.find(id).and_then(|r| {
-                    FoundationDialog::new(&layer, r, layer_names(cx))
-                        .map(|d| Active::Foundation(Box::new(d)))
+                    FoundationDialog::new(&layer, r, layer_names(cx)).map(|d| {
+                        let datums = crate::dialogs::foundation::datums_for(cx, &layer, r);
+                        Active::Foundation(Box::new(d.with_datums(datums)))
+                    })
                 })
             }
             ObjectRef::Detail(id) => {
@@ -139,17 +332,26 @@ impl SpecDialogs {
                 })
             }
             ObjectRef::Framing(id) => match framing_view::find(cx.floor(), id) {
-                Some(framing_view::Record::Manual(m) | framing_view::Record::Built(m)) => Some(
-                    Active::Framing(Box::new(FramingMemberDialog::new(&m, layer_names(cx)))),
-                ),
-                // Layout lines and markers have no specification.
-                _ => None,
+                Some(framing_view::Record::Manual(m)) => Some(Active::Framing(Box::new(
+                    FramingMemberDialog::new(&m, layer_names(cx)),
+                ))),
+                Some(framing_view::Record::Built(m)) => Some(Active::Framing(Box::new(
+                    FramingMemberDialog::new(&m, layer_names(cx)).for_built(),
+                ))),
+                // The Joist and Roof Truss Direction Lines have a Specification;
+                // markers, Bearing Lines and Truss Bases have none.
+                Some(r) => {
+                    FramingMemberDialog::for_direction(&r).map(|d| Active::Framing(Box::new(d)))
+                }
+                None => None,
             },
             ObjectRef::Device(id) => {
                 let layer = site_view::load_electrical(cx.floor());
-                layer
-                    .device(id)
-                    .map(|d| Active::Device(id, Box::new(ElectricalDialog::for_device(d, &layer))))
+                layer.device(id).map(|d| {
+                    let dialog = ElectricalDialog::for_device(d, &layer)
+                        .with_defaults(&plan_electrical::ElectricalDefaults::load(&cx.project));
+                    Active::Device(id, Box::new(dialog))
+                })
             }
             ObjectRef::Terrain => {
                 let rec = site_view::load_terrain(&cx.project).unwrap_or_default();
@@ -172,8 +374,9 @@ impl SpecDialogs {
             ObjectRef::Dimension(_) => {
                 dimension::open_for(cx, o).map(|d| Active::Dimension(Box::new(d)))
             }
-            ObjectRef::Cad(_) | ObjectRef::Text(_) => text::open_for(cx, o)
-                .map(|d| Active::Text(Box::new(d)))
+            ObjectRef::Cad(_) | ObjectRef::Text(_) => text::annot::open_for(cx, o)
+                .map(|d| Active::Annot(Box::new(d)))
+                .or_else(|| text::open_for(cx, o).map(|d| Active::Text(Box::new(d))))
                 .or_else(|| cad::open_for(cx, o).map(|d| Active::Cad(Box::new(d)))),
             ObjectRef::Room(idx) => {
                 rooms_edit::request_room_dialog(cx, idx);
@@ -188,23 +391,41 @@ impl SpecDialogs {
                 crate::dialogs::build_tools::open_schedule_spec(cx.floor, id);
                 return schedule_view::exists(cx.floor(), id);
             }
+            ObjectRef::Block(id) => {
+                crate::dialogs::arch_block::open(cx, id);
+                return cx.floor().blocks.get(id).is_some();
+            }
+            ObjectRef::Solid(id) => {
+                crate::dialogs::solids::open_compound(cx, id);
+                return cx.floor().solid_layer.compound(id).is_some();
+            }
             ObjectRef::Wall(_) | ObjectRef::Opening(_) => None,
         };
         let opened = dialog.is_some();
         if opened {
             self.active = dialog;
+            self.props = PropSession::for_object(cx, o);
+            self.info = InfoSession::for_object(cx, o);
         }
         opened
     }
 
     /// Shows the open dialog and applies an OK.
     pub fn show(&mut self, ctx: &egui::Context, cx: &mut EditorContext) {
+        // A click of the Callout, Marker or Note tool posts its dialog.
+        if self.active.is_none() {
+            if let Some(d) = text::annot::take_posted() {
+                self.active = Some(Active::Annot(Box::new(d)));
+            }
+        }
         let Some(mut a) = self.active.take() else {
             return;
         };
-        let outcome = match &mut a {
+        let prev_info = object_info::set_current(self.info.clone());
+        let outcome = property_manager::with_current(self.props.as_ref(), || match &mut a {
             Active::Stair(d) => d.show(ctx),
             Active::Cabinet(d) => d.show(ctx),
+            Active::Cabinets(d) => d.show(ctx),
             Active::Symbol(d) => d.show(ctx),
             Active::RoofPlane(d) => d.show(ctx),
             Active::Dormer(_, _, d) => d.show(ctx),
@@ -217,13 +438,27 @@ impl SpecDialogs {
             Active::TerrainObject(_, d) => d.show(ctx),
             Active::Dimension(d) => d.show(ctx),
             Active::Text(d) => d.show(ctx),
+            Active::Annot(d) => d.show(ctx),
             Active::Cad(d) => d.show(ctx),
-        };
+            Active::Walls(d) => d.show(ctx),
+        });
+        object_info::set_current(prev_info);
         match outcome {
             Outcome::Open => self.active = Some(a),
-            Outcome::Cancel => {}
+            Outcome::Cancel => {
+                self.props = None;
+                self.info = None;
+            }
             Outcome::Ok => {
-                apply(cx, &a);
+                // The dialog and its Properties and Materials List tabs are
+                // one undo step.
+                let depth = property_manager::before_apply(cx);
+                // One step, and none when OK changed nothing (QA-26).
+                cx.undo_group(|cx| apply(cx, &a));
+                property_manager::after_apply(cx, self.props.as_ref(), depth);
+                object_info::after_apply(cx, self.info.as_ref(), depth);
+                self.props = None;
+                self.info = None;
                 cx.mark_dirty();
             }
         }
@@ -238,8 +473,25 @@ fn apply(cx: &mut EditorContext, a: &Active) {
         Active::Cabinet(d) => {
             placed::apply_cabinet(cx, d.draft());
         }
+        Active::Cabinets(d) => {
+            if d.apply(cx) == 0 {
+                cx.status = "Cabinet Specification: nothing was changed".into();
+            }
+        }
         Active::Symbol(d) => {
-            placed::apply_symbol(cx, d.draft());
+            // The Materials tab's paint joins the Specification's undo step.
+            if placed::apply_symbol(cx, d.draft()) {
+                if let Some(choice) = d.material_choice() {
+                    let id = d.draft().id;
+                    if crate::tools::materials::apply_symbol_material(
+                        &mut cx.project,
+                        id,
+                        choice.as_deref(),
+                    ) {
+                        cx.mark_dirty();
+                    }
+                }
+            }
         }
         Active::RoofPlane(d) => {
             let fl = cx.floor;
@@ -284,7 +536,7 @@ fn apply(cx: &mut EditorContext, a: &Active) {
             }
         }
         Active::Framing(d) => {
-            framing_view::apply_edit(cx, d.draft().clone());
+            d.apply(cx);
         }
         Active::Device(id, d) => {
             let draft = d.draft().clone();
@@ -295,6 +547,10 @@ fn apply(cx: &mut EditorContext, a: &Active) {
                 // The Switches tab: connected lights and 3-way pairs.
                 draft.apply_to_layer(layer, &floor.walls);
             });
+            // "Use as default height" and the Default Heights list (same undo step).
+            if draft.store_defaults(&mut cx.project) {
+                cx.mark_dirty();
+            }
         }
         Active::Terrain(d) => {
             let draft = d.draft().clone();
@@ -319,8 +575,26 @@ fn apply(cx: &mut EditorContext, a: &Active) {
         Active::Text(d) => {
             d.apply(cx);
         }
+        Active::Annot(d) => {
+            d.apply(cx);
+        }
         Active::Cad(d) => {
             d.apply(cx);
+        }
+        Active::Walls(d) => {
+            cx.begin_change("Wall Specification");
+            let fl = cx.floor;
+            let mut changed = d.apply_multi(&mut cx.project, fl);
+            if let (Some(v), Some(ids)) = (d.retain_framing_change(), d.multi_ids()) {
+                changed += framing_view::retain_walls_in(&mut cx.project, ids, v);
+            }
+            if changed == 0 {
+                cx.cancel_change();
+                cx.status = "Wall Specification: nothing was changed".into();
+            } else {
+                cx.project.sync_platform_walls();
+                cx.refresh();
+            }
         }
     }
 }
@@ -382,10 +656,17 @@ mod tests {
         );
         assert_eq!(cx.undo_label().map(str::to_string), depth);
 
-        // An elevation point has no dialog of its own: the Terrain
-        // Specification opens. A vanished element opens nothing.
+        // An elevation point has a dialog of its own (round 14); the whole
+        // terrain opens the Terrain Specification. A vanished element opens
+        // nothing.
         let mut dialogs = SpecDialogs::default();
         assert!(dialogs.open(&mut cx, ObjectRef::TerrainObject(TerrainHit::Point(0))));
+        assert!(matches!(
+            dialogs.active,
+            Some(Active::TerrainObject(TerrainHit::Point(0), _))
+        ));
+        let mut dialogs = SpecDialogs::default();
+        assert!(dialogs.open(&mut cx, ObjectRef::Terrain));
         assert!(matches!(dialogs.active, Some(Active::Terrain(_))));
         let mut dialogs = SpecDialogs::default();
         assert!(!dialogs.open(&mut cx, ObjectRef::TerrainObject(TerrainHit::Wall(4))));
@@ -554,5 +835,97 @@ mod tests {
             (6.0, 108.0, 7.0, plan_core::LineStyle::Solid)
         );
         assert_eq!(cx.undo_label(), Some("Ceiling Plane Specification"));
+    }
+
+    #[test]
+    fn the_electrical_dialog_stores_default_heights_in_the_same_undo_step() {
+        use plan_electrical::{place_free, DeviceKind, ElectricalDefaults};
+        let mut cx = EditorContext::new(plan_defaults::embedded());
+        let mut layer = site_view::load_electrical(cx.floor());
+        let id = layer.add(place_free(DeviceKind::Switch, Point::new(40.0, 40.0)));
+        site_view::save_electrical(&mut cx.project, 0, &layer);
+        let before = cx.undo_label().map(str::to_string);
+        let mut dialogs = SpecDialogs::default();
+        assert!(dialogs.open(&mut cx, ObjectRef::Device(id)));
+        let Some(Active::Device(_, d)) = dialogs.active.as_mut() else {
+            panic!("the Electrical Service Specification did not open");
+        };
+        // Opened with the plan's defaults, so the tab can offer them.
+        let defaults = d.draft().defaults.clone().expect("opened with defaults");
+        assert_eq!(defaults, ElectricalDefaults::load(&cx.project));
+        let mut edited = defaults;
+        edited.set_height(DeviceKind::Switch, 52.0);
+        d.draft_mut().defaults = Some(edited);
+        d.draft_mut().label = "Hall".into();
+        let a = dialogs.active.take().unwrap();
+        apply(&mut cx, &a);
+        assert_eq!(cx.undo_label(), Some("Electrical Service Specification"));
+        assert_eq!(
+            ElectricalDefaults::load(&cx.project).height(DeviceKind::Switch),
+            52.0
+        );
+        let stored = site_view::load_electrical(cx.floor());
+        assert_eq!(stored.device(id).unwrap().label, "Hall");
+        // One undo step takes back the device edit and the default together.
+        cx.undo();
+        assert_eq!(
+            ElectricalDefaults::load(&cx.project).height(DeviceKind::Switch),
+            DeviceKind::Switch.default_height()
+        );
+        assert_ne!(
+            site_view::load_electrical(cx.floor())
+                .device(id)
+                .unwrap()
+                .label,
+            "Hall"
+        );
+        assert_eq!(cx.undo_label().map(str::to_string), before);
+    }
+
+    #[test]
+    fn the_symbol_dialog_paints_the_symbol_in_the_same_undo_step() {
+        use plan_core::PlacedSymbol;
+        let mut cx = EditorContext::new(plan_defaults::embedded());
+        let id = cx.project.add_symbol(
+            0,
+            PlacedSymbol::new("nope", Point::new(10.0, 10.0), 20.0, 20.0, 20.0),
+        );
+        let mut dialogs = SpecDialogs::default();
+        assert!(dialogs.open(&mut cx, ObjectRef::Symbol(id)));
+        let Some(Active::Symbol(d)) = dialogs.active.as_mut() else {
+            panic!("the Symbol Specification did not open");
+        };
+        assert_eq!(d.material_choice(), None, "nothing chosen yet");
+        d.choose_material(Some("Drywall".into()));
+        let a = dialogs.active.take().unwrap();
+        apply(&mut cx, &a);
+        assert_eq!(cx.undo_label(), Some("Symbol Specification"));
+        assert_eq!(
+            crate::tools::materials::symbol_material(&cx.project, id).as_deref(),
+            Some("Drywall")
+        );
+        // Reopening shows the paint; putting the look back clears it.
+        let mut dialogs = SpecDialogs::default();
+        assert!(dialogs.open(&mut cx, ObjectRef::Symbol(id)));
+        let Some(Active::Symbol(d)) = dialogs.active.as_mut() else {
+            panic!("the Symbol Specification did not open");
+        };
+        d.choose_material(None);
+        let a = dialogs.active.take().unwrap();
+        apply(&mut cx, &a);
+        assert_eq!(
+            crate::tools::materials::symbol_material(&cx.project, id),
+            None
+        );
+        cx.undo();
+        assert_eq!(
+            crate::tools::materials::symbol_material(&cx.project, id).as_deref(),
+            Some("Drywall")
+        );
+        cx.undo();
+        assert_eq!(
+            crate::tools::materials::symbol_material(&cx.project, id),
+            None
+        );
     }
 }

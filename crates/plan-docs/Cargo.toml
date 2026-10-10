@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 plan-core = { path = "../plan-core" }
 plan-cabinets = { path = "../plan-cabinets" }
+plan-calib = { path = "../plan-calib" }
 plan-electrical = { path = "../plan-electrical" }
 plan-framing = { path = "../plan-framing" }
 plan-library = { path = "../plan-library" }

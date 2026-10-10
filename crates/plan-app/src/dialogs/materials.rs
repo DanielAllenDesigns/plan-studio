@@ -21,7 +21,17 @@ use std::cell::RefCell;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Tab {
     List,
+    /// The take-off by surface and material: a room, the floor or the plan.
+    Surfaces,
     Master,
+}
+
+/// What the Surfaces tab adds up.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum RegionPick {
+    Room,
+    Floor,
+    Plan,
 }
 
 /// What the Materials List window remembers.
@@ -32,17 +42,23 @@ struct State {
     master: Option<MasterList>,
     stock_text: String,
     status: String,
+    region: RegionPick,
+    room: usize,
 }
 
 impl Default for State {
     fn default() -> Self {
         Self {
-            all_floors: false,
+            all_floors: crate::dialogs::preferences::pages::current()
+                .materials
+                .all_floors,
             category: None,
             tab: Tab::List,
             master: None,
             stock_text: String::new(),
             status: String::new(),
+            region: RegionPick::Floor,
+            room: 0,
         }
     }
 }
@@ -59,7 +75,29 @@ pub fn lines(cx: &EditorContext, all_floors: bool, master: &MasterList) -> Vec<M
     } else {
         MaterialsScope::Floor(cx.floor)
     };
-    materials_report(&cx.project, scope, Some((cx.floor, &cx.rooms)), master)
+    let prefs = crate::dialogs::preferences::pages::current().materials;
+    let waste_free;
+    let master = if prefs.apply_waste {
+        master
+    } else {
+        let mut cleared = master.clone();
+        cleared.waste.clear();
+        waste_free = cleared;
+        &waste_free
+    };
+    let mut lines = materials_report(&cx.project, scope, Some((cx.floor, &cx.rooms)), master);
+    for l in &mut lines {
+        if !prefs.round_up {
+            // The quantity to buy stays as worked out, not rounded to units.
+            l.quantity = l.net * (1.0 + l.waste_pct / 100.0);
+            l.price = l.unit_price.map(|u| u * l.quantity);
+        }
+        if !prefs.show_prices {
+            l.unit_price = None;
+            l.price = None;
+        }
+    }
+    lines
 }
 
 /// The active floor's materials list with the saved master list's waste and prices.
@@ -150,6 +188,7 @@ pub fn show(ctx: &egui::Context, cx: &mut EditorContext) -> bool {
 fn contents(ui: &mut Ui, cx: &mut EditorContext, st: &mut State) {
     ui.horizontal(|ui| {
         ui.selectable_value(&mut st.tab, Tab::List, "Materials List");
+        ui.selectable_value(&mut st.tab, Tab::Surfaces, "By Surface");
         ui.selectable_value(&mut st.tab, Tab::Master, "Master List");
         ui.separator();
         ui.radio_value(&mut st.all_floors, false, "Active floor");
@@ -160,6 +199,7 @@ fn contents(ui: &mut Ui, cx: &mut EditorContext, st: &mut State) {
     ui.separator();
     match st.tab {
         Tab::List => list_tab(ui, cx, st, &all),
+        Tab::Surfaces => surfaces_tab(ui, cx, st),
         Tab::Master => master_tab(ui, st, &all),
     }
     if !st.status.is_empty() {
@@ -227,8 +267,13 @@ fn list_tab(ui: &mut Ui, cx: &mut EditorContext, st: &mut State, all: &[Material
         ));
         if shown.iter().any(|l| l.price.is_some()) {
             ui.strong(format!("Total {}", fmt_money(Some(total))));
-        } else {
+        } else if crate::dialogs::preferences::pages::current()
+            .materials
+            .show_prices
+        {
             ui.weak("No prices yet: enter them on the Master List tab");
+        } else {
+            ui.weak("Prices are hidden (Preferences > Materials List)");
         }
     });
     ui.horizontal(|ui| {
@@ -262,6 +307,91 @@ fn list_tab(ui: &mut Ui, cx: &mut EditorContext, st: &mut State, all: &[Material
             st.status = lw::send_materials(cx, floor, st.category.clone());
         }
     });
+}
+
+/// The region of the Surfaces tab as the take-off wants it.
+fn region_of(st: &State) -> plan_materials::Region {
+    match st.region {
+        RegionPick::Room => plan_materials::Region::Room(st.room),
+        RegionPick::Floor => plan_materials::Region::Floor,
+        RegionPick::Plan => plan_materials::Region::Plan,
+    }
+}
+
+/// The by-surface list of the selected region: each library material with
+/// manufacturer, supplier, price, unit and the quantity its surfaces come to.
+fn surfaces_tab(ui: &mut Ui, cx: &mut EditorContext, st: &mut State) {
+    use crate::tools::materials::surfaces;
+    let rooms = surfaces::room_names(cx);
+    if st.room >= rooms.len() {
+        st.room = 0;
+    }
+    ui.horizontal(|ui| {
+        ui.label("Region");
+        ui.radio_value(&mut st.region, RegionPick::Room, "Room");
+        ui.add_enabled_ui(st.region == RegionPick::Room, |ui| {
+            egui::ComboBox::from_id_salt("materials_surface_room")
+                .selected_text(
+                    rooms
+                        .get(st.room)
+                        .cloned()
+                        .unwrap_or_else(|| "no rooms".into()),
+                )
+                .show_ui(ui, |ui| {
+                    for (i, n) in rooms.iter().enumerate() {
+                        ui.selectable_value(&mut st.room, i, n);
+                    }
+                });
+        });
+        ui.radio_value(&mut st.region, RegionPick::Floor, "Active floor");
+        ui.radio_value(&mut st.region, RegionPick::Plan, "Whole plan");
+    });
+    let lines = surfaces::lines(cx, region_of(st));
+    egui::ScrollArea::both().max_height(380.0).show(ui, |ui| {
+        egui::Grid::new("materials_surface_grid")
+            .striped(true)
+            .num_columns(plan_materials::SURFACE_COLUMNS.len())
+            .show(ui, |ui| {
+                for c in plan_materials::SURFACE_COLUMNS {
+                    ui.strong(c);
+                }
+                ui.end_row();
+                for l in &lines {
+                    for (i, cell) in l.cells().into_iter().enumerate() {
+                        if i >= 5 {
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| ui.label(cell),
+                            );
+                        } else {
+                            ui.label(cell);
+                        }
+                    }
+                    ui.end_row();
+                }
+            });
+    });
+    ui.separator();
+    let cost: f64 = lines.iter().map(|l| l.cost).sum();
+    let area: f64 = lines.iter().map(|l| l.area_sq_ft).sum();
+    ui.horizontal(|ui| {
+        ui.label(format!(
+            "{} materials, {area:.0} sq ft of surface",
+            lines.len()
+        ));
+        if cost > 0.0 {
+            ui.strong(format!("Total {}", fmt_money(Some(cost))));
+        } else {
+            ui.weak("Enter prices in each material's specification (Materials List tab)");
+        }
+    });
+    if ui.button("Export CSV\u{2026}").clicked() {
+        st.status = save_text(
+            "materials_by_surface.csv",
+            "csv",
+            &plan_materials::to_csv(&lines),
+        );
+    }
 }
 
 fn master_tab(ui: &mut Ui, st: &mut State, all: &[MaterialLine]) {
@@ -426,6 +556,41 @@ mod tests {
         assert!(csv_for_floor(&cx).contains("$120.00"));
         assert!(csv_for_floor(&cx).starts_with("Category,ID,Description"));
         assert_eq!(lines(&cx, true, &m).len(), priced.len());
+    }
+
+    #[test]
+    fn the_preferences_page_decides_waste_rounding_prices_and_the_starting_scope() {
+        use crate::dialogs::preferences::pages;
+        lw::use_memory_master_list(MasterList::default());
+        let mut cx = cx_with_house();
+        cx.rooms = plan_core::detect_rooms(&cx.project.floors[0].walls, 1.0);
+        let mut m = MasterList::default();
+        m.set_price("Doors|Door 3'-0\" x 6'-8\"", "ea", 120.0);
+        m.waste.insert("Doors".into(), 50.0);
+        lw::save_master_list(&m).unwrap();
+        let door = |cx: &EditorContext| {
+            lines_for_floor(cx)
+                .into_iter()
+                .find(|l| l.category == "Doors")
+                .unwrap()
+        };
+        let with_waste = door(&cx);
+        assert!(with_waste.quantity > with_waste.net);
+        pages::update(|p| p.materials.apply_waste = false);
+        let plain = door(&cx);
+        assert_eq!(plain.quantity, plain.net);
+        pages::update(|p| {
+            p.materials.apply_waste = true;
+            p.materials.round_up = false;
+        });
+        let exact = door(&cx);
+        assert!((exact.quantity - exact.net * 1.5).abs() < 1e-9);
+        pages::update(|p| p.materials.show_prices = false);
+        assert!(door(&cx).price.is_none() && door(&cx).unit_price.is_none());
+        pages::update(|p| p.materials.all_floors = true);
+        assert!(State::default().all_floors);
+        pages::set(pages::PagePrefs::default());
+        assert!(!State::default().all_floors);
     }
 
     #[test]

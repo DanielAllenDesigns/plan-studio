@@ -89,6 +89,11 @@ struct Setup {
     show_edges: bool,
     camera: Option<Camera>,
     lights: Vec<ViewLight>,
+    /// A picture drawn in place of the sky.
+    backdrop: Option<Arc<crate::backdrop::BackdropImage>>,
+    /// What lies below the horizon, and the distance haze.
+    ground: crate::backdrop::Ground,
+    fog: crate::backdrop::Fog,
     /// Side of the square picture, pixels.
     size: i32,
 }
@@ -113,6 +118,9 @@ impl Setup {
             show_edges: false,
             camera: None,
             lights: Vec::new(),
+            backdrop: None,
+            ground: crate::backdrop::Ground::default(),
+            fog: crate::backdrop::Fog::default(),
             size: W,
         }
     }
@@ -127,6 +135,9 @@ impl Setup {
             show_edges: false,
             camera: None,
             lights: Vec::new(),
+            backdrop: None,
+            ground: crate::backdrop::Ground::default(),
+            fog: crate::backdrop::Fog::default(),
             size: W,
         }
     }
@@ -193,6 +204,9 @@ fn render_with(
             look: setup.look,
             settings: setup.settings,
             lights: setup.lights.clone(),
+            backdrop: setup.backdrop.clone(),
+            ground: setup.ground,
+            fog: setup.fog,
             bounds: Some(bounds),
             target_fbo: Some(fbo),
             ..FrameParams::for_camera(&cam, 1.0, (0, 0, w, h))
@@ -945,6 +959,7 @@ fn mesh_colours_overlays_and_painted_bitmaps_render_through_real_gl() {
                 .collect(),
         ),
         scale_in: [24.0, 24.0],
+        pbr: None,
     };
     let blue = bitmap(1, None, [20, 40, 230]);
     let px = render_with(&gl, &mut gpu, &wall, &front_setup(), &|g, gl| {
@@ -970,6 +985,189 @@ fn mesh_colours_overlays_and_painted_bitmaps_render_through_real_gl() {
     gpu.forget_context();
     assert_eq!(gpu.overlay_count(), 0);
     assert_eq!(gpu.surface_texture_count(), 0);
+    assert_eq!(unsafe { gl.get_error() }, 0);
+    gpu.destroy(&gl);
+}
+
+#[test]
+#[ignore = "needs an OpenGL context (macOS CGL)"]
+fn a_backdrop_picture_replaces_the_sky_behind_the_model() {
+    let Some(gl) = context() else {
+        eprintln!("no OpenGL context available; skipping");
+        return;
+    };
+    let store = Arc::new(TextureStore::with_dirs(Vec::new()));
+    let mut gpu = GpuScene::with_store(store);
+    // A small wall far from the corners, so the corners show the backdrop.
+    let wall = Scene {
+        meshes: vec![front_wall(Material::WallExterior, None)],
+    };
+    let mut cam = front_camera();
+    cam.distance *= 4.0;
+    let mut lit = Setup::lit(Look::Standard, ViewSettings::default());
+    lit.camera = Some(cam);
+    let corner = |px: &[u8]| [px[0], px[1], px[2]];
+    let sky = render(&gl, &mut gpu, &wall, &lit);
+    // A solid red picture.
+    let red: Vec<u8> = (0..8 * 8).flat_map(|_| [220, 20, 20, 255]).collect();
+    lit.backdrop = Some(Arc::new(
+        crate::backdrop::BackdropImage::new(8, 8, red).unwrap(),
+    ));
+    let px = render(&gl, &mut gpu, &wall, &lit);
+    let c = corner(&px);
+    assert!(
+        c[0] > 180 && c[1] < 60 && c[2] < 60,
+        "the corner shows the picture: {c:?} (sky was {:?})",
+        corner(&sky)
+    );
+    // The wall still draws in front of it.
+    assert_ne!(centre(&px), c, "the model is in front of the backdrop");
+    // Taking the picture away brings the sky back.
+    lit.backdrop = None;
+    let again = render(&gl, &mut gpu, &wall, &lit);
+    assert_eq!(corner(&again), corner(&sky));
+    assert_eq!(unsafe { gl.get_error() }, 0);
+    gpu.destroy(&gl);
+}
+
+#[test]
+#[ignore = "needs an OpenGL context (macOS CGL)"]
+fn fog_tints_the_model_and_the_ground_option_changes_the_horizon() {
+    let Some(gl) = context() else {
+        eprintln!("no OpenGL context available; skipping");
+        return;
+    };
+    let store = Arc::new(TextureStore::with_dirs(Vec::new()));
+    let mut gpu = GpuScene::with_store(store);
+    let wall = Scene {
+        meshes: vec![front_wall(Material::WallExterior, None)],
+    };
+    // The camera sits 4 wall-widths back; a pitched view puts the horizon
+    // in the picture, so the lower corners show the ground option.
+    let mut cam = front_camera();
+    cam.distance *= 4.0;
+    let mut lit = Setup::lit(Look::Standard, ViewSettings::default());
+    lit.camera = Some(cam.clone());
+    let clear = render(&gl, &mut gpu, &wall, &lit);
+    // Heavy red fog: the wall turns reddish and the sky does not change.
+    lit.fog = crate::backdrop::Fog {
+        density: 1.0 / 60.0,
+        color: Some([0.9, 0.1, 0.1]),
+    };
+    let fogged = render(&gl, &mut gpu, &wall, &lit);
+    let (a, b) = (centre(&clear), centre(&fogged));
+    assert!(
+        i32::from(b[0]) - i32::from(b[1]) > i32::from(a[0]) - i32::from(a[1]) + 40,
+        "the wall fades toward red: {a:?} -> {b:?}"
+    );
+    // A flat green ground replaces the fade below the horizon.
+    lit.fog = crate::backdrop::Fog::default();
+    // Rows are read bottom first: row 2 is near the bottom of the picture.
+    let low = |px: &[u8]| {
+        let o = ((2 * W + W / 2) * 4) as usize;
+        [px[o], px[o + 1], px[o + 2]]
+    };
+    let mut down = cam;
+    down.pitch = 0.0;
+    lit.camera = Some(down);
+    let base = render(&gl, &mut gpu, &wall, &lit);
+    lit.ground = crate::backdrop::Ground::Solid([0.1, 0.8, 0.1]);
+    let green = render(&gl, &mut gpu, &wall, &lit);
+    let g = low(&green);
+    assert!(
+        g[1] > g[0] && g[1] > g[2] && g != low(&base),
+        "ground colour applied: {g:?} vs {:?}",
+        low(&base)
+    );
+    lit.ground = crate::backdrop::Ground::Sky;
+    let sky = render(&gl, &mut gpu, &wall, &lit);
+    assert_ne!(low(&sky), low(&green));
+    assert_eq!(unsafe { gl.get_error() }, 0);
+    gpu.destroy(&gl);
+}
+
+#[test]
+#[ignore = "needs an OpenGL context (macOS CGL)"]
+fn package_maps_bend_the_light_and_cut_surfaces_out_through_real_gl() {
+    use plan_materials::pbr::{MapImage, PbrSet, PBR_CUTOUT, PBR_NORMAL, PBR_ROUGH};
+    let Some(gl) = context() else {
+        eprintln!("no OpenGL context available; skipping");
+        return;
+    };
+    let mut gpu = GpuScene::with_store(Arc::new(TextureStore::with_dirs(Vec::new())));
+    let wall = Scene {
+        meshes: vec![front_wall(Material::WallInterior, Some(3))],
+    };
+    let solid = |alpha: u8| -> Arc<Vec<u8>> { Arc::new([150, 150, 150, alpha].repeat(4)) };
+    let tex = |key: u64, alpha: u8, pbr: Option<PbrSet>| SurfaceTexture {
+        object_id: 3,
+        material: None,
+        key,
+        width: 2,
+        height: 2,
+        rgba: solid(alpha),
+        scale_in: [24.0, 24.0],
+        pbr: pbr.map(Arc::new),
+    };
+    let data = |px: [u8; 4]| MapImage {
+        width: 2,
+        height: 2,
+        rgba: px.repeat(4),
+    };
+    let draw = |gpu: &mut GpuScene, t: SurfaceTexture| {
+        render_with(&gl, gpu, &wall, &front_setup(), &|g, gl| {
+            g.set_surface_textures(gl, std::slice::from_ref(&t))
+        })
+    };
+    let flat = centre(&draw(&mut gpu, tex(1, 255, None)));
+    // A normal map tilted toward the top of the wall catches more sky light
+    // (the hemisphere term brightens upward normals).
+    let up = PbrSet {
+        normal: Some(data([128, 242, 184, 255])),
+        flags: PBR_NORMAL,
+        ..PbrSet::default()
+    };
+    let bent = centre(&draw(&mut gpu, tex(2, 255, Some(up))));
+    assert!(
+        u32::from(bent[0]) > u32::from(flat[0]) + 3,
+        "bent {bent:?} vs flat {flat:?}"
+    );
+    // A data map of smooth, rough and open values draws without a GL error.
+    let orm = PbrSet {
+        orm: Some(data([255, 0, 0, 255])),
+        flags: PBR_ROUGH,
+        ..PbrSet::default()
+    };
+    let _ = draw(&mut gpu, tex(3, 255, Some(orm)));
+    assert_eq!(unsafe { gl.get_error() }, 0);
+    // An opacity cut-out (alpha below one half) leaves the sky.
+    let cut = PbrSet {
+        flags: PBR_CUTOUT,
+        ..PbrSet::default()
+    };
+    let hole = centre(&draw(&mut gpu, tex(4, 0, Some(cut))));
+    let sky = centre(&render_with(
+        &gl,
+        &mut gpu,
+        // A speck in the corner: the centre of the picture is the sky.
+        &Scene {
+            meshes: vec![quad(
+                [
+                    [0.0, 0.0, 0.0],
+                    [2.0, 0.0, 0.0],
+                    [2.0, 2.0, 0.0],
+                    [0.0, 2.0, 0.0],
+                ],
+                [0.0, 0.0, 1.0],
+                Material::WallInterior,
+                Some(9),
+            )],
+        },
+        &front_setup(),
+        &|_, _| {},
+    ));
+    assert_eq!(hole, sky, "the cut-out shows what is behind");
+    assert_ne!(hole, flat);
     assert_eq!(unsafe { gl.get_error() }, 0);
     gpu.destroy(&gl);
 }

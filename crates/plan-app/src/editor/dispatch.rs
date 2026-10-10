@@ -32,13 +32,7 @@ pub mod cmd {
 }
 
 fn stair_id(c: stairs_view::StairCommand) -> &'static str {
-    use stairs_view::StairCommand as C;
-    match c {
-        C::AutoStairwell => cmd::STAIR_WELL,
-        C::FlareCurve => cmd::STAIR_FLARE,
-        C::ToggleBreakLine => cmd::STAIR_BREAK,
-        C::MakeRailing => cmd::STAIR_RAILING,
-    }
+    c.id()
 }
 
 fn stair_command(id: &str) -> Option<stairs_view::StairCommand> {
@@ -102,6 +96,8 @@ impl EditorContext {
             .any(|o| matches!(o, ObjectRef::Cabinet(_) | ObjectRef::Symbol(_)))
         {
             n += placed::delete_placed(self);
+            // A deleted fireplace takes its specification with it.
+            super::fireplace_view::drop_orphans(self);
         }
         let devices = self.selected_ids(|o| match o {
             ObjectRef::Device(i) => Some(i),
@@ -156,6 +152,15 @@ impl EditorContext {
         if !details.is_empty() {
             // delete_ids drops them from the selection itself.
             n += details_view::delete_ids(self, &details);
+        }
+        let compounds = self.selected_ids(|o| match o {
+            ObjectRef::Solid(i) => Some(i),
+            _ => None,
+        });
+        if !compounds.is_empty() {
+            self.begin_change("Delete 3D Solid");
+            // delete_ids drops them from the selection itself.
+            n += super::solids_view::delete_ids(self, &compounds);
         }
         let schedules = self.selected_ids(|o| match o {
             ObjectRef::Schedule(i) => Some(i),
@@ -225,11 +230,48 @@ impl EditorContext {
             let mut a = EditAction::new(EditActionKind::ReverseSwing);
             a.label = "Reverse Door Swing";
             v.push(a);
+            // Open/Close Cabinet Doors/Drawers, Generate Custom Countertop,
+            // Make Cabinet Molding Polyline (CB-486, CB-490).
+            v.extend(super::cabinet_edit::edit_actions(self));
         }
+        // Calculate Materials in Room, Turn Ceiling On/Off, the room
+        // polylines, Create Schedule from Room, elevation views and Auto
+        // Room Dimensions (R-107, R-110).
+        v.extend(super::rooms_edit::edit_actions(self));
         // Reverse Layers, Break Wall, Change Line/Arc, Make Arc Tangent.
         v.extend(super::wall_edit::edit_actions(self));
         // Center on Wall Segment, Mull, Unmull.
         v.extend(super::opening_edit::edit_actions(self));
+        // Renumber Schedule, Open Row Object(s), Find Schedule(s), Move Up /
+        // Down in Schedule, Create Schedule from Room.
+        v.extend(super::schedule_view::edit_actions(self));
+        // Hip / Full Gable / High Shed / Knee / Dutch Gable Wall (RF-4).
+        v.extend(roof_view::wall_edit_actions(self));
+        // Fireplace Specification, deck framing and steps at level changes.
+        v.extend(super::fireplace_view::edit_actions(self));
+        // Build Framing for Selected / Parent Object(s), Wall and Truss Details,
+        // Move to Framing Ref, joins and breaks.
+        v.extend(super::framing_view::edit_actions(self));
+        // Polyline Boolean, Trim/Extend to Boundary, Insert Point, Multiple Copy.
+        v.extend(crate::tools::cad_ops::edit_actions(self));
+        // Architectural blocks, 3D solid Booleans, material layers, distribution options.
+        v.extend(crate::tools::arch_block::edit_actions(self));
+        // Callout links, Note Schedules, Convert Text to Note, hyperlinks.
+        v.extend(crate::tools::text::edit_actions(self));
+        // Selected 3D solids become a User Catalog symbol.
+        if crate::tools::library::convert::can_convert(self) {
+            let label = "Convert to Symbol";
+            v.push(EditAction {
+                kind: EditActionKind::Custom {
+                    id: crate::tools::library::convert::CONVERT_TO_SYMBOL,
+                    label,
+                    icon: "",
+                },
+                label,
+                icon: None,
+                enabled: true,
+            });
+        }
         let Some(one) = self.selection.single() else {
             return v;
         };
@@ -241,7 +283,11 @@ impl EditorContext {
         };
         match one {
             // The CAD edit tools (fillet, chamfer, offset, ...) under Select.
-            ObjectRef::Cad(_) => v.extend(crate::tools::cad::edit_actions(self)),
+            ObjectRef::Cad(_) => {
+                v.extend(crate::tools::cad::edit_actions(self));
+                // Specification, Set as Default and the conversions (CAD-67).
+                v.extend(crate::dialogs::construction_line::edit_actions(self));
+            }
             ObjectRef::Dimension(_) => v.extend(crate::tools::dimension::edit_actions(self)),
             ObjectRef::Stair(_) => {
                 for (c, on) in stairs_view::edit_commands(self) {
@@ -291,6 +337,31 @@ impl EditorContext {
                 ));
                 v.push(custom(cmd::DEVICE_FLIP, "Flip Side", "", true));
                 v.push(custom(cmd::DEVICE_ROTATE, "Rotate", "", free));
+                // Set as Default and the outlet type switches (E-29).
+                let kind = site_view::electrical_layer(self.floor, self.floor())
+                    .device(id)
+                    .map(|d| d.kind);
+                match kind {
+                    Some(plan_electrical::DeviceKind::Outlet110) => v.push(custom(
+                        crate::tools::electrical::cmd::TO_GFCI,
+                        "Change to GFCI Outlet",
+                        "",
+                        true,
+                    )),
+                    Some(plan_electrical::DeviceKind::Gfci) => v.push(custom(
+                        crate::tools::electrical::cmd::TO_110,
+                        "Change to 110V Outlet",
+                        "",
+                        true,
+                    )),
+                    _ => {}
+                }
+                v.push(custom(
+                    crate::tools::electrical::cmd::SET_DEFAULT,
+                    "Set as Default",
+                    "",
+                    true,
+                ));
             }
             _ => {}
         }
@@ -299,9 +370,24 @@ impl EditorContext {
 
     /// Runs a [`EditActionKind::Custom`] command on the selection.
     pub fn run_custom(&mut self, id: &str) {
+        // One command is one undo step, whatever families it touches.
+        self.undo_group(|cx| cx.run_custom_ungrouped(id));
+    }
+
+    fn run_custom_ungrouped(&mut self, id: &str) {
         // Clipboard, selection, transform and the other `edit.*` commands.
         if id.starts_with("edit.") {
             self.run_edit_command(id);
+            return;
+        }
+        // Tools > Materials List and the Calculate Materials buttons.
+        if crate::dialogs::materials_list::run_command(self, id) {
+            return;
+        }
+        // Construction lines and the Reference Display's commands.
+        if crate::dialogs::construction_line::run_command(self, id)
+            || crate::dialogs::reference_display::run_command(self, id)
+        {
             return;
         }
         if let Some(c) = stair_command(id) {
@@ -311,7 +397,44 @@ impl EditorContext {
         if super::wall_edit::run_command(self, id) {
             return;
         }
+        if super::framing_view::run_command(self, id) {
+            return;
+        }
+        if super::rooms_edit::run_command(self, id) {
+            return;
+        }
+        // Polyline Union/Subtract/Intersect, Trim/Extend to Boundary, Insert
+        // Point, Multiple Copy, Drawing Group, outer-face Plan Footprint.
+        if crate::tools::cad_ops::run_command(self, id) {
+            return;
+        }
+        // Architectural blocks, 3D solid Booleans, material layers, distribution options, soffits.
+        if crate::tools::arch_block::run_command(self, id) {
+            return;
+        }
+        // Match Properties and Object Painter Modes.
+        if crate::tools::painters::run_command(self, id)
+            || crate::dialogs::spell_check::run_command(self, id)
+        {
+            return;
+        }
+        // Fireplace Specification, Build Deck Framing, Add Steps (CB-86, CB-87, R-86).
+        if super::fireplace_view::run_command(self, id) {
+            return;
+        }
+        if super::cabinet_edit::run_command(self, id) {
+            return;
+        }
+        if crate::tools::text::run_command(self, id) {
+            return;
+        }
         if super::opening_edit::run_command(self, id) {
+            return;
+        }
+        if super::schedule_view::run_command(self, id) {
+            return;
+        }
+        if roof_view::run_wall_command(self, id) {
             return;
         }
         match id {
@@ -325,6 +448,8 @@ impl EditorContext {
             cmd::SYMBOL_REPLACE => self.replace_symbol_from_library(),
             _ if crate::editor::placed::run_command(self, id) => {}
             _ if crate::tools::cabinet::run_preset_command(self, id) => {}
+            // Set as Default, Reset Curvature, Change to GFCI / 110V (Electrical Tools).
+            _ if crate::tools::electrical::run_command(self, id) => {}
             cmd::DEVICE_FLIP => self.edit_selected_device("Flip Side", |d, wall| {
                 site_view::flip_side(d, wall);
             }),
@@ -417,33 +542,11 @@ impl EditorContext {
         }
     }
 
-    /// Replace From Library (CB-57): the symbol takes the catalog item
-    /// picked in the Library Browser.
+    /// Replace From Library (CB-57): every selected symbol takes the catalog
+    /// item picked in the Library Browser, in one undo step (cabinets and
+    /// devices one at a time; see `tools::library::convert`).
     fn replace_symbol_from_library(&mut self) {
-        // Cabinets and electrical devices swap from the User Catalog too.
-        if let Some(sel @ (ObjectRef::Cabinet(_) | ObjectRef::Device(_))) = self.selection.single()
-        {
-            crate::tools::library::user::replace_other(self, sel);
-            return;
-        }
-        let Some(ObjectRef::Symbol(id)) = self.selection.single() else {
-            return;
-        };
-        let Some(item) = crate::tools::library::active_item() else {
-            self.status =
-                "Pick an item in the Library Browser, then choose Replace From Library".into();
-            return;
-        };
-        let Some(mut sym) = self.floor().symbol(id).cloned() else {
-            return;
-        };
-        if sym.catalog_id == item {
-            self.status = "The symbol already is that library item".into();
-            return;
-        }
-        sym.catalog_id = item;
-        placed::apply_symbol(self, &sym);
-        self.status = "Replaced the symbol from the library".into();
+        crate::tools::library::convert::replace_selected(self);
     }
 
     fn edit_selected_device(
@@ -535,6 +638,14 @@ impl EditorContext {
             })
             .collect();
         details_view::translate_ids(self, &details, d);
+        let compounds: Vec<Id> = items
+            .iter()
+            .filter_map(|o| match o {
+                ObjectRef::Solid(id) => Some(*id),
+                _ => None,
+            })
+            .collect();
+        super::solids_view::translate_ids(self, &compounds, d);
         let schedules: Vec<Id> = items
             .iter()
             .filter_map(|o| match o {

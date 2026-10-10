@@ -85,7 +85,11 @@ impl EditorContext {
             return Vec::new();
         }
         let mut v = Vec::new();
-        if self.selection.single().is_some() {
+        if self.selection.single().is_some()
+            || self.selection.all_walls()
+            || self.selection.all_cabinets()
+            || crate::tools::text::selected_annot(self).is_some()
+        {
             v.push(EditAction::new(EditActionKind::OpenObject));
         }
         v.push(EditAction::new(EditActionKind::Delete));
@@ -103,9 +107,26 @@ impl EditorContext {
 
     /// Runs an Edit toolbar command on the current selection.
     pub fn apply_edit_action(&mut self, kind: EditActionKind) {
+        self.undo_group(|cx| cx.apply_edit_action_ungrouped(kind));
+    }
+
+    fn apply_edit_action_ungrouped(&mut self, kind: EditActionKind) {
         match kind {
             EditActionKind::OpenObject => {
-                if let Some(o) = self.selection.single() {
+                // Several walls open one dialog over all of them (W-83).
+                if let Some(o) = self
+                    .selection
+                    .single()
+                    .or_else(|| self.selection.all_walls().then(|| self.selection.items[0]))
+                    .or_else(|| {
+                        self.selection
+                            .all_cabinets()
+                            .then(|| self.selection.items[0])
+                    })
+                    .or_else(|| {
+                        crate::tools::text::selected_annot(self).map(|(_, id)| ObjectRef::Cad(id))
+                    })
+                {
                     self.requests.push(EditorRequest::OpenSpec(o));
                 }
             }
@@ -140,6 +161,12 @@ impl EditorContext {
     /// Delete / Backspace: removes the selection (one undo step). Objects on
     /// locked layers are refused (S-89).
     pub fn delete_selection(&mut self) {
+        // Walls, doors, cabinets and stairs each open their own step; a Delete
+        // is one (QA-24).
+        self.undo_group(|cx| cx.delete_selection_ungrouped());
+    }
+
+    fn delete_selection_ungrouped(&mut self) {
         if self.selection.is_empty() {
             return;
         }
@@ -165,6 +192,7 @@ impl EditorContext {
         self.selection.retain_existing(&self.project, fl);
         // A group left with fewer than two members goes (S-35).
         self.prune_dead_groups();
+        crate::tools::arch_block::prune_dead_blocks(self);
         self.mark_dirty();
         self.status.clear();
     }
@@ -198,6 +226,10 @@ impl EditorContext {
 
     /// Flips the swing of the selected doors.
     pub fn reverse_swing(&mut self) {
+        self.undo_group(|cx| cx.reverse_swing_ungrouped());
+    }
+
+    fn reverse_swing_ungrouped(&mut self) {
         placed::reverse_door_swing(self);
         let ids: Vec<Id> = self
             .selection

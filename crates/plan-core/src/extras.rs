@@ -109,6 +109,11 @@ pub struct RoomMisc {
     /// Ceiling Structure layers (R-29); empty follows the floor's default
     /// platform.
     pub ceiling_structure: Vec<StructureLayer>,
+    /// The room's layered Floor/Ceiling Structure and Finish definitions
+    /// (Structure panel Edit buttons); a slot that is not set keeps the
+    /// older fields above (see [`crate::assemblies`]).
+    #[serde(skip_serializing_if = "crate::assemblies::PlatformAssemblies::is_legacy")]
+    pub assemblies: crate::assemblies::PlatformAssemblies,
 }
 
 impl Default for RoomMisc {
@@ -123,6 +128,7 @@ impl Default for RoomMisc {
             wall_covering: String::new(),
             floor_structure: Vec::new(),
             ceiling_structure: Vec::new(),
+            assemblies: crate::assemblies::PlatformAssemblies::default(),
         }
     }
 }

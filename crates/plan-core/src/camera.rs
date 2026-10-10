@@ -35,6 +35,15 @@ pub enum CameraKind {
     Elevation,
     /// A camera that follows `path` (C-30 family, Create Walkthrough Path).
     Walkthrough,
+    /// A Full Camera that shows only its own floor: everything above the
+    /// floor's ceiling is clipped away (Floor Camera).
+    FloorCamera,
+    /// A Perspective Overview drawn as a Glass House (see-through walls,
+    /// every edge visible).
+    GlassHouse,
+    /// A Perspective Overview of the framing (the camera kind only; the
+    /// framing view fills the scene).
+    FramingOverview,
 }
 
 /// Default walking speed of a walkthrough, inches per second (3 ft/s).
@@ -53,6 +62,12 @@ pub struct WalkNode {
     /// Look direction in degrees counter-clockwise from +X.
     #[serde(default)]
     pub look_deg: Option<f64>,
+    /// Up/down tilt of the view at this node, degrees (positive looks up).
+    #[serde(default)]
+    pub tilt_deg: f64,
+    /// Seconds the camera stands still at this node (a key frame held).
+    #[serde(default)]
+    pub hold_s: f64,
 }
 
 impl Default for WalkNode {
@@ -60,6 +75,8 @@ impl Default for WalkNode {
         Self {
             height: DEFAULT_EYE_HEIGHT,
             look_deg: None,
+            tilt_deg: 0.0,
+            hold_s: 0.0,
         }
     }
 }
@@ -72,6 +89,8 @@ pub struct WalkPose {
     pub eye_height: f64,
     /// Look direction in degrees counter-clockwise from +X.
     pub direction_deg: f64,
+    /// Up/down tilt in degrees (positive looks up).
+    pub tilt_deg: f64,
 }
 
 /// Interpolates angles (degrees) along the shortest arc.
@@ -172,6 +191,10 @@ pub struct CameraObject {
     /// The plan callout of a section or elevation.
     #[serde(default)]
     pub callout: CalloutOptions,
+    /// Tilt, lock, backdrop, rendering, label and floors of the view (the
+    /// Camera Specification tabs).
+    #[serde(default)]
+    pub view: crate::camera_view::CameraView,
 }
 
 impl CameraObject {
@@ -201,6 +224,7 @@ impl CameraObject {
             walk_speed: DEFAULT_WALK_SPEED,
             vector: VectorOptions::default(),
             callout: CalloutOptions::default(),
+            view: crate::camera_view::CameraView::default(),
         }
     }
 
@@ -223,7 +247,7 @@ impl CameraObject {
             .iter()
             .map(|_| WalkNode {
                 height: eye_height,
-                look_deg: None,
+                ..WalkNode::default()
             })
             .collect();
         c.path = path;
@@ -234,7 +258,7 @@ impl CameraObject {
     pub fn walk_node(&self, i: usize) -> WalkNode {
         self.path_nodes.get(i).copied().unwrap_or(WalkNode {
             height: self.eye_height,
-            look_deg: None,
+            ..WalkNode::default()
         })
     }
 
@@ -243,13 +267,21 @@ impl CameraObject {
         self.path.windows(2).map(|w| w[0].dist(w[1])).sum()
     }
 
-    /// Time to walk the whole path at `walk_speed`, seconds.
+    /// Seconds spent standing at the nodes (the key frames' holds).
+    pub fn walk_hold_s(&self) -> f64 {
+        (0..self.path.len())
+            .map(|i| self.walk_node(i).hold_s.max(0.0))
+            .sum()
+    }
+
+    /// Time to walk the whole path at `walk_speed`, plus the holds, seconds.
     pub fn walk_duration_s(&self) -> f64 {
-        if self.walk_speed > 0.0 {
+        let travel = if self.walk_speed > 0.0 {
             self.walk_length() / self.walk_speed
         } else {
             0.0
-        }
+        };
+        travel + self.walk_hold_s()
     }
 
     /// Look direction at node `i`: its own, or along the path (the mean of
@@ -274,24 +306,15 @@ impl CameraObject {
     }
 
     /// The pose at fraction `u` (0..=1) of the way along the path by length:
-    /// the position moves in straight lines between nodes, the eye height is
-    /// interpolated between the node heights and the look direction along the
-    /// shortest arc between the node directions. A one-node path stays put.
+    /// the position moves in straight lines between nodes, the eye height and
+    /// tilt are interpolated between the node values and the look direction
+    /// along the shortest arc between the node directions. A one-node path
+    /// stays put. Holds are not part of the length: see
+    /// [`CameraObject::walk_pose_at_time`].
     pub fn walk_pose(&self, u: f64) -> WalkPose {
         let n = self.path.len();
-        if n == 0 {
-            return WalkPose {
-                position: self.position,
-                eye_height: self.eye_height,
-                direction_deg: self.direction_deg,
-            };
-        }
-        if n == 1 {
-            return WalkPose {
-                position: self.path[0],
-                eye_height: self.walk_node(0).height,
-                direction_deg: self.node_look_deg(0),
-            };
+        if n < 2 {
+            return self.pose_on(0, 0.0);
         }
         let total = self.walk_length();
         let want = u.clamp(0.0, 1.0) * total;
@@ -311,18 +334,78 @@ impl CameraObject {
         } else {
             0.0
         };
+        self.pose_on(seg, t)
+    }
+
+    /// The pose a fraction `t` of the way along segment `seg`.
+    fn pose_on(&self, seg: usize, t: f64) -> WalkPose {
+        let n = self.path.len();
+        if n == 0 {
+            return WalkPose {
+                position: self.position,
+                eye_height: self.eye_height,
+                direction_deg: self.direction_deg,
+                tilt_deg: 0.0,
+            };
+        }
+        if n == 1 {
+            let node = self.walk_node(0);
+            return WalkPose {
+                position: self.path[0],
+                eye_height: node.height,
+                direction_deg: self.node_look_deg(0),
+                tilt_deg: node.tilt_deg,
+            };
+        }
+        let seg = seg.min(n - 2);
         let (a, b) = (self.walk_node(seg), self.walk_node(seg + 1));
         WalkPose {
             position: Point::lerp(self.path[seg], self.path[seg + 1], t),
             eye_height: a.height + (b.height - a.height) * t,
             direction_deg: lerp_deg(self.node_look_deg(seg), self.node_look_deg(seg + 1), t),
+            tilt_deg: a.tilt_deg + (b.tilt_deg - a.tilt_deg) * t,
         }
     }
 
-    /// The pose `t_s` seconds into the walk (clamped to the path).
+    /// Seconds into the walk at which the camera arrives at node `i` (the
+    /// key frames' times, for jumping between them). Clamped to the last
+    /// node.
+    pub fn walk_node_time(&self, i: usize) -> f64 {
+        let n = self.path.len();
+        if n < 2 || self.walk_speed <= 0.0 {
+            return 0.0;
+        }
+        let i = i.min(n - 1);
+        let mut t = 0.0;
+        for seg in 0..i {
+            t += self.walk_node(seg).hold_s.max(0.0);
+            t += self.path[seg].dist(self.path[seg + 1]) / self.walk_speed;
+        }
+        t
+    }
+
+    /// The pose `t_s` seconds into the walk (clamped to the path): the camera
+    /// walks each segment at `walk_speed` and stands still for each node's
+    /// `hold_s` before it sets off.
     pub fn walk_pose_at_time(&self, t_s: f64) -> WalkPose {
-        let d = self.walk_duration_s();
-        self.walk_pose(if d > 0.0 { t_s / d } else { 0.0 })
+        let n = self.path.len();
+        if n < 2 || self.walk_speed <= 0.0 {
+            return self.pose_on(0, 0.0);
+        }
+        let mut t = t_s.max(0.0);
+        for seg in 0..n - 1 {
+            let hold = self.walk_node(seg).hold_s.max(0.0);
+            if t < hold {
+                return self.pose_on(seg, 0.0);
+            }
+            t -= hold;
+            let travel = self.path[seg].dist(self.path[seg + 1]) / self.walk_speed;
+            if t < travel {
+                return self.pose_on(seg, t / travel);
+            }
+            t -= travel;
+        }
+        self.pose_on(n - 2, 1.0)
     }
 
     /// Unit view direction in the plan.
@@ -413,6 +496,24 @@ impl CameraKind {
         matches!(
             self,
             CameraKind::CrossSection { .. } | CameraKind::WallElevation | CameraKind::Elevation
+        )
+    }
+
+    /// Does the camera stand in the plan at an eye height and look along its
+    /// direction (Full Camera and Floor Camera)?
+    pub fn is_eye_level(self) -> bool {
+        matches!(self, CameraKind::FullCamera | CameraKind::FloorCamera)
+    }
+
+    /// Is this a camera that orbits the whole building (the overviews, Doll
+    /// House and Glass House)?
+    pub fn is_overview(self) -> bool {
+        matches!(
+            self,
+            CameraKind::PerspectiveOverview
+                | CameraKind::DollHouse
+                | CameraKind::GlassHouse
+                | CameraKind::FramingOverview
         )
     }
 }
@@ -801,6 +902,59 @@ mod tests {
         c.path_nodes[1].look_deg = Some(10.0);
         let q = c.walk_pose(0.25);
         assert!(q.direction_deg.rem_euclid(360.0) < 1e-6 || (q.direction_deg - 360.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn key_frames_hold_and_tilt_along_the_walk() {
+        let mut c = CameraObject::walkthrough(
+            vec![
+                Point::new(0.0, 0.0),
+                Point::new(72.0, 0.0),
+                Point::new(72.0, 72.0),
+            ],
+            66.0,
+            "Walk",
+            0,
+        );
+        c.walk_speed = 36.0;
+        // Two seconds standing at the corner, looking up 20 degrees there.
+        c.path_nodes[1].hold_s = 2.0;
+        c.path_nodes[1].tilt_deg = 20.0;
+        assert!((c.walk_hold_s() - 2.0).abs() < 1e-9);
+        // 144" of path at 3 ft/s is four seconds, plus the hold.
+        assert!((c.walk_duration_s() - 6.0).abs() < 1e-9);
+        // Halfway up the first leg (one second in) the tilt is half way.
+        let q = c.walk_pose_at_time(1.0);
+        assert!((q.position.x - 36.0).abs() < 1e-9 && (q.tilt_deg - 10.0).abs() < 1e-9);
+        // The corner is reached at 2 s and held until 4 s.
+        for t in [2.0, 3.0, 3.99] {
+            let p = c.walk_pose_at_time(t);
+            assert!(
+                (p.position.x - 72.0).abs() < 1e-9 && p.position.y.abs() < 1e-9,
+                "t={t}"
+            );
+            assert!((p.tilt_deg - 20.0).abs() < 1e-9);
+        }
+        // It sets off again after the hold and ends at the last node.
+        let p = c.walk_pose_at_time(5.0);
+        assert!((p.position.y - 36.0).abs() < 1e-9, "{p:?}");
+        assert_eq!(c.walk_pose_at_time(99.0).position, Point::new(72.0, 72.0));
+        // The key frames' arrival times.
+        assert_eq!(c.walk_node_time(0), 0.0);
+        assert!((c.walk_node_time(1) - 2.0).abs() < 1e-9);
+        assert!((c.walk_node_time(2) - 6.0).abs() < 1e-9);
+        assert_eq!(c.walk_node_time(9), c.walk_node_time(2));
+        assert_eq!(c.walk_pose_at_time(-3.0).position, Point::new(0.0, 0.0));
+    }
+
+    #[test]
+    fn old_walkthrough_nodes_load_without_hold_or_tilt() {
+        let n: WalkNode = serde_json::from_str(r#"{"height":66.0,"look_deg":null}"#).unwrap();
+        assert_eq!(n, WalkNode::default());
+        let cam = CameraObject::new(CameraKind::FloorCamera, Point::ZERO, 90.0, "Floor", 1);
+        let back: CameraObject =
+            serde_json::from_str(&serde_json::to_string(&cam).unwrap()).unwrap();
+        assert_eq!(back, cam);
     }
 
     #[test]

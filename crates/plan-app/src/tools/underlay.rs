@@ -34,7 +34,7 @@ const MAX_TEXTURE_SIDE: usize = 2048;
 // ----- import -----
 
 /// Where a new underlay goes: the middle of the walls, else the origin.
-fn plan_center(cx: &EditorContext) -> Point {
+pub(crate) fn plan_center(cx: &EditorContext) -> Point {
     let pts: Vec<Point> = cx
         .floor()
         .walls
@@ -118,9 +118,12 @@ pub fn import_pdf_page(cx: &mut EditorContext, path: &Path, page: usize) -> Resu
     import_pdf_bytes(cx, path, &bytes, page, &picture_folder())
 }
 
-/// How many scanned pages (JPEG pictures) the PDF at `path` holds.
+/// How many pages of the PDF at `path` have a picture this build can read.
 pub fn pdf_page_count(path: &Path) -> usize {
-    std::fs::read(path).map_or(0, |b| pdf::jpeg_pictures(&b).len())
+    std::fs::read(path)
+        .ok()
+        .and_then(|b| pdf::page_images(&b).ok())
+        .map_or(0, |p| p.pages.len())
 }
 
 fn import_pdf_bytes(
@@ -130,12 +133,23 @@ fn import_pdf_bytes(
     page: usize,
     folder: &Path,
 ) -> Result<Id, String> {
-    let pictures = pdf::jpeg_pictures(bytes);
-    if pictures.is_empty() {
-        return Err(import_error(path, bytes));
-    }
-    let n = page.clamp(1, pictures.len());
-    let pic = &pictures[n - 1];
+    let found = pdf::page_images(bytes).map_err(|e| {
+        if e.starts_with("That file") {
+            import_error(path, bytes)
+        } else {
+            e
+        }
+    })?;
+    let pictures = &found.pages;
+    // The page asked for, else the page at that place in the list, else the
+    // last one.
+    let pic = pictures
+        .iter()
+        .find(|p| p.page == page)
+        .or_else(|| pictures.get(page.saturating_sub(1)))
+        .or(pictures.last())
+        .ok_or_else(|| import_error(path, bytes))?;
+    let n = pic.page;
     let stem = path
         .file_stem()
         .map_or_else(|| "plan".to_string(), |s| s.to_string_lossy().into_owned());
@@ -143,14 +157,15 @@ fn import_pdf_bytes(
         .map_err(|e| format!("Could not make {}: {e}", folder.display()))?;
     // Named by the content too, so two PDFs of one name do not share a file.
     let sum = pic
-        .jpeg
+        .data
+        .bytes()
         .iter()
         .fold(0u64, |h, b| h.wrapping_mul(31).wrapping_add(u64::from(*b)));
-    let file = folder.join(format!("{stem}-p{n}-{sum:08x}.jpg"));
-    std::fs::write(&file, &pic.jpeg)
+    let file = folder.join(format!("{stem}-p{n}-{sum:08x}.{}", pic.data.extension()));
+    std::fs::write(&file, pic.data.bytes())
         .map_err(|e| format!("Could not write {}: {e}", file.display()))?;
     let mut u = Underlay::new(
-        if pictures.len() > 1 {
+        if found.page_count.max(pictures.len()) > 1 {
             format!("{stem} p{n}")
         } else {
             stem
@@ -257,8 +272,10 @@ pub fn hit_underlay(cx: &EditorContext, p: Point) -> Option<Id> {
 
 // ----- drawing -----
 
+mod inflate;
 mod jpeg;
 pub mod pdf;
+pub mod trace;
 
 /// Where an underlay picture is on its way to the screen.
 enum Slot {
@@ -288,7 +305,17 @@ pub fn load_picture(path: &str) -> Result<egui::ColorImage, String> {
     let bytes = std::fs::read(path).map_err(|e| format!("Could not read {path}: {e}"))?;
     let img = match format_of(path) {
         ImageFormat::Png => png::decode(&bytes)?,
-        ImageFormat::Jpeg => jpeg::decode(&bytes)?,
+        // Our baseline decoder first; progressive and CMYK files (and the
+        // JPEGs of scanned PDFs) go to the shared decoder.
+        ImageFormat::Jpeg => jpeg::decode(&bytes).or_else(|first| {
+            plan_library::image::jpeg::decode(&bytes)
+                .map(|i| png::Rgba {
+                    width: i.width as usize,
+                    height: i.height as usize,
+                    pixels: i.rgba,
+                })
+                .map_err(|_| first)
+        })?,
         ImageFormat::Other => return Err("not a PNG or JPEG picture".to_string()),
     };
     Ok(img.downscaled(MAX_TEXTURE_SIDE).to_color_image())
@@ -419,11 +446,17 @@ impl Tool for UnderlayTool {
 
     fn hint(&self) -> String {
         match win::calibration() {
-            Some(c) if c.a.is_none() => {
-                "Calibrate: click the first of two points on the picture".into()
+            Some(c) if c.align && c.a.is_none() => {
+                "Rotate to Align: click the first end of a line that should be level".into()
             }
-            Some(c) if c.b.is_none() => "Calibrate: click the second point".into(),
-            Some(_) => "Calibrate: type the real distance in the Underlays window".into(),
+            Some(c) if c.align => "Rotate to Align: click the other end of the line".into(),
+            Some(c) if c.a.is_none() => {
+                "Point to Point Resize: click the first of two points on the picture".into()
+            }
+            Some(c) if c.b.is_none() => "Point to Point Resize: click the second point".into(),
+            Some(_) => {
+                "Point to Point Resize: type the real distance in the Underlays window".into()
+            }
             None => "Underlay: drag the picture to move it; click another to pick it; Esc returns"
                 .into(),
         }
@@ -450,6 +483,17 @@ impl Tool for UnderlayTool {
     fn pointer_down(&mut self, cx: &mut EditorContext, p: PointerEvent) -> ToolResult {
         if win::calibration().is_some() {
             win::push_calibration_point(p.world);
+            // Rotate to Align needs no distance: the second click does it.
+            if let Some(c) = win::calibration().filter(|c| c.align) {
+                if let (Some(a), Some(b)) = (c.a, c.b) {
+                    if trace::align_underlay(cx, c.id, a, b) {
+                        win::cancel_calibration();
+                        return ToolResult::committed("Rotate Underlay to Align");
+                    }
+                    win::cancel_calibration();
+                    return ToolResult::consumed();
+                }
+            }
             cx.status = self.hint();
             return ToolResult::consumed();
         }
@@ -593,7 +637,8 @@ pub fn run_command(cx: &mut EditorContext, id: &str) -> bool {
             win::open();
             true
         }
-        _ => false,
+        // The other picture and detail commands share this door.
+        _ => super::images::run_command(cx, id) || super::details::run_command(cx, id),
     }
 }
 
@@ -768,11 +813,13 @@ mod tests {
         }
         let img = load_picture(&fixture("pixels.png")).unwrap();
         assert_eq!(img.size, [3, 2]);
+        // Progressive JPEG goes to the shared decoder.
         let progressive = Underlay::new("p", fixture("progressive.jpg"), 32, 32, Point::ZERO);
-        match wait_for(&ctx, &progressive) {
-            Picture::Unavailable(why) => assert!(why.contains("progressive"), "{why}"),
-            other => panic!("{other:?}"),
-        }
+        assert!(matches!(wait_for(&ctx, &progressive), Picture::Ready(_)));
+        // A damaged JPEG says why.
+        let junk = scratch("junk.jpg", &[0xFF, 0xD8, 0xFF, 0xD9]);
+        let broken = Underlay::new("j", junk.to_string_lossy(), 8, 8, Point::ZERO);
+        assert!(matches!(wait_for(&ctx, &broken), Picture::Unavailable(_)));
         let missing = Underlay::new("m", "/no/such/file.png", 10, 10, Point::ZERO);
         assert!(matches!(wait_for(&ctx, &missing), Picture::Unavailable(_)));
         let mut pdf = Underlay::new("d", "/x/plan.pdf", 10, 10, Point::ZERO);

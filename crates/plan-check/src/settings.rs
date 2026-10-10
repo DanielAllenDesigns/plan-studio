@@ -18,9 +18,10 @@ use crate::{plan_check, CheckOptions, Finding, Severity, Target};
 
 /// The jurisdiction presets of the settings dialog. `Custom` is what the
 /// dialog shows once a limit has been edited.
-pub const JURISDICTIONS: [&str; 2] = ["IRC 2021 residential", "Custom"];
+pub const JURISDICTIONS: [&str; 3] = ["IRC 2021 residential", "Georgia 2020", "Custom"];
 
 const PRESET_IRC_2021: &str = "IRC 2021 residential";
+const PRESET_GEORGIA_2020: &str = "Georgia 2020";
 const CUSTOM: &str = "Custom";
 const SETTINGS_KEY: &str = "plancheck.settings";
 const IGNORED_KEY: &str = "plancheck.ignored";
@@ -134,6 +135,12 @@ static CATALOG: &[RuleInfo] = &[
         "Exterior doors are 80\" high",
     ),
     r(
+        "IRC R311.2 egress door",
+        "Doors and windows",
+        E,
+        "The grade floor has a 36\" x 80\" hinged exterior door",
+    ),
+    r(
         "IRC R311.2 bedroom door swing",
         "Doors and windows",
         I,
@@ -212,10 +219,28 @@ static CATALOG: &[RuleInfo] = &[
         "Flights of 4 or more risers have a handrail",
     ),
     r(
+        "IRC R311.7.8.1 handrail height",
+        "Stairs and guards",
+        W,
+        "Handrails are 34\" to 38\" high",
+    ),
+    r(
+        "IRC R311.7.8.2 handrail continuity",
+        "Stairs and guards",
+        W,
+        "The handrail runs on through landings",
+    ),
+    r(
         "IRC R312.1.2 guard height",
         "Stairs and guards",
         E,
         "Stair railings are at least 34\" high",
+    ),
+    r(
+        "IRC R312.1.3 opening limitation",
+        "Stairs and guards",
+        E,
+        "No opening in a guard passes a 4\" sphere",
     ),
     r(
         "IRC R312.1.1 guards",
@@ -234,6 +259,12 @@ static CATALOG: &[RuleInfo] = &[
         "Bath and kitchen",
         W,
         "15\" to each side and 21\" in front of a toilet",
+    ),
+    r(
+        "IRC R307.1 shower entrance clearance",
+        "Bath and kitchen",
+        W,
+        "24\" clear in front of a shower or tub entrance",
     ),
     r(
         "IRC P2708.1 shower and tub size",
@@ -284,6 +315,12 @@ static CATALOG: &[RuleInfo] = &[
         "The door to the house is solid or 20-minute rated",
     ),
     r(
+        "IRC R302.6 garage separation",
+        "Garage",
+        E,
+        "Gypsum board on the garage side of the house wall",
+    ),
+    r(
         "IRC R905.2.2 roof slope",
         "Roof",
         W,
@@ -320,6 +357,18 @@ static CATALOG: &[RuleInfo] = &[
         "A CO alarm with bedrooms and an attached garage",
     ),
     r(
+        "IRC R314.3 smoke alarm outside sleeping area",
+        "Electrical",
+        W,
+        "A smoke alarm outside each sleeping area",
+    ),
+    r(
+        "IRC R315.3 CO alarm outside sleeping area",
+        "Electrical",
+        I,
+        "A CO alarm outside each sleeping area",
+    ),
+    r(
         "NEC 210.8(A) GFCI protection",
         "Electrical",
         W,
@@ -332,12 +381,36 @@ static CATALOG: &[RuleInfo] = &[
         "A receptacle within 6' along every wall",
     ),
     r(
+        "IRC E3901.2 receptacle spacing",
+        "Electrical",
+        W,
+        "No point along a wall space is over 6' from a receptacle",
+    ),
+    r(
         "IRC R602.7 header size",
         "Framing",
         W,
         "Header sizes against the span table",
     ),
     r("IRC R502.3.1 joist span", "Framing", W, "Floor joist spans"),
+    r(
+        "IRC R802.4.1 rafter span",
+        "Framing",
+        W,
+        "Rafter runs against a conservative span table",
+    ),
+    r(
+        "IRC R403.1.4 footing depth",
+        "Foundation",
+        W,
+        "Footings reach the frost depth (12\" in Georgia)",
+    ),
+    r(
+        "IRC R403.1.1 footing size",
+        "Foundation",
+        W,
+        "Footings are wide and thick enough for the storeys",
+    ),
     r(
         "Plan geometry: tiny wall",
         "Plan geometry",
@@ -367,10 +440,16 @@ static CATALOG: &[RuleInfo] = &[
 /// Every rule the settings dialog lists, in dialog order. A finding whose
 /// rule is not in the list is always shown.
 pub fn rule_catalog() -> &'static [RuleInfo] {
-    CATALOG
+    static ALL: std::sync::OnceLock<Vec<RuleInfo>> = std::sync::OnceLock::new();
+    ALL.get_or_init(|| {
+        let mut all = CATALOG.to_vec();
+        all.extend(crate::rules_nkba::catalog());
+        all
+    })
 }
 
-/// Which rules run, and the limits they use.
+/// Which rules run, and the limits they use. Also exported as
+/// [`PlanCheckSettings`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CheckSettings {
@@ -381,6 +460,10 @@ pub struct CheckSettings {
     /// Rules switched off, by [`RuleInfo::id`].
     pub disabled: BTreeSet<String>,
 }
+
+/// The Plan Check Settings of a plan: jurisdiction preset, limits and which
+/// rules (and rule groups) run. Same type as [`CheckSettings`].
+pub type PlanCheckSettings = CheckSettings;
 
 impl Default for CheckSettings {
     fn default() -> Self {
@@ -395,6 +478,66 @@ impl CheckSettings {
             jurisdiction: PRESET_IRC_2021.to_string(),
             options: CheckOptions::default(),
             disabled: BTreeSet::new(),
+        }
+    }
+
+    /// The "Georgia 2020" preset: the State Minimum Standard codes, the 2018
+    /// IRC with the 2020 Georgia amendments, frost depth 12" (Table R301.2(1)),
+    /// every rule on. The limits are the 2021 ones except the code edition.
+    pub fn georgia_2020() -> Self {
+        Self {
+            jurisdiction: PRESET_GEORGIA_2020.to_string(),
+            options: CheckOptions {
+                code_year: 2018,
+                frost_depth: 12.0,
+                ..CheckOptions::default()
+            },
+            disabled: BTreeSet::new(),
+        }
+    }
+
+    /// The settings of a named preset of [`JURISDICTIONS`] (`None` for
+    /// "Custom" or a name that is not a preset). Pick a preset in the
+    /// dialog with this: `CheckSettings::preset(&name)`.
+    pub fn preset(name: &str) -> Option<Self> {
+        match name {
+            PRESET_IRC_2021 => Some(Self::irc_2021()),
+            PRESET_GEORGIA_2020 => Some(Self::georgia_2020()),
+            _ => None,
+        }
+    }
+
+    /// The rule groups of the settings list, in list order.
+    pub fn groups() -> Vec<&'static str> {
+        let mut out: Vec<&'static str> = Vec::new();
+        for r in rule_catalog() {
+            if !out.contains(&r.group) {
+                out.push(r.group);
+            }
+        }
+        out
+    }
+
+    /// Whether every rule of `group` runs.
+    pub fn group_enabled(&self, group: &str) -> bool {
+        rule_catalog()
+            .iter()
+            .filter(|r| r.group == group)
+            .all(|r| self.is_enabled(r.id))
+    }
+
+    /// Whether at least one rule of `group` runs.
+    pub fn group_any_enabled(&self, group: &str) -> bool {
+        rule_catalog()
+            .iter()
+            .filter(|r| r.group == group)
+            .any(|r| self.is_enabled(r.id))
+    }
+
+    /// Switch every rule of `group` on or off.
+    pub fn set_group_enabled(&mut self, group: &str, on: bool) {
+        for r in rule_catalog().iter().filter(|r| r.group == group) {
+            self.set_enabled(r.id, on);
         }
     }
 
@@ -417,6 +560,8 @@ impl CheckSettings {
     pub fn name_from_limits(&mut self) {
         self.jurisdiction = if self.options == CheckOptions::default() {
             PRESET_IRC_2021.to_string()
+        } else if self.options == Self::georgia_2020().options {
+            PRESET_GEORGIA_2020.to_string()
         } else {
             CUSTOM.to_string()
         };
@@ -439,7 +584,7 @@ impl CheckSettings {
     }
 }
 
-fn read_entry(project: &Project, key: &str) -> Option<String> {
+pub(crate) fn read_entry(project: &Project, key: &str) -> Option<String> {
     project
         .info
         .custom
@@ -448,7 +593,7 @@ fn read_entry(project: &Project, key: &str) -> Option<String> {
         .map(|(_, v)| v.clone())
 }
 
-fn write_entry(project: &mut Project, key: &str, value: Option<String>) {
+pub(crate) fn write_entry(project: &mut Project, key: &str, value: Option<String>) {
     let custom = &mut project.info.custom;
     match (value, custom.iter().position(|(k, _)| k == key)) {
         (Some(v), Some(i)) => custom[i].1 = v,
@@ -472,6 +617,7 @@ pub fn finding_key(floor: usize, f: &Finding) -> String {
         Some(Target::Cabinet(i)) => format!("cabinet{i}"),
         Some(Target::Roof(i)) => format!("roof{i}"),
         Some(Target::Detail(i)) => format!("detail{i}"),
+        Some(Target::Foundation(i)) => format!("foundation{i}"),
         Some(Target::Room(_)) => "room".to_string(),
         None => "-".to_string(),
     };

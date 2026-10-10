@@ -196,6 +196,13 @@ pub fn object_under(
 ) -> Option<(usize, ObjectRef)> {
     let (origin, dir) = pick_ray_at(cam, rect, pos);
     let hide = cam.mode.hides_ceiling_and_roof();
+    // The Material Painter wants to know which surface the ray met (a
+    // component of an object, a room's floor), not just the object.
+    if crate::tools::materials::painter_active() {
+        crate::tools::materials::note_pick(base.meshes.iter().chain(pictures), origin, dir, |m| {
+            is_drawn(m, hide)
+        });
+    }
     let (_, id) = nearest_hit(base.meshes.iter().chain(pictures), origin, dir, |m| {
         is_drawn(m, hide)
     })?;
@@ -209,9 +216,8 @@ pub fn apply_pick(cx: &mut EditorContext, hit: Option<(usize, ObjectRef)>, add: 
     // With the Material Painter on a click paints (or samples, or erases) the
     // object under it instead of selecting it.
     if crate::tools::materials::painter_active() {
-        if let Some((floor, obj)) = hit {
-            crate::tools::materials::paint_object(cx, floor, obj);
-        }
+        // A miss on an object can still be a room's floor or ceiling.
+        crate::tools::materials::paint_click(cx, hit);
         return;
     }
     match hit {

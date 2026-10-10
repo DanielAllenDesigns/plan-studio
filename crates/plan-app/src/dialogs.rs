@@ -18,20 +18,44 @@
 
 pub mod action_history;
 pub mod app_info;
+pub mod arch_block;
+pub mod assembly_def;
 pub mod build_tools;
 pub mod cabinet;
+pub mod cabinet_defaults;
+pub mod cabinet_face;
+pub mod cabinet_multi;
+pub mod cabinet_shelf;
 pub mod cad;
+pub mod calculators;
 pub mod camera;
+pub mod code_notice;
+pub mod common_pages;
+pub mod construction_line;
+pub mod construction_order;
+pub mod custom_countertop;
 pub mod customize_toolbars;
-mod default_lists;
+pub mod default_lists;
+pub mod default_pages;
+pub mod default_sets;
+pub mod default_settings_terrain;
 pub mod defaults;
 pub mod delete_objects;
 pub mod details;
 pub mod dimension;
+pub mod distribution;
+pub mod drawing_groups;
+pub mod drawing_sheet;
+pub mod dxf_options;
 pub mod edit_behaviors;
 pub mod electrical;
+pub mod elevation_ref;
 pub mod exchange;
+pub mod export_picture;
+pub mod exterior_room;
+pub mod fill_style;
 pub mod find_replace;
+pub mod fireplace;
 pub mod floor;
 pub mod floor_defaults;
 pub mod foundation;
@@ -39,31 +63,65 @@ pub mod framing;
 pub mod help;
 pub mod hotkeys;
 pub mod images;
+pub mod import_drawing;
+pub mod import_review;
+pub mod import_settings;
 pub mod layer_display;
 pub mod layer_sets;
 pub mod layout;
+pub mod layout_box;
+pub mod layout_revisions;
+pub mod library_object;
+pub mod line_style;
+pub mod material_region;
 pub mod materials;
+pub mod materials_list;
+pub mod molding;
+pub mod multiple_copy;
+pub mod object_info;
 mod opening;
+pub mod page_info;
+pub mod painters;
+pub mod panorama;
+pub mod pattern_editor;
 pub mod plan_check;
 pub mod plan_views;
 pub mod preferences;
 pub mod print;
 pub mod project_info;
+pub mod property_manager;
 pub mod reference_display;
 pub mod roof;
+pub mod roof_baseline;
+pub mod roof_trim;
 pub mod room;
+pub mod room_types;
+pub mod rope_light;
+pub mod saved_defaults;
+pub mod schedule_categories;
 pub mod schedule_spec;
+pub mod select_location;
 pub mod send_to_layer;
+pub mod send_to_layout;
+pub mod skylight;
 pub mod snap_settings;
+pub mod soffit;
+pub mod solids;
+pub mod spell_check;
 pub mod stairs;
 pub mod symbol;
+pub mod template_chooser;
 pub mod terrain;
 pub mod text;
 pub mod transform;
+pub mod tray_ceiling;
+pub mod truss;
+pub mod truss_detail;
 pub mod underlay;
 pub mod unsaved;
 mod wall;
 mod wall_types;
+pub mod watermark;
 
 pub use default_lists::DefaultsList;
 pub use defaults::{DefaultsDialog, DefaultsEntry, DefaultsOutcome};
@@ -165,6 +223,11 @@ impl SpecDialog {
         }
     }
 
+    /// Opens on tab `i` (a Default Settings leaf that jumps to its tab).
+    pub fn start_on(&mut self, i: usize) {
+        self.active = i;
+    }
+
     /// The dialog type's name in the settings file (its title).
     #[allow(dead_code)]
     pub fn geometry_key(&self) -> &str {
@@ -215,9 +278,31 @@ impl SpecDialog {
         let mut outcome = Outcome::Open;
         let mut apply = false;
         let mut open = true;
-        let error = pages.error();
+        // The Properties tab: the host armed custom properties for this
+        // object (`property_manager::with_current`), so the frame adds a
+        // last tab for them.
+        let props = property_manager::current();
+        let error = pages
+            .error()
+            .or_else(|| props.as_ref().and_then(|p| p.borrow().error()));
         let tabs = pages.tabs();
-        if !tabs.get(self.active).is_some_and(|t| t.enabled) {
+        let props_tab = props.is_some().then_some(tabs.len());
+        // The Components and Object Information tabs of the Materials List
+        // (`object_info::with_current`), after the Properties tab.
+        let info = object_info::current();
+        let first_info = tabs.len() + usize::from(props.is_some());
+        let own_names: Vec<&str> = tabs.iter().map(|t| t.name).collect();
+        // The Components, Object Information, Label, Schedule and
+        // Manufacturer tabs the shared panels add (`object_info::tabs`).
+        let common: Vec<object_info::CommonTab> = info
+            .as_ref()
+            .map(|s| object_info::tabs(&s.borrow(), &own_names))
+            .unwrap_or_default();
+        let in_common = |i: usize| i >= first_info && i < first_info + common.len();
+        if props_tab != Some(self.active)
+            && !in_common(self.active)
+            && !tabs.get(self.active).is_some_and(|t| t.enabled)
+        {
             self.active = 0;
         }
         FOCUS_FIRST.with(|f| f.set(self.fresh));
@@ -285,6 +370,19 @@ impl SpecDialog {
                                 self.active = i;
                             }
                         }
+                        if let Some(i) = props_tab {
+                            let label = egui::SelectableLabel::new(self.active == i, "Properties");
+                            if ui.add(label).clicked() {
+                                self.active = i;
+                            }
+                        }
+                        for (n, tab) in common.iter().enumerate() {
+                            let i = first_info + n;
+                            let label = egui::SelectableLabel::new(self.active == i, &tab.name);
+                            if ui.add(label).clicked() {
+                                self.active = i;
+                            }
+                        }
                     });
                 });
 
@@ -295,7 +393,42 @@ impl SpecDialog {
                 .auto_shrink([false, false])
                 .show(&mut mc, |ui| {
                     ui.set_width(ui.available_width());
-                    pages.page(ui, self.active);
+                    match (&props, props_tab) {
+                        (Some(p), Some(i)) if self.active == i => {
+                            property_manager::page(ui, &mut p.borrow_mut());
+                        }
+                        _ if in_common(self.active) => {
+                            if let (Some(s), Some(tab)) =
+                                (&info, common.get(self.active - first_info))
+                            {
+                                object_info::draw_page(
+                                    ui,
+                                    &mut s.borrow_mut(),
+                                    tab.page,
+                                    common_pages::Placement::Tab,
+                                );
+                            }
+                        }
+                        _ => {
+                            pages.page(ui, self.active);
+                            // A shared panel under the dialog's own tab of the
+                            // same name (an opening's Label, a symbol's
+                            // Schedule): the parts that tab lacks.
+                            let extra = info.as_ref().and_then(|s| {
+                                let name = tabs.get(self.active)?.name;
+                                object_info::appended(&s.borrow(), name)
+                            });
+                            if let (Some(page), Some(s)) = (extra, &info) {
+                                ui.add_space(10.0);
+                                object_info::draw_page(
+                                    ui,
+                                    &mut s.borrow_mut(),
+                                    page,
+                                    common_pages::Placement::Appended,
+                                );
+                            }
+                        }
+                    }
                 });
 
             // Preview.

@@ -32,9 +32,10 @@ of a `plan_cabinets::Cabinet`, so the plan file stays readable and the engine
   1 1/2" countertop with a 1" overhang, and a 4" x 3" toe kick); Wall cabinet 24" x 12" x 30"
   with its bottom at 54"; Full Height 24" x 24" x 84". Door style Lincoln Door,
   drawer style Lincoln Flat Panel Drawer, Knob handles.
-- Automatic labels follow the industry style: `B24` (base 24"), `B36-SB` (sink base),
-  `W3030` (wall cabinet, width then height), `FH2484` (full height), with `SO`, `SH`,
-  `PT` for soffit, shelf, partition.
+- Automatic labels follow Chief's four-part format, Key + Code + Size + Door Swing (Label, below): `B24` (base 24"),
+  `3DB24` (a bank of three drawers), `SB24R` (sink base with a right door), `W3030` (wall cabinet, width then
+  height), `U242484` (full height), `BF3` (a filler), `OTC362490` (tall oven), with `SO` for a soffit. Shelves,
+  partitions and the fillers the program makes have no automatic label.
 - Countertop merging is Generate Countertop (`G`, 6.2). One engine helper has no editor command yet: `run_along_wall` (a row of cabinets along a wall).
 
 ## 6.2 Tools
@@ -47,7 +48,7 @@ of a `plan_cabinets::Cabinet`, so the plan file stays readable and the engine
 | Wall Cabinet | `Cmd+T` | Works. |
 | Full Height | `Ctrl+Alt+Cmd+X` | Works. |
 | Soffit | `T` | Works as a cabinet-like box. |
-| Soffit Polygon | | Click the corners of the soffit (or drag a rectangle); `Enter` or the first corner finishes, `Backspace` removes a corner. It is stored as a Soffit with a polygon outline (one undo step, "Place Soffit Polygon"). |
+| Soffit Polygon | | Click the corners of the soffit (or drag a rectangle); `Enter` or the first corner finishes, `Backspace` removes a corner. It is stored as a Soffit with a polygon outline (one undo step, "Place Soffit Polygon"). A closed CAD polyline you have selected becomes the same soffit with the Edit toolbar button **Convert Polyline to Soffit** (the polyline is replaced; one undo step). |
 | Shelf | `Ctrl+Alt+Cmd+Y` | Works. |
 | Partition | `Ctrl+Alt+Cmd+Z` | Works. |
 | Base Filler | `Ctrl+Alt+Cmd+0` | Works: a click in a gap makes a filler the width of the gap. |
@@ -88,11 +89,16 @@ and sits in the bay (a range bay takes an oven and the other way round).
 | Move | A ghost cabinet follows the pointer. |
 | Click | Places a cabinet. Within 12" of a wall, the cabinet's back rotates to that wall and sits flush to its face. Away from walls it keeps the tool's angle. |
 | Press, drag, release | Sets the width in 3" steps (one cabinet). |
-| Place or drag next to another cabinet | It slides to butt against the neighbor and aligns its back line (bumping). |
+| Place or drag next to another cabinet | It slides to butt against the neighbor and aligns its back line (bumping). The Edit toolbar button **Neighbors: Bump / Push / Pass Through** changes what a dragged cabinet does (below). |
 | `Tab`, `Shift+Tab` | Next cabinet kind; next library type (Vanity, Pantry, Tall Oven, Refrigerator). |
 | Click the width, gap or distance of the temporary dimensions | Types a value (below). |
 | `G` | **Generate Countertop**: joins the countertops of touching base cabinets into custom countertops (below). |
 | `Esc` | Returns to Select Objects. |
+
+**Narrow spaces.** A cabinet clicked into a space that has a wall or cabinet on both sides and is narrower than the cabinet takes the
+largest multiple of the Resize Increment that fits (a 24" cabinet in a 20" space with a 3" increment becomes 18"), never below the Minimum
+Cabinet Width; in a space narrower than the minimum nothing is placed and the status line says so. A **wall cabinet** placed over a
+free-standing appliance (or a cabinet's appliance bay) that reaches above its usual bottom hangs from the appliance top.
 
 **Placement sizing.** A cabinet clicked into a gap (between a wall and a cabinet, or between two cabinets) whose width is within the
 tolerance of the cabinet's own takes the gap's width and position, so a 36" default base clicked into a 34" gap becomes 34" and
@@ -111,7 +117,8 @@ A placed cabinet is selected. Its handles:
   A cabinet dragged into a gap (between a wall and a cabinet, or two cabinets) whose width is within 2"
   of its own **fits to the gap**: it takes the gap's width and position exactly. `Alt`, or
   Preferences > Architectural, turns that off.
-- **Resize** at both ends: changes the width in 3" steps; the cabinet grows from the dragged side.
+- **Bumping and pushing**: in **Bump** (the default) a dragged cabinet stops butted against the cabinets it meets. In **Push** it pushes the cabinets of its run along ahead of it (they stay butted, and come back if you drag back); if a wall or another run is in the way it bumps instead. **Pass Through** ignores other cabinets. One undo step undoes the move and every push. The setting is for the session (Edit > Neighbors cycles it too) and the Select tool follows it when you drag a cabinet.
+- **Resize** at both ends: changes the width by the **Resize Increment** (3" unless Default Settings > Cabinets > General Cabinet changes it, or asks for the Snap Grid); the cabinet grows from the dragged side. An edge dragged within 3" of a wall or the next cabinet snaps to it, so the cabinet fills the gap (`Alt` turns the snap off).
 - **Depth** handles on the middle of the front and back edges: change the depth in 1" steps
   (3" at least); the opposite edge stays put, so the back can stay on the wall.
 - **Corner** handles: change width and depth together, the opposite corner staying put.
@@ -122,8 +129,27 @@ The height is set in the Cabinet Specification. Free-form tops (custom counterto
 have no resize handles.
 
 Double-click or press `Enter` opens the Cabinet Specification. The Edit toolbar offers
-Open Object, Delete Objects, Copy Selected Objects, Paste in Place and **Reverse Door
-Swing**. Select a cabinet with Select Objects too; the Cabinet tool can also pick cabinets.
+Open Object, Delete Objects, Copy Selected Objects, Paste in Place, **Reverse Door
+Swing** and **Set as Default** (copies one standard cabinet into the defaults of its kind). Select a cabinet with Select Objects too; the Cabinet tool can also pick cabinets.
+
+#### Automatic fillers, merging and module lines
+
+Cabinets of one family (base, wall or full height) and one height that stand side by side with up to 3" between them, or between a
+cabinet side and a wall, get a **filler** of exactly that width (to 1/16"), with the same toe kick, countertop, backsplash and moldings.
+The countertop runs on over the filler to the wall. A filler also goes in the angle where two runs meet at a front corner within 3".
+These fillers are made again after every edit (one undo step with it); you cannot pick them, they carry no label, and the Cabinet
+Schedule leaves them out. A manually placed filler (below) is a cabinet like any other. Extended stiles on a framed cabinet count
+towards the gap and put `XL`, `XR` or `XLR` in the label.
+
+Merged cabinets (side by side within 3", or meeting at a front corner, or at a back corner facing away at 87 degrees or less) draw
+**module lines** where they meet, dashed, on the layer **Cabinets, Module Lines**; turn the layer off and they read as one block.
+
+Default Settings > Cabinets > **General Cabinet** (this dialog opens from there only) sets: the Minimum Cabinet Width (not under 1/16"),
+Minimum Shelf Spacing, Auto Door Threshold; Create Automatic Fillers (also for angled connections; changing it rebuilds the fillers in
+one undo step) and Create Automatic Blind Corner Cabinets; **Cabinet Resizing** by the Snap Grid or by a Resize Increment (not under
+1/16"); and the **Plan Display Options**: Show Partial Module Lines (a short grey tick instead of a dashed line), Show Closed
+Doors/Drawers and Panels, Show Pilasters, Display Molding Edges in Plan Views. Changing a Cabinet Default moves the existing cabinets
+that still have the old value (countertop thickness and overhangs, toe kick, backsplash).
 
 #### Fillers, corner and blind cabinets
 
@@ -186,57 +212,71 @@ The preview shows the plan symbol and a front elevation of the resolved face ite
 | Tab | Status |
 |---|---|
 | General | Works |
-| Box Construction | Works |
-| Front/Sides/Back | Works. The **Cabinet Side** list picks Front, Left, Right or Back; each of the three sides is a Plain Panel, a Finished Panel, Open, or a **Custom Face** with its own face-item tree edited like the front (rectangular cabinets only; the sides are built in 3D) |
+| Box Construction | Works: Framed or Frameless with extended stiles, Top and Bottom Auto / Has / No, Side and Back Thickness, Box Corners, General Options |
+| Front/Sides/Back | Works: Side Properties, Show Open options, the 16 item types, a Face Item Specification for the selected item. The **Cabinet Side** list picks Front, Left, Right or Back; each of the three sides is a Plain Panel, a Finished Panel, Open, or a **Custom Face** with its own face-item tree edited like the front (rectangular cabinets only; the sides are built in 3D) |
 | Door/Drawer | Works |
-| Accessories | Works (mostly disabled controls) |
+| Accessories | Works: front pilasters (plain or fluted, left and right, width), feet (block, bun or bracket, in place of the toe kick board) and finished end panels |
 | Opening Indicators | Works |
 | Moldings | Works (crown and light rail) |
 | Layer | Works (shows the layer; follows the cabinet's type) |
-| Fill Style | (disabled) |
+| Fill Style | Works: None, Solid, Hatch or Cross Hatch with a colour, opacity and line spacing, in the plan view |
 | Materials | Works (per part) |
 | Label | Works |
-| Components, Object Information, Schedule | (disabled) |
+| Components | Works: the parts with counts, sizes and materials |
+| Object Information | Works: the facts, plus manufacturer, model number, description and notes |
+| Schedule | Works: *List this cabinet in the Cabinet Schedule* and the cabinet's schedule row |
+| Manufacturer | Works: name, contact, phone, email, web site and catalog of a catalog cabinet |
 
 ### General
 
-- **Cabinet Style**: Type (shows the kind, disabled); Treat As Filler (checked for the filler kinds, disabled).
+- **Cabinet Style**: the **Type** list converts a base, wall or full height cabinet: Standard, Corner (the width must be greater than the depth, else the program says so and nothing changes), Left End, Right End, Left Radius End, Right Radius End, Peninsula Radius, Angled Front and Bow Front. A second field follows the choice: *Corner Cut* (End), *Radius* (Radius End, Peninsula Radius), *Right Depth* (Angled Front: the left depth is the cabinet's Depth) or *Bow Depth* (Bow Front, negative for an inside bow; at most half the width). A corner cabinet also has *Bow Depth* for its diagonal. The face items stay when the style changes. Cabinets that are not ordinary (appliance bays, library types) show the kind, disabled. Treat As Filler is checked for the filler kinds, disabled.
 - **Size/Position**: Width, Height (including countertop), Depth, Finished Floor to Bottom,
   Finished Floor to Top, Position X and Y (the back-left corner), Angle.
 - **Corner Cabinet** (corner kinds): Front Diagonal or Pie-Cut, Lazy Susan shelves, Arm Depth. **Blind Corner** (blind kinds): Hidden end, Blind Width.
 - **Appliance Opening** (base cabinets): the open-bay check box and the appliance.
-- **Custom Top** (custom kinds): Thickness; Edge Profile and Edge Size (countertop); Height (backsplash).
+- **Custom Top** (custom kinds): Thickness; Edge Profile and Edge Size (countertop); Height (backsplash). A Custom Countertop also shows the **Custom Countertop Specification** panels: *Polyline* (closed or open, line count and perimeter, area, **Hole in Countertop**, thickness and height from the cabinet below), *Selected Line* (pick Line n, then its Length and Angle; an edit that would collapse the outline is refused), *Molding on Selected Edge* (Automatic, No Molding, Has Molding, **Apply to All Edges**; with no molding on any edge the top is built square), *Waterfall* (**Add Waterfall to Selected Edge**, Remove Waterfall, Mitre All Waterfall Edges, the slab runs to the floor or to a height you type) and *Moldings* (**Display Molding Edges in Plan Views**).
 - **Countertop**: Thickness (1 1/2"), Overhang Front, Back and Sides (1"), **Edge Profile** (Square, Beveled, Bullnose, Ogee or Waterfall) and Corner Treatment
   None / Clipped / Rounded with a size (on the front corners of a cabinet's own top and on every convex corner of a custom or joined top). **Sink and Cooktop Cutouts**: Add Sink, Add Cooktop, Remove.
-- **Backsplash**: Height, Thickness, and **Full height** (to the underside of the wall cabinet above, else to 54").
-- **Toe Kick**: Height (4"), Depth (3").
+- **Backsplash**: Height, Thickness, and **Full height** (to the underside of the wall cabinet above, else to 54"), **Side Backsplash** (also up the side that stands against a wall or a taller cabinet) and **Always Present** (off: the backsplash is built only where the cabinet's back stands on a wall).
+- **Toe Kick**: Height (4"), Depth (3"), Flat Sides, Flat Back, Closed Toe (the side panel runs to the floor at an exposed end) and Always Closed (also where cabinets stand side by side).
 
 ### Box Construction
 
-- **Box Construction**: Framed (with Separation) or Frameless.
+- **Box Construction**: Framed (with Separation, and Extend Left and Right Stile, which act as fillers and put XL, XR or XLR in the label) or Frameless.
 - **Top/Bottom/Sides**: Top Auto / Has Top / No Top; Bottom Auto / Has Bottom / No Bottom;
-  Side / Back Thickness.
+  Side Thickness and Back Thickness.
+- **Box Corners**: Clipped or Rounded corners of the box with a size, on every corner that is not against a wall or a cabinet (Automatic Placement) or on the corners you tick.
+- **General Options**: Cut Room Moldings, Suppress Automatic Fillers, Auto Door Threshold (the width up to which an Auto door item is one door, 24" by default) and the Elevation Reference.
 - **Door/Drawer Overlay**: Traditional Overlay, Full Overlay, Inset.
 
 ### Front/Sides/Back
 
-- **Cabinet Side**: the list shows Front and is disabled, and so is Side Type: only the front face is editable, not the Sides or the Back.
+- **Cabinet Side**: Front, Left, Right or Back, each with a Side Type (Plain Panel, Finished Panel, Open or Custom Face).
+- **Side Properties** (front): Left and Right Stile and Reveal, each following the cabinet until you tick *Specify*. **Options**: Show Open for Doors, Drawers and Rollouts, and the Auto Door Threshold.
 - **Front Elevation** (the face editor): a drawing of the resolved face items; drag a divider to resize the items on either side of it.
 - **Face Items**: an indented tree such as `Vertical Layout > Separation, Layout > Drawer,
   Separation, Door - Auto Right, Separation`. Buttons: **Add New**, **Delete**, **Move
   Up**, **Move Down**, **Split Vertical**, **Split Horizontal**, **Equalize**, **Reset to
   Default Face**, **Sink Base Face**.
-- **Selected Item Properties**: Item Type (Door, Drawer, Separation, Opening, Appliance,
-  Horizontal Layout ...), Item Height (0 = auto), Item Width, Lock from Auto-Resize, and an
-  Appliance field.
+- **Selected Item Properties**: Item Type, Item Height (0 = auto), Item Width, the Appliance name, and the item's **Face Item Specification** (below). The 16 types you can add or change to are Blank Area, False Drawer, False Double Drawer, Drawer, Double Drawer, Cutting Board, Door - Auto Right (one right-hand door up to the Auto Door Threshold, a pair above it), Door - Auto Left, Door - Left, Door - Right, Double Door, Door Panel, Opening, Rollout, Separation and Appliance; Layout - Horizontal and Layout - Vertical are made by splitting (Split Horizontal, Split Vertical) and nest inside each other.
 - Splitting an item recomputes its siblings' heights and widths unless one is locked.
+
+#### Face Item Specification
+
+Under the item's properties, the page named for its kind (Door, Drawer or Side Panel Face Item Specification) holds the settings that item has of its own; an item that sets none follows the cabinet's Door/Drawer tab.
+
+- **Main Style**: Same as Cabinet, Slab, Framed or Library (a Library style comes from the "Cabinet Doors" category; Framed adds the stile and rail width, Glass Door).
+- **Hardware**: the handle style and **Hardware Size/Orientation**: Width, Height and Depth (Retain Aspect keeps the proportions) and the angle in 90 degree steps.
+- **Cabinet Shelf Specification** (doors, openings, rollouts): *Automatic* keeps the number the opening height gives; *Manual* lists the shelves with Thickness, Spacing (or Equal Spacing and **Equalize**), Depth (Full, Half or a size), Rollout with its amount, and a Library object. A Rollout item without shelves of its own holds one roll-out shelf for each 13" of height.
+- **Show Open**: Swing Angle of a door, Percent Open of a drawer or rollout; each follows the cabinet's Show Open until you specify it.
+- **Panel Overlaps** (Left, Right, Top, Bottom), **Door Back Inserts** with their order, the **Drawer Box/Pullout** insert, **Reverse Appliance** and **Lock from Auto Resize**.
 
 ### Door/Drawer, Accessories
 
 **Door/Drawer** has: *Door Panel* (Main Style, Panel Profile Slab, Shaker or Raised Panel, Thickness, Stile and Rail Width for framed profiles, Glass Doors); *Door Handle* (Main Style, Vertical Position Centered or Distance From Top,
 Distance From Edge); *Door Hinges* (Hidden or Exposed, Up/Down From Edge); *Drawer Panel* (Main Style, Panel Profile, Thickness); *Drawer Handle* (Main Style, Vertical Position Centered or Near the top). The built-in door styles are Lincoln
-Door, Slab Door, Shaker Door and Raised Panel Door; the drawer styles are Lincoln Flat Panel Drawer, Slab Drawer, Shaker Drawer and Raised Panel Drawer; library styles are (planned). Handles (**hardware styles**) are None, Knob, Pull (a bar pull on two posts, vertical on a door and horizontal on a drawer), Cup Pull (a half-round plate at the top edge of a drawer) or Edge Pull (a thin lip along the free edge of a door or the top of a drawer front).
-**Accessories**: Front Pilasters, Feet (Foot Style), Side Panels (Main Panel Style, Full Size Panel); the controls are disabled.
+Door, Slab Door, Shaker Door and Raised Panel Door; the drawer styles are Lincoln Flat Panel Drawer, Slab Drawer, Shaker Drawer and Raised Panel Drawer; the **library styles** follow them in the Main Style list: every library object in a "Cabinet Doors" category (and "Cabinet Drawers" for drawer fronts) from the built-in and user libraries, and, after **Load Chief Library Styles** (with the Chief catalogs on), Chief's. A picked style copies its name, look (Slab, Shaker or Raised, Glass) and library id into the cabinet; the 3D door is built from the look. Handles (**hardware styles**) are None, Knob, Pull (a bar pull on two posts, vertical on a door and horizontal on a drawer), Cup Pull (a half-round plate at the top edge of a drawer) or Edge Pull (a thin lip along the free edge of a door or the top of a drawer front).
+**Accessories**: Front Pilaster (None, Plain, Fluted; Left and Right; Width), Foot Style (None, Block, Bun, Bracket; Foot Size; feet need a toe kick and stand in its place) and Side Panels (a finished panel on the left or right end, the same as Side Type on the Front/Sides/Back tab).
 
 ### Opening Indicators, Moldings, Layer, Materials, Label
 
@@ -244,6 +284,27 @@ Door, Slab Door, Shaker Door and Raised Panel Door; the drawer styles are Lincol
 **Moldings** lists up to four profiles, each with a Projection, a Height and a Delete button; **Add Crown** puts a crown molding on top of the cabinet and **Add Light Rail** one under it; both run along the front and return at the ends.
 **Layer** shows the layer (Cabinets, Base; Cabinets, Wall ...), which follows the kind. **Materials** gives each part (Box, Door Fronts, Drawer Fronts, Countertop, Backsplash, Toe Kick, Molding) a material from Default, Wood, Painted, Stone, Concrete,
 Metal or Glass; Default keeps the part's usual stand-in. **Label** shows the automatic label (`B24`); *Specify label* lets you type your own, with the macros `<L>` the automatic label, `<T>` the type letters (`B`, `W`, `FH`, `VB`), `<W>` `<D>` `<H>` width, depth and height (whole inches or trimmed decimals), `<WxD>` `<WxH>` `<WxDxH>` sizes joined with x, `<N>` the cabinet's name (`Base Cabinet`, `Vanity Cabinet`), `<S>` the door style, `<F>` the finish, `<HW>` the hardware and `<A>` the appliance a bay holds. A label without macros stays literal.
+
+#### Automatic cabinet labels
+
+The automatic label has four parts. The **Key** is `B` base, `W` wall, `U` full height. The **Code** says more about the box: `SB` sink
+base, `RB` range base, `OB` oven base, `3DB` a bank of three drawers, `FHB` a base with one full-height door, `2D` after a wall key
+for drawers (`W2D3030`), `DC`, `LC`, `LS`, `LSD` and `BC` in front of the key for diagonal, left, lazy susan, lazy susan diagonal and
+blind corners (`DCB36`, `BCW2436R`), `P` after the key for a peninsula (doors on the back), `F` for a filler (`BF3`, `WF330`,
+`UF32484`), `XL`, `XR`, `XLR` for extended stiles, and `OTC` and `RTC` for the tall oven and tall refrigerator cabinets. The **Size**
+is the width, then the depth and height when they are not standard (base 24" deep and 34 1/2" high under the top; wall 12" deep):
+base and full height read width, depth, height; a wall cabinet reads width, height (always), then depth. The **Door Swing**, `L` or
+`R`, is added only when every door swings the same way (an Auto door gives none). Library types keep their own letters (`VB30`,
+`PN2484`). *Suppress Label* hides one cabinet's label; the layer *Cabinets, Labels* hides them all. Shelves, partitions and custom
+countertops have a blank automatic label; type one in *Specify label* if you want it.
+
+#### Several cabinets at once
+
+Select two or more cabinets and use Open Object (Edit toolbar, or Enter): one **Cabinet Specification (Multiple Cabinets)** opens with the tabs General, Box Construction and Door/Drawer. A field whose value differs between the cabinets shows **No Change** (a blank length, an indeterminate check box, no style chosen). Only the fields you edit are written, to every selected cabinet, as one undo step; everything else keeps its own value.
+
+#### Edit toolbar commands
+
+With cabinets selected the Edit toolbar offers **Open Cabinet Doors/Drawers** and **Close Cabinet Doors/Drawers** (they set Show Open for doors, drawers and rollouts), **Generate Custom Countertop** (joins the countertops of the selected base cabinets) and, when a cabinet has moldings, **Make Cabinet Molding Polyline** (each molding becomes a closed polyline on the layer *Cabinets, Moldings*, and the cabinet loses the molding).
 
 ### 6.3a Cabinet Defaults
 
@@ -261,18 +322,32 @@ window has ten tabs; OK saves them to the plan's defaults and Cancel drops the e
 | Library Types | The sizes of the Vanity, Pantry, Tall Oven and Refrigerator cabinets |
 | Fillers and Corners | Filler width, corner base and corner wall legs, blind width and hidden width |
 
+A separate dialog, **Default Settings > Cabinets > General Cabinet**, holds the automatic behaviors, the resize step and the plan
+display options (6.2, Automatic fillers).
+
 ## 6.4 The Library Browser
 
 Open it with the Library Browser button on the view bar or `Cmd+L`. It is a dock
 (chapter 1.5) with:
 
+- A **header** with a **Library** menu (New Folder, Add Selection to Library, Convert to Symbol, Replace From
+  Library with a "Replace keeps size" switch, Import Library, Export Library, Import 3D Model, Rebuild Thumbnails,
+  Empty Trash) and a **Preferences...** link that opens the Library page of Preferences.
 - A **search field** with a clear button. Search is case-insensitive; every word must
-  match. Ranking, best first: name (whole word, prefix, substring), then tags, then category.
-- A **category tree** with item counts. Click a category to filter. Below the built-in tree sit
+  match the name or a keyword. Ranking, best first: name (whole word, prefix, substring), then tags, then category.
+  With "Search Chief catalogs" on, the keywords stored in the `.calib` catalogs are searched too.
+- A **Type** filter (a drop-down of check boxes): Cabinets, Doors, Windows, Fixtures, Furniture, Plants, Materials,
+  Backdrops, Moldings, Images, Electrical, Hardware. Tick several to see their union; "All" (nothing ticked) keeps
+  everything. An item's type comes from what it is (a swatch is a Material, a picture an Image, a saved cabinet a
+  Cabinet) and from the words in its category, name and keywords; an object that fits none of the twelve is hidden
+  while a type is ticked. The filter applies to the built-in and User items and to Chief rows.
+- A **category tree** with folder icons and item counts. Click a category to filter. Below the built-in tree sit
   the **Chief Architect catalogs** (6.6): the "Use Chief Architect catalogs" check box, a
-  "Catalog folders..." button and four collapsed nodes.
+  "Catalog folders..." button and four collapsed folders (Chief Architect Core Catalogs, Bonus Catalogs,
+  Manufacturer Catalogs, User Catalog), and last the **Trash** (6.4a).
 - A **result list** of up to 200 rows, each with a small drawing of the item's 2D symbol, its
-  name and its size (for example `30 x 28 in`).
+  name and its size (for example `30 x 28 in`). The **List / Grid / Names** switch picks rows, a thumbnail grid or
+  just a file icon and the name per line.
 - The line "Active item: ..." shows what a click in the plan will place.
 - A **Filters** button (type, catalog, style or manufacturer word, size range, favorites only), a **Sort** menu
   (relevance, name, type, size, recently used) and a **List / Grid** toggle.
@@ -280,12 +355,20 @@ Open it with the Library Browser button on the view bar or `Cmd+L`. It is a dock
   preview pane; an item joins the recent list when you pick or place it. Both lists are kept in
   `~/.plan-studio/user-library-meta.json`.
 - A **User** node in the tree: your own catalog (6.4a), with folders, favorites and recents.
-- A **Preview and Object Information** pane for the clicked item: a 2D/3D toggle (the 3D view is a software-shaded
-  picture of the item's model, or a box of its size; drag it or use the arrow buttons to rotate) and the item's
-  type, category, size, placement, layer, keywords and triangle count.
-- A right-click menu on a result: Add or Remove Favorite, Open Object, and Add to User Library for built-in items;
-  user items also get Rename, Duplicate, Move To and Delete. Chief rows have Open Object (6.6) and a dimmed
-  Add to User Library: Chief content is licensed, read in place and never copied.
+- A **Preview and Object Information** pane for the clicked item with a **2D / 3D / Render** toggle. Render (the
+  default) is a path-traced picture of the item's 3D shape (its model, or its plan outline raised to its height),
+  made with `plan-render` at a low sample count and denoised, on a background thread ("Rendering..." until it
+  lands). The picture is kept in `~/.plan-studio/thumbs/<hash>.png`; the hash covers the item, its model and the
+  renderer version, so an edited item renders again and a known one appears at once in later sessions. Library >
+  Rebuild Thumbnails deletes the folder's pictures. 3D is the software-shaded view you can turn (drag it or use the
+  arrow buttons). Below: type, category, size, placement, layer, keywords and triangle count. The **Open** button
+  opens the Library Object Specification (6.5).
+- A right-click menu on a result: Add or Remove Favorite, **Open Object**, **Replace Selected With This**, Add to
+  Library for built-in items; user items also get Object Information, Rename, Duplicate, Move To, New Folder and
+  Delete (to the Trash). Chief rows have Open Object (6.6) and no Add to Library: Chief content is licensed, read in
+  place and never copied.
+- **Drag a row onto the plan** to place it where you let go (the same placement as a click, one undo step); drag a
+  user item onto a User folder to move it instead. Letting go over a panel places nothing.
 
 ### 6.4a The User catalog
 
@@ -293,12 +376,27 @@ Your own items live in `~/.plan-studio/user-library.json`; their 3D models are `
 `~/.plan-studio/user-models/`.
 
 - **Folders.** Right-click User or any folder: New Folder, Rename Folder, Move Folder To, Delete Folder (the items
-  inside go with it, after a confirmation). Drag a user item onto a folder to move it, or use Move To.
+  inside go to the Trash, after a confirmation). The User node's menu also has Export Library and Import Library.
+  Drag a user item onto a folder to move it, or use Move To.
+- **Trash.** Delete (on an item, or on a folder's items) moves them to the **Trash** node at the bottom of the tree
+  instead of erasing them; it is kept in `~/.plan-studio/user-library-trash.json`, and a trashed item keeps its model
+  file. In the Trash, **Restore** puts an item back in the folder it came from (under a new id if another item took
+  its id), **Delete Permanently** and **Empty Trash** erase for good after a confirmation.
 - **Add to Library.** Select a symbol, cabinet, CAD line, arc, circle or polyline, or text, then Library > Add
   Selection to Library. Symbols keep their size, flip and 3D model; a cabinet is kept whole (placing it makes a
   cabinet again); CAD pieces become one block and text becomes a text item. Library > Add Active Material to Library
-  saves the Material Painter's material as a 12 in swatch. The Symbol Specification has Add to Library and
+  saves the Material Painter's material as a 12 in swatch. The Library Object Specification has Add to Library and
   Convert to Symbol (save, then use the saved item).
+- **Convert to Symbol.** Select 3D solids (3D Solid flyout: boxes, polyline solids, cylinders, cones, spheres,
+  pyramids) and choose Library > Convert to Symbol (or the Edit toolbar button). The solids' meshes become the 3D model
+  of one new User Catalog symbol in `User > 3D Models` ("Solid Symbol n"), its plan drawing is the model seen from
+  above, its size the solids' bounding box and its elevation the lowest solid's. The solids are replaced by a
+  placed copy of the symbol, all as one undo step ("Convert to Symbol"). A selection of flat faces is refused.
+- **Replace From Library.** Pick an item in the Library Browser, select the plan objects to replace and choose
+  Library > Replace From Library (the Edit toolbar button, or **Replace Selected With This** in a row's menu).
+  Every selected symbol takes the item and keeps its position, angle, reflect, label, layer and elevation; the size
+  stays too unless "Replace keeps size" is off, when the item's own size is used. One undo step for the whole
+  selection. A single selected cabinet or electrical device is swapped as in 6.5.
 - **Object Information.** Open Object on a user item (or Edit in the preview pane): name, keywords (comma
   separated; the search finds them), category folder, type, style, manufacturer, width, depth, height, elevation,
   placement, whether it turns to face a wall, default layer, the 2D symbol (keep, draw from the 3D model, plain
@@ -308,11 +406,14 @@ Your own items live in `~/.plan-studio/user-library.json`; their 3D models are `
   defaults to meters), the up axis (Y or Z), the folder and the placement. The plan symbol is drawn from the model
   seen from above. OBJ colors come from a `.mtl` beside the file; glTF reads scenes, node transforms, triangle
   meshes and base colors, not textures, sparse accessors or Draco compression.
-- **Export Library / Import Library.** Library > Export Library (Plan Studio only) writes a `.calibz` zip of the catalog JSON, the
-  folders, favorites and recents, and the `.psm` models. It is Plan Studio's own format: the zip is stored without compression and
-  Chief Architect cannot open it (its README says so). Library > Import Library reads such a file back (items with the same id
-  are replaced); a zip made by another tool works only if its entries are stored, not deflated. Chief `.calib` files are read in place
-  instead (6.6, chapter 12.7).
+- **Export Library / Import Library.** Library > Export Library (Plan Studio JSON) writes one `plan-studio-library.json`
+  with your User Catalog items only, the folders and favorites, and the 3D models (`.psm`, base 64). It is Plan
+  Studio's own format and Chief Architect cannot open it; Plan Studio never writes a `.calib` or `.calibz` (a name
+  with those extensions is refused). Library > Import Library reads that JSON back (items with the same id are
+  replaced; the older stored-zip export still imports). Pointed at a Chief `.calib` or `.calibz`, Import Library
+  adds it to the browser **read-only and in place**: the file is not copied or converted, only its path is kept (the
+  `library_imports` list in `~/.plan-studio/settings.json`), and the catalog appears under the User Catalog node
+  after a rescan (6.6, chapter 12.7). Remove it by deleting the path from that list.
 - **Placement.** Items snap by their placement: wall-mounted items turn to the nearest wall; a free-standing item
   can be set to turn to walls too (a bookcase); ceiling items hang at the ceiling height. Placed copies go on the
   item's layer (cabinets on the cabinet layers, electrical and lighting on Electrical, text on Text, else
@@ -347,18 +448,32 @@ Clicking a result makes it the active item and switches to the Library tool.
 | Near a wall | A wall-mounted item rotates to face away from the nearest wall and snaps flush within the auto-rotate distance (6"). |
 | Click an existing symbol | Selects it. Handles: Move, Rotate, Resize (width on both sides, depth at the front). |
 | Double-click or `Enter` | Opens the Symbol Specification. |
-| Edit toolbar | Open Object, Delete Objects, Copy, Paste in Place and **Replace From Library**: pick an item in the Library Browser first, then press the button to swap the selected symbol for it ("Pick an item in the Library Browser, then choose Replace From Library" if none is active). A selected cabinet is replaced by a saved cabinet item (it keeps its sink and cooktop cutouts, appliance, moldings and label); a selected electrical device becomes the active library symbol. |
+| Drop from the Library Browser | Drag a row onto the plan: the item is placed where you let go, with the same rules as a click. |
+| Edit toolbar | Open Object, Delete Objects, Copy, Paste in Place and **Replace From Library**: pick an item in the Library Browser first, then press the button to swap every selected symbol for it, in one undo step ("Pick an item in the Library Browser, then choose Replace From Library" if none is active; 6.4a). A selected cabinet is replaced by a saved cabinet item (it keeps its sink and cooktop cutouts, appliance, moldings and label); a selected electrical device becomes the active library symbol. |
 
-### Dialog: Symbol Specification
+### Dialog: Library Object Specification
+
+Double-click a placed symbol (or `Enter`) for the Library Object Specification of that copy. In the Library Browser,
+**Open Object** (a row's menu, or the **Open** button of the preview pane) opens the same dialog for the library
+item itself: it then edits the item's defaults on a stand-in copy, and OK saves them into a User Catalog item
+(size, elevation, layer, label, schedule, options and Reflect; the drawing is stretched to a new width and depth,
+and later copies start from these values). Built-in and Chief objects open read-only: OK is dimmed and the General
+tab offers Add to Library, which saves an editable copy.
 
 | Tab | Fields |
 |---|---|
-| General | Symbol (Name, Category, Placement), Size (Width, Depth, Height), Position (Elevation from floor, Position X and Y at the back center, Angle) |
-| Options | Flip |
+| General | Symbol (Name, Source catalog, Category, Placement; Replace From Library, Add to Library, Convert to Symbol), Size (Width, Depth, Height, **Keep aspect**, Reset to Library Size), Position (Elevation from floor, Position X and Y at the back center, Angle; for Open Object, Defaults: Elevation and **Rotation (3D model)** instead), **Reflect** (mirror left to right) |
+| Options | Reflect, and the library-specific choices of the object's type: Doors have **Door style** and **Hardware**, Cabinets **Cabinet door** (the Cabinet Doors styles of the library) and **Hardware**, Windows **Hardware**; each is a drop-down of the library's matching objects and Default. The choice is stored with the object (`PlacedSymbol::options`); the 3D view does not use it yet |
 | 3D | (disabled) |
+| Materials | The material the symbol is painted with |
 | Layer | The layer |
 | Label | Label text |
-| Components, Object Information | (disabled) |
+| Components | (disabled) |
+| Object Information | Name, Type, Browser type, Category, Source, Size, Placement, Default layer, Elevation, Manufacturer, Style, whether it has a 3D model, and its keywords |
+| Schedule | **Include in schedules**, the **Schedule** it is filed under (by library category, Fixture, Furniture, Plant or Appliance), Mark, Manufacturer, Model and Note (`PlacedSymbol::schedule`; the schedule builder still groups by library category) |
+
+**Keep aspect** scales the other two sizes with the one you type into. In the Edit toolbar, **Convert to Symbol**
+appears when 3D solids are selected (6.4a).
 
 ## 6.6 Chief catalogs
 
@@ -386,7 +501,7 @@ decodes); the Library Browser side lives in `shell/library_browser/chief_ui.rs` 
 
 ### The four nodes
 
-Under the check box are four collapsed nodes, in Chief's order: **Chief Architect Core Catalogs**, **Bonus
+Under the check box are four collapsed folders (with folder icons), in Chief's order: **Chief Architect Core Catalogs**, **Bonus
 Catalogs**, **Manufacturer Catalogs** and **User Catalog**, each with the number of installed catalogs in
 brackets. Catalogs that are listed in Chief's registry but not installed, and deleted entries, are left out;
 the status line under the nodes reads "n Chief catalogs found" (with "(m not installed)" when some are missing).
@@ -422,8 +537,14 @@ the status line under the nodes reads "n Chief catalogs found" (with "(m not ins
   available (the folder moved, or the check box is off) the symbol is not drawn in 3D. Built-in symbols show as boxes in 3D too.
 
 What is not decoded yet (partial or missing meshes, placeholder plan symbols, zero elevation) is listed in
-chapter 12.7. Library > Import Library (.calib, .calibz)... in the menu is still dimmed (planned), as are Add to
-User Library and the other Library menu items.
+chapter 12.7. Library > Import Library takes a `.calib` or `.calibz` too: the file is added to this list as a
+read-only catalog under the User Catalog node, read in place (6.4a).
+
+The Chief importer (opening a Chief `.plan` file) links each library object of a Chief plan to a catalog item: first
+in the installed Chief catalogs, by the item's catalog GUID and then by name, and when they hold nothing, in Plan
+Studio's own library: a built-in or User Catalog item with the same name (case and punctuation ignored, the
+plan's category tags breaking ties, User items first), or one carrying the tag `guid:<catalog GUID>`. What nothing
+matches stays a labelled box named `chief-plan.<name>`.
 
 ## 6.7 Images, billboards and distributed objects
 
@@ -487,8 +608,13 @@ shows the usual symbol. This is Chief's way of making a library object read as a
 
 - Built-in symbols are 2D drawings with a box in 3D. Chief catalog objects show their decoded 3D meshes, but a
   fraction of them decode only partially and fall back to a box (6.6).
-- Chief catalogs are read, never written: Chief objects cannot be added to the User catalog, and Import Library reads only Plan Studio's own export, not `.calib` files (6.4a).
+- Chief catalogs are read, never written: Chief objects cannot be added to the User catalog. Import Library reads a Chief `.calib` or `.calibz` in place instead of copying it into a Chief-style library, and Export Library writes Plan Studio's JSON, never a `.calib` (6.4a). Chief's Trash catalog (`Trash.calib`) is not shown; the Trash node is Plan Studio's own.
+- The Library Object Specification's 3D and Components tabs are disabled; Options choices (door style, cabinet door, hardware) and Schedule settings are stored but not yet used by the 3D view or the schedule builder. A drop from the browser uses the camera without a rotated plan view, and Chief rows cannot be dragged onto the plan (click them).
 - Imported and saved 3D models show in the preview pane; the 3D view of the plan draws them once `user::placed_meshes` is hooked into `view3d_panel.rs` (open).
 - Search filters have no "objects already in the plan" mode.
-- A custom face on the Sides and Back needs a rectangular cabinet. Library door and drawer styles and
-  accessories are (planned).
+- A custom face on the Sides and Back needs a rectangular cabinet. Of a library door or drawer style (a "Cabinet Doors" object) only the look
+  (profile, glass) reaches 3D: its own geometry and Chief's Library... and Edit... buttons on the Door/Drawer tab are not built, and the Chief styles you scan with
+  Load Chief Library Styles are forgotten when the install folder or the discovered library changes.
+- Front pilasters and feet are built for rectangular cabinets; corner, blind and custom kinds ignore them. The Object Information fields (manufacturer, model, description,
+  notes) have no schedule columns yet.
+- The Select tool and a drag in the 3D view always bump (the Push mode belongs to the Cabinet tool's Edit toolbar), and plan boxes, Print Preview and the PDF do not yet draw a cabinet's Fill Style (it shows on screen).

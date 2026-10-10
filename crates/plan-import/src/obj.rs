@@ -36,6 +36,29 @@ pub fn parse_mtl(text: &str) -> HashMap<String, [u8; 3]> {
     out
 }
 
+/// Diffuse texture file names (`map_Kd`) by material name from the text of a
+/// `.mtl` file. Options such as `-s 1 1 1` before the name are skipped.
+pub fn parse_mtl_textures(text: &str) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    let mut current: Option<String> = None;
+    for line in text.lines() {
+        let line = line.split('#').next().unwrap_or("").trim();
+        let mut it = line.split_whitespace();
+        match it.next() {
+            Some("newmtl") => current = Some(it.collect::<Vec<_>>().join(" ")),
+            Some(tag) if tag.eq_ignore_ascii_case("map_kd") => {
+                let rest: Vec<&str> = it.collect();
+                // Skip `-option value...` groups: the file name is the last token.
+                if let (Some(name), Some(file)) = (&current, rest.last()) {
+                    out.insert(name.clone(), (*file).to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 /// The `mtllib` file names an OBJ mentions, so a caller can load them.
 pub fn mtl_libraries(text: &str) -> Vec<String> {
     text.lines()
@@ -172,6 +195,7 @@ pub fn parse_obj(
     opts: &ModelOptions,
 ) -> Result<ImportedModel, ModelError> {
     let colors = mtl.map(parse_mtl).unwrap_or_default();
+    let textures = mtl.map(parse_mtl_textures).unwrap_or_default();
     let mut verts: Vec<[f32; 3]> = Vec::new();
     let mut parts: Vec<PartBuilder> = Vec::new();
     let mut name = String::new();
@@ -244,6 +268,8 @@ pub fn parse_obj(
             .into_iter()
             .map(|b| ImportedPart {
                 color: b.material.as_ref().and_then(|m| colors.get(m)).copied(),
+                texture: b.material.as_ref().and_then(|m| textures.get(m)).cloned(),
+                material: b.material,
                 name: b.name,
                 positions: b.positions,
                 indices: b.indices,

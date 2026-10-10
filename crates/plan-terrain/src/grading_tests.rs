@@ -467,6 +467,7 @@ fn a_crowned_road_is_higher_along_its_centerline() {
         curb: true,
         crown: 4.0,
         curb_height: 8.0,
+        ..RoadStrip::default()
     });
     let s = build_terrain(&t);
     let meshes = road_meshes(&t, &s);

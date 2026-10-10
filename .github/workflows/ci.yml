@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -21,7 +22,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      # Cache key reviewed: the action already keys on the OS, the Rust version
+      # and Cargo.lock; "key" keeps this job's debug/test artifacts apart from the
+      # release smoke build below, and only main writes the cache so pull requests
+      # cannot evict it.
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ci-test
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Linux GUI build deps
         if: runner.os == 'Linux'
         run: |
@@ -35,3 +43,59 @@ jobs:
         if: runner.os == 'Linux'
         continue-on-error: true
         run: cargo test -p plan-app perf_bench -- --ignored --nocapture
+      - name: Parity score and totals check (not a gate)
+        if: runner.os == 'Linux'
+        continue-on-error: true
+        run: python3 scripts/parity-score.py --check-totals
+
+  # The packaging scripts run against a stand-in binary: seconds, no compile.
+  # Windows runs it too so scripts/windows-package.sh is exercised under Git Bash.
+  packaging-scripts:
+    name: packaging scripts (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v5
+      - run: bash scripts/test-packaging.sh
+        shell: bash
+
+  # The real release build and the real packaging step on each OS, so a release
+  # profile or packaging break shows up on main and not on the day of the tag.
+  # Not on pull requests: thin LTO with one codegen unit is slow.
+  release-smoke:
+    name: release build and package (${{ matrix.os }})
+    if: github.event_name != 'pull_request'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ci-release-smoke
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Linux GUI build deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libxkbcommon-dev libwayland-dev \
+            libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libgl1-mesa-dev
+      - run: cargo build --release --locked -p plan-app
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          sh scripts/macos-bundle.sh release "$RUNNER_TEMP/pkg"
+          sh scripts/macos-dmg.sh "$RUNNER_TEMP/pkg" "$RUNNER_TEMP/pkg" smoke.dmg
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: bash scripts/windows-package.sh target/release/plan-studio.exe "$RUNNER_TEMP/pkg"
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        run: bash scripts/linux-appimage.sh target/release/plan-studio "$RUNNER_TEMP/pkg"

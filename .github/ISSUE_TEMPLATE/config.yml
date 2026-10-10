@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security problem
+    url: https://github.com/DanielAllenDesigns/plan-studio/security/advisories/new
+    about: Report a vulnerability privately. Please do not open a public issue for it.
+  - name: Reference manual
+    url: https://github.com/DanielAllenDesigns/plan-studio/blob/main/docs/manual/00-index.md
+    about: Check the manual (also in the program under Help > Launch Help) before filing a question.

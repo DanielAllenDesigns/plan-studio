@@ -12,6 +12,10 @@ use crate::tools::cad::CadMode;
 use crate::tools::ToolId;
 use eframe::egui;
 
+/// Edit > Replace Fonts: opens the Text Styles list, whose Replace Fonts section
+/// does the work (Chief TXT-12).
+pub const REPLACE_FONTS: &str = "edit.replace_fonts";
+
 /// Draws the menu bar contents; actions are appended to `out`.
 pub fn bar(
     ui: &mut egui::Ui,
@@ -20,6 +24,9 @@ pub fn bar(
     brightness: &mut f32,
     out: &mut Vec<Action>,
 ) {
+    // Windows the menu commands open (Replace Fonts, Export to REScheck).
+    crate::dialogs::find_replace::show_prompts(ui.ctx(), out);
+    crate::dialogs::text::rescheck::show_windows(ui.ctx(), out);
     ui.menu_button("File", |ui| file_menu(ui, state, out));
     ui.menu_button("Edit", |ui| edit_menu(ui, state, out));
     ui.menu_button("Build", |ui| build_menu(ui, state, out));
@@ -59,8 +66,63 @@ pub fn bar(
             Action::Custom(ulib::ADD_MATERIAL),
             out,
         );
+        live(
+            ui,
+            "Convert to Symbol",
+            "",
+            false,
+            Action::Custom(crate::tools::library::convert::CONVERT_TO_SYMBOL),
+            out,
+        );
+        live(
+            ui,
+            "Replace From Library",
+            "",
+            false,
+            Action::Custom(crate::tools::library::convert::REPLACE_FROM_LIBRARY),
+            out,
+        );
+        ui.menu_button("Moldings", |ui| {
+            use crate::tools::molding as mold;
+            for (label, id) in [
+                ("Add Closed Polyline as Molding Profile", mold::ADD_PROFILE),
+                (
+                    "Add Closed Polylines as Stacked Molding",
+                    mold::ADD_STACKED_PROFILE,
+                ),
+                ("Place Molding Profile", mold::PLACE_PROFILE),
+                ("Edit Molding Profile", mold::EDIT_PROFILE),
+                ("-", ""),
+                ("Replace Moldings From Library", mold::REPLACE_FROM_LIBRARY),
+                ("-", ""),
+                ("Make Room Molding Polyline", mold::MAKE_ROOM_POLYLINE),
+                (
+                    "Make Exterior Room Molding Polyline",
+                    mold::MAKE_EXTERIOR_POLYLINE,
+                ),
+                ("Make Cabinet Molding Polyline", mold::MAKE_CABINET_POLYLINE),
+                ("Reverse Direction", mold::REVERSE_DIRECTION),
+                ("Remove Molding from Selected Edge", mold::REMOVE_EDGE),
+                ("Add Molding to Selected Edge", mold::ADD_EDGE),
+                ("Select Next Edge", mold::NEXT_EDGE),
+                ("-", ""),
+                (
+                    "Include Inside Corners for Auto Place Trim",
+                    mold::INCLUDE_INSIDE,
+                ),
+            ] {
+                if label == "-" {
+                    ui.separator();
+                } else {
+                    live(ui, label, "", false, Action::Custom(id), out);
+                }
+            }
+        });
         // The import window lives in the Library Browser: open that first.
-        if ui.button("Import 3D Model (OBJ, glTF)\u{2026}").clicked() {
+        if ui
+            .button("Import 3D Model (STL, 3DS, DAE, OBJ, glTF)\u{2026}")
+            .clicked()
+        {
             if state.dock != Some(Dock::Library) {
                 out.push(Action::ToggleDock(Dock::Library));
             }
@@ -70,7 +132,7 @@ pub fn bar(
         ui.separator();
         live(
             ui,
-            "Export Library (Plan Studio only)\u{2026}",
+            "Export Library (Plan Studio JSON)\u{2026}",
             "",
             false,
             Action::Custom(ulib::EXPORT_LIBRARY),
@@ -78,7 +140,7 @@ pub fn bar(
         );
         live(
             ui,
-            "Import Library\u{2026}",
+            "Import Library (Plan Studio JSON, Chief .calib, .calibz)\u{2026}",
             "",
             false,
             Action::Custom(ulib::IMPORT_LIBRARY),
@@ -228,6 +290,23 @@ fn file_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
             Action::ResetTemplate,
             out,
         );
+        ui.separator();
+        for (label, id) in [
+            (
+                "New Plan from Template\u{2026}",
+                crate::dialogs::template_chooser::NEW_PLAN,
+            ),
+            (
+                "New Layout from Template\u{2026}",
+                crate::dialogs::template_chooser::NEW_LAYOUT,
+            ),
+            (
+                "Save as Template\u{2026}",
+                crate::dialogs::template_chooser::SAVE_AS,
+            ),
+        ] {
+            live(ui, label, "", false, Action::Custom(id), out);
+        }
     });
     ui.separator();
     live(
@@ -253,7 +332,23 @@ fn file_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
         "Close View",
         "",
         false,
-        Action::Layout(LayoutCommand::ShowPlan),
+        Action::Custom(crate::shell::view_commands::CLOSE_VIEW),
+        out,
+    );
+    live(
+        ui,
+        "Close All 3D Views",
+        "",
+        false,
+        Action::Custom(crate::shell::view_commands::CLOSE_ALL_3D),
+        out,
+    );
+    live(
+        ui,
+        "Close All Views",
+        "",
+        false,
+        Action::Custom(crate::shell::view_commands::CLOSE_ALL_VIEWS),
         out,
     );
     live(
@@ -358,14 +453,78 @@ fn file_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
             Action::File(FileCommand::ExportLayout),
             out,
         );
+        live(
+            ui,
+            "Thermal Envelope Data\u{2026}",
+            "",
+            false,
+            Action::Custom(crate::dialogs::text::rescheck::EXPORT_THERMAL),
+            out,
+        );
+        live(
+            ui,
+            "Export to REScheck\u{2026}",
+            "",
+            false,
+            Action::Custom(crate::dialogs::text::rescheck::EXPORT_RESCHECK),
+            out,
+        );
+        live(
+            ui,
+            "Picture (PNG, JPEG, BMP, TIFF)\u{2026}",
+            "",
+            false,
+            Action::Custom(crate::dialogs::export_picture::EXPORT_PICTURE),
+            out,
+        );
     });
     ui.menu_button("Import", |ui| {
         live(
             ui,
-            "Import Drawing (DXF)\u{2026}",
+            "Import Settings from Plan/Layout\u{2026}",
+            "",
+            false,
+            Action::Custom(crate::dialogs::import_settings::IMPORT_SETTINGS),
+            out,
+        );
+        ui.menu_button("Legacy Settings Import", |ui| {
+            use crate::dialogs::import_settings as imp;
+            for (label, id) in [
+                ("Import Layer Sets\u{2026}", imp::LEGACY_LAYERS),
+                ("Import Default Sets\u{2026}", imp::LEGACY_DEFAULT_SETS),
+                ("Import Wall Definitions\u{2026}", imp::LEGACY_WALLS),
+                ("Import Note Types\u{2026}", imp::LEGACY_NOTES),
+            ] {
+                live(ui, label, "", false, Action::Custom(id), out);
+            }
+        });
+        ui.separator();
+        live(
+            ui,
+            "Import Drawing (DWG/DXF)\u{2026}",
             "",
             false,
             Action::File(FileCommand::ImportDxf),
+            out,
+        );
+        live(
+            ui,
+            "Terrain Data\u{2026}",
+            "",
+            false,
+            Action::SetTool(ToolId::TerrainVariant(
+                crate::tools::terrain::TerrainVariant::ImportData,
+            )),
+            out,
+        );
+        live(
+            ui,
+            "GPS Data\u{2026}",
+            "",
+            false,
+            Action::SetTool(ToolId::TerrainVariant(
+                crate::tools::terrain::TerrainVariant::ImportGps,
+            )),
             out,
         );
         live(
@@ -386,10 +545,50 @@ fn file_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
         );
         live(
             ui,
+            "Line Styles (.lin)\u{2026}",
+            "",
+            false,
+            Action::Custom(crate::dialogs::line_style::IMPORT),
+            out,
+        );
+        live(
+            ui,
+            "Patterns (.pat)\u{2026}",
+            "",
+            false,
+            Action::Custom(crate::dialogs::pattern_editor::IMPORT),
+            out,
+        );
+        live(
+            ui,
+            "Picture (PNG, JPEG)\u{2026}",
+            "",
+            false,
+            Action::Custom(crate::tools::images::IMPORT_PICTURE),
+            out,
+        );
+        live(
+            ui,
+            "Material Package (Lightbeans zip)\u{2026}",
+            "",
+            false,
+            Action::Custom(crate::tools::materials::package::IMPORT_PACKAGE),
+            out,
+        );
+        live(
+            ui,
             "Underlay Picture (PNG, JPEG, PDF)\u{2026}",
             "",
             false,
             Action::Custom(crate::tools::underlay::IMPORT),
+            out,
+        );
+        live(
+            ui,
+            "3D Symbol (STL, 3DS, DAE, OBJ, glTF)\u{2026}",
+            "",
+            false,
+            Action::Custom(crate::dialogs::export_picture::IMPORT_3D_SYMBOL),
             out,
         );
     });
@@ -410,14 +609,53 @@ fn file_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
             Action::ToggleFlag(ViewFlag::PrintPreview),
             out,
         );
+        // A layout's sheet is its Page Setup; every other view has its own
+        // Drawing Sheet Setup.
         live(
             ui,
             "Drawing Sheet Setup\u{2026}",
             "",
             false,
-            Action::Layout(LayoutCommand::PageSetup),
+            if crate::shell::layout_window::is_active() {
+                Action::Layout(LayoutCommand::PageSetup)
+            } else {
+                Action::Custom(crate::dialogs::drawing_sheet::OPEN)
+            },
             out,
         );
+        live(
+            ui,
+            "Scale to Fit",
+            "",
+            false,
+            Action::Custom(crate::dialogs::drawing_sheet::SCALE_TO_FIT),
+            out,
+        );
+        live(
+            ui,
+            "Center Sheet",
+            "",
+            false,
+            Action::Custom(crate::dialogs::drawing_sheet::CENTER_SHEET),
+            out,
+        );
+        live(
+            ui,
+            "Customize Sheet Sizes\u{2026}",
+            "",
+            false,
+            Action::Custom(crate::dialogs::drawing_sheet::CUSTOMIZE),
+            out,
+        );
+        live(
+            ui,
+            "Clear Printer Info",
+            "",
+            false,
+            Action::Custom(crate::dialogs::drawing_sheet::CLEAR_PRINTER),
+            out,
+        );
+        ui.separator();
         live(
             ui,
             "Print Image\u{2026}",
@@ -496,10 +734,70 @@ fn edit_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
         Action::EditBehaviors,
         out,
     );
-    inert(
+    ui.menu_button("Arc Creation Modes", |ui| {
+        let current = crate::tools::cad::current_arc_mode();
+        for m in crate::tools::cad::ArcMode::ALL {
+            live(
+                ui,
+                m.name(),
+                "",
+                m == current,
+                Action::Custom(m.command()),
+                out,
+            );
+        }
+    });
+    // Moving a cabinet into its neighbours: Bump, Push or Pass Through (CB-4).
+    live(
         ui,
-        &["Arc Creation Modes>", "-", "Edit Area>", "Stretch CAD", "-"],
+        crate::tools::cabinet::bump_mode().toolbar_label(),
+        "",
+        false,
+        Action::Custom(crate::tools::cabinet::BUMP_MODE_COMMAND),
+        out,
     );
+    ui.separator();
+    ui.menu_button("Edit Area", |ui| {
+        use crate::tools::select as sel;
+        live(
+            ui,
+            "Edit Area",
+            "",
+            false,
+            Action::Custom(sel::EDIT_AREA),
+            out,
+        );
+        live(
+            ui,
+            "Edit Area Visible",
+            "",
+            false,
+            Action::Custom(sel::EDIT_AREA_VISIBLE),
+            out,
+        );
+    });
+    live(
+        ui,
+        "Stretch CAD",
+        "",
+        false,
+        Action::Custom(crate::tools::select::STRETCH_CAD),
+        out,
+    );
+    ui.menu_button("Marquee Selection", |ui| {
+        let current = crate::tools::select::marquee_mode();
+        for m in crate::tools::select::MarqueeMode::ALL {
+            live(
+                ui,
+                m.label(),
+                "",
+                m == current,
+                Action::Custom(m.command()),
+                out,
+            );
+        }
+    });
+    ui.separator();
     live(
         ui,
         "Find/Replace Text\u{2026}",
@@ -508,13 +806,37 @@ fn edit_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
         Action::FindReplaceText,
         out,
     );
-    inert(ui, &["Replace Fonts\u{2026}", "-"]);
+    live(
+        ui,
+        "Replace Fonts\u{2026}",
+        "",
+        false,
+        Action::Custom(crate::dialogs::find_replace::REPLACE_FONTS_PROMPT),
+        out,
+    );
+    ui.separator();
     live(
         ui,
         "Default Settings\u{2026}",
         "",
         false,
         Action::DefaultSettings,
+        out,
+    );
+    edit_row(
+        ui,
+        state,
+        "Drawing Groups\u{2026}",
+        "Drawing Groups",
+        crate::tools::cad_ops::DG_DEFAULTS,
+        out,
+    );
+    live(
+        ui,
+        "Watermark Defaults\u{2026}",
+        "",
+        false,
+        Action::Custom(crate::dialogs::watermark::DEFAULTS),
         out,
     );
     live(
@@ -527,21 +849,39 @@ fn edit_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
     );
     live(
         ui,
+        "Material Defaults\u{2026}",
+        "",
+        false,
+        Action::Custom(crate::tools::materials::DEFAULTS),
+        out,
+    );
+    live(
+        ui,
         "Preferences\u{2026}",
         "\u{2318},",
         false,
         Action::Custom(crate::dialogs::preferences::OPEN),
         out,
     );
+    live(
+        ui,
+        "Reset to Defaults",
+        "",
+        false,
+        Action::Custom(crate::dialogs::defaults::RESET_TO_DEFAULTS),
+        out,
+    );
+    live(
+        ui,
+        "Reverse Plan",
+        "",
+        false,
+        Action::Custom(crate::shell::view_commands::REVERSE_PLAN),
+        out,
+    );
     inert(
         ui,
-        &[
-            "Reset to Defaults\u{2026}",
-            "-",
-            "AutoFill>",
-            "Start Dictation",
-            "Emoji & Symbols",
-        ],
+        &["-", "AutoFill>", "Start Dictation", "Emoji & Symbols"],
     );
 }
 
@@ -732,6 +1072,34 @@ fn edit_select_rows(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) 
     );
     edit_row(ui, state, "Move to Front", "Move to Front", ids::FRONT, out);
     edit_row(ui, state, "Move to Back", "Move to Back", ids::BACK, out);
+    edit_row(
+        ui,
+        state,
+        "Multiple Copy\u{2026}",
+        "Multiple Copy",
+        crate::tools::cad_ops::MULTIPLE_COPY,
+        out,
+    );
+    ui.menu_button("Drawing Group", |ui| {
+        use crate::tools::cad_ops as ops;
+        edit_row(
+            ui,
+            state,
+            "Bring to Front",
+            "Bring to Front",
+            ops::DG_FRONT,
+            out,
+        );
+        edit_row(ui, state, "Send to Back", "Send to Back", ops::DG_BACK, out);
+        edit_row(
+            ui,
+            state,
+            "Set Drawing Group\u{2026}",
+            "Set Drawing Group",
+            ops::DG_SET,
+            out,
+        );
+    });
     ui.separator();
     edit_row(ui, state, "Lock", "Lock Selection", ids::LOCK, out);
     edit_row(ui, state, "Unlock", "Unlock Selection", ids::UNLOCK, out);
@@ -779,6 +1147,31 @@ fn build_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
 /// Build > Framing: the defaults window and the Framing Overview plan view.
 fn framing_rows(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
     ui.separator();
+    // The Build Framing dialog: the next Framing window opens as Build Framing
+    // (Floor, Ceiling, Roof, Wall, Posts, Trusses, Framing Defaults tabs).
+    for (label, all) in [
+        ("Build Framing\u{2026}", false),
+        ("Build All Framing\u{2026}", true),
+    ] {
+        if ui.add(egui::Button::new(label)).clicked() {
+            crate::dialogs::framing::request_build(all);
+            out.push(Action::Custom(crate::dialogs::defaults::FRAMING));
+            ui.close_menu();
+        }
+    }
+    // CB-86: the framing of the deck rooms of the floor.
+    for (label, id) in [
+        (
+            "Build Deck Framing",
+            crate::editor::fireplace_view::cmd::BUILD_DECK,
+        ),
+        (
+            "Delete Deck Framing",
+            crate::editor::fireplace_view::cmd::CLEAR_DECK,
+        ),
+    ] {
+        live(ui, label, "", false, Action::Custom(id), out);
+    }
     live(
         ui,
         "Framing Defaults\u{2026}",
@@ -922,6 +1315,22 @@ fn three_d_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
             cmd(C::Mode(M::DollHouse)),
             out,
         );
+        live(
+            ui,
+            V::GlassHouse.label(),
+            "",
+            false,
+            cmd(C::GlassHouse),
+            out,
+        );
+        live(
+            ui,
+            V::FloorCamera.label(),
+            "",
+            false,
+            cmd(C::Tool(V::FloorCamera)),
+            out,
+        );
         ui.separator();
         live(ui, "Ray Trace\u{2026}", "", false, cmd(C::RayTrace), out);
     });
@@ -943,6 +1352,8 @@ fn three_d_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
         }
     });
     ui.separator();
+    camera_step_menus(ui, out);
+    ui.separator();
     ui.menu_button("Walkthroughs", |ui| {
         live(
             ui,
@@ -950,6 +1361,14 @@ fn three_d_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
             "",
             false,
             Action::SetTool(ToolId::CameraVariant(V::Walkthrough)),
+            out,
+        );
+        live(
+            ui,
+            "Walkthrough Path from CAD Polyline",
+            "",
+            false,
+            cmd(C::WalkFromCad),
             out,
         );
         live(
@@ -990,6 +1409,30 @@ fn three_d_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
         );
         live(
             ui,
+            "Object Eyedropper",
+            "",
+            mat::is_mode_active(mat::OBJECT_EYEDROPPER),
+            Action::Custom(mat::OBJECT_EYEDROPPER),
+            out,
+        );
+        live(
+            ui,
+            "Use Default Material",
+            "",
+            mat::is_mode_active(mat::USE_DEFAULT),
+            Action::Custom(mat::USE_DEFAULT),
+            out,
+        );
+        live(
+            ui,
+            "Adjust Material Definition",
+            "",
+            mat::is_mode_active(mat::ADJUST_DEFINITION),
+            Action::Custom(mat::ADJUST_DEFINITION),
+            out,
+        );
+        live(
+            ui,
             "Adjust Materials\u{2026}",
             "",
             false,
@@ -1007,6 +1450,8 @@ fn three_d_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
     }
     ui.separator();
     ui.menu_button("Lighting", |ui| {
+        live(ui, "Lighting\u{2026}", "", false, cmd(C::Lighting), out);
+        ui.separator();
         live(
             ui,
             "Add Lights",
@@ -1027,6 +1472,23 @@ fn three_d_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
         out,
     );
     live(ui, "Rebuild 3D", "", false, cmd(C::Rebuild), out);
+    live(ui, "Refresh", "", false, cmd(C::Refresh), out);
+    live(ui, "Undo Zoom", "", false, cmd(C::UndoZoom), out);
+    live(ui, "Save Camera", "", false, cmd(C::SaveCamera), out);
+    ui.menu_button("View Quality", |ui| {
+        for q in plan_core::camera_view::ViewQuality::ALL {
+            live(ui, q.label(), "", false, cmd(C::Quality(q)), out);
+        }
+        ui.separator();
+        live(
+            ui,
+            "Path-traced Final View",
+            "",
+            false,
+            cmd(C::FinalViewToggle),
+            out,
+        );
+    });
     live(
         ui,
         "Show Doors Open",
@@ -1045,6 +1507,14 @@ fn three_d_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
     );
     ui.menu_button("Export", |ui| {
         live(ui, "glTF\u{2026}", "", false, cmd(C::ExportGltf), out);
+        live(
+            ui,
+            "360 Panorama\u{2026}",
+            "",
+            false,
+            cmd(C::ExportPanorama),
+            out,
+        );
     });
     ui.separator();
     live(
@@ -1055,6 +1525,82 @@ fn three_d_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
         cmd(C::Defaults),
         out,
     );
+}
+
+/// 3D > Move Camera with Mouse / with Keyboard, Move Camera, Orbit Camera,
+/// Tilt Camera and View Direction (C-2, C-34, C-38, C-40, C-41). Isometric
+/// Views need an orthographic camera at an angle the viewport does not have
+/// yet (queue).
+fn camera_step_menus(ui: &mut egui::Ui, out: &mut Vec<Action>) {
+    use crate::shell::view3d_panel::nudge::{Direction, Nudge as N};
+    use crate::shell::view3d_panel::View3dCommand as C;
+    let step = |n| Action::View3d(C::Nudge(n));
+    ui.menu_button("Move Camera with Mouse", |ui| {
+        live(
+            ui,
+            "Mouse-Orbit Camera",
+            "",
+            false,
+            Action::View3d(C::MouseOrbit),
+            out,
+        );
+    });
+    ui.menu_button("Move Camera with Keyboard", |ui| {
+        for (name, key, n) in [
+            ("Forward", "Up", N::Forward),
+            ("Back", "Down", N::Back),
+            ("Turn Left", "Left", N::TurnLeft),
+            ("Turn Right", "Right", N::TurnRight),
+            ("Raise", "PageUp", N::Raise),
+            ("Lower", "PageDown", N::Lower),
+        ] {
+            live(ui, name, key, false, step(n), out);
+        }
+    });
+    ui.menu_button("Move Camera", |ui| {
+        for (name, n) in [
+            ("Forward", N::Forward),
+            ("Back", N::Back),
+            ("Left", N::Left),
+            ("Right", N::Right),
+            ("Up", N::Raise),
+            ("Down", N::Lower),
+        ] {
+            live(ui, name, "", false, step(n), out);
+        }
+    });
+    ui.menu_button("Orbit Camera", |ui| {
+        for (name, n) in [
+            ("Left", N::OrbitLeft),
+            ("Right", N::OrbitRight),
+            ("Up", N::OrbitUp),
+            ("Down", N::OrbitDown),
+        ] {
+            live(ui, name, "", false, step(n), out);
+        }
+    });
+    ui.menu_button("Tilt Camera", |ui| {
+        live(ui, "Tilt Up", "", false, step(N::TiltUp), out);
+        live(ui, "Tilt Down", "", false, step(N::TiltDown), out);
+    });
+    ui.menu_button("View Direction", |ui| {
+        for d in Direction::ALL {
+            live(ui, d.label(), "", false, step(N::Look(d)), out);
+        }
+    });
+}
+
+/// Tools > Floor/Reference Display: Change Floor/Reference, Swap
+/// Floor/Reference and Edit Reference Document Offset (manual pp. 89-91).
+fn reference_menu(ui: &mut egui::Ui, out: &mut Vec<Action>) {
+    use crate::dialogs::reference_display as rd;
+    for (label, cmd) in [
+        ("Change Floor/Reference\u{2026}", rd::CHANGE),
+        ("Swap Floor/Reference", rd::SWAP),
+        ("Edit Reference Document Offset", rd::EDIT_OFFSET),
+    ] {
+        live(ui, label, "", false, Action::Custom(cmd), out);
+    }
 }
 
 /// A CAD menu entry that starts the CAD tool in mode `m`.
@@ -1079,6 +1625,35 @@ fn cad_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
     ] {
         toolbar::flyout_menu(ui, &f, state, out);
     }
+    // Construction lines: the rule sets that number them and the defaults.
+    for (label, cmd) in [
+        (
+            "Construction Line Order Management\u{2026}",
+            crate::dialogs::construction_line::ORDER,
+        ),
+        (
+            "Construction Line Defaults\u{2026}",
+            crate::dialogs::construction_line::DEFAULTS,
+        ),
+    ] {
+        live(ui, label, "", false, Action::Custom(cmd), out);
+    }
+    live(
+        ui,
+        "Line Style Management\u{2026}",
+        "",
+        false,
+        Action::Custom(crate::dialogs::line_style::MANAGEMENT),
+        out,
+    );
+    live(
+        ui,
+        "Line Style (Library) for Selection",
+        "",
+        false,
+        Action::Custom(crate::dialogs::line_style::ASSIGN),
+        out,
+    );
     cad_mode(ui, "Revision Cloud", CadMode::RevisionCloud, out);
     cad_mode(ui, "Spline", CadMode::Spline, out);
     ui.separator();
@@ -1088,6 +1663,58 @@ fn cad_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
     toolbar::flyout_menu(ui, &toolbar::text_tools(), state, out);
     ui.menu_button("Patterns", |ui| {
         cad_mode(ui, "Hatch Closed Shape", CadMode::Hatch, out);
+        ui.separator();
+        // Custom patterns (CAD-79..CAD-81) and fill styles (CAD-73).
+        for (label, cmd) in [
+            (
+                "Create New Pattern\u{2026}",
+                crate::dialogs::pattern_editor::CREATE,
+            ),
+            ("Edit Pattern\u{2026}", crate::dialogs::pattern_editor::EDIT),
+            (
+                "Add Pattern to Library",
+                crate::dialogs::pattern_editor::ADD_TO_LIBRARY,
+            ),
+            (
+                "Next Pattern Tile Group",
+                crate::dialogs::pattern_editor::NEXT_GROUP,
+            ),
+            (
+                "Previous Pattern Tile Group",
+                crate::dialogs::pattern_editor::PREVIOUS_GROUP,
+            ),
+            (
+                "Add Pattern Tile Group",
+                crate::dialogs::pattern_editor::ADD_GROUP,
+            ),
+            (
+                "Delete Pattern Tile Group",
+                crate::dialogs::pattern_editor::DELETE_GROUP,
+            ),
+            (
+                "Infinite Pattern Line",
+                crate::dialogs::pattern_editor::INFINITE_LINE,
+            ),
+        ] {
+            live(ui, label, "", false, Action::Custom(cmd), out);
+        }
+        ui.separator();
+        live(
+            ui,
+            "Fill Style\u{2026}",
+            "",
+            false,
+            Action::Custom(crate::dialogs::fill_style::APPLY),
+            out,
+        );
+        live(
+            ui,
+            "New Fill Style\u{2026}",
+            "",
+            false,
+            Action::Custom(crate::dialogs::fill_style::NEW_NAMED),
+            out,
+        );
     });
     toolbar::flyout_menu(ui, &toolbar::cad_blocks(), state, out);
     ui.menu_button("Edit CAD", |ui| {
@@ -1098,6 +1725,9 @@ fn cad_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
             CadMode::Trim,
             CadMode::Extend,
             CadMode::BreakLine,
+            CadMode::ChangeLineArc,
+            CadMode::DeleteBreak,
+            CadMode::MakeArcTangent,
             CadMode::ReverseDirection,
             CadMode::MakeParallel,
             CadMode::MakePerpendicular,
@@ -1112,6 +1742,66 @@ fn cad_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
         ] {
             cad_mode(ui, m.name(), m, out);
         }
+        // Closed polylines become polygon soffits (CB-17).
+        live(
+            ui,
+            "Convert Polyline to Soffit",
+            "",
+            false,
+            Action::Custom(crate::editor::placed::SOFFIT_FROM_POLYLINE),
+            out,
+        );
+        ui.separator();
+        use crate::tools::cad_ops as ops;
+        edit_row(
+            ui,
+            state,
+            "Polyline Union",
+            "Polyline Union",
+            ops::UNION,
+            out,
+        );
+        edit_row(
+            ui,
+            state,
+            "Polyline Subtract",
+            "Polyline Subtract",
+            ops::SUBTRACT,
+            out,
+        );
+        edit_row(
+            ui,
+            state,
+            "Polyline Intersect",
+            "Polyline Intersect",
+            ops::INTERSECT,
+            out,
+        );
+        ui.separator();
+        edit_row(
+            ui,
+            state,
+            "Trim to Boundary",
+            "Trim to Boundary",
+            ops::TRIM_BOUNDARY,
+            out,
+        );
+        edit_row(
+            ui,
+            state,
+            "Extend to Boundary",
+            "Extend to Boundary",
+            ops::EXTEND_BOUNDARY,
+            out,
+        );
+        edit_row(
+            ui,
+            state,
+            "Insert Point",
+            "Insert Point",
+            ops::INSERT_POINT,
+            out,
+        );
     });
     ui.separator();
     live(
@@ -1131,7 +1821,38 @@ fn cad_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
         CadMode::BlockManagement,
         out,
     );
-    cad_mode(ui, "CAD Detail From View", CadMode::DetailFromView, out);
+    live(
+        ui,
+        "Auto Detail",
+        "",
+        false,
+        Action::Custom(crate::tools::details::AUTO_DETAIL),
+        out,
+    );
+    live(
+        ui,
+        "CAD Detail From View",
+        "",
+        false,
+        Action::Custom(crate::tools::details::DETAIL_FROM_VIEW),
+        out,
+    );
+    live(
+        ui,
+        "CAD Detail Management\u{2026}",
+        "",
+        false,
+        Action::Custom(crate::tools::details::MANAGEMENT),
+        out,
+    );
+    live(
+        ui,
+        "Detail Components\u{2026}",
+        "",
+        false,
+        Action::Custom(crate::tools::details::COMPONENTS),
+        out,
+    );
     ui.separator();
     live(
         ui,
@@ -1170,14 +1891,7 @@ fn tools_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
             out,
         );
     });
-    live(
-        ui,
-        "Floor/Reference Display\u{2026}",
-        "",
-        false,
-        Action::ReferenceDisplayOptions,
-        out,
-    );
+    ui.menu_button("Floor/Reference Display", |ui| reference_menu(ui, out));
     live(
         ui,
         "Underlays\u{2026}",
@@ -1232,18 +1946,93 @@ fn tools_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
             Action::Custom(crate::dialogs::plan_views::SEED),
             out,
         );
+        live(
+            ui,
+            "Add Starter Plan Views",
+            "",
+            false,
+            Action::Custom(crate::dialogs::plan_views::STARTER),
+            out,
+        );
+        ui.separator();
+        live(
+            ui,
+            "New Saved Plan View\u{2026}",
+            "",
+            false,
+            Action::Custom(crate::dialogs::plan_views::NEW_SAVED),
+            out,
+        );
+        live(
+            ui,
+            "Save Active View As\u{2026}",
+            "",
+            false,
+            Action::Custom(crate::dialogs::plan_views::SAVE_AS),
+            out,
+        );
     });
     live(
         ui,
         "Active Defaults\u{2026}",
         "",
         false,
-        Action::DefaultSettings,
+        Action::Custom(crate::dialogs::default_sets::ACTIVE_DEFAULTS),
+        out,
+    );
+    live(
+        ui,
+        "Default Sets\u{2026}",
+        "",
+        false,
+        Action::Custom(crate::dialogs::default_sets::DEFAULT_SETS),
+        out,
+    );
+    live(
+        ui,
+        "Rotate Plan View\u{2026}",
+        "",
+        false,
+        Action::Custom(crate::shell::view_commands::ROTATE_DIALOG),
+        out,
+    );
+    live(
+        ui,
+        "Reverse Plan",
+        "",
+        false,
+        Action::Custom(crate::shell::view_commands::REVERSE_PLAN),
         out,
     );
     ui.separator();
     ui.menu_button("Checks", |ui| {
         live(ui, "Plan Check", "", false, Action::PlanCheck, out);
+        live(
+            ui,
+            "Plan Check Settings\u{2026}",
+            "",
+            false,
+            Action::Custom(crate::dialogs::plan_check::SETTINGS),
+            out,
+        );
+        live(
+            ui,
+            "Check While Drawing",
+            "",
+            crate::dialogs::preferences::pages::current()
+                .architectural
+                .check_while_drawing,
+            Action::Custom(crate::dialogs::plan_check::CHECK_LIVE),
+            out,
+        );
+        live(
+            ui,
+            "Apply Code Minimums to Defaults",
+            "",
+            false,
+            Action::Custom(crate::dialogs::plan_check::APPLY_DEFAULTS),
+            out,
+        );
         live(
             ui,
             "Door/Window Check",
@@ -1252,7 +2041,34 @@ fn tools_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
             Action::DoorWindowCheck,
             out,
         );
+        live(
+            ui,
+            "Kitchen and Bath Report",
+            "",
+            false,
+            Action::Custom(crate::dialogs::plan_check::NKBA_REPORT),
+            out,
+        );
+        live(
+            ui,
+            "Kitchen and Bath Report to Excel\u{2026}",
+            "",
+            false,
+            Action::Custom(crate::dialogs::plan_check::NKBA_XLSX),
+            out,
+        );
         live(ui, "Plan Footprint", "", false, Action::PlanFootprint, out);
+    });
+    ui.menu_button("Calculators", |ui| {
+        for (label, id) in [
+            ("Header/Beam\u{2026}", crate::dialogs::calculators::HEADER),
+            ("Joist Span\u{2026}", crate::dialogs::calculators::JOIST),
+            ("Rafter Span\u{2026}", crate::dialogs::calculators::RAFTER),
+            ("Stair\u{2026}", crate::dialogs::calculators::STAIR),
+            ("Deck Beam/Joist\u{2026}", crate::dialogs::calculators::DECK),
+        ] {
+            live(ui, label, "", false, Action::Custom(id), out);
+        }
     });
     ui.menu_button("Toolbars and Hotkeys", |ui| {
         live(
@@ -1295,6 +2111,24 @@ fn tools_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
         live(ui, "Room Schedule", "", false, Action::RoomSchedule, out);
         live(ui, "Wall Schedule", "", false, Action::WallSchedule, out);
         ui.separator();
+        // Marks set in the order the doors / windows were drawn (DW-61).
+        live(
+            ui,
+            "Renumber Door Schedule",
+            "",
+            false,
+            Action::Custom(crate::editor::opening_edit::RENUMBER_DOORS),
+            out,
+        );
+        live(
+            ui,
+            "Renumber Window Schedule",
+            "",
+            false,
+            Action::Custom(crate::editor::opening_edit::RENUMBER_WINDOWS),
+            out,
+        );
+        ui.separator();
         // Click in the plan to place the schedule as a table that stays up
         // to date (the Schedule flyout's tool).
         ui.menu_button("Place on Plan", |ui| {
@@ -1309,6 +2143,29 @@ fn tools_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
                 );
             }
         });
+        ui.separator();
+        // The settings new schedules of each type start with.
+        ui.menu_button("Schedule Defaults", |ui| {
+            for k in crate::tools::schedule::FLYOUT_KINDS {
+                live(
+                    ui,
+                    crate::tools::schedule::entry_name(k),
+                    "",
+                    false,
+                    Action::Custom(crate::editor::schedule_view::defaults_command(k)),
+                    out,
+                );
+            }
+        });
+        // Create, rename and delete the plan's custom schedule categories.
+        live(
+            ui,
+            "Manage Custom Schedule Categories\u{2026}",
+            "",
+            false,
+            Action::Custom(crate::editor::schedule_view::cmd::MANAGE_CATEGORIES),
+            out,
+        );
         ui.separator();
         live(
             ui,
@@ -1328,12 +2185,168 @@ fn tools_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
             out,
         );
     });
+    ui.menu_button("Materials List", |ui| {
+        use crate::dialogs::materials_list::cmd;
+        live(
+            ui,
+            "Calculate Materials for All Floors",
+            "",
+            false,
+            Action::Custom(cmd::ALL),
+            out,
+        );
+        live(
+            ui,
+            "Calculate Materials From Selection",
+            "",
+            false,
+            Action::Custom(cmd::SELECTION),
+            out,
+        );
+        live(
+            ui,
+            "Calculate Materials in Room",
+            "",
+            false,
+            Action::Custom(cmd::ROOM),
+            out,
+        );
+        live(
+            ui,
+            "Materials List Polyline",
+            "",
+            state.tool == ToolId::MaterialsPolyline,
+            Action::SetTool(ToolId::MaterialsPolyline),
+            out,
+        );
+        live(
+            ui,
+            "Materials List Polyline Defaults\u{2026}",
+            "",
+            false,
+            Action::Custom(cmd::POLYLINE_DEFAULTS),
+            out,
+        );
+        ui.separator();
+        live(
+            ui,
+            "Master List",
+            "",
+            false,
+            Action::Custom(cmd::MASTER),
+            out,
+        );
+        live(
+            ui,
+            "Materials List Management\u{2026}",
+            "",
+            false,
+            Action::Custom(cmd::MANAGE),
+            out,
+        );
+        live(
+            ui,
+            "Generate a Report",
+            "",
+            false,
+            Action::Custom(cmd::REPORT),
+            out,
+        );
+        ui.separator();
+        live(
+            ui,
+            "Open Materials List\u{2026}",
+            "",
+            false,
+            Action::MaterialsList,
+            out,
+        );
+        live(
+            ui,
+            "Edit Active View\u{2026}",
+            "",
+            false,
+            Action::Custom(cmd::EDIT_VIEW),
+            out,
+        );
+        live(
+            ui,
+            "Save Active View",
+            "",
+            false,
+            Action::Custom(cmd::SAVE),
+            out,
+        );
+        live(
+            ui,
+            "Save Active View As\u{2026}",
+            "",
+            false,
+            Action::Custom(cmd::SAVE_AS),
+            out,
+        );
+        live(
+            ui,
+            "Update From Master List",
+            "",
+            false,
+            Action::Custom(cmd::UPDATE_FROM),
+            out,
+        );
+        live(
+            ui,
+            "Update To Master List",
+            "",
+            false,
+            Action::Custom(cmd::UPDATE_TO),
+            out,
+        );
+        live(
+            ui,
+            "Export Materials List\u{2026}",
+            "",
+            false,
+            Action::Custom(cmd::EXPORT),
+            out,
+        );
+        live(
+            ui,
+            "Print Materials List\u{2026}",
+            "",
+            false,
+            Action::Custom(cmd::PRINT),
+            out,
+        );
+    });
+    ui.menu_button("Layer Painter", |ui| {
+        use crate::tools::painters::PainterMode as P;
+        for m in [P::LayerPaint, P::LayerEyedropper] {
+            let id = ToolId::PainterVariant(m);
+            live(ui, m.name(), "", state.tool == id, Action::SetTool(id), out);
+        }
+    });
+    ui.menu_button("Object Painter", |ui| {
+        use crate::tools::painters::PainterMode as P;
+        for m in [P::ObjectPaint, P::ObjectEyedropper] {
+            let id = ToolId::PainterVariant(m);
+            live(ui, m.name(), "", state.tool == id, Action::SetTool(id), out);
+        }
+        ui.separator();
+        live(
+            ui,
+            "Object Painter Modes\u{2026}",
+            "",
+            false,
+            Action::Custom(crate::tools::painters::MODES),
+            out,
+        );
+    });
     live(
         ui,
-        "Materials List\u{2026}",
+        "Spell Check\u{2026}",
         "",
         false,
-        Action::MaterialsList,
+        Action::Custom(crate::dialogs::spell_check::OPEN),
         out,
     );
     live(
@@ -1342,6 +2355,31 @@ fn tools_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
         "",
         false,
         Action::ProjectInfo,
+        out,
+    );
+    // Beyond Chief: custom properties and the Excel exchange.
+    live(
+        ui,
+        "Property Manager\u{2026}",
+        "",
+        false,
+        Action::Custom(crate::dialogs::property_manager::OPEN),
+        out,
+    );
+    live(
+        ui,
+        "Export Property Data (XLSX)\u{2026}",
+        "",
+        false,
+        Action::Custom(crate::dialogs::property_manager::EXPORT_ALL),
+        out,
+    );
+    live(
+        ui,
+        "Import Property Data (XLSX)\u{2026}",
+        "",
+        false,
+        Action::Custom(crate::dialogs::property_manager::IMPORT),
         out,
     );
     ui.separator();
@@ -1404,6 +2442,14 @@ fn view_menu(
         "",
         dock(Dock::LayerDisplay),
         Action::ToggleDock(Dock::LayerDisplay),
+        out,
+    );
+    live(
+        ui,
+        "Plan Agent\u{2026}",
+        "",
+        dock(Dock::Agent),
+        Action::ToggleDock(Dock::Agent),
         out,
     );
     live(
@@ -1492,10 +2538,26 @@ fn view_menu(
     );
     live(
         ui,
+        "Poch\u{e9}",
+        "",
+        crate::dialogs::fill_style::poche_shown(),
+        Action::Custom(crate::dialogs::fill_style::POCHE),
+        out,
+    );
+    live(
+        ui,
         "Drawing Sheet",
         "",
         flag(ViewFlag::DrawingSheet),
         Action::ToggleFlag(ViewFlag::DrawingSheet),
+        out,
+    );
+    live(
+        ui,
+        "Watermark",
+        "",
+        crate::dialogs::watermark::menu_checked(),
+        Action::Custom(crate::dialogs::watermark::TOGGLE),
         out,
     );
     ui.separator();
@@ -1524,9 +2586,16 @@ fn view_menu(
     });
 }
 
+/// A Window or File row that runs the view command `id`.
+fn vrow(ui: &mut egui::Ui, label: &str, hk: &str, id: &'static str, out: &mut Vec<Action>) {
+    live(ui, label, hk, false, Action::Custom(id), out);
+}
+
 fn window_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
     // Daniel's "-" is Zoom In; the labels follow the live hotkey map.
     let key = |name: &str| state.hotkey(name, "");
+    use crate::shell::view_commands as vc;
+    vrow(ui, "Zoom", &key("Zoom"), vc::ZOOM_WINDOW, out);
     live(
         ui,
         "Zoom Out",
@@ -1544,6 +2613,7 @@ fn window_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
         Action::UndoZoom,
         out,
     );
+    vrow(ui, "Zoom Previous", "", vc::ZOOM_PREVIOUS, out);
     live(
         ui,
         "Fill Window Selected Objects",
@@ -1552,6 +2622,7 @@ fn window_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
         Action::Custom(crate::dialogs::app_info::FILL_SELECTED),
         out,
     );
+    vrow(ui, "Fill Window Building Only", "", vc::FILL_BUILDING, out);
     live(
         ui,
         "Fill Window",
@@ -1566,6 +2637,25 @@ fn window_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
         &state.hotkey("Pan Window", "H"),
         state.tool == ToolId::Pan,
         Action::TogglePan,
+        out,
+    );
+    ui.menu_button("Rotate Plan View", |ui| {
+        vrow(ui, "90 Degrees Left", "", vc::ROTATE_LEFT, out);
+        vrow(ui, "90 Degrees Right", "", vc::ROTATE_RIGHT, out);
+        vrow(ui, "Back to North Up", "", vc::ROTATE_RESET, out);
+        vrow(ui, "Rotate to an Angle\u{2026}", "", vc::ROTATE_DIALOG, out);
+    });
+    ui.separator();
+    vrow(ui, "Swap Views", "F7", vc::SWAP_VIEWS, out);
+    vrow(ui, "Tile Horizontally", "", vc::TILE_HORIZONTALLY, out);
+    vrow(ui, "Tile Vertically", "", vc::TILE_VERTICALLY, out);
+    vrow(ui, "Tab Windows", "", vc::TAB_WINDOWS, out);
+    vrow(ui, "Select Next Tab", "\u{2303}\u{21E5}", vc::NEXT_TAB, out);
+    vrow(
+        ui,
+        "Select Previous Tab",
+        "\u{21E7}\u{2303}\u{21E5}",
+        vc::PREVIOUS_TAB,
         out,
     );
     ui.separator();
@@ -1605,7 +2695,70 @@ fn layout_menu(ui: &mut egui::Ui, out: &mut Vec<Action>) {
         out,
     );
     row(ui, "Delete Layout Box", C::DeleteBox, out);
-    row(ui, "Update Layout Views", C::UpdateViews, out);
+    row(ui, "Center Object", C::CenterObject, out);
+    row(
+        ui,
+        "Point to Point Move",
+        C::Tool(crate::shell::layout_window::LayoutTool::PointToPoint),
+        out,
+    );
+    row(ui, "Open Source View", C::OpenSourceView, out);
+    row(ui, "Copy Layout Box to Page\u{2026}", C::CopyBoxToPage, out);
+    row(ui, "Duplicate Layout Box", C::DuplicateBox, out);
+    ui.menu_button("Align Layout Boxes", |ui| {
+        for edge in plan_layout::AlignEdge::ALL {
+            row(ui, edge.label(), C::Align(edge), out);
+        }
+        ui.separator();
+        row(
+            ui,
+            "Spread Horizontally",
+            C::Distribute(plan_layout::Spread::Horizontal),
+            out,
+        );
+        row(
+            ui,
+            "Spread Vertically",
+            C::Distribute(plan_layout::Spread::Vertical),
+            out,
+        );
+    });
+    ui.menu_button("Update Layout Views", |ui| {
+        row(ui, "Update All Views", C::UpdateViews, out);
+        row(ui, "Update All Live Views", C::UpdateLiveViews, out);
+        row(
+            ui,
+            "Update All Plot Line Views",
+            C::UpdatePlotLineViews,
+            out,
+        );
+        row(ui, "Update Selected View", C::UpdateView, out);
+    });
+    row(ui, "Send All Views to Layout\u{2026}", C::SendAllViews, out);
+    ui.menu_button("Edit Layout View", |ui| {
+        row(ui, "Rescale Layout View\u{2026}", C::RescaleView, out);
+        row(
+            ui,
+            "Pan/Scale Layout Box",
+            C::Tool(crate::shell::layout_window::LayoutTool::PanScale),
+            out,
+        );
+        row(ui, "Recenter Layout Box Contents", C::RecenterBox, out);
+        row(
+            ui,
+            "Scale Layout Box Contents to Fit",
+            C::ScaleBoxToFit,
+            out,
+        );
+        row(ui, "Layout Box Layers\u{2026}", C::LayoutBoxLayers, out);
+        row(ui, "Unlink Saved Plan View", C::UnlinkSavedView, out);
+        row(
+            ui,
+            "Edit Layout Lines",
+            C::Tool(crate::shell::layout_window::LayoutTool::EditLines),
+            out,
+        );
+    });
     ui.separator();
     row(ui, "Insert Page Before", C::InsertPageBefore, out);
     row(ui, "Insert Page After", C::InsertPageAfter, out);
@@ -1622,8 +2775,29 @@ fn layout_menu(ui: &mut egui::Ui, out: &mut Vec<Action>) {
     row(ui, "Previous Page", C::PreviousPage, out);
     row(ui, "Next Page", C::NextPage, out);
     row(ui, "Layout Page Table\u{2026}", C::PageTable, out);
+    row(ui, "Page Information\u{2026}", C::PageInformation, out);
+    row(ui, "Layout Revision Table", C::RevisionTable, out);
+    row(ui, "Add Layout Revision\u{2026}", C::AddLayoutRevision, out);
+    row(
+        ui,
+        "Copy Drawings to Page\u{2026}",
+        C::CopyDrawingsToPage,
+        out,
+    );
+    row(
+        ui,
+        "General Layout Defaults\u{2026}",
+        C::LayoutDefaults,
+        out,
+    );
     ui.separator();
     row(ui, "Page Setup\u{2026}", C::PageSetup, out);
+    row(
+        ui,
+        "Customize Sheet Sizes\u{2026}",
+        C::CustomizeSheetSizes,
+        out,
+    );
     row(ui, "Project Information\u{2026}", C::ProjectInfo, out);
     row(ui, "Fit Page in Window", C::FitPage, out);
     row(ui, "Layer Display Options\u{2026}", C::LayerDisplay, out);
@@ -1631,6 +2805,15 @@ fn layout_menu(ui: &mut egui::Ui, out: &mut Vec<Action>) {
     ui.separator();
     row(ui, "Save As Template\u{2026}", C::SaveAsTemplate, out);
     row(ui, "Apply Template\u{2026}", C::ApplyTemplate, out);
+    row(ui, "New Layout File\u{2026}", C::NewLayoutFile, out);
+    ui.separator();
+    row(ui, "Export Table as CSV\u{2026}", C::ExportTableCsv, out);
+    row(
+        ui,
+        "Export Table to Excel\u{2026}",
+        C::ExportTableExcel,
+        out,
+    );
     ui.separator();
     row(ui, "Print Model\u{2026}", C::PrintModel, out);
     row(ui, "Print Layout\u{2026}", C::Print, out);
@@ -1698,6 +2881,11 @@ mod tests {
         let mut cx = EditorContext::new(crate::plan_defaults::embedded());
         for id in [
             underlay::MANAGE,
+            crate::tools::images::IMPORT_PICTURE,
+            crate::tools::details::MANAGEMENT,
+            crate::tools::details::COMPONENTS,
+            crate::tools::details::DETAIL_FROM_VIEW,
+            crate::tools::details::AUTO_DETAIL,
             mat::LIST,
             mat::ADJUST,
             mat::BUILDER,
@@ -1724,6 +2912,10 @@ mod tests {
             app::RECENT[0],
             crate::dialogs::defaults::CABINETS,
             crate::dialogs::defaults::FRAMING,
+            crate::dialogs::plan_check::SETTINGS,
+            crate::tools::molding::NEXT_EDGE,
+            crate::tools::molding::INCLUDE_INSIDE,
+            crate::tools::molding::PLACE_PROFILE,
         ] {
             assert!(placed::run_command(&mut cx, id), "{id} is not handled");
         }

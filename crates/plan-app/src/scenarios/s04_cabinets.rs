@@ -155,8 +155,16 @@ fn double_click_requests_the_cabinet_specification_and_the_dialog_opens() {
         sim.requests
     );
     assert!(sim.app.spec.is_open());
-    // The dialog draws two frames and OK closes it (one undo step).
+    // The dialog draws two frames and OK closes it (one undo step). An OK
+    // that changed nothing makes no step (QA-26), so the draft is edited.
     let before = sim.app.cx.undo_label().map(String::from);
+    sim.dialog_frame(false);
+    sim.app
+        .spec
+        .cabinet_dialog_mut()
+        .expect("the cabinet dialog")
+        .draft_mut()
+        .width += 3.0;
     sim.ok();
     assert!(!sim.app.spec.is_open());
     assert_eq!(sim.app.cx.undo_label(), Some("Cabinet Specification"));

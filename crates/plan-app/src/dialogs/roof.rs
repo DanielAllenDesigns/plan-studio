@@ -6,14 +6,17 @@
 
 #![allow(dead_code)]
 
+use super::assembly_def::AssemblyDefDialog;
 use super::{
     dis_check, fmt_short, on, row, section, Fields, Outcome, SpecDialog, SpecPages, Tab, PV_ACCENT,
     PV_INK,
 };
 use crate::editor::roof_view::{
-    pitch_label, CeilingRecord, RoofPlaneRecord, RoofSettings, ROOF_MATERIALS,
+    pitch_label, AllPlanesEdit, CeilingFraming, CeilingRecord, RoofFraming, RoofPlaneRecord,
+    RoofSettings, RoofStructure, RoofStyle, ROOF_MATERIALS,
 };
 use eframe::egui::{self, Align2, FontId, Painter, Pos2, Rect, Stroke, Ui};
+use plan_core::assemblies::{AssemblyKind, AssemblyLibrary, RoofLayers};
 use plan_core::defaults::{EaveCut, RoofDetailDefaults};
 use plan_core::LineStyle;
 use plan_roof::{DormerKind, DormerSpec, ReturnKind, ReturnSpec};
@@ -22,14 +25,9 @@ const MIN_PITCH: f64 = 0.5;
 const MAX_PITCH: f64 = 24.0;
 
 fn pitch_row(ui: &mut Ui, label: &str, pitch: &mut f64) {
+    // Rise per 12, or degrees with Pitch in Degrees on (RF-72).
     row(ui, label, |ui| {
-        ui.add(
-            egui::DragValue::new(pitch)
-                .range(MIN_PITCH..=MAX_PITCH)
-                .speed(0.1)
-                .max_decimals(2)
-                .suffix(" : 12"),
-        );
+        super::roof_baseline::pitch_drag(ui, pitch);
     });
 }
 
@@ -43,22 +41,25 @@ fn material_combo(ui: &mut Ui, salt: &str, value: &mut String) {
         });
 }
 
+/// The combo of a default / on / off choice.
+fn tri_combo(ui: &mut Ui, salt: &str, value: &mut Option<bool>) {
+    let shown = match value {
+        None => "Roof Default",
+        Some(true) => "On",
+        Some(false) => "Off",
+    };
+    egui::ComboBox::from_id_salt(salt)
+        .selected_text(shown)
+        .show_ui(ui, |ui| {
+            ui.selectable_value(value, None, "Roof Default");
+            ui.selectable_value(value, Some(true), "On");
+            ui.selectable_value(value, Some(false), "Off");
+        });
+}
+
 /// A default / on / off choice for an option a plane can set for itself.
 fn tri_state(ui: &mut Ui, salt: &str, label: &str, value: &mut Option<bool>) {
-    row(ui, label, |ui| {
-        let shown = match value {
-            None => "Roof Default",
-            Some(true) => "On",
-            Some(false) => "Off",
-        };
-        egui::ComboBox::from_id_salt(salt)
-            .selected_text(shown)
-            .show_ui(ui, |ui| {
-                ui.selectable_value(value, None, "Roof Default");
-                ui.selectable_value(value, Some(true), "On");
-                ui.selectable_value(value, Some(false), "Off");
-            });
-    });
+    row(ui, label, |ui| tri_combo(ui, salt, value));
 }
 
 /// A wall type for the roof detail: a combo over `types`, or a text field
@@ -194,6 +195,9 @@ struct BuildPages {
     fields: Fields,
     /// Which floor the roof goes on, for the Roof page.
     note: String,
+    /// The Roof Styles button pressed (RF-3): OK writes its directives to the
+    /// exterior walls before building. `None` builds from the walls as they are.
+    style: Option<RoofStyle>,
 }
 
 impl SpecPages for BuildPages {
@@ -202,10 +206,19 @@ impl SpecPages for BuildPages {
     }
 
     fn error(&self) -> Option<String> {
+        let sw = &self.s.switches;
         if self.fields.any_invalid() {
             Some("Enter a valid length".into())
-        } else if self.s.pitch < MIN_PITCH || self.s.pitch > MAX_PITCH {
+        } else if sw.pitch_in_degrees
+            && (self.s.pitch < MIN_PITCH || self.s.pitch > 12.0 * 89f64.to_radians().tan())
+        {
+            Some("Pitch must be between 1 and 89 degrees".into())
+        } else if !sw.pitch_in_degrees && (self.s.pitch < MIN_PITCH || self.s.pitch > MAX_PITCH) {
             Some("Pitch must be between 0.5 and 24 in 12".into())
+        } else if sw.segment_angle < plan_roof::SEGMENT_ANGLE_RANGE.0 - 1e-9
+            || sw.segment_angle > plan_roof::SEGMENT_ANGLE_RANGE.1 + 1e-9
+        {
+            Some("Segment Angle at Curved Wall must be between 6 and 90 degrees".into())
         } else {
             detail_error(&self.s.detail)
         }
@@ -214,10 +227,28 @@ impl SpecPages for BuildPages {
     fn page(&mut self, ui: &mut Ui, tab: usize) {
         match tab {
             0 => {
+                section(ui, "Roof Styles");
+                ui.horizontal_wrapped(|ui| {
+                    for st in RoofStyle::ALL {
+                        let on = self.style == Some(st);
+                        if ui
+                            .selectable_label(on, st.label())
+                            .on_hover_text("Writes the roof directive of every exterior wall")
+                            .clicked()
+                        {
+                            self.style = if on { None } else { Some(st) };
+                        }
+                    }
+                });
+                ui.weak(match self.style {
+                    Some(st) => style_note(st),
+                    None => "No style: the roof follows each wall's own Roof tab.",
+                });
                 section(ui, "Roof");
                 ui.checkbox(&mut self.s.build_planes, "Build Roof Planes");
                 ui.checkbox(&mut self.s.auto_rebuild, "Auto Rebuild Roofs")
                     .on_hover_text("Rebuild the automatic planes when the walls change");
+                self.build_switches(ui);
                 ui.checkbox(&mut self.s.ignore_top_floor, "Ignore Top Floor")
                     .on_hover_text("Build the roof over the floor below the top one");
                 ui.checkbox(
@@ -227,10 +258,33 @@ impl SpecPages for BuildPages {
                 .on_hover_text(
                     "Rooms with Ceiling Over This Room turned off get ceiling planes that follow the roof",
                 );
+                ui.checkbox(&mut self.s.build_attic_floor, "Build attic floor")
+                    .on_hover_text(
+                        "Also add the attic floor (attic walls and an Attic room) under the roof",
+                    );
                 section(ui, "Defaults for walls without their own roof settings");
                 pitch_row(ui, "Pitch", &mut self.s.pitch);
+                if ui
+                    .checkbox(&mut self.s.switches.pitch_in_degrees, "Pitch in Degrees")
+                    .on_hover_text("Dialogs and roof plane labels show degrees (-89 to 89)")
+                    .changed()
+                {
+                    plan_roof::set_pitch_display_degrees(self.s.switches.pitch_in_degrees);
+                }
                 self.fields
                     .length_row(ui, "Overhang", "overhang", &mut self.s.overhang);
+                self.fields.degrees_row(
+                    ui,
+                    "Segment Angle at Curved Wall",
+                    "deg_segment_angle",
+                    &mut self.s.switches.segment_angle,
+                );
+                self.fields.length_row(
+                    ui,
+                    "Minimum Alcove Size",
+                    "min_alcove",
+                    &mut self.s.switches.min_alcove,
+                );
                 self.fields.length_row(
                     ui,
                     "Raise Roof Off Plate",
@@ -253,6 +307,11 @@ impl SpecPages for BuildPages {
                 dis_check(ui, "Rafters", true);
                 dis_check(ui, "Trusses", false);
                 ui.weak("Roof framing is a placeholder until plan-framing exists.");
+                section(ui, "3D Display");
+                ui.checkbox(&mut self.s.switches.show_all_ridges, "Show All Ridges")
+                    .on_hover_text(
+                        "Draw a line along each hip over a curved wall in plan and vector views",
+                    );
             }
             2 => {
                 section(ui, "Roofing");
@@ -265,31 +324,117 @@ impl SpecPages for BuildPages {
     }
 
     fn preview(&self, p: &Painter, area: Rect) {
-        // A hip roof from above: outline, ridge and four hips.
+        // The roof from above: outline, ridge and hips of the chosen style.
         let r = Rect::from_center_size(area.center(), area.size() * egui::vec2(0.8, 0.5));
         let ink = Stroke::new(1.5_f32, PV_INK);
+        let line = Stroke::new(1.0_f32, PV_ACCENT);
         p.rect_stroke(r, 0.0, ink, egui::StrokeKind::Inside);
         let inset = r.height() * 0.5;
-        let (l, rr) = (
-            Pos2::new(r.min.x + inset, r.center().y),
-            Pos2::new(r.max.x - inset, r.center().y),
-        );
+        let style = self.style.unwrap_or(RoofStyle::Hip);
+        let (l, rr) = match style {
+            // Hip: the ridge is shortened by the hips at both ends.
+            RoofStyle::Hip | RoofStyle::Gambrel => (
+                Pos2::new(r.min.x + inset, r.center().y),
+                Pos2::new(r.max.x - inset, r.center().y),
+            ),
+            // Half hip and Dutch gable: a short hip at each end.
+            RoofStyle::HalfHip | RoofStyle::DutchGable => (
+                Pos2::new(r.min.x + inset * 0.4, r.center().y),
+                Pos2::new(r.max.x - inset * 0.4, r.center().y),
+            ),
+            RoofStyle::Gable => (
+                Pos2::new(r.min.x, r.center().y),
+                Pos2::new(r.max.x, r.center().y),
+            ),
+            RoofStyle::Shed => (
+                Pos2::new(r.min.x, r.min.y + 1.0),
+                Pos2::new(r.max.x, r.min.y + 1.0),
+            ),
+        };
         p.line_segment([l, rr], ink);
-        for (c, e) in [
-            (l, r.left_top()),
-            (l, r.left_bottom()),
-            (rr, r.right_top()),
-            (rr, r.right_bottom()),
-        ] {
-            p.line_segment([c, e], Stroke::new(1.0_f32, PV_ACCENT));
+        match style {
+            RoofStyle::Hip | RoofStyle::HalfHip | RoofStyle::DutchGable | RoofStyle::Gambrel => {
+                for (c, e) in [
+                    (l, r.left_top()),
+                    (l, r.left_bottom()),
+                    (rr, r.right_top()),
+                    (rr, r.right_bottom()),
+                ] {
+                    p.line_segment([c, e], line);
+                }
+            }
+            RoofStyle::Gable | RoofStyle::Shed => {}
+        }
+        if style == RoofStyle::Gambrel {
+            // The break line of the steeper lower slopes.
+            for y in [r.min.y + r.height() * 0.25, r.max.y - r.height() * 0.25] {
+                p.line_segment([Pos2::new(l.x, y), Pos2::new(rr.x, y)], line);
+            }
         }
         p.text(
             Pos2::new(area.center().x, r.max.y + 18.0),
             Align2::CENTER_CENTER,
-            pitch_label(self.s.pitch),
+            match self.style {
+                Some(st) => format!("{}, {}", st.label(), pitch_label(self.s.pitch)),
+                None => pitch_label(self.s.pitch),
+            },
             FontId::proportional(13.0),
             PV_INK,
         );
+    }
+}
+
+impl BuildPages {
+    /// Make Roof Baseline Polylines, the two Retain switches and Use Existing
+    /// Roof Baselines (RF-70, RF-71): the Build group of the Roof panel.
+    fn build_switches(&mut self, ui: &mut Ui) {
+        let planes = self.s.build_planes;
+        let sw = &mut self.s.switches;
+        // Make Roof Baseline Polylines is not available with Build Roof Planes.
+        ui.add_enabled_ui(!planes, |ui| {
+            ui.checkbox(&mut sw.make_baselines, "Make Roof Baseline Polylines")
+                .on_hover_text(
+                    "Delete the roof and make baseline polylines along the outside of the exterior walls",
+                );
+        });
+        if planes {
+            sw.make_baselines = false;
+        }
+        // The retain boxes work with Build Roof Planes or with Make Roof
+        // Baseline Polylines.
+        ui.add_enabled_ui(planes || sw.make_baselines, |ui| {
+            ui.checkbox(&mut sw.retain_manual, "Retain Manually Drawn Roof Planes")
+                .on_hover_text("A rebuild keeps the planes drawn by hand");
+            ui.checkbox(&mut sw.retain_edited, "Retain Edited Automatic Roof Planes")
+                .on_hover_text(
+                    "A rebuild keeps automatic planes that were moved or re-pitched; a new plane coplanar with one is dropped",
+                );
+        });
+        ui.add_enabled_ui(planes, |ui| {
+            ui.checkbox(
+                &mut sw.use_existing_baselines,
+                "Use Existing Roof Baselines",
+            )
+            .on_hover_text(
+                "Build the planes from the roof baseline polylines instead of the walls",
+            );
+        });
+    }
+}
+
+/// What a style writes to the walls, for the Build Roof dialog.
+fn style_note(style: RoofStyle) -> &'static str {
+    match style {
+        RoofStyle::Hip => "Every exterior wall becomes a Hip Wall.",
+        RoofStyle::Gable => "The walls across the ridge become Full Gable Walls.",
+        RoofStyle::Shed => {
+            "One long wall becomes the High Shed/Gable Wall; the ends are Full Gable Walls."
+        }
+        RoofStyle::Gambrel => {
+            "Gable ends; the long walls get a steep lower pitch and a shallow upper pitch."
+        }
+        RoofStyle::DutchGable => "The walls across the ridge become Dutch Gable Walls.",
+        RoofStyle::HalfHip => "Gable ends whose peak is clipped by a small hip (Starts at Height).",
     }
 }
 
@@ -308,6 +453,7 @@ impl BuildRoofDialog {
                 s: settings,
                 fields: Fields::default(),
                 note: note.into(),
+                style: None,
             },
         }
     }
@@ -318,6 +464,16 @@ impl BuildRoofDialog {
 
     pub fn settings(&self) -> &RoofSettings {
         &self.pages.s
+    }
+
+    /// The Roof Styles button chosen, if any (RF-3).
+    pub fn style(&self) -> Option<RoofStyle> {
+        self.pages.style
+    }
+
+    /// Presses a style button as a click would (tests and the shell).
+    pub fn set_style(&mut self, style: Option<RoofStyle>) {
+        self.pages.style = style;
     }
 }
 
@@ -330,6 +486,7 @@ const PLANE_TABS: &[Tab] = &[
     on("Holes"),
     on("Build Roof Edge"),
     on("Options"),
+    on("Structure"),
     on("Materials"),
     on("Layer"),
     on("Label"),
@@ -339,6 +496,77 @@ struct PlanePages {
     draft: RoofPlaneRecord,
     layers: Vec<String>,
     fields: Fields,
+    /// The structure Roof Defaults give a plane, which Define starts from.
+    default_structure: RoofStructure,
+    /// The Define Roof Structure window while it is open (the all-planes
+    /// sheet keeps it; a single plane uses the layer definitions below).
+    define: Option<RoofStructure>,
+    /// The Material Layers Definition window of a single plane's Roof
+    /// Surface, Roof Structure or Roof Ceiling Finish while it is open.
+    layers_edit: Option<AssemblyDefDialog>,
+}
+
+/// The Define Roof Structure window (RF-36): framing, member size and
+/// spacing, layers and ceiling framing. Returns `true` once OK was pressed
+/// (the structure is then in `st`) and `false`/`None` states are kept by the
+/// caller: `Some(true)` OK, `Some(false)` Cancel, `None` still open.
+fn define_window(ctx: &egui::Context, st: &mut RoofStructure, fields: &mut Fields) -> Option<bool> {
+    let mut result = None;
+    egui::Window::new("Define Roof Structure")
+        .id(egui::Id::new("roof_define_structure"))
+        .collapsible(false)
+        .resizable(false)
+        .anchor(Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+        .show(ctx, |ui| {
+            section(ui, "Roof Framing");
+            row(ui, "Framing", |ui| {
+                egui::ComboBox::from_id_salt("define_framing")
+                    .selected_text(st.framing.label())
+                    .show_ui(ui, |ui| {
+                        for f in RoofFraming::ALL {
+                            ui.selectable_value(&mut st.framing, f, f.label());
+                        }
+                    });
+            });
+            fields.length_row(ui, "Member Width", "struct_width", &mut st.member_width);
+            fields.length_row(ui, "Member Depth", "struct_depth", &mut st.member_depth);
+            fields.length_row(ui, "Spacing On Center", "struct_spacing", &mut st.spacing);
+            section(ui, "Layers Over the Framing");
+            fields.length_row(ui, "Sheathing", "struct_sheathing", &mut st.sheathing);
+            fields.length_row(ui, "Roofing", "struct_roofing", &mut st.roofing);
+            section(ui, "Ceiling Framing");
+            row(ui, "Ceiling", |ui| {
+                egui::ComboBox::from_id_salt("define_ceiling")
+                    .selected_text(st.ceiling.label())
+                    .show_ui(ui, |ui| {
+                        for c in CeilingFraming::ALL {
+                            ui.selectable_value(&mut st.ceiling, c, c.label());
+                        }
+                    });
+            });
+            ui.add_space(6.0);
+            ui.weak(format!("Total thickness {}", fmt_short(st.thickness())));
+            let err = if fields.any_invalid() {
+                Some("Enter a valid length".to_string())
+            } else {
+                st.error()
+            };
+            if let Some(e) = &err {
+                ui.colored_label(egui::Color32::from_rgb(0xC0, 0x30, 0x30), e);
+            }
+            ui.horizontal(|ui| {
+                if ui.button("Cancel").clicked() {
+                    result = Some(false);
+                }
+                if ui
+                    .add_enabled(err.is_none(), egui::Button::new("OK"))
+                    .clicked()
+                {
+                    result = Some(true);
+                }
+            });
+        });
+    result
 }
 
 impl PlanePages {
@@ -380,6 +608,89 @@ impl PlanePages {
         }
         if let Some(i) = remove {
             self.draft.holes.remove(i);
+        }
+    }
+
+    /// The layered definitions the plane has now: its own, or ones made from
+    /// the structure it follows (its own numbers or Roof Defaults).
+    fn roof_layers(&self) -> RoofLayers {
+        self.draft.layers.clone().unwrap_or_else(|| {
+            let st = self.draft.structure.unwrap_or(self.default_structure);
+            RoofLayers::from_numbers(
+                st.roofing,
+                st.sheathing,
+                st.member_depth,
+                st.member_width,
+                st.spacing,
+                st.framing == RoofFraming::Trusses,
+            )
+        })
+    }
+
+    /// Structure panel (RF-36, Round 16): the plane's Roof Surface, Roof
+    /// Structure and Roof Ceiling Finish, each a Material Layers Definition.
+    fn structure_page(&mut self, ui: &mut Ui) {
+        section(ui, "Structure");
+        let shown = self.draft.structure.unwrap_or(self.default_structure);
+        let layers = self.roof_layers();
+        row(ui, "Source", |ui| {
+            ui.label(if self.draft.structure.is_some() {
+                "This plane"
+            } else {
+                "Roof Defaults"
+            });
+        });
+        row(ui, "Framing", |ui| ui.label(shown.framing.label()));
+        row(ui, "Members", |ui| {
+            ui.label(format!(
+                "{} x {} at {} o.c.",
+                fmt_short(shown.member_width),
+                fmt_short(shown.member_depth),
+                fmt_short(shown.spacing)
+            ))
+        });
+        row(ui, "Thickness", |ui| ui.label(fmt_short(shown.thickness())));
+        row(ui, "Ceiling Framing", |ui| ui.label(shown.ceiling.label()));
+        ui.add_space(6.0);
+        let mut open = None;
+        for kind in [
+            AssemblyKind::RoofSurface,
+            AssemblyKind::RoofStructure,
+            AssemblyKind::RoofCeilingFinish,
+        ] {
+            row(ui, kind.label(), |ui| {
+                let a = layers.get(kind);
+                ui.label(format!(
+                    "{} layer{}, {}",
+                    a.layers.len(),
+                    if a.layers.len() == 1 { "" } else { "s" },
+                    fmt_short(a.total_thickness())
+                ));
+                if ui.button("Edit\u{2026}").clicked() {
+                    open = Some(kind);
+                }
+            });
+        }
+        if let Some(kind) = open {
+            self.layers_edit = Some(AssemblyDefDialog::new(
+                kind,
+                layers.get(kind).clone(),
+                &AssemblyLibrary::default(),
+            ));
+        }
+        if self.draft.structure.is_some() && ui.button("Use Roof Defaults").clicked() {
+            self.draft.set_structure(None);
+        }
+        if let Some(mut d) = self.layers_edit.take() {
+            match d.show(ui.ctx()) {
+                Outcome::Open => self.layers_edit = Some(d),
+                Outcome::Cancel => {}
+                Outcome::Ok => {
+                    let mut l = layers;
+                    l.set(d.kind(), d.into_assembly());
+                    self.draft.set_layers(Some(l), shown);
+                }
+            }
         }
     }
 
@@ -447,6 +758,7 @@ impl SpecPages for PlanePages {
                 {
                     self.draft.set_baseline_height(h);
                 }
+                super::roof_baseline::curved_section(ui, &mut self.draft, &mut self.fields);
                 row(ui, "Overhang", |ui| {
                     ui.add_enabled(false, egui::Label::new(fmt_short(self.draft.overhang)));
                 });
@@ -521,13 +833,14 @@ impl SpecPages for PlanePages {
                 tri_state(ui, "plane_gutters", "Gutters", &mut self.draft.eave.gutters);
                 self.draft.gutters = self.draft.eave.gutters == Some(true);
             }
-            4 => {
+            4 => self.structure_page(ui),
+            5 => {
                 section(ui, "Roofing");
                 row(ui, "Material", |ui| {
                     material_combo(ui, "plane_material", &mut self.draft.material);
                 });
             }
-            5 => {
+            6 => {
                 section(ui, "Layer");
                 row(ui, "Layer", |ui| {
                     egui::ComboBox::from_id_salt("plane_layer")
@@ -601,8 +914,17 @@ impl RoofPlaneDialog {
                 draft: record,
                 layers,
                 fields: Fields::default(),
+                default_structure: RoofStructure::default(),
+                define: None,
+                layers_edit: None,
             },
         }
+    }
+
+    /// Structure > Define starts from the structure these Roof Defaults give.
+    pub fn with_detail(mut self, detail: &plan_core::defaults::RoofDetailDefaults) -> Self {
+        self.pages.default_structure = RoofStructure::from_detail(detail);
+        self
     }
 
     pub fn show(&mut self, ctx: &egui::Context) -> Outcome {
@@ -612,6 +934,302 @@ impl RoofPlaneDialog {
     /// The edited copy.
     pub fn draft(&self) -> &RoofPlaneRecord {
         &self.pages.draft
+    }
+}
+
+// ===================================================================
+// Edit All Roof Planes
+// ===================================================================
+
+const ALL_TABS: &[Tab] = &[
+    on("General"),
+    on("Options"),
+    on("Structure"),
+    on("Materials"),
+];
+
+/// One setting of Edit All Roof Planes: a "Change" check box and the control.
+fn change_row(ui: &mut Ui, label: &str, on_: &mut bool, add: impl FnOnce(&mut Ui)) {
+    ui.horizontal(|ui| {
+        ui.checkbox(on_, "Change");
+        row(ui, label, |ui| {
+            ui.add_enabled_ui(*on_, add);
+        });
+    });
+}
+
+struct AllPages {
+    /// How many planes the change reaches.
+    count: usize,
+    layers: Vec<String>,
+    fields: Fields,
+    pitch: Option<f64>,
+    overhang: Option<f64>,
+    material: Option<String>,
+    layer: Option<String>,
+    ridge_caps: Option<bool>,
+    eave_cut: Option<Option<EaveCut>>,
+    rafter_tails: Option<Option<bool>>,
+    fascia: Option<Option<bool>>,
+    soffit: Option<Option<bool>>,
+    frieze: Option<Option<bool>>,
+    gutters: Option<Option<bool>>,
+    structure: Option<Option<RoofStructure>>,
+    default_structure: RoofStructure,
+    define: Option<RoofStructure>,
+}
+
+impl AllPages {
+    fn edit(&self) -> AllPlanesEdit {
+        AllPlanesEdit {
+            pitch: self.pitch,
+            overhang: self.overhang,
+            material: self.material.clone(),
+            layer: self.layer.clone(),
+            ridge_caps: self.ridge_caps,
+            eave_cut: self.eave_cut,
+            rafter_tails: self.rafter_tails,
+            fascia: self.fascia,
+            soffit: self.soffit,
+            frieze: self.frieze,
+            gutters: self.gutters,
+            structure: self.structure,
+        }
+    }
+}
+
+impl SpecPages for AllPages {
+    fn tabs(&self) -> &'static [Tab] {
+        ALL_TABS
+    }
+
+    fn error(&self) -> Option<String> {
+        if self.fields.any_invalid() {
+            Some("Enter a valid length".into())
+        } else if self
+            .pitch
+            .is_some_and(|p| !(MIN_PITCH..=MAX_PITCH).contains(&p))
+        {
+            Some("Pitch must be between 0.5 and 24 in 12".into())
+        } else if self.overhang.is_some_and(|o| o < 0.0) {
+            Some("The overhang cannot be negative".into())
+        } else if self.edit().is_empty() {
+            Some("Choose what to change".into())
+        } else {
+            None
+        }
+    }
+
+    fn page(&mut self, ui: &mut Ui, tab: usize) {
+        match tab {
+            0 => {
+                section(ui, &format!("Edit All Roof Planes ({} planes)", self.count));
+                let mut on_ = self.pitch.is_some();
+                let mut pitch = self.pitch.unwrap_or(8.0);
+                change_row(ui, "Pitch", &mut on_, |ui| {
+                    ui.add(
+                        egui::DragValue::new(&mut pitch)
+                            .range(MIN_PITCH..=MAX_PITCH)
+                            .speed(0.1)
+                            .max_decimals(2)
+                            .suffix(" : 12"),
+                    );
+                });
+                self.pitch = on_.then_some(pitch);
+                let mut on_ = self.overhang.is_some();
+                let mut over = self.overhang.unwrap_or(16.0);
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut on_, "Change");
+                    self.fields
+                        .length_row(ui, "Overhang", "all_overhang", &mut over);
+                });
+                self.overhang = on_.then_some(over);
+                ui.weak(
+                    "Pitch and overhang rebuild the automatic planes so hips and ridges follow.",
+                );
+            }
+            1 => {
+                section(ui, "Eaves and Ridge");
+                let mut caps_on = self.ridge_caps.is_some();
+                let mut caps = self.ridge_caps.unwrap_or(false);
+                change_row(ui, "Ridge Caps", &mut caps_on, |ui| {
+                    ui.checkbox(&mut caps, "Include Ridge Caps");
+                });
+                self.ridge_caps = caps_on.then_some(caps);
+                let mut on_ = self.eave_cut.is_some();
+                let mut cut = self.eave_cut.flatten();
+                change_row(ui, "Eave Cut", &mut on_, |ui| {
+                    egui::ComboBox::from_id_salt("all_eave_cut")
+                        .selected_text(cut.map_or("Roof Default", EaveCut::label))
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut cut, None, "Roof Default");
+                            for c in EaveCut::ALL {
+                                ui.selectable_value(&mut cut, Some(c), c.label());
+                            }
+                        });
+                });
+                self.eave_cut = on_.then_some(cut);
+                for (salt, label, slot) in [
+                    ("all_tails", "Rafter Tails", &mut self.rafter_tails),
+                    ("all_fascia", "Fascia", &mut self.fascia),
+                    ("all_soffit", "Soffit", &mut self.soffit),
+                    ("all_frieze", "Frieze", &mut self.frieze),
+                    ("all_gutters", "Gutters", &mut self.gutters),
+                ] {
+                    let mut on_ = slot.is_some();
+                    let mut v = slot.flatten();
+                    change_row(ui, label, &mut on_, |ui| tri_combo(ui, salt, &mut v));
+                    *slot = on_.then_some(v);
+                }
+            }
+            2 => {
+                section(ui, "Structure");
+                let mut on_ = self.structure.is_some();
+                let shown = self.structure.flatten().unwrap_or(self.default_structure);
+                ui.checkbox(&mut on_, "Change the structure of every plane");
+                if on_ && self.structure.is_none() {
+                    self.structure = Some(Some(shown));
+                } else if !on_ {
+                    self.structure = None;
+                }
+                if self.structure.is_some() {
+                    row(ui, "Framing", |ui| ui.label(shown.framing.label()));
+                    row(ui, "Members", |ui| {
+                        ui.label(format!(
+                            "{} x {} at {} o.c.",
+                            fmt_short(shown.member_width),
+                            fmt_short(shown.member_depth),
+                            fmt_short(shown.spacing)
+                        ))
+                    });
+                    row(ui, "Thickness", |ui| ui.label(fmt_short(shown.thickness())));
+                    ui.horizontal(|ui| {
+                        if ui.button("Define...").clicked() {
+                            self.define = Some(shown);
+                        }
+                        if ui.button("Use Roof Defaults").clicked() {
+                            self.structure = Some(None);
+                        }
+                    });
+                }
+                if let Some(mut st) = self.define {
+                    match define_window(ui.ctx(), &mut st, &mut self.fields) {
+                        Some(true) => {
+                            self.structure = Some(Some(st));
+                            self.define = None;
+                        }
+                        Some(false) => self.define = None,
+                        None => self.define = Some(st),
+                    }
+                }
+            }
+            _ => {
+                section(ui, "Roofing");
+                let mut on_ = self.material.is_some();
+                let mut m = self
+                    .material
+                    .clone()
+                    .unwrap_or_else(|| ROOF_MATERIALS[0].to_string());
+                change_row(ui, "Material", &mut on_, |ui| {
+                    material_combo(ui, "all_material", &mut m);
+                });
+                self.material = on_.then_some(m);
+                section(ui, "Layer");
+                let mut on_ = self.layer.is_some();
+                let mut l = self.layer.clone().unwrap_or_default();
+                change_row(ui, "Layer", &mut on_, |ui| {
+                    egui::ComboBox::from_id_salt("all_layer")
+                        .selected_text(l.clone())
+                        .show_ui(ui, |ui| {
+                            for name in &self.layers {
+                                ui.selectable_value(&mut l, name.clone(), name);
+                            }
+                        });
+                });
+                self.layer = (on_ && !l.is_empty()).then_some(l);
+            }
+        }
+    }
+
+    fn preview(&self, p: &Painter, area: Rect) {
+        // A roof from above with every plane marked.
+        let r = Rect::from_center_size(area.center(), area.size() * egui::vec2(0.8, 0.5));
+        let ink = Stroke::new(1.5_f32, PV_INK);
+        p.rect_stroke(r, 0.0, ink, egui::StrokeKind::Inside);
+        let inset = r.height() * 0.5;
+        let (l, rr) = (
+            Pos2::new(r.min.x + inset, r.center().y),
+            Pos2::new(r.max.x - inset, r.center().y),
+        );
+        p.line_segment([l, rr], ink);
+        for (c, e) in [
+            (l, r.left_top()),
+            (l, r.left_bottom()),
+            (rr, r.right_top()),
+            (rr, r.right_bottom()),
+        ] {
+            p.line_segment([c, e], Stroke::new(1.0_f32, PV_ACCENT));
+        }
+        p.text(
+            Pos2::new(area.center().x, r.max.y + 18.0),
+            Align2::CENTER_CENTER,
+            format!("{} planes", self.count),
+            FontId::proportional(13.0),
+            PV_INK,
+        );
+    }
+}
+
+/// Edit All Roof Planes (RF-39): one dialog whose settings reach every plane
+/// of the roof.
+pub struct AllPlanesDialog {
+    frame: SpecDialog,
+    pages: AllPages,
+}
+
+impl AllPlanesDialog {
+    pub fn new(count: usize, layers: Vec<String>) -> Self {
+        Self {
+            frame: SpecDialog::new("Edit All Roof Planes", "roof_all_planes"),
+            pages: AllPages {
+                count,
+                layers,
+                fields: Fields::default(),
+                pitch: None,
+                overhang: None,
+                material: None,
+                layer: None,
+                ridge_caps: None,
+                eave_cut: None,
+                rafter_tails: None,
+                fascia: None,
+                soffit: None,
+                frieze: None,
+                gutters: None,
+                structure: None,
+                default_structure: RoofStructure::default(),
+                define: None,
+            },
+        }
+    }
+
+    pub fn with_detail(mut self, detail: &plan_core::defaults::RoofDetailDefaults) -> Self {
+        self.pages.default_structure = RoofStructure::from_detail(detail);
+        self
+    }
+
+    pub fn show(&mut self, ctx: &egui::Context) -> Outcome {
+        self.frame.show(ctx, &mut self.pages)
+    }
+
+    /// What OK changes.
+    pub fn edit(&self) -> AllPlanesEdit {
+        self.pages.edit()
+    }
+
+    /// Sets the pitch to change, as typing in the dialog does (tests).
+    pub fn set_pitch(&mut self, pitch: Option<f64>) {
+        self.pages.pitch = pitch;
     }
 }
 
@@ -1098,6 +1716,6 @@ mod tests {
         assert!(d.pages.error().is_none());
         d.pages.draft.pitch = 40.0;
         assert!(d.pages.error().is_some());
-        assert_eq!(PLANE_TABS.len(), 7);
+        assert_eq!(PLANE_TABS.len(), 8);
     }
 }

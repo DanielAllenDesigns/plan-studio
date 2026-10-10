@@ -7,19 +7,29 @@
 //! that the tool stores on OK as one undo step.
 
 use super::{
-    on, pv_text, row, section, Fields, Outcome, SpecDialog, SpecPages, Tab, PV_ACCENT, PV_FAINT,
-    PV_INK, PV_WALL,
+    off, on, pv_text, row, section, Fields, Outcome, SpecDialog, SpecPages, Tab, PV_ACCENT,
+    PV_FAINT, PV_INK, PV_WALL,
 };
 use crate::editor::details_view::{material_names, PATTERN_NAMES};
 use eframe::egui::{self, Align2, Color32, Painter, Pos2, Rect, Stroke, Ui};
 use plan_core::details::{
     bounds, wall_rect, CornerBoard, DeckPolygon, DetailRef, DetailStyle, DetailsLayer,
-    MaterialRegion, MoldingLine, MoldingProfile, Quoin, RegionKind, Solid3d, SolidKind, WallHatch,
+    MaterialRegion, MoldingLine, MoldingSide, Quoin, QuoinStyle, RegionKind, Solid3d, SolidKind,
+    WallHatch,
 };
 use plan_core::geometry::Point;
+use plan_core::moldings::builtin_profiles;
 use plan_core::units::fmt_ft_in;
 use plan_core::walls::Side;
 use plan_core::Id;
+
+mod management;
+use super::molding;
+#[cfg(test)]
+pub use management::{components_open, management_open};
+pub use management::{
+    open_auto_detail, open_components, open_management, select_detail, show_windows,
+};
 
 const FULL_TABS: &[Tab] = &[
     on("General"),
@@ -28,6 +38,27 @@ const FULL_TABS: &[Tab] = &[
     on("Layer"),
 ];
 const HATCH_TABS: &[Tab] = &[on("General"), on("Line Style"), on("Layer")];
+/// Corner boards and quoins: General, Layer, Materials and Components.
+const TRIM_TABS: &[Tab] = &[
+    on("General"),
+    on("Line Style"),
+    on("Materials"),
+    on("Components"),
+    on("Layer"),
+];
+/// Molding Specification: General, Selected Line, the Moldings panel, Line
+/// Style, Fill Style (not built), Materials, Label and Components.
+const MOLDING_TABS: &[Tab] = &[
+    on("General"),
+    on("Moldings"),
+    on("Selected Line"),
+    on("Line Style"),
+    off("Fill Style"),
+    on("Materials"),
+    on("Label"),
+    on("Components"),
+    on("Layer"),
+];
 
 /// Material names offered before the library's own.
 pub const BASE_MATERIALS: [&str; 8] = [
@@ -102,7 +133,19 @@ impl Draft {
     fn tabs(&self) -> &'static [Tab] {
         match self {
             Draft::Hatch(_) => HATCH_TABS,
+            Draft::CornerBoard(_) | Draft::Quoin(_) => TRIM_TABS,
+            Draft::Molding(_) => MOLDING_TABS,
             _ => FULL_TABS,
+        }
+    }
+
+    /// The Components panel list of the draft, when it has one.
+    fn components_mut(&mut self) -> Option<&mut Vec<String>> {
+        match self {
+            Draft::CornerBoard(d) => Some(&mut d.components),
+            Draft::Quoin(d) => Some(&mut d.components),
+            Draft::Molding(d) => Some(&mut d.components),
+            _ => None,
         }
     }
 
@@ -153,6 +196,15 @@ struct Form {
     layers: Vec<String>,
     materials: Vec<String>,
     fields: Fields,
+    /// The Moldings panel of a molding.
+    panel: molding::MoldingPanel,
+    /// The edge the Selected Line panel and Molding on Selected Edge refer to.
+    edge: usize,
+    /// Edit was pressed on a profile of the Moldings panel.
+    edit_request: Option<String>,
+    /// The move fields of the Selected Line panel: along the edge, across it,
+    /// up (Select Edit Plane).
+    plane: [f64; 3],
 }
 
 impl DetailsDialog {
@@ -166,6 +218,20 @@ impl DetailsDialog {
                 materials.push(n);
             }
         }
+        let mut catalog = builtin_profiles();
+        for p in &layer.profiles {
+            match catalog
+                .iter_mut()
+                .find(|q| q.name.eq_ignore_ascii_case(&p.name))
+            {
+                Some(q) => *q = p.clone(),
+                None => catalog.push(p.clone()),
+            }
+        }
+        let mut draft = draft;
+        if let Draft::Molding(m) = &mut draft {
+            m.ensure_table();
+        }
         Some(Self {
             frame: SpecDialog::new(draft.title(), ("details_spec", draft.title())),
             form: Form {
@@ -173,8 +239,23 @@ impl DetailsDialog {
                 layers,
                 materials,
                 fields: Fields::default(),
+                panel: molding::MoldingPanel::new(molding::PanelOptions::default(), catalog),
+                edge: crate::tools::molding::selected_edge_of(match r {
+                    DetailRef::Molding(i) => i,
+                    _ => 0,
+                }),
+                edit_request: None,
+                plane: [0.0; 3],
             },
         })
+    }
+
+    /// The profile the Edit button of the Moldings panel asked to open, if any.
+    /// The shell host (`shell/spec_dialogs.rs`, not owned here) polls it; see
+    /// docs/integration-queue.md.
+    #[allow(dead_code)]
+    pub fn take_edit_request(&mut self) -> Option<String> {
+        self.form.edit_request.take()
     }
 
     pub fn show(&mut self, ctx: &egui::Context) -> Outcome {
@@ -210,57 +291,149 @@ impl Form {
             Draft::CornerBoard(b) => {
                 fields.length_row(ui, "Width", "cb_width", &mut b.width);
                 fields.length_row(ui, "Thickness", "cb_thickness", &mut b.thickness);
-                fields.length_row(ui, "Bottom height", "cb_base", &mut b.base);
-                fields.length_row(ui, "Height", "cb_height", &mut b.height);
-                ui.add_space(6.0);
-                ui.weak(format!("Lumber {:.2} cu ft", b.volume() / 1728.0));
-            }
-            Draft::Quoin(q) => {
-                fields.length_row(ui, "Long block", "q_width", &mut q.width);
-                fields.length_row(ui, "Block height", "q_height", &mut q.height);
-                fields.length_row(ui, "Depth", "q_depth", &mut q.depth);
-                fields.length_row(ui, "Bottom height", "q_base", &mut q.base);
-                fields.length_row(ui, "Stack height", "q_total", &mut q.total_height);
-                row(ui, "Courses", |ui| {
-                    ui.checkbox(&mut q.alternating, "Alternate long and short blocks")
+                row(ui, "Bottom", |ui| {
+                    ui.checkbox(&mut b.set_bottom, "Set Bottom")
+                        .on_hover_text("Off: the bottom of the floor platform")
                 });
-                ui.add_space(6.0);
-                ui.weak(format!("{} courses", q.courses()));
-            }
-            Draft::Molding(m) => {
-                row(ui, "Profile", |ui| {
-                    let current = m.profile.name();
-                    egui::ComboBox::from_id_salt("molding_profile")
-                        .selected_text(current)
-                        .show_ui(ui, |ui| {
-                            for p in [
-                                MoldingProfile::Crown,
-                                MoldingProfile::Base,
-                                MoldingProfile::Chair,
-                                MoldingProfile::Casing,
-                            ] {
-                                let name = p.name();
-                                if ui.selectable_label(current == name, name).clicked() {
-                                    let (h, w) = p.default_size();
-                                    m.height = h;
-                                    m.width = w;
-                                    m.profile = p;
-                                }
-                            }
-                            if current == "Custom" {
-                                let _ = ui.selectable_label(true, "Custom");
-                            }
-                        });
+                if b.set_bottom {
+                    fields.length_row(ui, "Bottom height", "cb_base", &mut b.base);
+                }
+                row(ui, "Top", |ui| {
+                    ui.checkbox(&mut b.set_top, "Set Top")
+                        .on_hover_text("Off: the top plate of the walls")
                 });
-                fields.length_row(ui, "Height", "m_height", &mut m.height);
-                fields.length_row(ui, "Projection", "m_width", &mut m.width);
-                fields.length_row(ui, "Bottom height", "m_elev", &mut m.elevation);
+                if b.set_top {
+                    let mut top = b.top();
+                    if fields.length_row(ui, "Top height", "cb_top", &mut top) {
+                        b.height = (top - b.base).max(0.0);
+                    }
+                } else {
+                    ui.weak(format!(
+                        "Runs from {} to the top plate ({})",
+                        fmt_ft_in(b.base),
+                        fmt_ft_in(b.top())
+                    ));
+                }
+                row(ui, "Sheathing", |ui| {
+                    ui.checkbox(&mut b.recessed, "Recessed To Sheathing Layer")
+                });
                 ui.add_space(6.0);
                 ui.weak(format!(
-                    "Length {}, projects to the left of the drawing direction",
-                    fmt_ft_in(m.length())
+                    "{} corner, lumber {:.2} cu ft",
+                    if b.inside { "Inside" } else { "Outside" },
+                    b.volume() / 1728.0
                 ));
-                self.profile_editor(ui);
+            }
+            Draft::Quoin(q) => {
+                fields.length_row(ui, "Width", "q_width", &mut q.width);
+                fields.length_row(ui, "Thickness", "q_depth", &mut q.depth);
+                fields.length_row(ui, "Quoin Height", "q_height", &mut q.height);
+                fields.length_row(ui, "Quoin Gap", "q_gap", &mut q.gap);
+                row(ui, "Style", |ui| {
+                    let mut st = q.quoin_style();
+                    egui::ComboBox::from_id_salt("quoin_style")
+                        .selected_text(st.name())
+                        .show_ui(ui, |ui| {
+                            for k in QuoinStyle::ALL {
+                                ui.selectable_value(&mut st, k, k.name());
+                            }
+                        });
+                    q.set_quoin_style(st);
+                });
+                row(ui, "Start", |ui| {
+                    ui.checkbox(&mut q.swap_start, "Swap Start Block")
+                });
+                row(ui, "Bottom", |ui| {
+                    ui.checkbox(&mut q.set_bottom, "Set Bottom")
+                });
+                if q.set_bottom {
+                    fields.length_row(ui, "Bottom height", "q_base", &mut q.base);
+                }
+                row(ui, "Top", |ui| ui.checkbox(&mut q.set_top, "Set Top"));
+                if q.set_top {
+                    let mut top = q.top();
+                    if fields.length_row(ui, "Top height", "q_top", &mut top) {
+                        q.total_height = (top - q.base).max(0.0);
+                    }
+                } else {
+                    ui.weak(format!(
+                        "Stacks up to the top plate ({})",
+                        fmt_ft_in(q.top())
+                    ));
+                }
+                row(ui, "Sheathing", |ui| {
+                    ui.checkbox(&mut q.recessed, "Recessed To Sheathing Layer")
+                });
+                ui.add_space(6.0);
+                ui.weak(format!(
+                    "{} corner, {} courses, {} blocks",
+                    if q.inside { "Inside" } else { "Outside" },
+                    q.courses(),
+                    q.block_count()
+                ));
+            }
+            Draft::Molding(m) => {
+                let floor_note = "The bottom edge of the molding above the floor";
+                let mut h = m.elevation;
+                if fields.length_row(ui, "Height from Z=0", "m_elev", &mut h) {
+                    m.elevation = h;
+                    m.heights.clear();
+                    m.automatic = false;
+                }
+                ui.weak(floor_note);
+                row(ui, "Twisted Joints", |ui| {
+                    ui.vertical(|ui| {
+                        ui.checkbox(
+                            &mut m.auto_orient,
+                            "Auto Calc Orientation at Twisted Joints",
+                        );
+                        ui.checkbox(&mut m.mitre_twisted, "Mitre Molding at Twisted Joints");
+                        ui.checkbox(
+                            &mut m.mitre_if_next_off,
+                            "Mitre Molding If Next Edge Turned Off",
+                        );
+                    })
+                    .inner
+                });
+                let n = m.edge_count();
+                if n > 0 {
+                    self.edge = self.edge.min(n - 1);
+                    let mut on = m.edge_on(self.edge);
+                    row(ui, "Selected Edge", |ui| {
+                        if ui.small_button("\u{25C0}").clicked() && self.edge > 0 {
+                            self.edge -= 1;
+                        }
+                        ui.label(format!("{} of {}", self.edge + 1, n));
+                        if ui.small_button("\u{25B6}").clicked() && self.edge + 1 < n {
+                            self.edge += 1;
+                        }
+                    });
+                    let on_before = on;
+                    row(ui, "Molding on Selected Edge", |ui| {
+                        ui.checkbox(&mut on, "On")
+                    });
+                    if on != on_before {
+                        m.set_edge_on(self.edge, on);
+                    }
+                }
+                row(ui, "Generated", |ui| {
+                    ui.add_enabled(
+                        m.automatic,
+                        egui::Checkbox::new(&mut m.automatic, "Automatically Generated"),
+                    )
+                });
+                ui.add_space(6.0);
+                ui.weak(format!(
+                    "Length {} ({} 3D), {} edge{}, projects to the {}",
+                    fmt_ft_in(m.length()),
+                    fmt_ft_in(m.edge_lengths_on()),
+                    n,
+                    if n == 1 { "" } else { "s" },
+                    match m.side {
+                        MoldingSide::Left => "left",
+                        MoldingSide::Right => "right",
+                    }
+                ));
             }
             Draft::Region(r) => {
                 match r.kind {
@@ -396,87 +569,133 @@ impl Form {
         }
     }
 
-    /// Custom molding cross section: the points `(projection, height)`
-    /// measured from the bottom edge at the wall, edited one by one.
-    fn profile_editor(&mut self, ui: &mut Ui) {
+    /// The Moldings panel of a molding (profiles, offsets, stacking) with
+    /// Extrude Inside Polyline and Reverse Direction.
+    fn moldings_page(&mut self, ui: &mut Ui) {
         let Draft::Molding(m) = &mut self.draft else {
             return;
         };
-        section(ui, "Cross section");
-        let is_custom = matches!(m.profile, MoldingProfile::Custom(_));
-        ui.horizontal(|ui| {
-            if ui
-                .button(if is_custom {
-                    "Reset to the box"
-                } else {
-                    "Edit as custom profile"
-                })
-                .clicked()
-            {
-                // Start the custom profile from the current section, or go
-                // back to a plain box of the same size.
-                m.profile = if is_custom {
-                    MoldingProfile::Base
-                } else {
-                    MoldingProfile::Custom(m.section())
-                };
+        section(ui, "Moldings");
+        row(ui, "Polyline", |ui| {
+            ui.checkbox(&mut m.extrude_inside, "Extrude Inside Polyline")
+                .on_hover_text(
+                    "A closed polyline puts the profile inside whichever way it was drawn",
+                )
+        });
+        row(ui, "Direction", |ui| {
+            if ui.button("Reverse Direction").clicked() {
+                m.reverse_direction();
             }
         });
-        let MoldingProfile::Custom(pts) = &mut m.profile else {
-            ui.weak("A preset profile is a plain box; edit it as a custom profile to shape it.");
+        let ev = self.panel.show(ui, &mut m.table);
+        if ev.changed {
+            m.automatic = false;
+            // The single-profile fields follow the first row.
+            if let Some(r) = m.table.rows.first() {
+                m.width = r.width;
+                m.height = r.height;
+            }
+        }
+        if ev.edit.is_some() {
+            self.edit_request = ev.edit;
+        }
+    }
+
+    /// Selected Line panel: the 3D length and the two angles of an edge, its
+    /// end heights, and Select Edit Plane moves.
+    fn selected_line_page(&mut self, ui: &mut Ui) {
+        let Draft::Molding(m) = &mut self.draft else {
+            return;
+        };
+        section(ui, "Selected Line");
+        let n = m.edge_count();
+        if n == 0 {
+            ui.weak("The molding has no edge");
+            return;
+        }
+        self.edge = self.edge.min(n - 1);
+        row(ui, "Edge", |ui| {
+            if ui.small_button("\u{25C0}").clicked() && self.edge > 0 {
+                self.edge -= 1;
+            }
+            ui.label(format!("{} of {}", self.edge + 1, n));
+            if ui.small_button("\u{25B6}").clicked() && self.edge + 1 < n {
+                self.edge += 1;
+            }
+        });
+        let i = self.edge;
+        let fields = &mut self.fields;
+        let (mut xy, mut from) = m.edge_angles(i);
+        let mut len = m.edge_length_3d(i);
+        let a = fields.length_row(ui, "3D Length", "sl_len", &mut len);
+        let b = fields.degrees_row(ui, "Angle in XY Plane", "deg_sl_xy", &mut xy);
+        let c = fields.degrees_row(ui, "Angle from XY Plane", "deg_sl_from", &mut from);
+        if (a || b || c) && len > 0.0 {
+            m.set_edge_3d(i, len, xy, from.clamp(-89.0, 89.0));
+        }
+        let mut z0 = m.vertex_bottom(i);
+        let mut z1 = m.vertex_bottom(i + 1);
+        if fields.length_row(ui, "Start height", "sl_z0", &mut z0) {
+            m.set_vertex_bottom(i, z0);
+        }
+        if fields.length_row(ui, "End height", "sl_z1", &mut z1) {
+            m.set_vertex_bottom(i + 1, z1);
+        }
+        section(ui, "Select Edit Plane");
+        let plane = &mut self.plane;
+        fields.length_row(ui, "Along the edge", "sl_along", &mut plane[0]);
+        fields.length_row(ui, "Across (perpendicular)", "sl_across", &mut plane[1]);
+        fields.length_row(ui, "Up", "sl_up", &mut plane[2]);
+        ui.horizontal(|ui| {
+            if ui.button("Move Edge").clicked() {
+                m.move_edge(i, plane[0], plane[1], plane[2]);
+                *plane = [0.0; 3];
+            }
+            ui.weak("Moves both ends of the edge; the edges next to it follow.");
+        });
+    }
+
+    /// Label panel: a custom label for the molding.
+    fn label_page(&mut self, ui: &mut Ui) {
+        let Draft::Molding(m) = &mut self.draft else {
+            return;
+        };
+        section(ui, "Label");
+        row(ui, "Show label", |ui| {
+            ui.checkbox(&mut m.show_label, "Display")
+        });
+        row(ui, "Label text", |ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut m.label)
+                    .hint_text("the profile name")
+                    .desired_width(200.0),
+            )
+        });
+    }
+
+    /// Components panel: the names of the components that make the object.
+    fn components_page(&mut self, ui: &mut Ui) {
+        section(ui, "Components");
+        let Some(list) = self.draft.components_mut() else {
             return;
         };
         let mut remove = None;
-        let mut insert = None;
-        egui::Grid::new("profile_points")
-            .striped(true)
-            .show(ui, |ui| {
-                ui.strong("#");
-                ui.strong("Projection");
-                ui.strong("Height");
-                ui.label("");
-                ui.end_row();
-                let n = pts.len();
-                for (i, p) in pts.iter_mut().enumerate() {
-                    ui.label((i + 1).to_string());
-                    ui.add(egui::DragValue::new(&mut p.x).speed(0.05).range(0.0..=48.0));
-                    ui.add(egui::DragValue::new(&mut p.y).speed(0.05).range(0.0..=96.0));
-                    ui.horizontal(|ui| {
-                        if ui
-                            .small_button("+")
-                            .on_hover_text("Add a point after this one")
-                            .clicked()
-                        {
-                            insert = Some(i);
-                        }
-                        if ui
-                            .add_enabled(n > 3, egui::Button::new("\u{2212}").small())
-                            .on_hover_text("Remove this point")
-                            .clicked()
-                        {
-                            remove = Some(i);
-                        }
-                    });
-                    ui.end_row();
+        for (i, c) in list.iter_mut().enumerate() {
+            ui.horizontal(|ui| {
+                ui.add(egui::TextEdit::singleline(c).desired_width(200.0));
+                if ui.small_button("\u{2212}").clicked() {
+                    remove = Some(i);
                 }
             });
-        if let Some(i) = insert {
-            let a = pts[i];
-            let b = pts[(i + 1) % pts.len()];
-            pts.insert(i + 1, Point::new((a.x + b.x) * 0.5, (a.y + b.y) * 0.5));
         }
         if let Some(i) = remove {
-            pts.remove(i);
+            list.remove(i);
         }
-        // The stated height and projection are the profile's extents; they
-        // follow the points as they are edited.
-        let (_, hi) = bounds(pts);
-        if hi.x > 0.0 && hi.y > 0.0 {
-            m.width = hi.x;
-            m.height = hi.y;
+        if ui.button("Add Component").clicked() {
+            list.push(String::new());
         }
-        if plan_core::geometry::polygon_area(pts).abs() < 1e-6 {
-            ui.colored_label(super::ERROR_RED, "The points enclose no area");
+        if list.is_empty() {
+            ui.weak("No components. They are listed in the Materials List.");
         }
     }
 
@@ -518,13 +737,19 @@ impl Form {
     }
 }
 
+impl Form {
+    fn panel_selected(&self) -> usize {
+        self.panel.selected()
+    }
+}
+
 impl SpecPages for Form {
     fn tabs(&self) -> &'static [Tab] {
         self.draft.tabs()
     }
 
     fn error(&self) -> Option<String> {
-        if self.fields.any_invalid() {
+        if self.fields.any_invalid() || self.panel.any_invalid() {
             return Some("Fix the highlighted field".into());
         }
         let positive = |ok: bool, msg: &str| (!ok).then(|| msg.to_string());
@@ -538,8 +763,13 @@ impl SpecPages for Form {
                 "The quoins need a size, a depth and a stack height",
             ),
             Draft::Molding(m) => positive(
-                m.height > 0.0 && m.width > 0.0,
-                "The molding needs a height and a projection",
+                m.height > 0.0
+                    && m.width > 0.0
+                    && m.table
+                        .rows
+                        .iter()
+                        .all(|r| r.width > 0.0 && r.height > 0.0 && r.profile.is_valid()),
+                "Every profile of the molding needs a height and a projection",
             ),
             Draft::Region(r) => {
                 if r.thickness <= 0.0 {
@@ -582,6 +812,10 @@ impl SpecPages for Form {
         let name = self.draft.tabs()[tab].name;
         match name {
             "General" => self.general(ui),
+            "Moldings" => self.moldings_page(ui),
+            "Selected Line" => self.selected_line_page(ui),
+            "Label" => self.label_page(ui),
+            "Components" => self.components_page(ui),
             "Materials" => self.materials_page(ui),
             "Line Style" => self.line_style_page(ui),
             "Layer" => self.layer_page(ui),
@@ -618,8 +852,12 @@ impl SpecPages for Form {
                 outline_preview(p, area, &l, PV_WALL, ink);
             }
             Draft::Molding(m) => {
-                let s = m.section();
-                outline_preview(p, area, &s, PV_WALL, ink);
+                if m.table.is_empty() {
+                    let s = m.section();
+                    outline_preview(p, area, &s, PV_WALL, ink);
+                } else {
+                    molding::preview(p, area, &m.table, self.panel_selected());
+                }
             }
             Draft::Region(r) => {
                 if r.outline.len() >= 3 {
@@ -678,6 +916,8 @@ fn outline_preview(p: &Painter, area: Rect, outline: &[Point], fill: Color32, st
 #[cfg(test)]
 mod tests {
     use super::*;
+    use plan_core::details::MoldingProfile;
+    use plan_core::moldings::{builtin_profiles, MoldingType};
 
     fn layer() -> DetailsLayer {
         let sq = vec![
@@ -712,6 +952,7 @@ mod tests {
             }],
             decks: vec![DeckPolygon::new(7, sq)],
             solids: vec![Solid3d::new(8, SolidKind::Sphere { r: 12.0 }, Point::ZERO)],
+            ..DetailsLayer::default()
         }
     }
 
@@ -720,13 +961,10 @@ mod tests {
     }
 
     #[test]
-    fn each_kind_has_general_materials_line_style_and_layer_pages() {
+    fn each_kind_has_its_pages() {
         let l = layer();
         let tabs = |r| DetailsDialog::new(&l, r, names()).unwrap().tab_names();
         for r in [
-            DetailRef::CornerBoard(1),
-            DetailRef::Quoin(2),
-            DetailRef::Molding(3),
             DetailRef::Region(4),
             DetailRef::Deck(7),
             DetailRef::Solid(8),
@@ -737,6 +975,29 @@ mod tests {
                 "{r:?}"
             );
         }
+        // Corner boards and quoins: General, Layer, Materials, Components.
+        for r in [DetailRef::CornerBoard(1), DetailRef::Quoin(2)] {
+            assert_eq!(
+                tabs(r),
+                ["General", "Line Style", "Materials", "Components", "Layer"],
+                "{r:?}"
+            );
+        }
+        // The Molding Specification has the panels of the manual.
+        assert_eq!(
+            tabs(DetailRef::Molding(3)),
+            [
+                "General",
+                "Moldings",
+                "Selected Line",
+                "Line Style",
+                "Fill Style",
+                "Materials",
+                "Label",
+                "Components",
+                "Layer"
+            ]
+        );
         assert_eq!(
             tabs(DetailRef::Hatch(6)),
             ["General", "Line Style", "Layer"]
@@ -814,55 +1075,131 @@ mod tests {
     }
 
     #[test]
-    fn a_molding_profile_can_be_edited_point_by_point() {
+    fn the_moldings_panel_edits_the_table_of_the_draft() {
         let mut l = layer();
         let mut d = DetailsDialog::new(&l, DetailRef::Molding(3), names()).unwrap();
-        let drawn = page_texts(&mut d, "General");
-        assert!(
-            drawn.iter().any(|t| t == "Edit as custom profile"),
-            "{drawn:?}"
-        );
-        // The button turns the preset into a custom profile of the same box.
-        let Draft::Molding(m) = d.draft_mut() else {
+        // The old single profile became the first row of the table.
+        let Draft::Molding(m) = d.draft() else {
             panic!("a molding")
         };
-        let (w, h) = (m.width, m.height);
-        m.profile = MoldingProfile::Custom(m.section());
-        let drawn = page_texts(&mut d, "General");
-        assert!(drawn.iter().any(|t| t == "Reset to the box"), "{drawn:?}");
-        // Shape it into a bevelled profile: move one corner in and add a point.
-        let Draft::Molding(m) = d.draft_mut() else {
-            panic!()
-        };
-        let MoldingProfile::Custom(pts) = &mut m.profile else {
-            panic!("custom")
-        };
-        assert_eq!(pts.len(), 4);
-        pts[2] = Point::new(w * 0.5, h);
-        pts.insert(2, Point::new(w, h * 0.5));
-        let before = m.section().len();
-        assert_eq!(before, 5);
+        assert_eq!(m.table.len(), 1);
+        assert_eq!(m.table.rows[0].profile.name, "Crown");
+        let drawn = page_texts(&mut d, "Moldings");
+        for want in [
+            "Extrude Inside Polyline",
+            "Reverse Direction",
+            "Make Stack",
+            "Selected Profile Options",
+            "Retain Aspect Ratio",
+        ] {
+            assert!(drawn.iter().any(|t| t == want), "{want} in {drawn:?}");
+        }
+        // The buttons: add a library profile, offset and stack it.
+        let Form { draft, panel, .. } = &mut d.form;
+        let Draft::Molding(m) = draft else { panic!() };
+        let base = builtin_profiles()
+            .into_iter()
+            .find(|p| p.kind == MoldingType::Base)
+            .unwrap();
+        assert!(panel.apply(&mut m.table, molding::PanelAction::AddNew(base)));
+        m.table.rows[1].h_offset = -0.25;
+        panel.mark(0, true);
+        assert!(panel.apply(&mut m.table, molding::PanelAction::MakeStack));
         assert!(d.form.error().is_none());
         assert!(d.draft().apply(&mut l));
-        let stored = l.moldings.iter().find(|m| m.id == 3).unwrap();
-        assert!(matches!(&stored.profile, MoldingProfile::Custom(p) if p.len() == 5));
-        // The section follows the points: smaller than the plain box.
-        let area = plan_core::geometry::polygon_area(&stored.section()).abs();
-        assert!(area < w * h - 0.1 && area > 0.0, "{area} vs {}", w * h);
-        // Degenerate points enclose no area; the page says so.
+        let stored = l.molding(3).unwrap();
+        assert_eq!(stored.table.len(), 2);
+        assert_eq!(stored.table.rows[0].stack, stored.table.rows[1].stack);
+        // Two parts, the recessed one 1/4 behind the back line.
+        let parts = stored.placed_parts();
+        assert_eq!(parts.len(), 2);
+        assert!(parts[1].section.iter().any(|p| p.x < -0.2));
+        assert!(parts[1].dz > 0.0, "the second sits on the first");
+        // A profile of no size is an error.
         let Draft::Molding(m) = d.draft_mut() else {
             panic!()
         };
-        m.profile = MoldingProfile::Custom(vec![
-            Point::new(0.0, 0.0),
-            Point::new(1.0, 1.0),
-            Point::new(2.0, 2.0),
-        ]);
+        m.table.rows[0].width = 0.0;
+        assert!(d.form.error().is_some());
+    }
+
+    #[test]
+    fn the_selected_line_page_sets_lengths_angles_and_heights() {
+        let mut l = layer();
+        l.moldings[0].polyline = vec![Point::ZERO, Point::new(96.0, 0.0), Point::new(96.0, 48.0)];
+        let mut d = DetailsDialog::new(&l, DetailRef::Molding(3), names()).unwrap();
+        let drawn = page_texts(&mut d, "Selected Line");
+        for want in [
+            "3D Length",
+            "Angle in XY Plane",
+            "Angle from XY Plane",
+            "Select Edit Plane",
+        ] {
+            assert!(drawn.iter().any(|t| t == want), "{want} in {drawn:?}");
+        }
         let drawn = page_texts(&mut d, "General");
-        assert!(
-            drawn.iter().any(|t| t == "The points enclose no area"),
-            "{drawn:?}"
-        );
+        for want in [
+            "Height from Z=0",
+            "Auto Calc Orientation at Twisted Joints",
+            "Mitre Molding at Twisted Joints",
+            "Mitre Molding If Next Edge Turned Off",
+            "Molding on Selected Edge",
+        ] {
+            assert!(drawn.iter().any(|t| t == want), "{want} in {drawn:?}");
+        }
+        // Edge 0 rises 24 inches over its 96: 3D length and angles follow.
+        let Draft::Molding(m) = d.draft_mut() else {
+            panic!()
+        };
+        assert!(m.set_edge_3d(0, 100.0, 0.0, 14.0));
+        assert!(m.is_sloped());
+        assert!((m.edge_length_3d(0) - 100.0).abs() < 1e-9);
+        let (xy, from) = m.edge_angles(0);
+        assert!(xy.abs() < 1e-9 && (from - 14.0).abs() < 1e-9);
+        // The edge can come off and go back on.
+        assert!(m.set_edge_on(1, false));
+        assert!(!m.edge_on(1));
+        assert!(d.draft().apply(&mut l));
+        assert!(l.molding(3).unwrap().is_sloped());
+        assert!(!l.molding(3).unwrap().edge_on(1));
+    }
+
+    #[test]
+    fn the_corner_board_and_quoin_pages_have_the_field_sets_of_the_manual() {
+        let l = layer();
+        let mut d = DetailsDialog::new(&l, DetailRef::CornerBoard(1), names()).unwrap();
+        let drawn = page_texts(&mut d, "General");
+        for want in [
+            "Width",
+            "Thickness",
+            "Set Bottom",
+            "Set Top",
+            "Recessed To Sheathing Layer",
+        ] {
+            assert!(drawn.iter().any(|t| t == want), "{want} in {drawn:?}");
+        }
+        let mut d = DetailsDialog::new(&l, DetailRef::Quoin(2), names()).unwrap();
+        let drawn = page_texts(&mut d, "General");
+        for want in [
+            "Width",
+            "Thickness",
+            "Quoin Height",
+            "Quoin Gap",
+            "Style",
+            "Swap Start Block",
+            "Set Bottom",
+            "Set Top",
+        ] {
+            assert!(drawn.iter().any(|t| t == want), "{want} in {drawn:?}");
+        }
+        // Components can be listed.
+        let Draft::Quoin(q) = d.draft_mut() else {
+            panic!()
+        };
+        q.components.push("Stone block".into());
+        let drawn = page_texts(&mut d, "Components");
+        assert!(drawn.iter().any(|t| t == "Add Component"), "{drawn:?}");
+        let _ = MoldingProfile::Crown;
     }
 
     #[test]

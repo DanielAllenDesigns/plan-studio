@@ -7,14 +7,17 @@
 
 pub mod actions;
 pub mod behaviors;
+pub mod cabinet_edit;
 pub mod camera;
 pub mod clipboard;
+pub mod code;
 pub mod connect;
 pub mod details_view;
 pub mod dispatch;
 pub mod edit_commands;
 #[cfg(test)]
 mod edit_tests;
+pub mod fireplace_view;
 pub mod foundation_view;
 pub mod framing_view;
 pub mod handles;
@@ -23,7 +26,9 @@ pub mod opening_edit;
 pub mod opening_view;
 pub mod ops;
 pub mod placed;
+pub mod plan_overlay;
 pub mod plan_tabs;
+pub mod ref_overlay;
 pub mod render;
 pub mod restyle;
 pub mod roof_view;
@@ -33,6 +38,7 @@ pub mod selection;
 pub mod sheet;
 pub mod site_view;
 pub mod snap;
+pub mod solids_view;
 pub mod stairs_view;
 pub mod tempdim;
 pub mod transform;
@@ -245,6 +251,41 @@ impl EditorContext {
         self.history.end_merge();
     }
 
+    /// Runs `f`, a command that may change several kinds of object (each
+    /// family opening its own [`begin_change`](Self::begin_change)), as ONE
+    /// undo step named after the first change; a command that changed nothing
+    /// leaves no step at all (QA-24, QA-26). Groups nest.
+    pub fn undo_group<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        self.begin_undo_group();
+        let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(self)));
+        self.end_undo_group();
+        match run {
+            Ok(r) => r,
+            Err(e) => std::panic::resume_unwind(e),
+        }
+    }
+
+    /// Opens an undo group by hand; pair with
+    /// [`end_undo_group`](Self::end_undo_group) (use `undo_group` when the
+    /// commands run in a closure).
+    pub fn begin_undo_group(&mut self) {
+        self.history.begin_group();
+    }
+
+    /// Closes the group opened by [`begin_undo_group`](Self::begin_undo_group).
+    pub fn end_undo_group(&mut self) {
+        if self.history.end_group(&self.project) {
+            self.touch();
+        }
+    }
+
+    /// Forgets every undo and redo step (the plan stays). For test sweeps that
+    /// must not run into the history's cap of steps.
+    #[cfg(test)]
+    pub fn forget_history(&mut self) {
+        self.history.clear();
+    }
+
     /// Records `before` (the project as it was before a change made outside
     /// the context, such as an edit in the layout window) as the undo step
     /// `label` of the one shared history.
@@ -367,10 +408,15 @@ impl EditorContext {
 
         if self.dirty {
             self.rev = self.rev.wrapping_add(1);
-            // Dimensions tied to walls follow them.
+            // Dimensions tied to walls follow them: tied ends, curved
+            // dimensions of walls and Grid Rounding of the strings.
+            let dim_fmt = self.dim_format();
             for f in &mut self.project.floors {
-                f.sync_dimension_anchors();
+                f.refresh_dimensions(&dim_fmt);
             }
+            // Callouts, markers and notes: moved groups, linked views and the
+            // notes' numbers are brought up to date (`plan_core::callout`).
+            self.project.sync_annotations();
             let walls = &self.project.floors[self.floor].walls;
             let types = if self.project.wall_types.is_empty() {
                 &self.defaults.wall_types

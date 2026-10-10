@@ -1,21 +1,25 @@
 //! The 2D plan symbol of a stair: outline, risers, direction arrow, UP label
 //! and the break line Chief draws where the floor above cuts the flight.
+//!
+//! The Plan Display and Arrow panels ([`crate::PlanOptions`]) shape the break
+//! line, the arrowhead, the tread numbers, the walkline and which parts of a
+//! railing show.
 
-use crate::layout::{Curve, Flight, Layout, Uv};
-use crate::railing::{landing_edges, landing_rail_paths, plan_symbol_railing};
-use crate::{RailSide, SideKind, Stair};
+use crate::layout::{arc_band, Curve, Flight, Layout, RampArc, Uv};
+use crate::railing::{
+    landing_guards, landing_rail_paths, plan_symbol_railing, stair_railing_geometry,
+};
+use crate::{ArrowStyle, BreakStyle, RailSide, RailStyle, SideKind, Stair, StairParams};
 use plan_core::Point;
 
 /// Radius of the circle at the foot of the direction arrow.
 const CIRCLE_RADIUS: f64 = 2.5;
 /// Distance of that circle's centre from the first riser.
 const CIRCLE_ALONG: f64 = 4.0;
-/// Arrowhead length.
-const ARROW_HEAD: f64 = 6.0;
 /// Plan text height for the UP label.
 const TEXT_HEIGHT: f64 = 6.0;
-/// Half the zigzag amplitude of the break line.
-const ZIGZAG: f64 = 3.0;
+/// Height of a tread number.
+const NUMBER_HEIGHT: f64 = 4.0;
 
 /// A plan-view drawing primitive (inches, plan Y-up).
 #[derive(Debug, Clone, PartialEq)]
@@ -52,13 +56,18 @@ pub fn plan_symbol(stair: &Stair, cut_at: Option<f64>) -> Vec<Stroke> {
     if layout.is_landing {
         return landing_symbol(stair, &layout);
     }
+    if let Some(arc) = &layout.ramp_arc {
+        return ramp_arc_symbol(stair, &layout, arc);
+    }
     if let Some(c) = &layout.curve {
         return curved_symbol(stair, &layout, c, cut_at);
     }
+    let p = &stair.params;
     let flights = &layout.flights;
     let cut = locate_cut(flights, cut_at);
     let last = cut.map_or(flights.len() - 1, |(i, _)| i);
     let mut out = Vec::new();
+    let flared = !p.flare_shape.is_none();
 
     for (i, f) in flights.iter().enumerate().take(last + 1) {
         let clipped = cut.filter(|&(ci, _)| ci == i).map(|(_, s)| s);
@@ -71,11 +80,36 @@ pub fn plan_symbol(stair: &Stair, cut_at: Option<f64>) -> Vec<Stroke> {
                 true
             };
             if keep {
-                out.push(Stroke::Line(
-                    to_plan(f.at(s, 0.0)),
-                    to_plan(f.at(s, f.width)),
+                // The line across the riser; the first riser of a flight has
+                // no tread below it, so it is never curved.
+                let bulge = if j == 0 { 0.0 } else { layout.bulge(p, i, j) };
+                for w in layout.across(p, i, s, bulge).windows(2) {
+                    out.push(Stroke::Line(to_plan(w[0]), to_plan(w[1])));
+                }
+            }
+        }
+        if flared {
+            let left = layout.edge_chain(p, i, len, false);
+            let right = layout.edge_chain(p, i, len, true);
+            if clipped.is_some() {
+                // From the cut back down the left edge, across the bottom,
+                // then up the right edge.
+                let mut open: Vec<Uv> = left.iter().rev().copied().collect();
+                open.extend(right.iter().copied());
+                out.push(Stroke::Polyline(
+                    open.into_iter().map(to_plan).collect(),
+                    false,
+                ));
+                out.push(break_line(f, len, &to_plan, p));
+            } else if f.len > 1e-9 {
+                let mut ring = left;
+                ring.extend(right.into_iter().rev());
+                out.push(Stroke::Polyline(
+                    ring.into_iter().map(to_plan).collect(),
+                    true,
                 ));
             }
+            continue;
         }
         let corners = [
             f.at(0.0, 0.0),
@@ -86,7 +120,7 @@ pub fn plan_symbol(stair: &Stair, cut_at: Option<f64>) -> Vec<Stroke> {
         if clipped.is_some() {
             let open = [corners[1], corners[0], corners[3], corners[2]];
             out.push(Stroke::Polyline(open.map(to_plan).to_vec(), false));
-            out.push(break_line(f, len, &to_plan));
+            out.push(break_line(f, len, &to_plan, p));
         } else if f.len > 1e-9 {
             out.push(Stroke::Polyline(corners.map(to_plan).to_vec(), true));
         }
@@ -104,13 +138,22 @@ pub fn plan_symbol(stair: &Stair, cut_at: Option<f64>) -> Vec<Stroke> {
         }
     }
 
-    if let Some(apron) = layout.apron(&stair.params) {
+    for (_, apron) in layout.aprons(p) {
         out.push(Stroke::Polyline(
             apron.into_iter().map(to_plan).collect(),
             true,
         ));
     }
+    if p.walkline.show {
+        out.extend(straight_walkline(stair, &layout, last, cut));
+    }
     out.extend(side_strokes(stair, &layout, last, cut));
+    if p.handrail && layout.is_ramp {
+        out.extend(ramp_handrails(stair, &layout, last, cut));
+    }
+    if p.plan.number_treads && !layout.is_ramp {
+        out.extend(tread_numbers(stair, &layout, last, cut));
+    }
     out.extend(direction_arrow(stair, &layout, last, cut.map(|(_, s)| s)));
     out
 }
@@ -129,23 +172,16 @@ fn landing_symbol(stair: &Stair, layout: &Layout) -> Vec<Stroke> {
         out.push(Stroke::Line(poly[1], poly[3]));
     }
     let p = &stair.params;
-    for (side, kind) in [
-        (RailSide::Left, p.left_side),
-        (RailSide::Right, p.right_side),
-    ] {
-        if kind == SideKind::None {
-            continue;
-        }
-        for (a, b) in landing_edges(stair, side) {
-            if kind == SideKind::Railing {
-                out.extend(plan_symbol_railing(a, b, &p.railing));
-            } else {
-                // A wall or half wall: a closed band on the outside.
-                let t = if kind == SideKind::Wall { 4.5 } else { 5.5 };
-                let out_n = (b - a).normalized();
-                let n = Point::new(out_n.y, -out_n.x) * t;
-                out.push(Stroke::Polyline(vec![a, b, b + n, a + n], true));
-            }
+    for g in landing_guards(stair) {
+        let (a, b, kind) = (g.a, g.b, g.kind);
+        if kind == SideKind::Railing {
+            out.extend(plan_symbol_railing(a, b, &p.railing_for(g.side)));
+        } else {
+            // A wall or half wall: a closed band on the outside.
+            let t = if kind == SideKind::Wall { 4.5 } else { 5.5 };
+            let out_n = (b - a).normalized();
+            let n = Point::new(out_n.y, -out_n.x) * t;
+            out.push(Stroke::Polyline(vec![a, b, b + n, a + n], true));
         }
     }
     out
@@ -153,6 +189,104 @@ fn landing_symbol(stair: &Stair, layout: &Layout) -> Vec<Stroke> {
 
 /// Half the line gap of a railing in plan (the top rail is this wide).
 const RAIL_PLAN_WIDTH: f64 = 3.5;
+/// A wall handrail's line sits this far inside the stair's edge in plan.
+const HANDRAIL_PLAN_INSET: f64 = 1.5;
+
+/// The walkline of a straight stair, `distance` from the right edge, along
+/// each flight (or to the cut).
+fn straight_walkline(
+    stair: &Stair,
+    layout: &Layout,
+    last: usize,
+    cut: Option<(usize, f64)>,
+) -> Vec<Stroke> {
+    let p = &stair.params;
+    let mut out = Vec::new();
+    for (i, f) in layout.flights.iter().enumerate().take(last + 1) {
+        if f.len < 1e-9 {
+            continue;
+        }
+        let len = cut.filter(|&(ci, _)| ci == i).map_or(f.len, |(_, s)| s);
+        let lat = (f.width - p.walkline.distance.clamp(0.0, f.width)).max(0.0);
+        out.push(Stroke::Polyline(
+            vec![
+                layout.frame.uv(f.at(0.0, lat)),
+                layout.frame.uv(f.at(len, lat)),
+            ],
+            false,
+        ));
+    }
+    out
+}
+
+/// The number of each tread, 1 at the bottom, on the left of the centre of
+/// every tread of the flights that show.
+fn tread_numbers(
+    stair: &Stair,
+    layout: &Layout,
+    last: usize,
+    cut: Option<(usize, f64)>,
+) -> Vec<Stroke> {
+    let mut out = Vec::new();
+    let mut n = 0u32;
+    let angle = stair.direction.to_degrees().rem_euclid(360.0);
+    for (i, f) in layout.flights.iter().enumerate().take(last + 1) {
+        let len = cut.filter(|&(ci, _)| ci == i).map_or(f.len, |(_, s)| s);
+        for j in 1..=f.treads {
+            n += 1;
+            let s = (f64::from(j) - 0.5) * layout.tread_depth;
+            if s > len + 1e-9 {
+                continue;
+            }
+            let height = NUMBER_HEIGHT.min(layout.tread_depth * 0.45);
+            let at = layout.frame.uv(f.at(s - height * 0.5, f.width * 0.12));
+            out.push(Stroke::Text {
+                pos: at,
+                text: n.to_string(),
+                height,
+                angle,
+            });
+        }
+    }
+    out
+}
+
+/// A ramp's handrails: a thin line a little inside each edge.
+fn ramp_handrails(
+    stair: &Stair,
+    layout: &Layout,
+    last: usize,
+    cut: Option<(usize, f64)>,
+) -> Vec<Stroke> {
+    let _ = stair;
+    let mut out = Vec::new();
+    for (i, f) in layout.flights.iter().enumerate().take(last + 1) {
+        if f.len < 1e-9 {
+            continue;
+        }
+        let len = cut.filter(|&(ci, _)| ci == i).map_or(f.len, |(_, s)| s);
+        for lat in [HANDRAIL_PLAN_INSET, f.width - HANDRAIL_PLAN_INSET] {
+            out.push(Stroke::Line(
+                layout.frame.uv(f.at(0.0, lat)),
+                layout.frame.uv(f.at(len, lat)),
+            ));
+        }
+    }
+    out
+}
+
+/// A small square about `c`.
+fn square(c: Point, half: f64) -> Stroke {
+    Stroke::Polyline(
+        vec![
+            c + Point::new(half, half),
+            c + Point::new(-half, half),
+            c + Point::new(-half, -half),
+            c + Point::new(half, -half),
+        ],
+        true,
+    )
+}
 
 /// Railing, wall and half-wall symbols along the straight flights: a double
 /// line with newel squares for a railing, a closed band for a wall.
@@ -163,11 +297,18 @@ fn side_strokes(
     cut: Option<(usize, f64)>,
 ) -> Vec<Stroke> {
     let p = &stair.params;
+    let opts = &p.plan;
     let mut out = Vec::new();
     for (kind, right_side) in [(p.left_side, false), (p.right_side, true)] {
         if kind == SideKind::None {
             continue;
         }
+        let rail_side = if right_side {
+            RailSide::Right
+        } else {
+            RailSide::Left
+        };
+        let railing = p.railing_for(rail_side);
         for (i, f) in layout.flights.iter().enumerate().take(last + 1) {
             if f.len < 1e-9 {
                 continue;
@@ -186,27 +327,39 @@ fn side_strokes(
             };
             match kind {
                 SideKind::None => {}
+                SideKind::Handrail => {
+                    // One thin line a little inside the edge: a handrail on
+                    // the wall, with no newels.
+                    out.push(Stroke::Line(
+                        edge(0.0, -HANDRAIL_PLAN_INSET),
+                        edge(len, -HANDRAIL_PLAN_INSET),
+                    ));
+                }
                 SideKind::Railing => {
-                    let half = p.railing.top_rail.0.max(RAIL_PLAN_WIDTH) / 2.0;
-                    for off in [-half, half] {
-                        out.push(Stroke::Line(edge(0.0, off), edge(len, off)));
+                    let half = railing.top_rail.0.max(RAIL_PLAN_WIDTH) / 2.0;
+                    if opts.draw_rails {
+                        for off in [-half, half] {
+                            out.push(Stroke::Line(edge(0.0, off), edge(len, off)));
+                        }
                     }
-                    let n = p.railing.newel.size / 2.0;
+                    let n = railing.newel.size / 2.0;
                     let ends: &[f64] = if clipped.is_some() {
                         &[0.0]
                     } else {
                         &[0.0, f.len]
                     };
-                    for &s in ends {
-                        out.push(Stroke::Polyline(
-                            vec![
-                                edge(s - n, -n),
-                                edge(s + n, -n),
-                                edge(s + n, n),
-                                edge(s - n, n),
-                            ],
-                            true,
-                        ));
+                    if opts.draw_newels {
+                        for &s in ends {
+                            out.push(Stroke::Polyline(
+                                vec![
+                                    edge(s - n, -n),
+                                    edge(s + n, -n),
+                                    edge(s + n, n),
+                                    edge(s - n, n),
+                                ],
+                                true,
+                            ));
+                        }
                     }
                 }
                 SideKind::Wall | SideKind::HalfWall => {
@@ -219,32 +372,33 @@ fn side_strokes(
             }
         }
         if kind == SideKind::Railing && last > 0 {
-            let side = if right_side {
-                RailSide::Right
-            } else {
-                RailSide::Left
-            };
-            let half = p.railing.top_rail.0.max(RAIL_PLAN_WIDTH) / 2.0;
-            let n = p.railing.newel.size / 2.0;
+            let half = railing.top_rail.0.max(RAIL_PLAN_WIDTH) / 2.0;
+            let n = railing.newel.size / 2.0;
             // The rail that carries across each landing or turn: a double
             // line along the path and a newel square at each corner.
-            for path in landing_rail_paths(stair, side).iter().take(last) {
-                for w in path.windows(2) {
-                    let d = (w[1] - w[0]).normalized();
-                    let off = d.perp() * half;
-                    out.push(Stroke::Line(w[0] + off, w[1] + off));
-                    out.push(Stroke::Line(w[0] - off, w[1] - off));
+            for path in landing_rail_paths(stair, rail_side).iter().take(last) {
+                if opts.draw_rails {
+                    for w in path.windows(2) {
+                        let d = (w[1] - w[0]).normalized();
+                        let off = d.perp() * half;
+                        out.push(Stroke::Line(w[0] + off, w[1] + off));
+                        out.push(Stroke::Line(w[0] - off, w[1] - off));
+                    }
                 }
-                for &c in &path[1..path.len() - 1] {
-                    out.push(Stroke::Polyline(
-                        vec![
-                            c + Point::new(n, n),
-                            c + Point::new(-n, n),
-                            c + Point::new(-n, -n),
-                            c + Point::new(n, -n),
-                        ],
-                        true,
-                    ));
+                if opts.draw_newels {
+                    for &c in &path[1..path.len() - 1] {
+                        out.push(square(c, n));
+                    }
+                }
+            }
+        }
+        // Balusters: a small square at each one (switched on in the
+        // Newels/Balusters panel; off by default).
+        if kind == SideKind::Railing && opts.draw_balusters {
+            if let RailStyle::Balusters { size, .. } = railing.style {
+                let g = stair_railing_geometry(stair, rail_side, &railing);
+                for (at, _, _) in g.balusters {
+                    out.push(square(at, size / 2.0));
                 }
             }
         }
@@ -260,6 +414,73 @@ fn curve_arc(c: &Curve, lat: f64, a0: f64, a1: f64) -> Vec<Uv> {
         .collect()
 }
 
+/// The arrowhead at `b` pointing along `dir`, in the stair's arrow style;
+/// `seg` is the length of the shaft it ends, which caps the head.
+fn arrow_head(style: ArrowStyle, size: f64, b: Point, dir: Point, seg: f64) -> Option<Stroke> {
+    let head = size.min(seg);
+    let back = b - dir * head;
+    let side = dir.perp() * (head * 0.45);
+    match style {
+        ArrowStyle::Closed => Some(Stroke::Polyline(vec![b, back + side, back - side], true)),
+        ArrowStyle::Open => Some(Stroke::Polyline(vec![back + side, b, back - side], false)),
+        ArrowStyle::Line | ArrowStyle::None => None,
+    }
+}
+
+/// The arrow of a curved stair or ramp along the walking line from angle
+/// `start` to `end`, with its circle and UP label.
+fn curve_arrow(stair: &Stair, layout: &Layout, c: &Curve, circle_at: f64, end: f64) -> Vec<Stroke> {
+    let to_plan = |p: Uv| layout.frame.uv(p);
+    let opts = &stair.params.plan;
+    let walk = c.walk();
+    let da = |len: f64| len / walk.max(1e-9);
+    let down = stair.params.down;
+    // A downward stair starts its arrow at the top and points to the bottom.
+    let (circle_a, from, to) = if down {
+        (end, (end - da(CIRCLE_RADIUS)).max(circle_at), circle_at)
+    } else {
+        (circle_at, (circle_at + da(CIRCLE_RADIUS)).min(end), end)
+    };
+    let mut out = Vec::new();
+    if opts.arrow != ArrowStyle::None {
+        out.push(Stroke::Arc {
+            center: to_plan(c.at(circle_a, walk)),
+            radius: CIRCLE_RADIUS,
+            start_deg: 0.0,
+            end_deg: 360.0,
+        });
+        if (to - from).abs() > 1e-6 {
+            let n = (((to - from).abs().to_degrees() / 5.0).ceil() as usize).max(1);
+            let plan_pts: Vec<Point> = (0..=n)
+                .map(|i| to_plan(c.at(from + (to - from) * i as f64 / n as f64, walk)))
+                .collect();
+            out.push(Stroke::Polyline(plan_pts.clone(), false));
+            if let [.., a, b] = plan_pts[..] {
+                let seg = a.dist(b);
+                if seg > 1e-9 {
+                    let dir = (b - a) * (1.0 / seg);
+                    out.extend(arrow_head(opts.arrow, opts.arrow_size, b, dir, seg * 4.0));
+                }
+            }
+        }
+    }
+    let label_at = if down {
+        circle_a - da(CIRCLE_RADIUS + 3.0)
+    } else {
+        circle_a + da(CIRCLE_RADIUS + 3.0)
+    };
+    out.push(Stroke::Text {
+        pos: to_plan(c.at_lat(
+            label_at,
+            (c.width / 2.0 + CIRCLE_RADIUS + 0.5 * TEXT_HEIGHT + 1.0).min(c.width),
+        )),
+        text: if down { "DN" } else { "UP" }.into(),
+        height: TEXT_HEIGHT,
+        angle: stair.direction.to_degrees().rem_euclid(360.0),
+    });
+    out
+}
+
 /// The plan symbol of a curved stair: radial riser lines, the two edge arcs,
 /// the break line, the direction arrow along the walking line and "UP".
 fn curved_symbol(stair: &Stair, layout: &Layout, c: &Curve, cut_at: Option<f64>) -> Vec<Stroke> {
@@ -267,6 +488,7 @@ fn curved_symbol(stair: &Stair, layout: &Layout, c: &Curve, cut_at: Option<f64>)
     let poly = |pts: Vec<Uv>, closed: bool| {
         Stroke::Polyline(pts.into_iter().map(to_plan).collect(), closed)
     };
+    let p = &stair.params;
     let sweep = c.sweep();
     let cut = cut_at
         .filter(|f| f.is_finite() && *f < 1.0)
@@ -288,7 +510,8 @@ fn curved_symbol(stair: &Stair, layout: &Layout, c: &Curve, cut_at: Option<f64>)
         let mut pts = curve_arc(c, 0.0, end, 0.0);
         pts.extend(curve_arc(c, c.width, 0.0, end));
         out.push(poly(pts, false));
-        // Zigzag across the width at the cut angle.
+        // The break line across the width at the cut angle.
+        let size = p.plan.break_size;
         let eps = 1e-3;
         let (p0, p1) = (c.at(end - eps, c.walk()), c.at(end + eps, c.walk()));
         let tl = ((p1.0 - p0.0).powi(2) + (p1.1 - p0.1).powi(2))
@@ -296,17 +519,9 @@ fn curved_symbol(stair: &Stair, layout: &Layout, c: &Curve, cut_at: Option<f64>)
             .max(1e-12);
         let t = ((p1.0 - p0.0) / tl, (p1.1 - p0.1) / tl);
         let w = c.width;
-        let zig = [
-            (0.0, 0.0),
-            (0.4 * w, 0.0),
-            (0.45 * w, ZIGZAG),
-            (0.55 * w, -ZIGZAG),
-            (0.6 * w, 0.0),
-            (w, 0.0),
-        ];
-        let pts: Vec<Uv> = zig
-            .iter()
-            .map(|&(lat, off)| {
+        let pts: Vec<Uv> = break_profile(w, p.plan.break_style, p.plan.break_angle, size)
+            .into_iter()
+            .map(|(lat, off)| {
                 let q = c.at_lat(end, lat);
                 (q.0 + t.0 * off, q.1 + t.1 * off)
             })
@@ -320,7 +535,7 @@ fn curved_symbol(stair: &Stair, layout: &Layout, c: &Curve, cut_at: Option<f64>)
     }
 
     // The centre pole of a spiral stair.
-    if stair.params.spiral {
+    if p.spiral {
         out.push(Stroke::Arc {
             center: to_plan(c.center),
             radius: c.inner.max(1.0),
@@ -329,46 +544,83 @@ fn curved_symbol(stair: &Stair, layout: &Layout, c: &Curve, cut_at: Option<f64>)
         });
     }
 
-    // Direction arrow along the walking line, circle at the foot.
-    let walk = c.walk();
-    let da = |len: f64| len / walk.max(1e-9);
-    let circle_at = da(CIRCLE_ALONG).min(end / 2.0);
-    out.push(Stroke::Arc {
-        center: to_plan(c.at(circle_at, walk)),
-        radius: CIRCLE_RADIUS,
-        start_deg: 0.0,
-        end_deg: 360.0,
-    });
-    let start = (circle_at + da(CIRCLE_RADIUS)).min(end);
-    if end - start > 1e-6 {
-        let pts: Vec<Uv> = {
-            let n = (((end - start).to_degrees() / 5.0).ceil() as usize).max(1);
-            (0..=n)
-                .map(|i| c.at(start + (end - start) * i as f64 / n as f64, walk))
-                .collect()
-        };
-        let plan_pts: Vec<Point> = pts.iter().map(|&q| to_plan(q)).collect();
-        out.push(Stroke::Polyline(plan_pts.clone(), false));
-        if let [.., a, b] = plan_pts[..] {
-            let seg = a.dist(b);
-            if seg > 1e-9 {
-                let dir = (b - a) * (1.0 / seg);
-                let head = ARROW_HEAD.min(seg * 4.0);
-                let back = b - dir * head;
-                let side = dir.perp() * (head * 0.45);
-                out.push(Stroke::Polyline(vec![b, back + side, back - side], true));
+    // The walkline: an arc at the walking radius.
+    if p.walkline.show {
+        let pts = curve_arc(
+            c,
+            if c.left {
+                c.walk_off
+            } else {
+                c.width - c.walk_off
+            },
+            0.0,
+            end,
+        );
+        out.push(poly(pts, false));
+    }
+
+    if p.plan.number_treads {
+        let angle = stair.direction.to_degrees().rem_euclid(360.0);
+        for j in 1..=c.treads {
+            let a = c.step * (f64::from(j) - 0.5);
+            if a > end + 1e-9 {
+                continue;
             }
+            out.push(Stroke::Text {
+                pos: to_plan(c.at_lat(a, c.width * 0.18)),
+                text: j.to_string(),
+                height: NUMBER_HEIGHT,
+                angle,
+            });
         }
     }
-    out.push(Stroke::Text {
-        pos: to_plan(c.at_lat(
-            circle_at + da(CIRCLE_RADIUS + 3.0),
-            (c.width / 2.0 + CIRCLE_RADIUS + 0.5 * TEXT_HEIGHT + 1.0).min(c.width),
-        )),
-        text: "UP".into(),
-        height: TEXT_HEIGHT,
-        angle: stair.direction.to_degrees().rem_euclid(360.0),
-    });
+
+    let circle_at = (CIRCLE_ALONG / c.walk().max(1e-9)).min(end / 2.0);
+    out.extend(curve_arrow(stair, layout, c, circle_at, end));
+    out
+}
+
+/// The plan symbol of a curved ramp: the outline, the edges of the landings,
+/// handrails and the arrow along the walking line.
+fn ramp_arc_symbol(stair: &Stair, layout: &Layout, arc: &RampArc) -> Vec<Stroke> {
+    let to_plan = |p: Uv| layout.frame.uv(p);
+    let c = &arc.curve;
+    let p = &stair.params;
+    let sweep = c.sweep();
+    let mut out = vec![Stroke::Polyline(
+        layout.footprint.iter().map(|&q| to_plan(q)).collect(),
+        true,
+    )];
+    for &(a0, a1, _, rise) in &arc.segs {
+        if rise.abs() < 1e-9 {
+            out.push(Stroke::Polyline(
+                arc_band(c, a0, a1).into_iter().map(to_plan).collect(),
+                true,
+            ));
+        }
+    }
+    if p.handrail {
+        for lat in [HANDRAIL_PLAN_INSET, c.width - HANDRAIL_PLAN_INSET] {
+            out.push(Stroke::Polyline(
+                curve_arc(c, lat, 0.0, sweep)
+                    .into_iter()
+                    .map(to_plan)
+                    .collect(),
+                false,
+            ));
+        }
+    }
+    if p.walkline.show {
+        out.push(Stroke::Polyline(
+            curve_arc(c, c.width / 2.0, 0.0, sweep)
+                .into_iter()
+                .map(to_plan)
+                .collect(),
+            false,
+        ));
+    }
+    let circle_at = (CIRCLE_ALONG / c.walk().max(1e-9)).min(sweep / 2.0);
+    out.extend(curve_arrow(stair, layout, c, circle_at, sweep));
     out
 }
 
@@ -389,19 +641,30 @@ fn locate_cut(flights: &[Flight], cut_at: Option<f64>) -> Option<(usize, f64)> {
     None
 }
 
-/// A zigzag across the flight at distance `at` from its first riser.
-fn break_line(f: &Flight, at: f64, to_plan: &impl Fn(Uv) -> Point) -> Stroke {
-    let w = f.width;
-    let pts = [
-        (at, 0.0),
-        (at, 0.4 * w),
-        (at + ZIGZAG, 0.45 * w),
-        (at - ZIGZAG, 0.55 * w),
-        (at, 0.6 * w),
-        (at, w),
-    ];
+/// The break line across a width `w` as `(lateral, offset along the stair)`
+/// points: six of them, for any style (the line is straight outside the
+/// middle fifth, where the style shows).
+fn break_profile(w: f64, style: BreakStyle, angle_deg: f64, size: f64) -> Vec<(f64, f64)> {
+    let lats = [0.0, 0.4 * w, 0.45 * w, 0.55 * w, 0.6 * w, w];
+    let tilt = angle_deg.to_radians().tan();
+    let shape = |k: usize, lat: f64| match style {
+        BreakStyle::Zigzag => [0.0, 0.0, size, -size, 0.0, 0.0][k],
+        BreakStyle::Straight => 0.0,
+        // One slanted line corner to corner.
+        BreakStyle::Slash => 2.0 * size * (lat / w.max(1e-9) - 0.5),
+    };
+    lats.iter()
+        .enumerate()
+        .map(|(k, &lat)| (lat, shape(k, lat) + tilt * (lat - w / 2.0)))
+        .collect()
+}
+
+/// The break line across the flight at distance `at` from its first riser.
+fn break_line(f: &Flight, at: f64, to_plan: &impl Fn(Uv) -> Point, params: &StairParams) -> Stroke {
+    let o = &params.plan;
+    let pts = break_profile(f.width, o.break_style, o.break_angle, o.break_size);
     Stroke::Polyline(
-        pts.iter().map(|&(s, l)| to_plan(f.at(s, l))).collect(),
+        pts.iter().map(|&(l, s)| to_plan(f.at(at + s, l))).collect(),
         false,
     )
 }
@@ -409,17 +672,14 @@ fn break_line(f: &Flight, at: f64, to_plan: &impl Fn(Uv) -> Point) -> Stroke {
 /// Circle at the bottom, centreline with arrowhead at the top, and the UP label.
 fn direction_arrow(stair: &Stair, layout: &Layout, last: usize, cut: Option<f64>) -> Vec<Stroke> {
     let to_plan = |p: Uv| layout.frame.uv(p);
+    let opts = &stair.params.plan;
     let flights = &layout.flights;
     let f0 = &flights[0];
     let mid = f0.width / 2.0;
     let circle_along = CIRCLE_ALONG.min(f0.len / 2.0);
-    let mut out = vec![Stroke::Arc {
-        center: to_plan(f0.at(circle_along, mid)),
-        radius: CIRCLE_RADIUS,
-        start_deg: 0.0,
-        end_deg: 360.0,
-    }];
-
+    let down = stair.params.down;
+    let mut out = Vec::new();
+    // The centreline of the whole run, bottom to top.
     let mut path = vec![f0.at(circle_along + CIRCLE_RADIUS, mid)];
     for (i, f) in flights.iter().enumerate().take(last + 1) {
         let end = if i == last {
@@ -451,31 +711,60 @@ fn direction_arrow(stair: &Stair, layout: &Layout, last: usize, cut: Option<f64>
             path.push(entry);
         }
     }
-
-    if let [.., a, b] = path[..] {
-        let seg = ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt();
-        if seg > 1e-6 && path.len() > 1 {
-            out.push(Stroke::Polyline(
-                path.iter().map(|&p| to_plan(p)).collect(),
-                false,
-            ));
-            let dir = ((b.0 - a.0) / seg, (b.1 - a.1) / seg);
-            let head = ARROW_HEAD.min(seg);
-            let back = (b.0 - dir.0 * head, b.1 - dir.1 * head);
-            let side = (-dir.1 * head * 0.45, dir.0 * head * 0.45);
-            let barbs = [
-                b,
-                (back.0 + side.0, back.1 + side.1),
-                (back.0 - side.0, back.1 - side.1),
-            ];
-            out.push(Stroke::Polyline(barbs.map(to_plan).to_vec(), true));
+    // The circle marks where the arrow starts: near the bottom going up, near
+    // the top going down.
+    let (circle, path) = if down {
+        let top = *path.last().expect("a path has points");
+        let before = path[path.len().saturating_sub(2)];
+        let (dx, dy) = (before.0 - top.0, before.1 - top.1);
+        let l = (dx * dx + dy * dy).sqrt().max(1e-9);
+        let step = |d: f64| {
+            let d = d.min(l);
+            (top.0 + dx / l * d, top.1 + dy / l * d)
+        };
+        let mut rev: Vec<Uv> = path.iter().rev().copied().collect();
+        rev[0] = step(circle_along + CIRCLE_RADIUS);
+        (step(circle_along), rev)
+    } else {
+        (f0.at(circle_along, mid), path)
+    };
+    if opts.arrow != ArrowStyle::None {
+        out.push(Stroke::Arc {
+            center: to_plan(circle),
+            radius: CIRCLE_RADIUS,
+            start_deg: 0.0,
+            end_deg: 360.0,
+        });
+        if let [.., a, b] = path[..] {
+            let seg = ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt();
+            if seg > 1e-6 && path.len() > 1 {
+                out.push(Stroke::Polyline(
+                    path.iter().map(|&p| to_plan(p)).collect(),
+                    false,
+                ));
+                let dir = Point::new((b.0 - a.0) / seg, (b.1 - a.1) / seg);
+                let dir_plan = layout.frame.vector((dir.x, dir.y));
+                let head = arrow_head(opts.arrow, opts.arrow_size, to_plan(b), dir_plan, seg);
+                out.extend(head);
+            }
         }
     }
 
     let label_lateral = (mid + CIRCLE_RADIUS + 0.5 * TEXT_HEIGHT + 1.0).min(f0.width);
+    let label_at = if down {
+        // Just inside the circle at the top.
+        let last_f = &flights[last];
+        let end = cut.unwrap_or(last_f.len);
+        last_f.at(
+            (end - circle_along - CIRCLE_RADIUS - 3.0 - 2.0 * TEXT_HEIGHT).max(0.0),
+            label_lateral.min(last_f.width),
+        )
+    } else {
+        f0.at(circle_along + CIRCLE_RADIUS + 3.0, label_lateral)
+    };
     out.push(Stroke::Text {
-        pos: to_plan(f0.at(circle_along + CIRCLE_RADIUS + 3.0, label_lateral)),
-        text: "UP".into(),
+        pos: to_plan(label_at),
+        text: if down { "DN" } else { "UP" }.into(),
         height: TEXT_HEIGHT,
         angle: stair.direction.to_degrees().rem_euclid(360.0),
     });

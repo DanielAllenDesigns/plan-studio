@@ -73,6 +73,113 @@ impl Pattern {
     }
 }
 
+impl Pattern {
+    /// This pattern `k` times its size (course heights, tile sizes, line
+    /// spacing); the stipple and symbol patterns have no size and are
+    /// unchanged. A non-positive or non-finite `k` changes nothing.
+    pub fn scaled(&self, k: f64) -> Pattern {
+        if !(k.is_finite() && k > 0.0) || (k - 1.0).abs() < 1e-12 {
+            return self.clone();
+        }
+        match *self {
+            Pattern::Lines { angle_deg, spacing } => Pattern::Lines {
+                angle_deg,
+                spacing: spacing * k,
+            },
+            Pattern::CrossHatch { angle_deg, spacing } => Pattern::CrossHatch {
+                angle_deg,
+                spacing: spacing * k,
+            },
+            Pattern::Brick { length, height } => Pattern::Brick {
+                length: length * k,
+                height: height * k,
+            },
+            Pattern::Block { length, height } => Pattern::Block {
+                length: length * k,
+                height: height * k,
+            },
+            Pattern::Shingle { exposure, width } => Pattern::Shingle {
+                exposure: exposure * k,
+                width: width * k,
+            },
+            Pattern::LapSiding { exposure } => Pattern::LapSiding {
+                exposure: exposure * k,
+            },
+            Pattern::BoardAndBatten { spacing } => Pattern::BoardAndBatten {
+                spacing: spacing * k,
+            },
+            Pattern::Tile { w, h } => Pattern::Tile { w: w * k, h: h * k },
+            Pattern::Herringbone { length, width } => Pattern::Herringbone {
+                length: length * k,
+                width: width * k,
+            },
+            Pattern::None
+            | Pattern::Insulation
+            | Pattern::Concrete
+            | Pattern::Earth
+            | Pattern::Grass => self.clone(),
+        }
+    }
+
+    /// Does the hatch have a direction of its own that an angle can turn
+    /// exactly (line sets turn in place)?
+    fn is_line_set(&self) -> bool {
+        matches!(self, Pattern::Lines { .. } | Pattern::CrossHatch { .. })
+    }
+}
+
+/// [`pattern_strokes`] for a pattern drawn `scale` times its size and turned
+/// `angle_deg` degrees counter-clockwise (the Pattern tab of the Material
+/// Specification). Line sets take the angle directly; the courses, tiles and
+/// boards of the other patterns are drawn over a square that covers the
+/// rectangle's circumscribed circle and turned about the rectangle's centre,
+/// so callers still clip the result to their polygon. The result is capped at
+/// [`MAX_STROKES`].
+pub fn pattern_strokes_turned(
+    p: &Pattern,
+    rect: (Point, Point),
+    scale_in_per_ft: f64,
+    scale: f64,
+    angle_deg: f64,
+) -> Vec<(Point, Point)> {
+    let p = p.scaled(scale);
+    let angle = if angle_deg.is_finite() {
+        angle_deg
+    } else {
+        0.0
+    };
+    if angle.rem_euclid(360.0) < 1e-9 {
+        return pattern_strokes(&p, rect, scale_in_per_ft);
+    }
+    if p.is_line_set() {
+        let turned = match p {
+            Pattern::Lines { angle_deg, spacing } => Pattern::Lines {
+                angle_deg: angle_deg + angle,
+                spacing,
+            },
+            Pattern::CrossHatch { angle_deg, spacing } => Pattern::CrossHatch {
+                angle_deg: angle_deg + angle,
+                spacing,
+            },
+            other => other,
+        };
+        return pattern_strokes(&turned, rect, scale_in_per_ft);
+    }
+    let (a, b) = rect;
+    let c = Point::new((a.x + b.x) / 2.0, (a.y + b.y) / 2.0);
+    let r = 0.5 * ((b.x - a.x).powi(2) + (b.y - a.y).powi(2)).sqrt();
+    let square = (Point::new(c.x - r, c.y - r), Point::new(c.x + r, c.y + r));
+    let (sin, cos) = angle.to_radians().sin_cos();
+    let turn = |q: Point| {
+        let (dx, dy) = (q.x - c.x, q.y - c.y);
+        Point::new(c.x + dx * cos - dy * sin, c.y + dx * sin + dy * cos)
+    };
+    pattern_strokes(&p, square, scale_in_per_ft)
+        .into_iter()
+        .map(|(q, w)| (turn(q), turn(w)))
+        .collect()
+}
+
 type Seg = (Point, Point);
 
 /// Axis-aligned clip window with a bounded segment sink.
@@ -486,4 +593,73 @@ fn point_in_polygon(pt: Point, poly: &[Point]) -> bool {
         j = i;
     }
     inside
+}
+
+/// The material pattern a Fill Style stands for, so a plan fill and the
+/// hatch of a section or elevation agree: lines and cross hatch keep their
+/// spacing and angle, Brick, Grid and Herringbone their cell size, Concrete
+/// and Sand become the stipple and earth patterns. `None` for Solid, Use
+/// Layer, Library patterns and the system patterns without a material
+/// counterpart (Dots, U's).
+pub fn pattern_of_fill(style: &plan_core::fill_styles::FillStyle) -> Option<Pattern> {
+    use plan_core::fill_styles::{PatternType, SystemPattern};
+    let PatternType::System(sp) = &style.pattern else {
+        return None;
+    };
+    Some(match sp {
+        SystemPattern::Lines => Pattern::Lines {
+            angle_deg: style.angle_deg,
+            spacing: style.width,
+        },
+        SystemPattern::CrossHatch => Pattern::CrossHatch {
+            angle_deg: style.angle_deg,
+            spacing: style.width,
+        },
+        SystemPattern::Brick | SystemPattern::GridOffset => Pattern::Brick {
+            length: style.width,
+            height: style.height,
+        },
+        SystemPattern::Grid | SystemPattern::GridStep => Pattern::Tile {
+            w: style.width,
+            h: style.height,
+        },
+        SystemPattern::Herringbone => Pattern::Herringbone {
+            length: style.width,
+            width: style.height,
+        },
+        SystemPattern::Concrete => Pattern::Concrete,
+        SystemPattern::Sand => Pattern::Earth,
+        SystemPattern::Solid | SystemPattern::Us | SystemPattern::Dots => return None,
+    })
+}
+
+#[cfg(test)]
+mod fill_tests {
+    use super::*;
+    use plan_core::fill_styles::{FillStyle, SystemPattern};
+
+    #[test]
+    fn a_fill_style_maps_to_the_material_pattern_with_its_size() {
+        assert_eq!(
+            pattern_of_fill(&FillStyle::hatch(30.0, 9.0, [0; 3])),
+            Some(Pattern::Lines {
+                angle_deg: 30.0,
+                spacing: 9.0
+            })
+        );
+        assert_eq!(
+            pattern_of_fill(&FillStyle::system(SystemPattern::Brick, 8.0, 2.25)),
+            Some(Pattern::brick())
+        );
+        assert_eq!(
+            pattern_of_fill(&FillStyle::system(SystemPattern::Concrete, 6.0, 6.0)),
+            Some(Pattern::Concrete)
+        );
+        assert!(pattern_of_fill(&FillStyle::solid([0; 3])).is_none());
+        assert!(pattern_of_fill(&FillStyle::library("x")).is_none());
+        // The mapped pattern makes strokes over a rectangle.
+        let p = pattern_of_fill(&FillStyle::hatch(0.0, 12.0, [0; 3])).unwrap();
+        let rect = (Point::new(0.0, 0.0), Point::new(48.0, 48.0));
+        assert!(!pattern_strokes(&p, rect, 0.25).is_empty());
+    }
 }

@@ -40,11 +40,14 @@
 //! Hip/Gable/Shed/Extend Slope Downward (RF-21..RF-25), framing (RF-52..).
 
 use super::{KeyEvent, PointerEvent, Tool, ToolId, ToolResult};
-use crate::dialogs::roof::{BuildRoofDialog, DormerDialog, ReturnDialog, RoofPlaneDialog};
+use crate::dialogs::roof::{
+    AllPlanesDialog, BuildRoofDialog, DormerDialog, ReturnDialog, RoofPlaneDialog,
+};
 use crate::dialogs::Outcome;
 use crate::editor::roof_view::{
     self, auto_rebuild, build_floor, delete_all, load, manual_plane_geometry, rebuild,
-    rect_polygon, store, toggle_gable, PlaneHandle, RoofPlaneRecord, RoofSettings,
+    rect_polygon, store, toggle_gable, AllPlanesEdit, PlaneHandle, RoofPlaneRecord, RoofSettings,
+    RoofStyle,
 };
 use crate::editor::{Camera, EditAction, EditActionKind, EditorContext};
 use eframe::egui::{self, Align2, FontId, Pos2, Stroke, Vec2};
@@ -68,6 +71,8 @@ pub enum RoofMode {
     #[default]
     Plane,
     Edit,
+    /// Edit All Roof Planes (RF-39): one dialog for every plane.
+    EditAll,
     Build,
     GableLine,
     Hole,
@@ -81,9 +86,10 @@ pub enum RoofMode {
 }
 
 impl RoofMode {
-    const ALL: [RoofMode; 12] = [
+    const ALL: [RoofMode; 13] = [
         RoofMode::Plane,
         RoofMode::Edit,
+        RoofMode::EditAll,
         RoofMode::Build,
         RoofMode::Ceiling,
         RoofMode::GableLine,
@@ -101,6 +107,7 @@ impl RoofMode {
         match self {
             RoofMode::Plane => "Roof Plane",
             RoofMode::Edit => "Edit Roof Planes",
+            RoofMode::EditAll => "Edit All Roof Planes",
             RoofMode::Build => "Build Roof",
             RoofMode::GableLine => "Gable/Roof Line",
             RoofMode::Hole => "Roof Hole",
@@ -122,11 +129,14 @@ impl RoofMode {
             RoofMode::Edit => {
                 "Roof planes: click to select, drag to move, drag a corner to reshape, Enter opens"
             }
+            RoofMode::EditAll => "Edit All Roof Planes: click to open the dialog for every plane",
             RoofMode::Build => "Build Roof: click to open the Build Roof dialog",
             RoofMode::GableLine => {
                 "Gable/Roof Line: click an eave to make it a gable end (or an exterior wall to flip it)"
             }
-            RoofMode::Hole => "Roof Hole: press and drag a rectangle inside a roof plane",
+            RoofMode::Hole => {
+                "Roof Hole: drag a rectangle inside a roof plane, or click corners and double-click to close"
+            }
             RoofMode::Skylight => {
                 "Skylight: press and drag a rectangle inside a roof plane, or click for 24 x 48"
             }
@@ -155,7 +165,9 @@ type DormerSlot = (Id, Option<Id>, bool, DormerDialog);
 /// What the palette and dialogs ask for.
 enum Cmd {
     OpenBuild,
-    ApplyBuild(RoofSettings),
+    OpenAll,
+    ApplyAll(Box<AllPlanesEdit>),
+    ApplyBuild(RoofSettings, Option<RoofStyle>),
     ApplyPlane(Id, Box<RoofPlaneRecord>),
     DeleteAll,
     Rebuild,
@@ -186,6 +198,11 @@ enum Gesture {
         from: Point,
         to: Point,
     },
+    /// Clicking the corners of a polygon hole (RF-42); a double-click, Enter
+    /// or a click on the first corner closes it.
+    HolePoly {
+        pts: Vec<Point>,
+    },
     Move {
         id: Id,
         last: Point,
@@ -213,6 +230,8 @@ pub struct RoofTool {
     mode: Cell<RoofMode>,
     cmds: RefCell<Vec<Cmd>>,
     build_dialog: RefCell<Option<BuildRoofDialog>>,
+    /// Edit All Roof Planes.
+    all_dialog: RefCell<Option<AllPlanesDialog>>,
     plane_dialog: RefCell<Option<(Id, RoofPlaneDialog)>>,
     /// Auto Dormer: the plane, the dormer being edited if any, whether a new
     /// dormer floats, the dialog.
@@ -258,6 +277,7 @@ impl RoofTool {
 
     fn dialogs_open(&self) -> bool {
         self.build_dialog.borrow().is_some()
+            || self.all_dialog.borrow().is_some()
             || self.plane_dialog.borrow().is_some()
             || self.dormer_dialog.borrow().is_some()
             || self.return_dialog.borrow().is_some()
@@ -288,7 +308,12 @@ impl RoofTool {
                     self.open_build(cx);
                     None
                 }
-                Cmd::ApplyBuild(s) => self.build(cx, s),
+                Cmd::OpenAll => {
+                    self.open_all(cx);
+                    None
+                }
+                Cmd::ApplyAll(edit) => self.apply_all(cx, &edit),
+                Cmd::ApplyBuild(s, style) => self.build_styled(cx, s, style),
                 Cmd::ApplyPlane(id, rec) => self.apply_plane(cx, id, &rec),
                 Cmd::DeleteAll => self.delete_all_planes(cx),
                 Cmd::Rebuild => self.rebuild_stored(cx),
@@ -370,8 +395,26 @@ impl RoofTool {
 
     /// Build Roof OK (RF-1): automatic planes from the exterior walls.
     pub(crate) fn build(&mut self, cx: &mut EditorContext, s: RoofSettings) -> Option<String> {
+        self.build_styled(cx, s, None)
+    }
+
+    /// [`build`](Self::build) after a Roof Styles button (RF-3): the style's
+    /// directives are written to the exterior walls in the same undo step.
+    pub(crate) fn build_styled(
+        &mut self,
+        cx: &mut EditorContext,
+        s: RoofSettings,
+        style: Option<RoofStyle>,
+    ) -> Option<String> {
         let fi = build_floor(&cx.project, s.ignore_top_floor, cx.floor);
         cx.begin_change("Build Roof");
+        if let Some(style) = style {
+            if let Err(e) = roof_view::apply_style(&mut cx.project, fi, style, s.pitch) {
+                cx.cancel_change();
+                cx.status = format!("Build Roof: {e}");
+                return None;
+            }
+        }
         // A roof built over another floor before moves here: drop that one.
         for j in 0..cx.project.floors.len() {
             if j != fi {
@@ -383,11 +426,28 @@ impl RoofTool {
                 }
             }
         }
+        let attic = s.build_attic_floor;
+        let make = s.switches.make_baselines;
         match rebuild(&mut cx.project, fi, s, false) {
             Ok(rep) => {
+                // "Build attic floor": the roof and the attic floor are one step.
+                let attic = attic && cx.project.build_attic_floor().is_some();
                 cx.mark_dirty();
+                if make {
+                    // Make Roof Baseline Polylines (RF-70): polylines, not planes.
+                    let n: usize = (0..=fi)
+                        .map(|g| {
+                            crate::tools::roof_baseline::baselines(&cx.project.floors[g]).len()
+                        })
+                        .sum();
+                    cx.status = format!(
+                        "Made {n} roof baseline polyline{}",
+                        if n == 1 { "" } else { "s" }
+                    );
+                    return Some("Build Roof".into());
+                }
                 cx.status = format!(
-                    "Built {} roof plane{} over {}{}",
+                    "Built {} roof plane{} over {}{}{}",
                     rep.planes,
                     if rep.planes == 1 { "" } else { "s" },
                     cx.project.floors[fi].name,
@@ -395,7 +455,8 @@ impl RoofTool {
                         " (approximated: the footprint is too complex for an exact roof)"
                     } else {
                         ""
-                    }
+                    },
+                    if attic { " and the attic floor" } else { "" }
                 );
                 Some("Build Roof".into())
             }
@@ -456,11 +517,55 @@ impl RoofTool {
                 .iter()
                 .map(|l| l.name.clone())
                 .collect();
-            *self.plane_dialog.borrow_mut() = Some((id, RoofPlaneDialog::new(rec, layers)));
+            let (settings, _) = Self::current_settings(cx);
+            *self.plane_dialog.borrow_mut() = Some((
+                id,
+                RoofPlaneDialog::new(rec, layers).with_detail(&settings.detail),
+            ));
         } else if let Some(d) = set.dormer(id) {
             *self.dormer_dialog.borrow_mut() =
                 Some((d.main, Some(id), d.floating, DormerDialog::new(d.spec)));
         }
+    }
+
+    /// Edit All Roof Planes (RF-39): opens the dialog when there are planes.
+    fn open_all(&mut self, cx: &mut EditorContext) {
+        if self.all_dialog.borrow().is_some() {
+            return;
+        }
+        let set = load(cx.floor());
+        if set.planes.is_empty() {
+            cx.status = "There are no roof planes to edit".into();
+            return;
+        }
+        let layers = cx
+            .project
+            .layers
+            .layers
+            .iter()
+            .map(|l| l.name.clone())
+            .collect();
+        let (settings, _) = Self::current_settings(cx);
+        *self.all_dialog.borrow_mut() =
+            Some(AllPlanesDialog::new(set.planes.len(), layers).with_detail(&settings.detail));
+    }
+
+    /// Edit All Roof Planes OK: one undo step for every plane.
+    fn apply_all(&mut self, cx: &mut EditorContext, edit: &AllPlanesEdit) -> Option<String> {
+        if edit.is_empty() {
+            return None;
+        }
+        let fi = cx.floor;
+        cx.begin_change("Edit All Roof Planes");
+        let n = roof_view::apply_all(&mut cx.project, fi, edit);
+        if n == 0 {
+            cx.cancel_change();
+            cx.status = "Edit All Roof Planes: nothing changed".into();
+            return None;
+        }
+        cx.mark_dirty();
+        cx.status = format!("Changed {n} roof plane{}", if n == 1 { "" } else { "s" });
+        Some("Edit All Roof Planes".into())
     }
 
     fn apply_plane(
@@ -697,6 +802,24 @@ impl RoofTool {
         }
     }
 
+    /// A polygon hole from the corners clicked (RF-42).
+    fn make_hole_polygon(&mut self, cx: &mut EditorContext, pts: Vec<Point>) -> bool {
+        let fi = cx.floor;
+        cx.begin_change("Roof Hole");
+        match roof_view::add_hole_polygon(&mut cx.project, fi, pts, false) {
+            Ok(_) => {
+                cx.mark_dirty();
+                cx.status = "Roof hole made".into();
+                true
+            }
+            Err(e) => {
+                cx.cancel_change();
+                cx.status = e;
+                false
+            }
+        }
+    }
+
     /// Explode Dormer (RF-51).
     fn explode(&mut self, cx: &mut EditorContext, at: Point) -> bool {
         let fi = cx.floor;
@@ -756,6 +879,13 @@ impl RoofTool {
         };
         self.join_first = None;
         let fi = cx.floor;
+        // A curved plane asks which of its radius and its angle at the ridge
+        // to keep before it is joined (Join Curved Roof Plane, RF-61).
+        if crate::tools::roof_baseline::join_asks(cx, a) {
+            crate::dialogs::roof_baseline::open_join_curved(cx, fi, a, edge, b);
+            cx.status = "Join Curved Roof Plane: choose what to keep".into();
+            return false;
+        }
         cx.begin_change("Join Roof Planes");
         match roof_view::join_planes_record(&mut cx.project, fi, a, edge, b) {
             Ok(()) => {
@@ -849,35 +979,8 @@ impl RoofTool {
             began,
         } = &mut self.gesture.0
         {
-            let mut rec = (**orig).clone();
-            let drag = to.sub(*start);
-            let (label, readout) = match handle {
-                PlaneHandle::Pitch => {
-                    rec.drag_pitch(drag.dot(orig.up_slope()));
-                    ("Change Roof Pitch", format!("Pitch: {}", rec.pitch_label()))
-                }
-                PlaneHandle::Rotate => {
-                    let pivot = orig.centroid();
-                    let a0 = start.sub(pivot).angle();
-                    let a1 = to.sub(pivot).angle();
-                    // Whole degrees; Esc-free: the original is kept until OK.
-                    let turn = ((a1 - a0).to_degrees()).round().to_radians();
-                    rec.rotate(turn, pivot);
-                    (
-                        "Rotate Roof Plane",
-                        format!("Rotation: {:.0} degrees", turn.to_degrees()),
-                    )
-                }
-                PlaneHandle::Edge(i) => {
-                    let poly = orig.plan_polygon();
-                    let n = poly.len();
-                    let d = poly[(*i + 1) % n].sub(poly[*i]).normalized();
-                    let by = drag.dot(Point::new(d.y, -d.x));
-                    rec.move_edge(*i, by);
-                    ("Move Roof Edge", format!("Edge moved {}", cx.fmt_dim(by)))
-                }
-                PlaneHandle::Vertex(_) => return,
-            };
+            let d = roof_view::drag_handle(orig, *handle, *start, to, &|v| cx.fmt_dim(v));
+            let (rec, label, readout) = (d.record, d.label, d.readout);
             if !*began {
                 cx.begin_change(label);
             }
@@ -901,15 +1004,16 @@ impl RoofTool {
                 return;
             }
         }
-        if !began {
-            cx.begin_change(if delta.is_some() {
-                "Move Roof Plane"
-            } else {
-                "Reshape Roof Plane"
-            });
-        }
         let mut set = load(&cx.project.floors[fi]);
         match delta {
+            Some(d) if set.dormer(id).is_some() => {
+                // A dormer slides on its plane, and onto another plane when
+                // the pointer crosses over (RF-51); where it would not fit
+                // it stays.
+                if !roof_view::slide_dormer(&mut set, id, d, to) {
+                    return;
+                }
+            }
             Some(d) => {
                 roof_view::translate_record(&mut set, id, d);
             }
@@ -918,6 +1022,13 @@ impl RoofTool {
                     r.move_vertex(idx, to);
                 }
             }
+        }
+        if !began {
+            cx.begin_change(if delta.is_some() {
+                "Move Roof Plane"
+            } else {
+                "Reshape Roof Plane"
+            });
         }
         store(&mut cx.project, fi, &mut set);
         cx.mark_dirty();
@@ -958,6 +1069,9 @@ impl Tool for RoofTool {
             if m == RoofMode::Build {
                 self.cmds.borrow_mut().push(Cmd::OpenBuild);
             }
+            if m == RoofMode::EditAll {
+                self.cmds.borrow_mut().push(Cmd::OpenAll);
+            }
         }
     }
 
@@ -970,8 +1084,12 @@ impl Tool for RoofTool {
         self.gesture.0 = Gesture::None;
         self.join_first = None;
         self.selected = None;
+        let before = cx.status.clone();
         self.begin_event(cx);
-        cx.status = self.mode.get().hint().to_string();
+        // A request that explained itself (no planes to edit) keeps its words.
+        if cx.status == before {
+            cx.status = self.mode.get().hint().to_string();
+        }
     }
 
     fn deactivate(&mut self, cx: &mut EditorContext) {
@@ -979,6 +1097,7 @@ impl Tool for RoofTool {
         self.join_first = None;
         self.hover = None;
         *self.build_dialog.borrow_mut() = None;
+        *self.all_dialog.borrow_mut() = None;
         *self.plane_dialog.borrow_mut() = None;
         *self.dormer_dialog.borrow_mut() = None;
         *self.return_dialog.borrow_mut() = None;
@@ -1020,6 +1139,7 @@ impl Tool for RoofTool {
                 }
             }
             RoofMode::Edit => self.press_edit(cx, &p),
+            RoofMode::EditAll => self.open_all(cx),
             RoofMode::Build => self.open_build(cx),
             RoofMode::GableLine => {
                 if self.gable_line(cx, p.world) {
@@ -1027,10 +1147,24 @@ impl Tool for RoofTool {
                 }
             }
             RoofMode::Hole | RoofMode::Skylight => {
-                self.gesture.0 = Gesture::Rect {
-                    from: p.snapped,
-                    to: p.snapped,
-                };
+                if let Gesture::HolePoly { pts } = &mut self.gesture.0 {
+                    // A click on the first corner closes the polygon.
+                    let close = pts.len() >= 3 && pts[0].dist(p.snapped) <= cx.pick_tol();
+                    if close {
+                        let pts = std::mem::take(pts);
+                        self.gesture.0 = Gesture::None;
+                        if self.make_hole_polygon(cx, pts) {
+                            res = ToolResult::committed("Roof Hole");
+                        }
+                    } else if pts.last().is_none_or(|l| l.dist(p.snapped) > 1.0) {
+                        pts.push(p.snapped);
+                    }
+                } else {
+                    self.gesture.0 = Gesture::Rect {
+                        from: p.snapped,
+                        to: p.snapped,
+                    };
+                }
             }
             RoofMode::Join => {
                 if self.join_click(cx, p.world) {
@@ -1113,7 +1247,15 @@ impl Tool for RoofTool {
             }
             Gesture::Rect { from, .. } => {
                 let skylight = self.mode.get() == RoofMode::Skylight;
-                if self.make_hole(cx, from, p.snapped, skylight) {
+                let tiny = (from.x - p.snapped.x).abs() < MIN_HOLE
+                    && (from.y - p.snapped.y).abs() < MIN_HOLE;
+                if tiny && !skylight {
+                    // A click, not a drag: the first corner of a polygon hole.
+                    self.gesture.0 = Gesture::HolePoly { pts: vec![from] };
+                    cx.status =
+                        "Click the next corners; double-click or click the first corner to close"
+                            .into();
+                } else if self.make_hole(cx, from, p.snapped, skylight) {
                     res = ToolResult::committed(if skylight {
                         "Place Skylight"
                     } else {
@@ -1146,7 +1288,7 @@ impl Tool for RoofTool {
                 });
             }
             Gesture::Handle { .. } => {}
-            other @ Gesture::Draft { .. } => self.gesture.0 = other,
+            other @ (Gesture::Draft { .. } | Gesture::HolePoly { .. }) => self.gesture.0 = other,
             Gesture::None => return Self::with_pre(pre, ToolResult::ignored()),
         }
         Self::with_pre(pre, res)
@@ -1154,6 +1296,15 @@ impl Tool for RoofTool {
 
     fn double_click(&mut self, cx: &mut EditorContext, p: PointerEvent) -> ToolResult {
         let pre = self.begin_event(cx);
+        if let Gesture::HolePoly { pts } = &mut self.gesture.0 {
+            // The double-click's own presses added the last corner.
+            let pts = std::mem::take(pts);
+            self.gesture.0 = Gesture::None;
+            if self.make_hole_polygon(cx, pts) {
+                return Self::with_pre(pre, ToolResult::committed("Roof Hole"));
+            }
+            return Self::with_pre(pre, ToolResult::consumed());
+        }
         if self.mode.get() == RoofMode::Edit {
             if let Some(id) = load(cx.floor()).record_at(p.world) {
                 self.selected = Some(id);
@@ -1186,6 +1337,14 @@ impl Tool for RoofTool {
                 }
             }
         } else if k.is(egui::Key::Enter) {
+            if let Gesture::HolePoly { pts } = &mut self.gesture.0 {
+                let pts = std::mem::take(pts);
+                self.gesture.0 = Gesture::None;
+                if self.make_hole_polygon(cx, pts) {
+                    return Self::with_pre(pre, ToolResult::committed("Roof Hole"));
+                }
+                return Self::with_pre(pre, ToolResult::consumed());
+            }
             if let Some(id) = self.selected {
                 self.open_plane(cx, id);
                 return Self::with_pre(pre, ToolResult::consumed());
@@ -1238,8 +1397,19 @@ impl Tool for RoofTool {
                 let pts: Vec<Pos2> = rect_polygon(*from, *to).iter().map(|q| scr(*q)).collect();
                 painter.add(egui::Shape::closed_line(pts, ghost));
             }
+            Gesture::HolePoly { pts } => {
+                let mut line: Vec<Pos2> = pts.iter().map(|q| scr(*q)).collect();
+                if let Some(h) = self.hover {
+                    line.push(scr(h));
+                }
+                painter.add(egui::Shape::line(line, ghost));
+                for q in pts {
+                    painter.circle_filled(scr(*q), 3.0, accent);
+                }
+            }
             _ => {}
         }
+        self.dormer_ghost(cx, painter, cam);
         if let Some((id, edge)) = self.join_first {
             if let Some(rec) = load(cx.floor()).plane(id) {
                 let poly = rec.plan_polygon();
@@ -1309,6 +1479,45 @@ impl Tool for RoofTool {
 }
 
 impl RoofTool {
+    /// The dormer an Auto Dormer click would place, outlined under the
+    /// pointer (RF-48, RF-50): the roof planes of the dormer, overhang
+    /// included.
+    fn dormer_ghost(&self, cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
+        let mode = self.mode.get();
+        if !matches!(mode, RoofMode::Dormer | RoofMode::FloatingDormer) || self.dialogs_open() {
+            return;
+        }
+        let Some(at) = self.hover else { return };
+        let set = load(cx.floor());
+        let Some(main) = set.plane_at(at) else { return };
+        let spec = roof_view::dormer_spec_at(&set, main, at);
+        let Some(plane) = set.plane(main) else { return };
+        let ghost = Stroke::new(1.5_f32, cx.palette.ghost_stroke);
+        match plan_roof::auto_dormer(&plane.to_roof_plane(0), spec) {
+            Some(d) => {
+                for pl in &d.overhang_planes {
+                    let pts: Vec<Pos2> = pl
+                        .plan_polygon()
+                        .iter()
+                        .map(|q| cam.world_to_screen(*q))
+                        .collect();
+                    painter.add(egui::Shape::convex_polygon(
+                        pts,
+                        cx.palette.ghost_fill,
+                        ghost,
+                    ));
+                }
+            }
+            None => {
+                // The dormer does not fit here: a cross at the pointer.
+                let c = cam.world_to_screen(at);
+                let red = Stroke::new(2.0_f32, egui::Color32::from_rgb(0xC0, 0x30, 0x30));
+                painter.line_segment([c + Vec2::new(-6.0, -6.0), c + Vec2::new(6.0, 6.0)], red);
+                painter.line_segment([c + Vec2::new(-6.0, 6.0), c + Vec2::new(6.0, -6.0)], red);
+            }
+        }
+    }
+
     /// The mode palette in the top-left corner of the canvas.
     fn palette(&self, painter: &egui::Painter, cam: &Camera) {
         let ctx = painter.ctx();
@@ -1325,6 +1534,9 @@ impl RoofTool {
                             self.reset.set(true);
                             if m == RoofMode::Build {
                                 self.cmds.borrow_mut().push(Cmd::OpenBuild);
+                            }
+                            if m == RoofMode::EditAll {
+                                self.cmds.borrow_mut().push(Cmd::OpenAll);
                             }
                         }
                     }
@@ -1358,15 +1570,30 @@ impl RoofTool {
         let mut build_done = None;
         if let Some(d) = self.build_dialog.borrow_mut().as_mut() {
             match d.show(ctx) {
-                Outcome::Ok => build_done = Some(Some(d.settings().clone())),
+                Outcome::Ok => build_done = Some(Some((d.settings().clone(), d.style()))),
                 Outcome::Cancel => build_done = Some(None),
                 Outcome::Open => {}
             }
         }
         if let Some(done) = build_done {
             *self.build_dialog.borrow_mut() = None;
-            if let Some(s) = done {
-                self.cmds.borrow_mut().push(Cmd::ApplyBuild(s));
+            if let Some((s, style)) = done {
+                self.cmds.borrow_mut().push(Cmd::ApplyBuild(s, style));
+            }
+            ctx.request_repaint();
+        }
+        let mut all_done = None;
+        if let Some(d) = self.all_dialog.borrow_mut().as_mut() {
+            match d.show(ctx) {
+                Outcome::Ok => all_done = Some(Some(d.edit())),
+                Outcome::Cancel => all_done = Some(None),
+                Outcome::Open => {}
+            }
+        }
+        if let Some(done) = all_done {
+            *self.all_dialog.borrow_mut() = None;
+            if let Some(edit) = done {
+                self.cmds.borrow_mut().push(Cmd::ApplyAll(Box::new(edit)));
             }
             ctx.request_repaint();
         }
@@ -1492,7 +1719,7 @@ mod tests {
         house(&mut cx);
         let mut t = RoofTool::default();
         let s = RoofSettings::from_defaults(&cx.defaults);
-        t.cmds.borrow_mut().push(Cmd::ApplyBuild(s));
+        t.cmds.borrow_mut().push(Cmd::ApplyBuild(s, None));
         let p = PointerEvent::at(&cx, Point::new(10.0, 10.0));
         let res = t.pointer_move(&mut cx, p);
         assert_eq!(res.commit.as_deref(), Some("Build Roof"));
@@ -2502,5 +2729,257 @@ mod tests {
         assert!(t.build(&mut cx, s).is_some());
         assert!(load(&cx.project.floors[1]).planes.is_empty());
         assert_eq!(load(&cx.project.floors[0]).planes.len(), 4);
+    }
+
+    // ----- round 14 -----
+
+    fn wall_kinds(cx: &EditorContext) -> Vec<RoofWallKind> {
+        cx.floor().walls.iter().map(|w| w.roof.kind).collect()
+    }
+
+    #[test]
+    fn a_roof_style_writes_the_wall_directives_and_builds_in_one_undo_step() {
+        let mut cx = new_cx();
+        house(&mut cx);
+        let mut t = RoofTool::default();
+        let s = RoofSettings::from_defaults(&cx.defaults);
+        let label = t.build_styled(&mut cx, s, Some(RoofStyle::Gable));
+        assert_eq!(label.as_deref(), Some("Build Roof"));
+        assert_eq!(
+            wall_kinds(&cx),
+            vec![
+                RoofWallKind::Hip,
+                RoofWallKind::FullGable,
+                RoofWallKind::Hip,
+                RoofWallKind::FullGable
+            ]
+        );
+        assert_eq!(planes(&cx).len(), 2);
+        // One undo takes back the directives and the roof.
+        cx.undo();
+        assert!(planes(&cx).is_empty());
+        assert!(wall_kinds(&cx).iter().all(|k| *k == RoofWallKind::Hip));
+    }
+
+    #[test]
+    fn the_build_dialog_has_a_button_per_style_and_ok_applies_the_one_pressed() {
+        let mut cx = new_cx();
+        house(&mut cx);
+        let mut t = RoofTool::default();
+        t.open_build(&cx);
+        assert!(t.build_dialog.borrow().is_some());
+        t.build_dialog
+            .borrow_mut()
+            .as_mut()
+            .unwrap()
+            .set_style(Some(RoofStyle::Shed));
+        assert_eq!(
+            t.build_dialog.borrow().as_ref().unwrap().style(),
+            Some(RoofStyle::Shed)
+        );
+        // OK queues the settings and the style, as the dialog loop does.
+        let (s, style) = {
+            let d = t.build_dialog.borrow();
+            let d = d.as_ref().unwrap();
+            (d.settings().clone(), d.style())
+        };
+        t.cmds.borrow_mut().push(Cmd::ApplyBuild(s, style));
+        let p = PointerEvent::at(&cx, Point::new(10.0, 10.0));
+        t.pointer_move(&mut cx, p);
+        assert_eq!(planes(&cx).len(), 1, "a shed roof is one plane");
+        assert_eq!(wall_kinds(&cx)[0], RoofWallKind::HighShedGable);
+    }
+
+    #[test]
+    fn build_roof_with_the_attic_check_adds_the_attic_floor_in_one_undo_step() {
+        let mut cx = new_cx();
+        house(&mut cx);
+        let floors = cx.project.floors.len();
+        let mut t = RoofTool::default();
+        let mut s = RoofSettings::from_defaults(&cx.defaults);
+        s.build_attic_floor = true;
+        t.cmds.borrow_mut().push(Cmd::ApplyBuild(s, None));
+        let p = PointerEvent::at(&cx, Point::new(10.0, 10.0));
+        t.pointer_move(&mut cx, p);
+        assert_eq!(cx.project.floors.len(), floors + 1);
+        assert!(cx
+            .project
+            .floors
+            .iter()
+            .any(|f| f.kind == plan_core::floors::FloorKind::Attic));
+        assert!(cx.status.contains("attic floor"), "{}", cx.status);
+        // The check box is not stored: a rebuild from the stored roof adds none.
+        let (stored, at) = RoofTool::current_settings(&cx);
+        assert!(at.is_some() && !stored.build_attic_floor);
+        cx.undo();
+        assert_eq!(cx.project.floors.len(), floors, "one undo step");
+    }
+
+    #[test]
+    fn edit_all_roof_planes_applies_to_every_plane_in_one_undo_step() {
+        let mut cx = new_cx();
+        house(&mut cx);
+        let mut t = RoofTool::default();
+        build_default(&mut t, &mut cx);
+        t.set_mode(RoofMode::EditAll);
+        t.open_all(&mut cx);
+        assert!(t.all_dialog.borrow().is_some());
+        t.all_dialog
+            .borrow_mut()
+            .as_mut()
+            .unwrap()
+            .set_pitch(Some(12.0));
+        let edit = t.all_dialog.borrow().as_ref().unwrap().edit();
+        assert_eq!(edit.pitch, Some(12.0));
+        t.cmds.borrow_mut().push(Cmd::ApplyAll(Box::new(edit)));
+        let p = PointerEvent::at(&cx, Point::new(10.0, 10.0));
+        let res = t.pointer_move(&mut cx, p);
+        assert_eq!(res.commit.as_deref(), Some("Edit All Roof Planes"));
+        assert!(planes(&cx).iter().all(|r| r.pitch == 12.0));
+        assert_eq!(cx.undo_label(), Some("Edit All Roof Planes"));
+        cx.undo();
+        assert!(planes(&cx).iter().all(|r| r.pitch == 8.0));
+    }
+
+    #[test]
+    fn edit_all_roof_planes_without_planes_says_so() {
+        let mut cx = new_cx();
+        let mut t = RoofTool::default();
+        t.open_all(&mut cx);
+        assert!(t.all_dialog.borrow().is_none());
+        assert!(cx.status.contains("no roof planes"));
+    }
+
+    #[test]
+    fn clicking_corners_makes_a_polygon_hole_and_double_click_closes_it() {
+        let mut cx = new_cx();
+        house(&mut cx);
+        let mut t = RoofTool::default();
+        build_default(&mut t, &mut cx);
+        t.set_mode(RoofMode::Hole);
+        // An L inside the south plane (baseline y = -19, rising to y ~ 144).
+        for (x, y) in [(200.0, 30.0), (280.0, 30.0), (280.0, 70.0), (240.0, 70.0)] {
+            click(&mut t, &mut cx, x, y);
+        }
+        assert!(matches!(t.gesture.0, Gesture::HolePoly { .. }));
+        assert_eq!(planes(&cx).iter().map(|r| r.holes.len()).sum::<usize>(), 0);
+        click(&mut t, &mut cx, 240.0, 100.0);
+        let ev = PointerEvent::at(&cx, Point::new(200.0, 100.0));
+        t.pointer_move(&mut cx, ev);
+        t.pointer_down(&mut cx, ev.with_down(true));
+        t.pointer_up(&mut cx, ev);
+        let res = t.double_click(&mut cx, ev.with_down(true));
+        assert_eq!(res.commit.as_deref(), Some("Roof Hole"));
+        let holes: Vec<_> = planes(&cx).into_iter().flat_map(|r| r.holes).collect();
+        assert_eq!(holes.len(), 1);
+        assert_eq!(holes[0].outline.len(), 6);
+        assert_eq!(cx.undo_label(), Some("Roof Hole"));
+        cx.undo();
+        assert!(planes(&cx).iter().all(|r| r.holes.is_empty()));
+    }
+
+    #[test]
+    fn a_dragged_hole_is_still_a_rectangle_and_enter_closes_a_polygon() {
+        let mut cx = new_cx();
+        house(&mut cx);
+        let mut t = RoofTool::default();
+        build_default(&mut t, &mut cx);
+        t.set_mode(RoofMode::Hole);
+        drag(&mut t, &mut cx, (150.0, 40.0), (200.0, 80.0));
+        assert_eq!(planes(&cx).iter().map(|r| r.holes.len()).sum::<usize>(), 1);
+        // Three clicks and Enter: a triangle.
+        for (x, y) in [(300.0, 30.0), (340.0, 30.0), (320.0, 70.0)] {
+            click(&mut t, &mut cx, x, y);
+        }
+        let res = t.key(&mut cx, KeyEvent::key(egui::Key::Enter));
+        assert_eq!(res.commit.as_deref(), Some("Roof Hole"));
+        assert_eq!(planes(&cx).iter().map(|r| r.holes.len()).sum::<usize>(), 2);
+    }
+
+    #[test]
+    fn a_polygon_that_is_not_inside_the_roof_is_refused_and_leaves_no_undo_step() {
+        let mut cx = new_cx();
+        house(&mut cx);
+        let mut t = RoofTool::default();
+        build_default(&mut t, &mut cx);
+        t.set_mode(RoofMode::Hole);
+        for (x, y) in [(1000.0, 40.0), (1060.0, 40.0), (1030.0, 90.0)] {
+            click(&mut t, &mut cx, x, y);
+        }
+        let before = cx.undo_label().map(str::to_string);
+        let res = t.key(&mut cx, KeyEvent::key(egui::Key::Enter));
+        assert!(res.commit.is_none());
+        assert_eq!(cx.undo_label().map(str::to_string), before);
+    }
+
+    #[test]
+    fn escape_drops_a_polygon_hole_in_progress() {
+        let mut cx = new_cx();
+        house(&mut cx);
+        let mut t = RoofTool::default();
+        build_default(&mut t, &mut cx);
+        t.set_mode(RoofMode::Hole);
+        click(&mut t, &mut cx, 200.0, 40.0);
+        click(&mut t, &mut cx, 240.0, 40.0);
+        assert!(matches!(t.gesture.0, Gesture::HolePoly { .. }));
+        t.key(&mut cx, KeyEvent::escape());
+        assert!(matches!(t.gesture.0, Gesture::None));
+    }
+
+    #[test]
+    fn dragging_a_dormer_across_the_ridge_puts_it_on_the_other_plane() {
+        let mut cx = new_cx();
+        house(&mut cx);
+        // A gable roof: ridge along x.
+        for i in [1, 3] {
+            cx.project.floors[0].walls[i].roof.kind = RoofWallKind::FullGable;
+        }
+        let mut t = RoofTool::default();
+        build_default(&mut t, &mut cx);
+        let set = load(cx.floor());
+        let south = set.planes.iter().find(|r| r.up_slope().y > 0.9).unwrap().id;
+        let north = set
+            .planes
+            .iter()
+            .find(|r| r.up_slope().y < -0.9)
+            .unwrap()
+            .id;
+        let spec = roof_view::dormer_spec_at(&set, south, Point::new(240.0, 20.0));
+        let d = roof_view::apply_dormer(&mut cx.project, 0, south, None, spec).unwrap();
+        t.set_mode(RoofMode::Edit);
+        click(&mut t, &mut cx, 240.0, 20.0);
+        assert_eq!(t.selected, Some(d));
+        drag(&mut t, &mut cx, (240.0, 20.0), (240.0, 285.0));
+        assert_eq!(load(cx.floor()).dormer(d).unwrap().main, north);
+        assert_eq!(cx.undo_label(), Some("Move Roof Plane"));
+    }
+
+    #[test]
+    fn the_dormer_tools_show_where_the_dormer_would_go() {
+        let mut cx = new_cx();
+        house(&mut cx);
+        let mut t = RoofTool::default();
+        build_default(&mut t, &mut cx);
+        t.set_mode(RoofMode::Dormer);
+        let ev = PointerEvent::at(&cx, Point::new(240.0, 20.0));
+        t.pointer_move(&mut cx, ev);
+        // The ghost is made from the same spec a click would use.
+        let set = load(cx.floor());
+        let main = set.plane_at(Point::new(240.0, 20.0)).unwrap();
+        let spec = roof_view::dormer_spec_at(&set, main, Point::new(240.0, 20.0));
+        assert!(plan_roof::auto_dormer(&set.plane(main).unwrap().to_roof_plane(0), spec).is_some());
+        // Drawing it must not panic or change the plan.
+        let before = cx.project.clone();
+        let ctx = egui::Context::default();
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let (resp, painter) =
+                    ui.allocate_painter(ui.available_size(), egui::Sense::hover());
+                let mut cam = Camera::default_view();
+                cam.rect = resp.rect;
+                t.draw_overlay(&cx, &painter, &cam);
+            });
+        });
+        assert_eq!(cx.project.floors[0].roofs, before.floors[0].roofs);
     }
 }

@@ -13,6 +13,28 @@ pub fn plan_height_for_printed(printed_in: f64, inches_per_foot: f64) -> f64 {
     printed_in * 12.0 / inches_per_foot
 }
 
+/// The printed scales the Print Size Calculator offers: `(name, paper inches
+/// per foot)`.
+pub const PRINT_SCALES: [(&str, f64); 10] = [
+    ("1/16\" = 1'-0\"", 0.0625),
+    ("1/8\" = 1'-0\"", 0.125),
+    ("3/16\" = 1'-0\"", 0.1875),
+    ("1/4\" = 1'-0\"", 0.25),
+    ("3/8\" = 1'-0\"", 0.375),
+    ("1/2\" = 1'-0\"", 0.5),
+    ("3/4\" = 1'-0\"", 0.75),
+    ("1\" = 1'-0\"", 1.0),
+    ("1 1/2\" = 1'-0\"", 1.5),
+    ("3\" = 1'-0\"", 3.0),
+];
+
+/// Print Size Calculator (manual p. 540): the paper height in inches that a
+/// text `plan_height` plan inches tall prints at on a sheet drawn at
+/// `inches_per_foot`; the inverse of [`plan_height_for_printed`].
+pub fn printed_height_of(plan_height: f64, inches_per_foot: f64) -> f64 {
+    plan_height * inches_per_foot / 12.0
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TextStyle {
@@ -359,6 +381,15 @@ pub struct RichRun {
     /// Multiplies the text height; 1.0 is the base size.
     pub scale: f64,
     pub color: Option<[u8; 3]>,
+    /// A font family for this run (Edit Bar); `None` is the text style's.
+    pub font: Option<String>,
+    /// Struck through (Edit Bar).
+    pub strike: bool,
+    /// Shown in capitals without retyping (Edit Bar Uppercase).
+    pub upper: bool,
+    /// The address a hyperlink run opens (Insert Hyperlink); the run is
+    /// underlined and blue like the manual says.
+    pub link: Option<String>,
 }
 
 impl Default for RichRun {
@@ -370,6 +401,10 @@ impl Default for RichRun {
             underline: false,
             scale: 1.0,
             color: None,
+            font: None,
+            strike: false,
+            upper: false,
+            link: None,
         }
     }
 }
@@ -416,6 +451,10 @@ impl RichRun {
             && self.underline == o.underline
             && (self.scale - o.scale).abs() < 1e-9
             && self.color == o.color
+            && self.font == o.font
+            && self.strike == o.strike
+            && self.upper == o.upper
+            && self.link == o.link
     }
 }
 
@@ -448,6 +487,14 @@ pub fn runs_to_markup(runs: &[RichRun]) -> String {
     let mut out = String::new();
     for r in runs {
         let mut close: Vec<&str> = Vec::new();
+        if let Some(url) = &r.link {
+            out.push_str(&format!("<link={}>", url.replace('>', "%3E")));
+            close.push("</link>");
+        }
+        if let Some(font) = &r.font {
+            out.push_str(&format!("<font={}>", font.replace('>', "")));
+            close.push("</font>");
+        }
         if let Some([cr, cg, cb]) = r.color {
             out.push_str(&format!("<color=#{cr:02X}{cg:02X}{cb:02X}>"));
             close.push("</color>");
@@ -460,6 +507,8 @@ pub fn runs_to_markup(runs: &[RichRun]) -> String {
             (r.bold, "<b>", "</b>"),
             (r.italic, "<i>", "</i>"),
             (r.underline, "<u>", "</u>"),
+            (r.strike, "<s>", "</s>"),
+            (r.upper, "<upper>", "</upper>"),
         ] {
             if on {
                 out.push_str(open);
@@ -484,6 +533,10 @@ pub fn runs_from_markup(s: &str) -> Vec<RichRun> {
         underline: bool,
         scale: f64,
         color: Option<[u8; 3]>,
+        font: Option<String>,
+        strike: bool,
+        upper: bool,
+        link: Option<String>,
     }
     let mut cur = Fmt {
         bold: false,
@@ -491,6 +544,10 @@ pub fn runs_from_markup(s: &str) -> Vec<RichRun> {
         underline: false,
         scale: 1.0,
         color: None,
+        font: None,
+        strike: false,
+        upper: false,
+        link: None,
     };
     let mut stack: Vec<(String, Fmt)> = Vec::new();
     let mut runs: Vec<RichRun> = Vec::new();
@@ -504,6 +561,10 @@ pub fn runs_from_markup(s: &str) -> Vec<RichRun> {
                 underline: cur.underline,
                 scale: cur.scale,
                 color: cur.color,
+                font: cur.font.clone(),
+                strike: cur.strike,
+                upper: cur.upper,
+                link: cur.link.clone(),
             });
         }
     };
@@ -535,9 +596,11 @@ pub fn runs_from_markup(s: &str) -> Vec<RichRun> {
                     None => (tag.clone(), None),
                 };
                 let opened = match (name.as_str(), arg.as_deref()) {
-                    ("b", None) | ("i", None) | ("u", None) => true,
+                    ("b", None) | ("i", None) | ("u", None) | ("s", None) | ("upper", None) => true,
                     ("size", Some(a)) => a.parse::<f64>().is_ok(),
                     ("color", Some(a)) => parse_hex_color(a).is_some(),
+                    ("font", Some(a)) => !a.trim().is_empty(),
+                    ("link", Some(_)) => true,
                     _ => false,
                 };
                 if opened {
@@ -547,9 +610,13 @@ pub fn runs_from_markup(s: &str) -> Vec<RichRun> {
                         "b" => cur.bold = true,
                         "i" => cur.italic = true,
                         "u" => cur.underline = true,
+                        "s" => cur.strike = true,
+                        "upper" => cur.upper = true,
                         "size" => {
                             cur.scale = arg.as_deref().and_then(|a| a.parse().ok()).unwrap_or(1.0)
                         }
+                        "font" => cur.font = arg.as_deref().map(|a| a.trim().to_string()),
+                        "link" => cur.link = arg.as_deref().map(|a| a.replace("%3E", ">")),
                         _ => cur.color = arg.as_deref().and_then(parse_hex_color),
                     }
                     i += end + 1;
@@ -563,7 +630,10 @@ pub fn runs_from_markup(s: &str) -> Vec<RichRun> {
                         i += end + 1;
                         continue;
                     }
-                    if matches!(close, "b" | "i" | "u" | "size" | "color") {
+                    if matches!(
+                        close,
+                        "b" | "i" | "u" | "s" | "upper" | "size" | "color" | "font" | "link"
+                    ) {
                         i += end + 1;
                         continue;
                     }
@@ -644,6 +714,7 @@ impl TextMacros {
                 .chars()
                 .all(|c| c.is_alphanumeric() || matches!(c, '.' | '_' | '-'))
             && !BUILT_IN_MACROS.iter().any(|(n, _)| *n == name)
+            && !crate::macros::is_reserved(name)
             && self.get(name).is_none();
         if ok {
             self.macros.push(TextMacro {
@@ -885,6 +956,81 @@ impl crate::model::Project {
     pub fn set_note_types(&mut self, n: &NoteTypes) {
         self.note_types = n.clone();
     }
+
+    /// Every font family the plan's text uses: the text styles, the fonts
+    /// of rich text runs and of live (macro) texts. Sorted, each once.
+    pub fn fonts_in_use(&self) -> Vec<String> {
+        let mut out = self.text_styles.fonts_used();
+        let mut add = |f: &str| {
+            let f = f.trim();
+            if !f.is_empty() && !out.iter().any(|o| same_font_family(o, f)) {
+                out.push(f.to_string());
+            }
+        };
+        for fl in &self.floors {
+            for a in &fl.cad_attrs {
+                for r in &a.runs {
+                    if let Some(f) = &r.font {
+                        add(f);
+                    }
+                }
+            }
+        }
+        for t in &self.macro_texts.texts {
+            for r in &t.runs {
+                if let Some(f) = &r.font {
+                    add(f);
+                }
+            }
+        }
+        out.sort_by_key(|f| normalize_font_name(f));
+        out
+    }
+
+    /// Replace Fonts: every style and rich text run set in family `from` is
+    /// set in `to`; `face` is the Face list's choice (`""` Regular, `"Bold"`,
+    /// `"Italic"`, `"Bold Italic"`). Returns how many styles and runs
+    /// changed.
+    pub fn replace_font_everywhere(&mut self, from: &str, to: &str, face: &str) -> usize {
+        let to = to.trim();
+        if to.is_empty() || from.trim().is_empty() || same_font_family(from, to) {
+            return 0;
+        }
+        let (bold, italic) = (face.contains("Bold"), face.contains("Italic"));
+        let mut n = 0;
+        for s in &mut self.text_styles.styles {
+            if same_font_family(&s.font, from) {
+                s.font = to.to_string();
+                s.font_style.clear();
+                s.bold |= bold;
+                s.italic |= italic;
+                n += 1;
+            }
+        }
+        let fix = |r: &mut RichRun| -> bool {
+            if r.font.as_deref().is_some_and(|f| same_font_family(f, from)) {
+                r.font = Some(to.to_string());
+                r.bold |= bold;
+                r.italic |= italic;
+                true
+            } else {
+                false
+            }
+        };
+        for fl in &mut self.floors {
+            for a in &mut fl.cad_attrs {
+                for r in &mut a.runs {
+                    n += usize::from(fix(r));
+                }
+            }
+        }
+        for t in &mut self.macro_texts.texts {
+            for r in &mut t.runs {
+                n += usize::from(fix(r));
+            }
+        }
+        n
+    }
 }
 
 #[cfg(test)]
@@ -1033,6 +1179,7 @@ mod tests {
                 underline: true,
                 scale: 1.5,
                 color: Some([255, 0, 16]),
+                ..RichRun::default()
             },
             RichRun::sized(" <big> ", 2.0),
             RichRun::italic("end"),
@@ -1145,6 +1292,18 @@ mod tests {
     }
 
     #[test]
+    fn the_print_size_calculator_goes_both_ways() {
+        // 1/8" on paper at 1/4" scale is 6" in the plan, and back.
+        assert_eq!(plan_height_for_printed(0.125, 0.25), 6.0);
+        assert_eq!(printed_height_of(6.0, 0.25), 0.125);
+        for (_, ipf) in PRINT_SCALES {
+            let h = plan_height_for_printed(0.1, ipf);
+            assert!((printed_height_of(h, ipf) - 0.1).abs() < 1e-12);
+        }
+        assert!(PRINT_SCALES.windows(2).all(|w| w[0].1 < w[1].1));
+    }
+
+    #[test]
     fn replace_font_changes_every_style_of_the_family() {
         let mut t = TextStyles::chief_defaults();
         t.styles[1].font = "Avenir".into();
@@ -1190,5 +1349,29 @@ mod tests {
         p.set_text_macros(&TextMacros::default());
         assert!(p.text_macros().macros.is_empty());
         assert!(p.text_macros.macros.is_empty());
+    }
+
+    #[test]
+    fn edit_bar_formats_round_trip_through_markup_and_layout() {
+        let runs = vec![
+            RichRun {
+                font: Some("Avenir".into()),
+                strike: true,
+                upper: true,
+                link: Some("https://example.com/a?b=1".into()),
+                underline: true,
+                color: Some([0, 0, 238]),
+                ..RichRun::plain("site")
+            },
+            RichRun::plain(" and more"),
+        ];
+        let markup = runs_to_markup(&runs);
+        assert!(markup.contains("<font=Avenir>") && markup.contains("<s>"));
+        assert!(markup.contains("<link=https://example.com/a?b=1>"));
+        assert_eq!(runs_from_markup(&markup), runs);
+        // Uppercase shows in capitals in the laid out box; the words stay.
+        let lay = crate::text_box::layout_runs(&runs, 6.0, &crate::text_box::TextBox::default());
+        assert_eq!(lay.lines[0].plain(), "SITE and more");
+        assert_eq!(runs_plain(&runs), "site and more");
     }
 }

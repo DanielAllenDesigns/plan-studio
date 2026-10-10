@@ -74,6 +74,7 @@ Select a dimension by clicking its line, extension or text. Its handles:
   wall moves perpendicular, or lengthens if the dimension runs along it; openings
   slide). A locked layer refuses the change.
 - Double-click opens the Dimension Specification (5.7).
+- **Add Extension Line** and **Delete Extension Line** (Round 14) edit an existing string: click a dimension line where a new measured point goes (or on a hidden extension line to bring it back); click an extension line to delete it, which merges the strings on both sides into one or hides an end's line. Both tools are on the Dimension flyout (after Tape Measure) and in the CAD menu, and reachable through the option strip of the Dimension tools; they have no hotkey in Daniel's file. Copying a dimension keeps its ties to the walls and openings it measures.
 - The **Edit toolbar** of a selected dimension offers four commands, each one undo step (a locked layer refuses them):
   - **Reverse Dimension** swaps the two measured points (with their ties and extension-line switches), which puts the dimension line on the other side of what it measures, the same distance away.
   - **Convert to Manual Dimension** turns an automatic dimension (any string of Auto Exterior, Interior, Elevation, Story Pole or NKBA) into an ordinary manual one that a later Auto run no longer replaces. Enabled only when a selected dimension is automatic.
@@ -98,7 +99,7 @@ Not built: ties to other kinds of objects (stairs, roof planes, framing).
 
 Temporary Dimensions (view bar, on by default) show a live readout while drawing
 and dimensions to nearby objects for the selected one. They are never saved or
-printed. Clicking one turns it into an edit field (see chapter 2.5). Which part of a wall or opening they measure to is the **Temporary** group of Locate Objects in the Dimension Defaults (5.9); the **Elevation** group is stored for the level dimensions but no tool reads it yet. Both groups default to wall surfaces and opening sides.
+printed. Clicking one turns it into an edit field (see chapter 2.5). A selected **CAD object** shows its own (Round 14): a line its length and angle, a box its width and height, a circle its radius and diameter and an arc its radius; typing a value resizes the object (a line keeps its start, a box its lower-left corner, a circle its center). A **padlock** beside a measuring value locks it: the temporary dimension becomes a permanent manual dimension on the Dimensions layer, tied to the objects it measures, and clicking the padlock again takes it away. Which part of a wall or opening they measure to is the **Temporary** group of Locate Objects in the Dimension Defaults (5.9); the **Elevation** group is stored for the level dimensions but no tool reads it yet. Both groups default to wall surfaces and opening sides.
 
 ## 5.3 Text tools
 
@@ -109,7 +110,7 @@ together.
 
 | Variant | Hotkey | How it works |
 |---|---|---|
-| Text | `Y` | Click to set the text's lower-left anchor, type, `Enter` to commit. A click elsewhere commits and starts the next text. `Esc` cancels. Clicking existing text edits it in place. |
+| Text | `Y` | Click the text's **upper-left corner** (the block hangs down from the click, and keeps its top edge as lines are added), type, `Enter` to commit. A click elsewhere commits and starts the next text. `Esc` cancels. Clicking existing text edits it in place. **Press and drag** instead of clicking (Round 14) to draw a **text box**: its width wraps the text, its drag height is a minimum box height, and a ghost shows the box; a drag narrower than about three characters is an ordinary click. Rich Text takes the same drag. |
 | Rich Text | `Ctrl+Alt+Cmd+J` | Click, type; `Enter` adds a line; `Tab` finishes. Bold, italic, underline, size and color are stored with the text as runs (below). |
 | Leader Line | `Alt+L` | Click the arrow tip and the bends; double-click or `Enter` ends. |
 | Text Line with Arrow | `Alt+A` | As Leader Line, then asks for the text at the end. |
@@ -118,12 +119,15 @@ together.
 | Note | `Ctrl+Alt+Cmd+N` | Click, type; the text reads "Note n: ..." with the next free number of the active note type. |
 | Note Type Management | | Opens the dialog below. |
 | Text Macro Management | | Opens the dialog below. |
+| Text Style Management | | The **Text Style Management** window (Round 13): pick a style, then **Rename** it or **Remove** it. A rename follows the style everywhere it is used (the plan's layers, layer-set overrides, saved plan views, CAD text, dimensions and placed schedules); a remove sends its users back to the layer's style. The Default Text Style can be neither renamed nor removed. OK applies the changes. The window is built (the Text tool's Styles mode) but the Text flyout has no entry for it yet (planned); Default Settings > Text > Text Styles renames and removes styles in the meantime (5.9). A note type does not follow a style rename. |
 
 Text height defaults to the template's 6" plan height. A text style can instead be a **Printed Size** style
 (Default Settings > Text Styles, 5.9): its text keeps its size on paper (a 1/8" label stays 1/8" at 1/4", 1/8" or 1/2" scale)
 because its plan height is recomputed from the sheet's scale; a new text on such a layer is placed at the style's own height, and the
 Text Specification says how big it is on paper. A **Character Height** style keeps the plan height you give it.
-Edit > Find/Replace Text finds a string in the text objects of the floor (or every floor) and replaces it, Replace All as one undo step. Replace Fonts is (planned).
+**Edit > Find/Replace Text** finds a string in the text of the plan and replaces it. *Searching In* is Current View (the floor on screen), Current File (every floor), All Open Files (every floor and the plan's layout files: page titles, page text and leaders) or Selected Objects. Search options: *Case Sensitive*; *Expand Percent Signs* (a run of one or two `%` outside a macro is ignored, as imported text uses them for style commands); *Show in File* (go to the floor of the result and select it); *Highlight Color*. *Macro Options* say whether the names of macros take part: Exclude Macros, Macros Only or Include All; the macro's name is searched, never its value. The *Results* list shows each match with its file, view and object type; **Find Previous** and **Find Next** walk it, **Replace** changes the current result, **Replace All** every match in the scope as one undo step (the plan and the layouts together). Callout, marker and note labels are searched through their records.
+
+**Edit > Replace Fonts** lists the fonts the plan's text uses (text styles, rich text runs): the ones this computer lacks are marked Missing. Pick a *Replace With* family and a *Face* for each; the preview shows the choice. Replace changes the styles and runs in one undo step.
 
 ### Rich text
 
@@ -139,15 +143,26 @@ The Text Specification (5.8) shows the markup in its Text tab (tick *Rich text*)
 
 ### Text macros
 
-A `%macro%` in text is replaced when the text is placed or edited. The built-in macros:
+A `%macro%` in a text is replaced by what it reports. The **Insert Macro** button beside every text field (the Text Specification, the Rich Text Edit Bar, the callout, marker and note dialogs) lists them in submenus; every entry can be picked wherever the button is.
 
-| Macro | Gives |
+| Category | Macros |
 |---|---|
-| `%room.name%`, `%room.number%`, `%room.area%` | The name, number and floor area of the room under the text |
-| `%plan.name%`, `%plan.date%` | The plan's name; today's date as `YYYY-MM-DD` |
-| `%floor%`, `%floor.number%`, `%floor.count%`, `%floor.height%` | The floor's name; its number (1 is the lowest); the number of floors; its ceiling height |
+| Global > Project Information | `%client.name%`, `%client.address%`, `%client.phone%`, `%client.email%`, `%designer.name%`, `%designer.company%`, `%designer.drawn_by%`, `%designer.checked_by%`, `%project.number%`, `%project.address%`, `%project.lot%`, `%project.date%`, `%project.revision%` and the fields of any custom owner, `%builder.license_no%` |
+| Global > File | `%plan.name%`, `%plan.date%`, `%floor%`, `%floor.number%`, `%floor.count%`, `%floor.height%` |
+| Global > Room (the room the text is in) | `%room.name%`, `%room.nvp_name%` (a custom room label), `%room.number%`, `%room.type%`, `%room.area%`, `%room.perimeter%`, `%room.ceiling_height%` |
+| Global > Time Date | `%date.short%` (10/9/2026), `%date.long%`, `%date.iso%`, `%date.year%`, `%date.month%`, `%date.day%`, `%date.weekday%`, `%time.short%`, `%time.long%` (UTC) |
+| Global > Special Characters | `%char.degree%`, `%char.plusminus%`, `%char.diameter%`, `%char.feet%`, `%char.inches%`, `%char.bullet%`, `%char.copyright%`, `%char.half%`, `%char.newline%`... |
+| User Defined | your own, below |
+| Referenced Object | for a text with an arrow (Leader Line text, Text Line with Arrow): what the object under the arrow tip reports: `%comment%`, `%description%`, `%automatic_description%`, `%automatic_label%`, `%nominal_size%`, `%object_type%`, `%type%`, `%name%`, `%width%`, `%height%`, `%depth%`, `%length%`, `%elevation%`, `%schedule_number%`, `%code%`, `%manufacturer%`, `%supplier%` |
+| Callout, Marker and Note | `%linked_view_name%`, `%referenced_view_callout_label%`, `%layout_page_label%`, `%automatic_label%`, `%simple_schedule_number%`, `%height%`, `%note_text%` |
 
-**Text Macro Management** adds your own: a name (letters, digits, `.`, `_` or `-`; not a built-in's name; unique) and the text it expands to, used as `%name%`. They are saved with the plan.
+A **Text or Rich Text with macros stays live**: the object keeps what you typed and shows what the macros give, and follows the plan (rename the room, edit Project Information, resize the door). Editing it, in place or in the specification, shows the macros as typed. A text that something else changes (a spell check correction) keeps that edit and stops being live; copies are plain text. Callouts, markers and notes expand their macros when their dialog is OK'd, apart from their own annotation macros, which stay live.
+
+**Text Macro Management** (Text flyout) lists your macros with **Edit**, **New**, **Copy**, **Delete**, **Import** and **Export**. A name is letters, digits, `.`, `_` or `-`, unique, and not the name of a macro the program has; its text may use other macros (a macro that uses itself is reported). **Show Evaluation Error** (the red line under a macro that does not evaluate) says why. **Export** writes the selected macro (or all) to a file; **Import** reads one, and for a name the plan already has asks to *Rename*, *Discard* or *Replace*, or *Do for all*. Macros are saved with the plan. Ruby macros are not supported: a user macro is plain text with `%name%` substitutions.
+
+### Project Information
+
+**Tools > Project Information** lists the **Owners** on the left: Project, Designer and Client (they cannot be renamed or deleted) and custom owners such as Builder (italic). **Add**, **Duplicate**, **Rename** and **Delete** manage the custom ones. The right side lists the selected owner's **Name-Value Pairs**: the system names (Project: Number, Address, Lot, Date, Revision; Designer: Name, Company, Drawn By, Checked By; Client: Name, Address, Phone, Email) cannot be edited or deleted; custom names (italic) can be added with **Add Field**, renamed by a double-click and deleted with **Delete Field**; **Clear Values** blanks the owner. Every pair is the macro `%owner.name%` (lower case, spaces as `_`) in any text, and the layout title blocks read the same information. The Client and Designer information go to the REScheck export (18.9). The Revisions tab holds the revision table.
 
 ### Note types
 
@@ -169,11 +184,11 @@ snaps, angle snaps and the grid apply to every CAD tool. In the tools that take 
 | | Input Point | | Type X, `Tab`, Y, `Enter`. |
 | | Point Marker | | Click to drop a marked point. |
 | | Delete Temporary Points | | A command: removes every point Place Point and Input Point dropped (they sit on the layer `CAD, Temporary Points`; Point Marker points stay). |
-| Lines | Draw Line | | Click start, click end, or press-drag-release. With Connect CAD Segments on (`Shift+F8`) the next line starts where the last ended. `Enter` after the first click types a length and angle. |
+| Lines | Draw Line | | Click start, click end, or press-drag-release. With Connect CAD Segments on (`Shift+F8`) the next line starts where the last ended. `Enter` after the first click types a length and angle. Hold `Shift` to hold the line to 15-degree steps. |
 | | Input Line | | Click start, type length, `Tab`, angle, `Enter`. |
 | | Line With Arrow | | Click the start, click the arrow tip. |
 | | Polyline | | Click vertices, click the first to close, `Enter` or double-click ends. |
-| Arcs | Draw Arc | | Click the points of the arc. Modes in the option strip: three-point, center-start-end, start-end-tangent. |
+| Arcs | Draw Arc | | Click the points of the arc. Four **Arc Creation Modes** (Edit > Arc Creation Modes, or the option strip): **Three-Point** (start, end, then a point the arc passes through), **Center-Start-End** (center, start, end), **Start-End-Radius** (start, end, then a point on the side the arc bulges to; its distance from the middle of the chord sets the radius) and **Tangent** (start, end, then a point giving the tangent direction at the start; two clicks when the start is the end of the line or arc just drawn, which the new arc continues without a corner). |
 | | Input Arc | | Click the center, type radius, start angle and sweep. |
 | | Arc With Arrow | | Three-point arc ending in an arrowhead. |
 | Circles | Circle | `K` | Click the center, click a point on the circle. |
@@ -225,6 +240,9 @@ The **CAD edit tools** are in the CAD menu (CAD > Edit CAD, CAD > Patterns) as t
 | Trim Line | Click the part of a line to remove at its nearest cutters. |
 | Extend Line | Click the end of a line to extend it to the next object. |
 | Break Line | Click the point where a line or polyline splits. |
+| Change Line/Arc | Click a line, an arc or one edge of a polyline: it becomes curved (bulging toward your click) or straight. A selected polyline shows a **diamond handle** on each arc edge; drag it to set the bulge. Arc edges are stored as sample points every 7.5 degrees, so DXF and the layout see a smooth curve. |
+| Delete Break | Click a polyline vertex to remove it; the two edges around it become one straight edge. |
+| Make Arc Tangent | Click an arc edge (or an Arc object): it turns so it leaves its neighbor at the shared end without a corner. |
 | Reverse Direction | Click a line or polyline to reverse it. |
 | Make Parallel | Click the end of a line to turn, then the line to match. |
 | Make Perpendicular | Click the end of a line to turn, then the line to square to. |
@@ -237,6 +255,21 @@ The **CAD edit tools** are in the CAD menu (CAD > Edit CAD, CAD > Patterns) as t
 CAD Detail From View makes a normal floor, which takes part in the 3D stack; Chief's detail windows and CAD Detail Management do not exist here. With a drawn CAD object selected the Edit toolbar has a button for each of these tools (Fillet, Chamfer, Offset, Trim, Extend, Break, Reverse Direction, Make Parallel, Make Perpendicular and the three converts): the button switches to that CAD tool mode with the selection kept, and the converts act on the selection at once. Separately, Edit > **Make Parallel** and **Make Perpendicular** (and the Edit toolbar's buttons for a selection of walls and CAD lines) work from a selection: with the selection made, click the wall or line to match and each selected one keeps its start and length and swings its far end to be parallel or perpendicular to it (chapter 2.5).
 
 The Edit menu's selection commands (Cut, Copy, Paste, Duplicate, Select All, Select Same Type, Group, Transform/Replicate, Reflect About Object, Point to Point Move, Align/Distribute, Move to Front / Back, Lock, Send to Layer) all work on CAD objects, text and dimensions as well as on walls (chapter 2.5). **Move to Front / Back** is for CAD objects and text: CAD objects are drawn in list order, so it moves the selection to the end (top) or the start (bottom) of the list. **Edit > Edit Behaviors > Resize, Concentric, Fillet, Alternate and Replicate** change what dragging a CAD selection does (chapter 2.5).
+
+### Polylines, boundaries, copies and drawing groups
+
+These commands are in the **Edit CAD** menu, the **Edit** menu and as Edit toolbar buttons for the selection (Select Objects). Each is one undo step.
+
+| Command | What it does |
+|---|---|
+| Polyline Union / Subtract / Intersect | Select two or more closed polylines or circles. Union joins them into one outline, Intersect keeps what they all cover, Subtract keeps the first one you selected and cuts the others out of it. Arcs stay arcs: the result is a polyline whose curved edges are real arcs, and a circle that comes out whole is a circle again. A hole becomes a polyline of its own, grouped with its outline. Shapes that do not overlap are left alone and the status bar says so. |
+| Trim to Boundary / Extend to Boundary | Click the boundary (a line, arc, circle, polyline or a wall), then click objects: Trim removes the clicked part up to the boundary (a circle crossed twice becomes the arc left), Extend grows the end nearer your click until it meets the boundary. Keep clicking; Esc ends. Trim Line and Extend Line (Edit CAD) also work on arcs, circles and open polylines. |
+| Insert Point | Click an edge of a polyline to add a vertex there; on an arc edge the arc splits into two arcs of the same circle. Esc ends. |
+| Multiple Copy (Edit > Multiple Copy, Edit toolbar) | Copies of the selection, walls included. Number of copies, the offset between copies (X and Y, or distance and angle; or the offset to the last copy) and a turn per copy. **Drag in Plan** does it with two clicks: the point to copy from, then where the last copy goes; a tick marks every copy. |
+| Edit > Drawing Group | A drawing group number on every object sets the order the plan draws in, lowest first. **Bring to Front** and **Send to Back** put the selection above or below everything else, **Set Drawing Group** types a number. **Default Settings > Drawing Groups** sets the number of each kind of object. CAD objects and text follow their numbers in the plan, the Layout window and the PDF; CAD below the Walls number draws under the walls. |
+| CAD > Plan Footprint | A closed polyline around the outer faces of the exterior walls, with its area under it. |
+
+**File > Export > DXF** first asks what the file should hold: the unit (inches, feet, millimeters, centimeters, meters), layer names (the plan's or the AIA standard, with your own map `plan layer = file layer`), the weight of each layer, text as text or as lines, this floor / all floors / a pick of floors, and 2D or 3D (floors at their elevation plus the model).
 
 ## 5.5 Layers and layer display
 
@@ -319,11 +352,11 @@ The plan draws the object's own color, weight, dash, solid fill and arrow ends. 
 | Tab | Fields |
 |---|---|
 | General | Type and Value; the Offset From Measured Line; the measured points (Start X/Y, End X/Y); **Located Objects**: for each end what it is tied to (a wall, an opening, a cabinet, a fixture, or "Free point") and a **Show Extension Line** check box per end that hides or shows that end's extension line (stored with the dimension). |
-| Primary Format | Units, Show Unit Indicators, Smallest Fraction, Show Denominator, Reduce Fractions. Shown from the active Dimension Defaults (disabled). |
-| Arrow | Style (Tick) and Size, and the extension line gap and length, from the Dimension Defaults (disabled). |
+| Primary Format | Round 14: the check box **Use the Dimension Defaults' format** (on: the format of the active Dimension Defaults, shown read-only). Clear it and this one dimension has its own **Units** (Feet and Inches, Inches, Decimal Feet, Millimeters, Centimeters, Meters), **Smallest Fraction** (1/2 to 1/64) or **Decimal Places** and **Show Trailing Zeroes**, **Show Unit Indicators** and **Suppress Zero Feet**; a line shows how the value then reads. |
+| Arrow | Round 14: **Use the Dimension Defaults' arrows**, or this dimension's own **Style** (Tick, Arrow, Dot, None), **Size** and **Filled**; and **Extension Lines**: **Use the Dimension Defaults' extension lines**, or its own **Gap From Marked Object**, **Length Past Dimension Line** and **Fixed Extension Line Length** with the **Length From Dimension Line**. |
 | Text Style | **Style**: "From Dimension Defaults" or any text style of the plan (stored with the dimension). Below it the style's Font, whether the Size is a Character Height or a Printed Size, the size **on paper** at the sheet's scale (inches and points) and the height **in the plan**. Position (Centered On / Above / Below Dimension Line) is shown disabled. |
 | Layer | Manual or Automatic dimension layer. |
-| Label | Value Text: type a replacement for the measured value. |
+| Label | Value Text: **Specify the dimension text** and type a replacement for the measured value (the measured value is shown beneath). |
 
 The Dimension Defaults sets (1/4" Scale, 1/8" Scale, Electrical, Framing ...) are kept in the plan
 defaults and edited from Edit > Default Settings > Dimension > Dimensions (5.9). The set marked
@@ -334,9 +367,9 @@ fractions) is what dimensions use.
 
 | Tab | Fields |
 |---|---|
-| Text | The text, with a *Rich text* check box that shows it as markup (`<b>`, `<i>`, `<u>`, `<size=1.5>`, 5.3), Angle, Position (lower left X and Y). |
-| Text Style | **Style**: a named text style of the plan, or "(layer's style)"; the font it gives; **Format** check boxes Bold, Italic and Underline for the whole text (mixed formats are typed as markup on the Text tab). |
-| Appearance | **Size**: Text Height. Alignment (Left, Center, Right), Border and Background Fill are disabled until the model stores them. |
+| Text | The text, with a *Rich text* check box that shows it as markup (`<b>`, `<i>`, `<u>`, `<size=1.5>`, 5.3), the **Insert Macro** button (5.3), Check Spelling, Angle, Position (lower left X and Y). Rich Text shows the Edit Bar with its own Insert Macro, Print Size and Paragraph buttons. |
+| Text Style | **Use Layer Text Style**, **Use Text Style** (a named style of the plan) or **Use Custom Text Style**; the font the choice gives; with Custom the **Format** controls apply to the whole text: font, Bold, Italic, Underline, Strikethrough and **Uppercase** (mixed formats are typed as markup on the Text tab). |
+| Appearance | **Size**: Text Height. **Alignment** (Left, Center, Right; Top, Middle, Bottom when the box is taller than the text). **Text Box** (Round 14): **Wrap Text at Box Width** with the **Box Width**, and the **Minimum Box Height** (the box grows taller to hold the text; 0 fits it). **Border** with its **Margin** and **Line Weight** (0 follows the layer). **Background Fill** and its **Fill Color**. The same box is drawn in the plan, on layout pages and in the PDF; the DXF export writes a boxed text as one text entity without its wrapping, border or fill. **Paragraph Options** (Round 16): *Line Spacing* (single, 1.5, double or any), *Left Margin*, *Right Margin* and *First Line Indent*. **Tab Columns**: a tab character starts a new column, each as wide as its widest cell, or *Column Width*; **Reset Column Widths** goes back to automatic. **Font Sizing**: *Word processor sizing* is stored; the plan draws CAD style (size = capital height). **Convert to Text** (formats and column tabs are lost) and **Convert to Rich Text**. **Print Size Calculator**: a printed size and a printed scale give the text height; *Use as Text Height* applies it. Text pasted from another program (a spreadsheet's rows) becomes a Rich Text with its tab columns. |
 | Layer | The layer, editable. |
 
 ## 5.9 Default Settings: Dimensions and Text Styles
@@ -371,13 +404,37 @@ Edit > Default Settings... > Text > **Text Styles** edits named text styles for 
 **Edit styles of** radios: **This plan** (the open plan's styles, one undo step, "Text Styles") and **New-plan
 defaults** (what plans start from).
 
-- The list is on the left. The form on the right has Name, Font (Arial, Helvetica, Times New Roman, Courier
-  New, Verdana, Georgia, Calibri), Height (0.25" to 96"), **Size by** (Character Height or Printed Size), Style (Bold, Italic, Underline) and Color.
+- The list is on the left. The form on the right has Name, **Font** (a picker of the fonts installed on this
+  computer, with a search box; the Chief names Avenir, Arial, Arial Narrow and Chief Blueprint are listed too and
+  marked when this machine does not have them; a preview line under it is set in the face the style will use,
+  Bold and Italic choosing the real bold and italic faces), Height (0.25" to 96"), **Size by** (Character Height or Printed Size), Style (Bold, Italic, Underline) and Color.
   **Character Height** keeps the plan height; a character-height style prints at its height times the sheet scale (a 6" style is 1/8" at 1/4" scale).
   **Printed Size** shows a size in inches on paper (0.02" to 2") that holds at any scale, so the plan height changes with the
   sheet's scale. **New** adds a style, **Copy** duplicates the selected one, **Delete** removes it.
 - Names must be filled in and unique. "Default Text Style" can be neither renamed nor deleted.
-- Renaming a style in the plan renames it on the layers that used it. OK applies both lists ("Saved the text
+- Renaming a style in the plan renames it on every layer, layer-set override, saved plan view, CAD text,
+  dimension and placed schedule that used it (Round 13). OK applies both lists ("Saved the text
   styles"); Cancel or Escape drops the changes.
+- **Replace Fonts** (Chief's TXT-12), in the same dialog: choose the family to replace (the list offers the
+  families the styles use now), choose the family to use instead with the same picker, and press **Replace in all
+  styles**. The note under the button says how many styles changed. It edits the list on the screen, so it
+  takes effect with the dialog's OK, as one undo step ("Text Styles").
+- **Fonts on screen and on paper.** A style's font is drawn in the installed font of that name: plan text objects,
+  dimension numbers, room labels and the layout window's box text on screen, and the same fonts embedded in the PDFs
+  you make here (chapter 12.6). A font family that is not installed falls back to a close stand-in (Arial to Helvetica
+  Neue, Avenir to Avenir Next), else the bundled font on screen and Helvetica on paper. Preferences > Fonts switches
+  all this off or on (chapter 1.9a).
 - The styles are stored with the plan, and a layer's Text Style property refers to one by name. The Text
-  Specification's Appearance tab is still disabled (5.8).
+  Specification's Appearance tab holds the text box settings (5.8).
+
+## 5.10 Layer and Object Painters
+
+- **Tools > Layer Painter > Layer Eyedropper** loads the layer of the object you click and hands over to **Layer Painter**, which moves each clicked wall, CAD object, text and symbol to that layer (doors, windows, cabinets and the other kinds live on the layer of their kind). The bar at the top of the drawing area also lists every layer. **Scope** is Component (the clicked object, even in a group) or Object (its group). Every click is one undo step; a locked layer refuses. Esc ends the painter.
+- **Tools > Object Painter > Object Eyedropper** loads every specification field of the clicked object except where it is and how big it is, and hands over to **Object Painter**, which writes them onto each object of the same kind you click: walls (type, thickness, height, layer, options), doors and windows (style, casing, lites, tempered, egress), dimensions, CAD and text (layer, color, weight, dash, fill, arrows, text style, text height), symbols, cabinets (door and drawer style, overlay, materials, moldings) and rooms (type, finishes, fill, label). Words, marks and labels are never copied, and a door never takes a window's. **Object Painter Modes** sets the scope: Component, Object (the group), Room, Floor or Plan; **Apply to all of type** off makes Room, Floor and Plan reach only objects like the one clicked (same wall type, symbol, cabinet kind), on reaches every object of the kind. **Match Properties** on the Edit toolbar loads the selected object into the Object Painter.
+- Chief's own wording and layout of these bars are not confirmed (verify in Chief).
+
+## 5.11 Spell check
+
+- **Tools > Spell Check** (also the Check Spelling button on the File toolbar) walks the plan's text objects (with their rich text), dimension text, door and window labels, symbol labels, room names and the layout's text boxes, captions, notes, leaders and page titles. At each unknown word the **Spelling** dialog shows the word in its sentence, a **Change to** field, suggestions (listed words within two edits), and **Ignore**, **Ignore All**, **Change**, **Change All** and **Add**. Each Change is one undo step.
+- The word list is the operating system's (`/usr/share/dict/words` on macOS and Linux); nothing is bundled. Windows has none, so only the built-in design vocabulary and your own dictionary count (the dialog says so). **Add** appends to `~/.plan-studio/dictionary.txt`, one word per line, which you can edit by hand. Words with digits, short acronyms in capitals, internal capitals, addresses and rich text tags are not checked.
+- The Text Specification underlines misspelled words in red as you type and has a **Check Spelling** button that runs the same dialog over that text.

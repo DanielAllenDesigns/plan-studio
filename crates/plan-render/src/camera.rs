@@ -1,6 +1,7 @@
 //! Thin-lens camera.
 
 use crate::rng::Rng;
+use crate::settings::Projection;
 use crate::vec3::V3;
 use plan_core::Point;
 
@@ -59,10 +60,27 @@ pub(crate) struct Lens {
     focus_dist: f32,
     width: f32,
     height: f32,
+    projection: Projection,
+}
+
+/// The unit direction of an equirectangular panorama pixel at `(u, v)`
+/// (both 0..1, `v` from the top) for a camera with the given basis: the
+/// image centre looks along `forward`, `u` turns to the right, `v = 0` is
+/// straight up and `v = 1` straight down.
+pub(crate) fn equirect_dir(forward: V3, right: V3, up: V3, u: f32, v: f32) -> V3 {
+    let lon = (u - 0.5) * std::f32::consts::TAU;
+    let lat = (0.5 - v) * std::f32::consts::PI;
+    let (sin_lat, cos_lat) = lat.sin_cos();
+    let (sin_lon, cos_lon) = lon.sin_cos();
+    ((forward * cos_lon + right * sin_lon) * cos_lat + up * sin_lat).normalized()
 }
 
 impl Lens {
     pub fn new(cam: &Camera, width: u32, height: u32) -> Lens {
+        Lens::with_projection(cam, width, height, Projection::Perspective)
+    }
+
+    pub fn with_projection(cam: &Camera, width: u32, height: u32, projection: Projection) -> Lens {
         let origin = V3::from_array(cam.eye);
         let to_target = V3::from_array(cam.target) - origin;
         let forward = if to_target.length_sq() > 0.0 {
@@ -97,11 +115,22 @@ impl Lens {
             focus_dist: focus,
             width: width as f32,
             height: height as f32,
+            projection,
         }
     }
 
     /// The pinhole ray through `(px, py)`, ignoring the lens aperture.
     pub fn centre_ray(&self, px: f32, py: f32) -> (V3, V3) {
+        if self.projection == Projection::Equirectangular {
+            let dir = equirect_dir(
+                self.forward,
+                self.right,
+                self.up,
+                px / self.width,
+                py / self.height,
+            );
+            return (self.origin, dir);
+        }
         let x = (2.0 * px / self.width - 1.0) * self.aspect * self.half_h;
         let y = (1.0 - 2.0 * py / self.height) * self.half_h;
         (
@@ -112,6 +141,10 @@ impl Lens {
 
     /// Ray through image position `(px, py)` (pixels, origin top-left).
     pub fn ray(&self, px: f32, py: f32, rng: &mut Rng) -> (V3, V3) {
+        if self.projection == Projection::Equirectangular {
+            // A panorama is a pinhole: no depth of field.
+            return self.centre_ray(px, py);
+        }
         let x = (2.0 * px / self.width - 1.0) * self.aspect * self.half_h;
         let y = (1.0 - 2.0 * py / self.height) * self.half_h;
         let dir = self.forward + self.right * x + self.up * y;

@@ -75,6 +75,8 @@ impl PlanTabs {
         if let Some(v) = cx.project.plan_views.iter_mut().find(|v| v.name == active) {
             v.capture(floor, flag, camera);
         }
+        // The defaults in force and the rotation shown belong to the view.
+        crate::dialogs::plan_views::view_stored(cx, &active);
     }
 
     /// Opens `name` as a tab (if it is not one) and switches to it. `false`
@@ -183,6 +185,13 @@ pub fn report_camera(center: Point, zoom: f64) {
     with_tabs(|t| t.report_camera(center, zoom));
 }
 
+/// Where the shell last reported the camera: the plan point at the centre of
+/// the drawing area and the zoom in pixels per inch (a Library Browser drop
+/// turns the pointer into a plan point with it).
+pub fn reported_camera() -> Option<CameraState> {
+    with_tabs(|t| t.camera)
+}
+
 /// The camera to show now, if a tab switch or Reset Plan View asked for one.
 pub fn take_pending_camera() -> Option<CameraState> {
     with_tabs(PlanTabs::take_pending_camera)
@@ -229,6 +238,8 @@ impl EditorContext {
             self.defaults.text.font = st.font;
             self.defaults.text.height = st.height_in;
         }
+        // Show Color, the Selected Defaults and the rotation of the view.
+        crate::dialogs::plan_views::view_shown(self, &view);
         self.mark_dirty();
         Some(view)
     }

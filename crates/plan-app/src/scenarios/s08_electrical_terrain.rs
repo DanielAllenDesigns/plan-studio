@@ -133,7 +133,7 @@ fn double_click_on_a_device_opens_the_service_specification_and_ok_applies_it() 
     );
     // OK applies the draft as one undo step.
     sim.ok();
-    sim.click(150.0, 150.0); // any tool event applies the OK
+    sim.move_to(150.0, 150.0); // any tool event applies the OK
     assert_eq!(
         sim.app.cx.undo_label(),
         Some("Electrical Service Specification"),

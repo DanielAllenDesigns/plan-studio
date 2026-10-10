@@ -13,6 +13,8 @@ use plan_core::{Point, WallCurve};
 use serde::{Deserialize, Serialize};
 
 use crate::geom::flatten_spline;
+use crate::plants::{Distribution, GrassBlades, GrassLook, PlantImage};
+use crate::spec::ObjectExtras;
 
 /// Default layer of the terrain features (rectangular, kidney, spline).
 pub const LAYER_FEATURES: &str = "Terrain, Features";
@@ -74,6 +76,13 @@ pub struct TerrainBreak {
     /// Elevation of the break line, inches.
     pub z: f64,
     pub style: ObjectStyle,
+    /// How far from the break its effect reaches, inches (0 = the whole data set).
+    pub transition: f64,
+    /// The break holds no elevation of its own: it keeps the crease sharp
+    /// along the ground as it is (the break of a Retaining Wall).
+    pub follow_ground: bool,
+    /// Label, schedule category and object information.
+    pub extras: ObjectExtras,
 }
 
 impl Default for TerrainBreak {
@@ -82,6 +91,9 @@ impl Default for TerrainBreak {
             points: Vec::new(),
             z: 0.0,
             style: ObjectStyle::default(),
+            transition: 0.0,
+            follow_ground: false,
+            extras: ObjectExtras::default(),
         }
     }
 }
@@ -122,7 +134,22 @@ pub struct TerrainWall {
     pub retain: f64,
     /// Cut the surface along the wall (a gap with the wall's vertical faces).
     pub cut: bool,
+    /// A stepped retaining wall: the top holds level over a stretch and drops
+    /// in `step` inch courses as the ground falls, instead of following every
+    /// bump of the ground.
+    pub stepped: bool,
+    /// Height of one course of a stepped wall, inches.
+    pub step: f64,
+    /// Label, schedule category and object information.
+    pub extras: ObjectExtras,
 }
+
+/// Default height of a terrain wall above the ground: 5 ft (Chief's default).
+pub const DEFAULT_WALL_HEIGHT: f64 = 60.0;
+
+/// Height of one course of a stepped wall until the specification changes it
+/// (a standard 8" block).
+pub const DEFAULT_WALL_STEP: f64 = 8.0;
 
 /// Slope ratio of the graded ground on the cut side of a wall (4 = 1:4).
 pub const WALL_SLOPE_RATIO: f64 = 4.0;
@@ -130,7 +157,7 @@ pub const WALL_SLOPE_RATIO: f64 = 4.0;
 impl TerrainWall {
     pub fn new(kind: WallKind, points: Vec<Point>, curved: bool) -> Self {
         let (height, depth, thickness) = match kind {
-            WallKind::Wall => (36.0, 12.0, 8.0),
+            WallKind::Wall => (DEFAULT_WALL_HEIGHT, 12.0, 8.0),
             WallKind::Curb => (6.0, 4.0, 6.0),
         };
         TerrainWall {
@@ -144,6 +171,9 @@ impl TerrainWall {
             style: ObjectStyle::default(),
             retain: 0.0,
             cut: true,
+            stepped: false,
+            step: DEFAULT_WALL_STEP,
+            extras: ObjectExtras::default(),
         }
     }
 
@@ -173,6 +203,9 @@ pub enum LandscapeKind {
     SteppingStones,
     Plants,
     Sprinklers,
+    /// A Sprinkler Line: 2D irrigation pipe drawn as a line or spline. It
+    /// is not shown in 3D.
+    SprinklerLine,
 }
 
 /// How the outline was drawn.
@@ -182,6 +215,59 @@ pub enum ShapeKind {
     Polyline,
     Kidney,
     Spline,
+}
+
+/// How a plant is built in the 3D view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum PlantForm {
+    /// From the plant: conifers (spruce, pine, cedar, arborvitae, ...) are
+    /// cones, other tall plants trees on a trunk, the rest round shrubs.
+    #[default]
+    Auto,
+    /// A round canopy (a shrub, or a tree on a trunk when tall).
+    Round,
+    /// A cone: an evergreen.
+    Cone,
+    /// Two crossed upright planes: a flat cut-out of a plant, cheap to draw.
+    Billboard,
+}
+
+impl PlantForm {
+    pub const ALL: [PlantForm; 4] = [
+        PlantForm::Auto,
+        PlantForm::Round,
+        PlantForm::Cone,
+        PlantForm::Billboard,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            PlantForm::Auto => "Automatic",
+            PlantForm::Round => "Round canopy",
+            PlantForm::Cone => "Cone (evergreen)",
+            PlantForm::Billboard => "Billboard",
+        }
+    }
+}
+
+/// Words in a plant's name or catalog id that make it a conifer.
+const CONIFER_WORDS: [&str; 9] = [
+    "spruce",
+    "pine",
+    "cedar",
+    "fir",
+    "arborvitae",
+    "juniper",
+    "cypress",
+    "evergreen",
+    "conifer",
+];
+
+/// Whether `text` (a plant name or catalog id) names a conifer.
+pub fn is_conifer(text: &str) -> bool {
+    let t = text.to_ascii_lowercase();
+    t.split(|c: char| !c.is_ascii_alphabetic())
+        .any(|w| CONIFER_WORDS.contains(&w))
 }
 
 /// One landscaping object. The numeric fields mean (inches unless noted):
@@ -216,6 +302,38 @@ pub struct Landscape {
     /// Control points of a kidney or spline outline: `points` is the spline
     /// through them (closed for regions). Empty for a clicked polyline.
     pub control: Vec<Point>,
+    /// How a plant is built in 3D.
+    pub form: PlantForm,
+    /// Grass Region: blade options.
+    pub blades: GrassBlades,
+    /// Grass Region: colours, noise and mowing.
+    pub grass_look: GrassLook,
+    /// Garden Bed: plants spread over the bed.
+    pub distribution: Option<Distribution>,
+    /// Plants: the run is made of plant images (billboards with seasons).
+    pub image: Option<PlantImage>,
+    /// Plants: height at maturity, inches (0 = no growth data).
+    pub mature_height: f64,
+    /// Plants: canopy width at maturity, inches.
+    pub mature_width: f64,
+    /// Plants: months from planting to maturity.
+    pub maturity_months: f64,
+    /// Plants: share of the mature size at planting, 0 to 1.
+    pub start_fraction: f64,
+    /// Label, schedule category and object information.
+    pub extras: ObjectExtras,
+}
+
+impl Landscape {
+    /// The form a plant is built with: its own, or for `Auto` a cone for a
+    /// conifer and a round canopy for the rest.
+    pub fn plant_form(&self) -> PlantForm {
+        match self.form {
+            PlantForm::Auto if is_conifer(&self.plant) => PlantForm::Cone,
+            PlantForm::Auto => PlantForm::Round,
+            f => f,
+        }
+    }
 }
 
 impl Landscape {
@@ -235,6 +353,16 @@ impl Landscape {
             arc: 360.0,
             style: ObjectStyle::default(),
             control: Vec::new(),
+            form: PlantForm::Auto,
+            blades: GrassBlades::default(),
+            grass_look: GrassLook::default(),
+            distribution: None,
+            image: None,
+            mature_height: 0.0,
+            mature_width: 0.0,
+            maturity_months: 0.0,
+            start_fraction: 0.5,
+            extras: ObjectExtras::default(),
         };
         match kind {
             LandscapeKind::GardenBed => Landscape {
@@ -276,6 +404,11 @@ impl Landscape {
                 spacing: 144.0,
                 ..base
             },
+            LandscapeKind::SprinklerLine => Landscape {
+                material: "PVC".into(),
+                size: 2.0,
+                ..base
+            },
         }
     }
 
@@ -294,7 +427,7 @@ impl Landscape {
             LandscapeKind::WaterFeature => LAYER_WATER,
             LandscapeKind::SteppingStones => LAYER_STONES,
             LandscapeKind::Plants => LAYER_PLANTS,
-            LandscapeKind::Sprinklers => LAYER_SPRINKLERS,
+            LandscapeKind::Sprinklers | LandscapeKind::SprinklerLine => LAYER_SPRINKLERS,
         }
     }
 
@@ -310,6 +443,7 @@ impl Landscape {
             LandscapeKind::SteppingStones => "Stepping Stones",
             LandscapeKind::Plants => "Plants",
             LandscapeKind::Sprinklers => "Sprinklers",
+            LandscapeKind::SprinklerLine => "Sprinkler Line",
         }
     }
 
@@ -411,6 +545,41 @@ pub fn sprinkler_heads(pts: &[Point], spacing: f64) -> Vec<(Point, f64)> {
         .into_iter()
         .map(|(p, dir)| (p, dir + PI / 2.0))
         .collect()
+}
+
+/// The dashes of a dashed line along `pts`: pieces `dash` inches long with
+/// `gap` inches between them, the last one cut short at the end of the path.
+pub fn dash_path(pts: &[Point], dash: f64, gap: f64) -> Vec<Vec<Point>> {
+    let len = path_length(pts);
+    if dash <= 0.0 || len <= 0.0 {
+        return Vec::new();
+    }
+    let period = dash + gap.max(0.0);
+    let mut out = Vec::new();
+    let mut start = 0.0;
+    while start < len - 1e-6 {
+        let end = (start + dash).min(len);
+        let mut piece = Vec::new();
+        if let Some((p, _)) = point_at(pts, start) {
+            piece.push(p);
+        }
+        // Original vertices strictly inside the dash keep its corners.
+        let mut run = 0.0;
+        for w in pts.windows(2) {
+            run += w[0].dist(w[1]);
+            if run > start + 1e-6 && run < end - 1e-6 {
+                piece.push(w[1]);
+            }
+        }
+        if let Some((p, _)) = point_at(pts, end) {
+            piece.push(p);
+        }
+        if piece.len() >= 2 {
+            out.push(piece);
+        }
+        start += period;
+    }
+    out
 }
 
 /// The four corners of the rectangle with opposite corners `a` and `b`.

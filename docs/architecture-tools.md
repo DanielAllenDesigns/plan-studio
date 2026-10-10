@@ -105,6 +105,7 @@ sub-tool, so one tool object serves every entry of its flyout:
 | `DimensionVariant(DimMode)`, `TextVariant(TextMode)`, `CadVariant(CadMode)` | the flyout entry |
 | `CameraVariant(CameraVariant)` | Full Camera, overviews, Doll House, sections |
 | `FramingVariant(FramingVariant)` | General Framing, Post, Joist, Joist Direction, Bearing Line, Rafter, Roof Truss, Truss Base ... (`framing_view` stores the objects in `Floor.framing`) |
+| `FireplaceVariant(FireplaceMode)` | Fireplace, Fireplace in Wall, Prefab Fireplace, Chimney (a placed symbol plus a `Floor::fireplaces` record; `editor::fireplace_view` places, specifies and draws them, `dialogs::fireplace` is the Fireplace Specification) |
 
 `ToolSet::set_active` finds the tool whose `id().same_tool(id)` and calls
 `set_variant(id)` with the full payload; `ToolId::base()` gives the plain id.
@@ -135,6 +136,37 @@ kind, and `EditorRequest::OpenSpec(ObjectRef)` asks the shell to open the object
 specification dialog (`shell/spec_dialogs.rs` hosts them all). Menu and toolbar
 commands that are not tools are `toolbar::Action` values handled in
 `PlanApp::apply`.
+
+## Dynamic defaults, Set as Default and saved defaults (round 16, brief 26)
+
+An object follows its defaults dialog while its settings are "Use Default"
+(manual p. 103). What a tool owner does:
+
+* **A new spec field group** (say a stair's riser, tread and width): add it to
+  `DefaultKind::groups()` in `plan-core/src/defaults/dynamic.rs`, give the
+  object its Use Default state, and make the dialog's Use Default radio or
+  Default check box call `Project::set_group_follows(kind, id, group, on)`.
+  An object whose state is unrecorded follows while its value still equals the
+  old default's.
+* **A follower**: a function that, given the plan defaults before and after,
+  gives the objects that follow the new value (`Project::follow_wall_defaults`,
+  `Project::follow_type_defaults` for doors and windows, the cabinets'
+  `apply_dynamic_defaults`). Call it from
+  `plan_app::plan_defaults::follow_changed_defaults`; it runs after any change
+  of the plan defaults because `plan_defaults::track` (called once a frame from
+  `dialogs::defaults::show_templates_page`) notices the change, so a defaults
+  dialog needs no hook of its own. It is one undo step, "Default Settings".
+* **Set as Default** is the Edit toolbar button (`plan_defaults::SET_AS_DEFAULT`
+  with `can_set_as_default`); a kind that has its own button keeps it.
+* **A new tool with several saved defaults** (`SavedKind` in
+  `plan-core/src/defaults/saved.rs`): keep the values the tool reads in
+  `Project::annot_defaults` or as page values under `SavedKind::prefix()`;
+  `Project::saved_activate` swaps them, the Saved Defaults dialog and Default
+  Sets need nothing more. A tool that records which saved default made an object
+  calls `SavedDefaults::note_use` so Delete is blocked while it is used.
+* **Saved plan views** carry `PlanViewSpec` (`plan-core/src/defaults/views.rs`):
+  the Selected Defaults, Show Color and the rotation come back through
+  `plan_views::view_shown`, which `EditorContext::show_plan_view` calls.
 
 ## Rules for tool builders
 

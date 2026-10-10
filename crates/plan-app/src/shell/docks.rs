@@ -6,7 +6,7 @@
 //!   Every edit goes through `begin_change` on `project.layers` so it is
 //!   undoable, and marks the plan dirty so hidden layers vanish at once.
 //! * **Project Browser**: Plan > Floors / Cameras / Saved Views, and Layout.
-//! * **Library Browser**: see [`super::library_browser`].
+//! * **Library Browser**: see [`super::library_panel`] and [`super::library_browser`].
 //!
 //! The panels never switch floors or tools themselves (the app owns the tool
 //! set); they queue [`DockRequest`]s that `main.rs` applies.
@@ -20,7 +20,7 @@
 //! ([`toggle_focus_region`]) jumps in and out of the dock.
 
 use super::hotkeys::HotkeyState;
-use super::library_browser::{self, LibraryBrowserState};
+use super::library_browser::LibraryBrowserState;
 use crate::dialogs::hotkeys::HotkeyDialog;
 use crate::dialogs::layer_display::LayerDisplayDialog;
 use crate::dialogs::Outcome;
@@ -30,7 +30,7 @@ use crate::toolbar::{Action, Dock};
 use crate::tools::ToolId;
 use eframe::egui::{self, Key, Modifiers, Sense, Stroke, Vec2};
 use plan_core::layer_sets::LayerEdit;
-use plan_core::{DimensionKind, Layer, OpeningKind, Project};
+use plan_core::{DimensionKind, Layer, Project};
 use std::collections::HashMap;
 
 /// Something a dock panel needs the application to do.
@@ -59,6 +59,8 @@ pub use crate::dialogs::layer_display::{layer_panel, LayerPanelState};
 pub struct DockState {
     pub layers: LayerPanelState,
     pub library: LibraryBrowserState,
+    /// The Plan Agent dock (`shell::agent_panel`).
+    pub agent: super::agent_panel::AgentPanelState,
     /// Floor switches and tool changes for the app to apply.
     pub requests: Vec<DockRequest>,
     pub hotkey_dialog: Option<HotkeyDialog>,
@@ -93,13 +95,10 @@ pub fn show(ui: &mut egui::Ui, dock: Dock, cx: &mut EditorContext, st: &mut Dock
     match dock {
         Dock::LayerDisplay => layer_panel(ui, cx, &mut st.layers, 0.55),
         Dock::Project => project_browser(ui, cx, &mut st.requests),
-        Dock::Library => {
-            if let Some(ev) = library_browser::show(ui, &mut st.library) {
-                if let Some(tool) = library_browser::apply_event(ev, &mut st.library, cx) {
-                    st.requests.push(DockRequest::SetTool(tool));
-                }
-            }
-        }
+        // The dock body (library objects, or the material library) lives in
+        // `library_panel`.
+        Dock::Library => super::library_panel::show(ui, &mut st.library, cx, &mut st.requests),
+        Dock::Agent => super::agent_panel::show(ui, st, cx),
     }
 }
 
@@ -128,11 +127,12 @@ pub fn remember_width(slot: &mut f32, width: f32) {
     }
 }
 
-/// The three docks in tab order, with the tab's icon and short label.
-const TABS: [(Dock, &str, &str); 3] = [
+/// The docks in tab order, with the tab's icon and short label.
+const TABS: [(Dock, &str, &str); 4] = [
     (Dock::Library, "library_browser", "Library"),
     (Dock::Project, "project_browser", "Project"),
     (Dock::LayerDisplay, "layer_display", "Layers"),
+    (Dock::Agent, "auto_detail", "Agent"),
 ];
 
 const TAB_HEIGHT: f32 = 32.0;
@@ -377,6 +377,8 @@ pub fn show_dialogs(
     }
     crate::dialogs::layer_sets::show_all(ctx, cx);
     crate::dialogs::plan_views::show_all(ctx, cx);
+    crate::dialogs::calculators::show_all(ctx, cx);
+    crate::dialogs::library_object::show_all(ctx, cx);
 }
 
 // ----- layers -----
@@ -390,16 +392,13 @@ pub fn layer_usage(project: &Project) -> HashMap<String, usize> {
             add(&w.layer);
         }
         for o in &f.openings {
-            add(match o.kind {
-                OpeningKind::Door => "Doors",
-                OpeningKind::Window => "Windows",
-            });
+            add(o.layer_name());
         }
         for d in &f.dimensions {
-            add(match d.kind {
+            add(d.layer_or(match d.kind {
                 DimensionKind::AutoExterior => "Dimensions, Automatic",
                 _ => "Dimensions, Manual",
-            });
+            }));
         }
         for c in &f.cad {
             add(&c.layer);
@@ -535,17 +534,24 @@ pub enum BrowserNode {
     Cameras,
     Schedules,
     CadDetails,
+    /// The Wall Details of the framed walls, named from the wall labels and
+    /// listed by floor.
+    WallDetails,
+    /// The plan's saved Materials Lists and Reports.
+    MaterialsLists,
     Layout,
 }
 
 impl BrowserNode {
     /// The order the browser lists them in.
-    pub const ALL: [BrowserNode; 6] = [
+    pub const ALL: [BrowserNode; 8] = [
         BrowserNode::Floors,
         BrowserNode::PlanViews,
         BrowserNode::Cameras,
         BrowserNode::Schedules,
         BrowserNode::CadDetails,
+        BrowserNode::WallDetails,
+        BrowserNode::MaterialsLists,
         BrowserNode::Layout,
     ];
 
@@ -556,6 +562,8 @@ impl BrowserNode {
             BrowserNode::Cameras => "Cameras",
             BrowserNode::Schedules => "Schedules",
             BrowserNode::CadDetails => "CAD Details",
+            BrowserNode::WallDetails => "Wall Details",
+            BrowserNode::MaterialsLists => "Materials Lists",
             BrowserNode::Layout => "Layout",
         }
     }
@@ -567,6 +575,8 @@ impl BrowserNode {
             BrowserNode::Cameras => "pb_cameras",
             BrowserNode::Schedules => "pb_schedules",
             BrowserNode::CadDetails => "pb_cad_details",
+            BrowserNode::WallDetails => "pb_wall_details",
+            BrowserNode::MaterialsLists => "pb_materials_lists",
             BrowserNode::Layout => "pb_layout_pages",
         }
     }
@@ -587,6 +597,10 @@ pub enum BrowserItem {
         floor: usize,
         group: plan_core::Id,
     },
+    /// A CAD detail (a floor marked as a detail): opens in a tab of its own.
+    DetailFloor(usize),
+    /// A saved Materials List or Report, by name.
+    MaterialsList(String),
     /// Index into the layout's pages.
     Page(usize),
 }
@@ -623,6 +637,15 @@ pub fn browser_nodes(cx: &EditorContext) -> Vec<(BrowserNode, Vec<BrowserEntry>)
     let mut schedules = Vec::new();
     let mut details = Vec::new();
     for (fi, f) in p.floors.iter().enumerate() {
+        if f.is_cad_detail() {
+            // A Wall Detail is listed in its own folder, by floor.
+            if crate::editor::framing_view::detail_wall(f).is_some() {
+                continue;
+            }
+            // A detail is listed once; its parts are not browser rows.
+            details.push(entry(BrowserItem::DetailFloor(fi), f.name.clone()));
+            continue;
+        }
         for s in plan_core::schedules::ScheduleLayer::load(f).schedules {
             let title = if s.title.is_empty() {
                 s.kind.name().to_string()
@@ -655,6 +678,7 @@ pub fn browser_nodes(cx: &EditorContext) -> Vec<(BrowserNode, Vec<BrowserEntry>)
                     .floors
                     .iter()
                     .enumerate()
+                    .filter(|(_, f)| !f.is_cad_detail())
                     .map(|(i, f)| entry(BrowserItem::Floor(i), f.name.clone()))
                     .collect(),
                 BrowserNode::PlanViews => p
@@ -670,6 +694,28 @@ pub fn browser_nodes(cx: &EditorContext) -> Vec<(BrowserNode, Vec<BrowserEntry>)
                     .collect(),
                 BrowserNode::Schedules => schedules.clone(),
                 BrowserNode::CadDetails => details.clone(),
+                BrowserNode::WallDetails => crate::editor::framing_view::wall_details(p)
+                    .into_iter()
+                    .map(|(di, fi, _, label)| {
+                        entry(BrowserItem::DetailFloor(di), tag(&p.floors[fi], label))
+                    })
+                    .collect(),
+                BrowserNode::MaterialsLists => p
+                    .materials
+                    .lists
+                    .iter()
+                    .map(|l| {
+                        let kind = if l.spec.kind == plan_core::materials_data::ListKind::Report {
+                            "Report"
+                        } else {
+                            "Live"
+                        };
+                        entry(
+                            BrowserItem::MaterialsList(l.spec.name.clone()),
+                            format!("{} ({kind})", l.spec.name),
+                        )
+                    })
+                    .collect(),
                 BrowserNode::Layout => super::layout_window::page_list(p)
                     .into_iter()
                     .map(|(i, label, _)| entry(BrowserItem::Page(i), label))
@@ -791,7 +837,7 @@ fn layout_section(ui: &mut egui::Ui, cx: &mut EditorContext, requests: &mut Vec<
     egui::ComboBox::from_id_salt("pb_sheet_scale")
         .selected_text(cx.sheet.scale.label())
         .show_ui(ui, |ui| {
-            for s in plan_docs::Scale::ALL {
+            for s in plan_docs::Scale::choices() {
                 ui.selectable_value(&mut cx.sheet.scale, s, s.label());
             }
         });
@@ -825,13 +871,54 @@ fn layout_pages(ui: &mut egui::Ui, cx: &EditorContext, requests: &mut Vec<DockRe
         } else {
             egui::RichText::new(label)
         };
-        if ui.selectable_label(showing == Some(i), text).clicked() {
+        let r = ui
+            .selectable_label(showing == Some(i), text)
+            .interact(Sense::click_and_drag())
+            .on_hover_text(
+                "Click to open; drag to another page to move it (the # labels renumber)",
+            );
+        if r.clicked() {
             run(requests, C::GoToPage(i));
+        }
+        r.dnd_set_drag_payload(LayoutPageDrag(i));
+        if let Some(p) = r.dnd_hover_payload::<LayoutPageDrag>() {
+            if p.0 != i {
+                let y = if p.0 < i {
+                    r.rect.bottom()
+                } else {
+                    r.rect.top()
+                };
+                ui.painter().hline(
+                    r.rect.x_range(),
+                    y,
+                    Stroke::new(2.0_f32, theme::current_chrome().accent),
+                );
+            }
+        }
+        if let Some(p) = r.dnd_release_payload::<LayoutPageDrag>() {
+            if p.0 != i {
+                run(requests, C::MovePage(p.0, i));
+            }
+        }
+    }
+    // The plan's other layout files, parked until opened (File > New Layout
+    // makes one; clicking a name opens it and parks the open one).
+    let parked = layout_window::parked_layouts(&cx.project);
+    if !parked.is_empty() {
+        ui.separator();
+        ui.label("Other layout files");
+        for (i, name) in parked {
+            if ui.selectable_label(false, name).clicked() {
+                run(requests, C::SwitchLayout(i));
+            }
         }
     }
     ui.horizontal_wrapped(|ui| {
         if ui.button("Open Layout").clicked() {
             run(requests, C::ShowLayout);
+        }
+        if ui.button("New Layout File\u{2026}").clicked() {
+            run(requests, C::NewLayoutFile);
         }
         if ui.button("Add Page").clicked() {
             run(requests, C::InsertPageAfter);
@@ -847,6 +934,9 @@ fn layout_pages(ui: &mut egui::Ui, cx: &EditorContext, requests: &mut Vec<DockRe
 
 /// A plan view row being dragged to a new place in the list.
 struct PlanViewDrag(usize);
+
+/// A layout page row being dragged to a new place in the list.
+struct LayoutPageDrag(usize);
 
 /// The row being renamed in place: `key` names the row, `text` is the edit.
 #[derive(Clone, Default)]
@@ -1002,7 +1092,8 @@ fn plan_view_rows(ui: &mut egui::Ui, cx: &mut EditorContext, rows: &[BrowserEntr
         pv::move_view(cx, from, to);
     }
     if let Some(n) = dup {
-        pv::duplicate_view(cx, &n);
+        // The New Saved Plan View dialog opens (name and Copy Layer Set).
+        pv::request_duplicate(cx, &n);
     }
     if let Some(n) = delete {
         cx.status = match pv::delete_view(cx, &n) {
@@ -1031,14 +1122,23 @@ fn plan_view_rows(ui: &mut egui::Ui, cx: &mut EditorContext, rows: &[BrowserEntr
     });
 }
 
-/// The Cameras rows: click selects the camera and pans to it, right-click
-/// offers Rename, Delete and Send to Layout.
+/// The Cameras rows: click selects the camera and pans to it, double-click
+/// restores it (opens its 3D view), right-click offers Restore, Rename, Delete
+/// and Send to Layout. "Save Camera" keeps the 3D view on screen as a camera.
 fn camera_rows(
     ui: &mut egui::Ui,
     cx: &mut EditorContext,
     rows: &[BrowserEntry],
     requests: &mut Vec<DockRequest>,
 ) {
+    use super::view3d_panel::{Outbox, ViewRequest};
+    if ui
+        .small_button("Save Camera")
+        .on_hover_text("Keep the view in the 3D window as a camera (3D > Save Camera)")
+        .clicked()
+    {
+        Outbox::global().post(ViewRequest::SaveCamera);
+    }
     if rows.is_empty() {
         ui.weak("None");
     }
@@ -1059,12 +1159,19 @@ fn camera_rows(
         let current = selected == Some(ObjectRef::Camera(id));
         let r = ui
             .selectable_label(current, &e.label)
-            .on_hover_text("Select the camera and pan the plan to it (right-click: Rename, Delete, Send to Layout)");
+            .on_hover_text("Select the camera and pan the plan to it; double-click restores its 3D view (right-click: Restore, Rename, Delete, Send to Layout)");
         if r.clicked() {
             requests.push(DockRequest::SelectCamera(id));
         }
+        if r.double_clicked() {
+            Outbox::global().post(ViewRequest::ShowCamera(id));
+        }
         let label = e.label.clone();
         r.context_menu(|ui| {
+            if ui.button("Restore (open 3D view)").clicked() {
+                Outbox::global().post(ViewRequest::ShowCamera(id));
+                ui.close_menu();
+            }
             if ui.button("Rename").clicked() {
                 start_rename(ui, &key, &label);
                 ui.close_menu();
@@ -1088,6 +1195,45 @@ fn camera_rows(
     }
     if let Some(id) = delete {
         delete_camera(cx, id);
+    }
+}
+
+/// The saved Materials Lists and Reports: click to open one (a live list is
+/// calculated again from the plan), right-click for Copy, Delete and the
+/// Management dialog.
+fn materials_list_rows(ui: &mut egui::Ui, cx: &mut EditorContext, rows: &[BrowserEntry]) {
+    use crate::dialogs::materials_list as ml;
+    if rows.is_empty() {
+        ui.weak("None");
+    }
+    for e in rows {
+        let BrowserItem::MaterialsList(name) = &e.item else {
+            continue;
+        };
+        let r = ui
+            .selectable_label(false, &e.label)
+            .on_hover_text("Open the Materials List");
+        if r.clicked() {
+            ml::open_from_browser(cx, name);
+        }
+        r.context_menu(|ui| {
+            if ui.button("Open").clicked() {
+                ml::open_from_browser(cx, name);
+                ui.close_menu();
+            }
+            if ui.button("Copy").clicked() {
+                ml::copy_saved(cx, name, &format!("{name} copy"));
+                ui.close_menu();
+            }
+            if ui.button("Delete").clicked() {
+                ml::delete_saved(cx, name);
+                ui.close_menu();
+            }
+            if ui.button("Rename\u{2026}").clicked() {
+                ml::run_command(cx, ml::cmd::MANAGE);
+                ui.close_menu();
+            }
+        });
     }
 }
 
@@ -1161,6 +1307,45 @@ fn project_browser(ui: &mut egui::Ui, cx: &mut EditorContext, requests: &mut Vec
                                         ui.weak("None");
                                     }
                                     for e in rows {
+                                        if let BrowserItem::DetailFloor(i) = e.item {
+                                            let on = cx.floor == i;
+                                            let r = ui
+                                                .selectable_label(on, &e.label)
+                                                .on_hover_text("Open the detail in a tab");
+                                            if r.clicked() {
+                                                crate::tools::details::open_detail(cx, i);
+                                            }
+                                            r.context_menu(|ui| {
+                                                if ui.button("Open").clicked() {
+                                                    crate::tools::details::open_detail(cx, i);
+                                                    ui.close_menu();
+                                                }
+                                                if ui.button("Duplicate").clicked() {
+                                                    crate::tools::details::duplicate_detail(cx, i);
+                                                    ui.close_menu();
+                                                }
+                                                if ui.button("Send to Layout").clicked() {
+                                                    if let Err(e) =
+                                                        crate::tools::details::send_to_layout(cx, i)
+                                                    {
+                                                        cx.status = e;
+                                                    }
+                                                    ui.close_menu();
+                                                }
+                                                if ui.button("Delete").clicked() {
+                                                    crate::tools::details::delete_detail(cx, i);
+                                                    ui.close_menu();
+                                                }
+                                                if ui.button("Manage\u{2026}").clicked() {
+                                                    crate::dialogs::details::select_detail(Some(
+                                                        &e.label,
+                                                    ));
+                                                    crate::dialogs::details::open_management();
+                                                    ui.close_menu();
+                                                }
+                                            });
+                                            continue;
+                                        }
                                         if let BrowserItem::CadDetail { floor, group } = e.item {
                                             if ui
                                                 .selectable_label(false, &e.label)
@@ -1176,6 +1361,43 @@ fn project_browser(ui: &mut egui::Ui, cx: &mut EditorContext, requests: &mut Vec
                                             }
                                         }
                                     }
+                                });
+                            }
+                            BrowserNode::WallDetails => {
+                                tree_node(ui, node.salt(), node.title(), false, |ui| {
+                                    if rows.is_empty() {
+                                        ui.weak("None");
+                                    }
+                                    for e in rows {
+                                        if let BrowserItem::DetailFloor(i) = e.item {
+                                            let on = cx.floor == i;
+                                            let r = ui
+                                                .selectable_label(on, &e.label)
+                                                .on_hover_text("Open the Wall Detail in a tab");
+                                            if r.clicked() {
+                                                crate::tools::details::open_detail(cx, i);
+                                            }
+                                            r.context_menu(|ui| {
+                                                if ui.button("Open View").clicked() {
+                                                    crate::tools::details::open_detail(cx, i);
+                                                    ui.close_menu();
+                                                }
+                                                if ui.button("Send to Layout").clicked() {
+                                                    if let Err(e) =
+                                                        crate::tools::details::send_to_layout(cx, i)
+                                                    {
+                                                        cx.status = e;
+                                                    }
+                                                    ui.close_menu();
+                                                }
+                                            });
+                                        }
+                                    }
+                                });
+                            }
+                            BrowserNode::MaterialsLists => {
+                                tree_node(ui, node.salt(), node.title(), false, |ui| {
+                                    materials_list_rows(ui, cx, rows);
                                 });
                             }
                             BrowserNode::Layout => {}
@@ -1475,7 +1697,12 @@ mod tests {
         st.open_hotkey_dialog(&hk);
         st.open_layer_dialog();
         for _ in 0..3 {
-            for dock in [Dock::LayerDisplay, Dock::Project, Dock::Library] {
+            for dock in [
+                Dock::LayerDisplay,
+                Dock::Project,
+                Dock::Library,
+                Dock::Agent,
+            ] {
                 let _ = ctx.run(egui::RawInput::default(), |ctx| {
                     egui::SidePanel::right("dock").show(ctx, |ui| show(ui, dock, &mut cx, &mut st));
                     show_dialogs(ctx, &mut cx, &mut st, &mut hk);
@@ -1553,6 +1780,8 @@ mod tests {
                 "Cameras",
                 "Schedules",
                 "CAD Details",
+                "Wall Details",
+                "Materials Lists",
                 "Layout"
             ]
         );

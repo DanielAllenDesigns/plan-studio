@@ -34,6 +34,45 @@ pub fn contours(surface: &TerrainSurface, interval: f64) -> Vec<Contour> {
 /// [`contours`] with every `major_every`'th level a major contour (`0` falls
 /// back to every fifth).
 pub fn contours_with(surface: &TerrainSurface, interval: f64, major_every: u32) -> Vec<Contour> {
+    contours_opts(
+        surface,
+        &ContourOptions {
+            interval,
+            major_every,
+            ..ContourOptions::default()
+        },
+    )
+}
+
+/// How the contour lines are cut (Terrain Specification > Contours).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ContourOptions {
+    /// Distance between contours, inches (non-positive falls back to 12").
+    pub interval: f64,
+    /// Every this-many'th contour is a major one (0 = every fifth).
+    pub major_every: u32,
+    /// Shifts which elevation gets a contour: levels fall at `offset` plus
+    /// whole intervals, inches.
+    pub offset: f64,
+    /// Passes of 2D corner cutting that smooth the lines (0 = none).
+    pub smooth_passes: u32,
+}
+
+impl Default for ContourOptions {
+    fn default() -> Self {
+        ContourOptions {
+            interval: 12.0,
+            major_every: MAJOR_EVERY as u32,
+            offset: 0.0,
+            smooth_passes: 0,
+        }
+    }
+}
+
+/// [`contours`] with all the Contours panel options.
+pub fn contours_opts(surface: &TerrainSurface, opts: &ContourOptions) -> Vec<Contour> {
+    let (interval, major_every, offset) = (opts.interval, opts.major_every, opts.offset);
+    let offset = if offset.is_finite() { offset } else { 0.0 };
     let major_every = if major_every == 0 {
         MAJOR_EVERY
     } else {
@@ -52,10 +91,10 @@ pub fn contours_with(surface: &TerrainSurface, interval: f64, major_every: u32) 
             zs.iter().copied().fold(f64::INFINITY, f64::min),
             zs.iter().copied().fold(f64::NEG_INFINITY, f64::max),
         );
-        let k0 = (zmin / interval).ceil() as i64;
-        let k1 = (zmax / interval).floor() as i64;
+        let k0 = ((zmin - offset) / interval).ceil() as i64;
+        let k1 = ((zmax - offset) / interval).floor() as i64;
         for k in k0..=k1 {
-            let level = k as f64 * interval;
+            let level = offset + k as f64 * interval;
             let above = zs.map(|v| v >= level);
             let crossings: Vec<Point> = (0..3)
                 .filter(|&e| above[e] != above[(e + 1) % 3])
@@ -69,14 +108,58 @@ pub fn contours_with(surface: &TerrainSurface, interval: f64, major_every: u32) 
     segments
         .into_iter()
         .filter_map(|(k, segs)| {
-            let polylines = chain_segments(&segs);
+            let mut polylines = chain_segments(&segs);
+            if opts.smooth_passes > 0 {
+                polylines = polylines
+                    .iter()
+                    .map(|l| smooth_line(l, opts.smooth_passes.min(6)))
+                    .collect();
+            }
             (!polylines.is_empty()).then(|| Contour {
-                z: k as f64 * interval,
+                z: offset + k as f64 * interval,
                 polylines,
                 major: k.rem_euclid(major_every) == 0,
             })
         })
         .collect()
+}
+
+/// Chaikin corner cutting: each pass replaces every corner by two points a
+/// quarter of the way along its neighbors. Open lines keep their end points; a
+/// closed loop (first point repeated last) stays closed.
+pub fn smooth_line(line: &[Point], passes: u32) -> Vec<Point> {
+    let mut pts = line.to_vec();
+    for _ in 0..passes {
+        if pts.len() < 3 {
+            break;
+        }
+        let closed = pts.first() == pts.last();
+        let n = pts.len();
+        let mut next = Vec::with_capacity(n * 2);
+        if !closed {
+            next.push(pts[0]);
+        }
+        let segs = n - 1;
+        for i in 0..segs {
+            let (a, b) = (pts[i], pts[i + 1]);
+            if !closed && i == 0 {
+                next.push(Point::lerp(a, b, 0.75));
+            } else if !closed && i == segs - 1 {
+                next.push(Point::lerp(a, b, 0.25));
+            } else {
+                next.push(Point::lerp(a, b, 0.25));
+                next.push(Point::lerp(a, b, 0.75));
+            }
+        }
+        if closed {
+            let first = next[0];
+            next.push(first);
+        } else {
+            next.push(pts[n - 1]);
+        }
+        pts = next;
+    }
+    pts
 }
 
 /// Where the edge `a`-`b` crosses `level`, computed identically from either triangle.

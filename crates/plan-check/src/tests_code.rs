@@ -142,6 +142,13 @@ fn handrail_is_required_from_four_risers() {
         }),
         "IRC R311.7.8 handrails"
     ));
+    // A Handrail side is one, and it is not a guard (no guard-height finding).
+    let gripped = check(StairParams {
+        left_side: SideKind::Handrail,
+        ..tall.clone()
+    });
+    assert!(!has(&gripped, "IRC R311.7.8 handrails"));
+    assert!(!has(&gripped, "IRC R312.1.2 guard height"));
     // Three risers need none.
     let short = StairParams {
         total_rise: 22.0,
@@ -850,6 +857,8 @@ fn the_catalog_lists_every_rule_once_and_only_real_ones() {
         include_str!("rules_mep.rs"),
         include_str!("rules_code.rs"),
         include_str!("rules_fixtures.rs"),
+        include_str!("rules_irc.rs"),
+        include_str!("rules_nkba.rs"),
     ];
     for r in catalog {
         let quoted = format!("\"{}\"", r.id);
@@ -866,6 +875,10 @@ fn every_rule_of_the_new_files_is_in_the_catalog() {
     for src in [
         include_str!("rules_code.rs"),
         include_str!("rules_fixtures.rs"),
+        include_str!("rules_irc.rs"),
+        include_str!("rules_mep.rs"),
+        include_str!("rules_nkba.rs"),
+        include_str!("rules.rs"),
     ] {
         for lit in src.split('"').skip(1).step_by(2) {
             let looks_like_rule = ["IRC ", "NEC ", "NKBA ", "Roof pitch: ", "Plan geometry: "]

@@ -57,6 +57,9 @@ pub(crate) struct Curve {
     /// Radius of the inside edge.
     pub inner: f64,
     pub width: f64,
+    /// Distance of the walkline from the inside edge (half the width when
+    /// the walkline is off).
+    pub walk_off: f64,
     /// Turning left (counter-clockwise in plan).
     pub left: bool,
     /// Angle between two riser lines, radians.
@@ -68,7 +71,7 @@ pub(crate) struct Curve {
 impl Curve {
     /// Radius of the walking line (the middle of the stair).
     pub(crate) fn walk(&self) -> f64 {
-        self.inner + self.width / 2.0
+        self.inner + self.walk_off
     }
 
     pub(crate) fn outer(&self) -> f64 {
@@ -181,50 +184,203 @@ pub(crate) struct Layout {
     pub is_landing: bool,
     /// Set for curved stairs.
     pub curve: Option<Curve>,
+    /// Set for curved ramps.
+    pub ramp_arc: Option<RampArc>,
+}
+
+/// A curved ramp: the arc it sweeps and its runs and landings along it.
+#[derive(Debug, Clone)]
+pub(crate) struct RampArc {
+    /// The arc (`treads` is 1 and `step` the whole sweep).
+    pub curve: Curve,
+    /// Runs and landings in order: `(from angle, to angle, height at the
+    /// start above the floor, rise over the segment)`; a landing has no
+    /// rise.
+    pub segs: Vec<(f64, f64, f64, f64)>,
+}
+
+impl RampArc {
+    /// Height of the surface at angle `a` along the arc.
+    pub(crate) fn height_at(&self, a: f64) -> f64 {
+        for &(a0, a1, base, rise) in &self.segs {
+            if a <= a1 + 1e-9 {
+                let t = if a1 > a0 {
+                    ((a - a0) / (a1 - a0)).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                return base + rise * t;
+            }
+        }
+        self.segs.last().map_or(0.0, |&(_, _, b, r)| b + r)
+    }
 }
 
 /// Points per half-ellipse of a flared tread.
 const APRON_STEPS: usize = 10;
 
-/// The outline `(s, lateral)` of a flared bottom tread (the apron): the
-/// straight tread of depth `tread` (plus the `nosing` in front) and `width`
-/// wide, with a half-ellipse cap on each side that reaches `flare` past the
-/// stair. Convex. Measured along the flight from the first riser line.
-pub(crate) fn apron_outline(tread: f64, nosing: f64, width: f64, flare: f64) -> Vec<Uv> {
+/// The outline `(s, lateral)` of a flared or bullnosed bottom tread (the
+/// apron): the straight tread of depth `tread` (plus the `nosing` in front)
+/// and `width` wide, with a half-ellipse cap on each side that reaches
+/// `reach.0` past the left edge and `reach.1` past the right one (a reach of
+/// zero is a straight end). Convex. Measured along the flight from the first
+/// riser line.
+pub(crate) fn apron_outline(tread: f64, nosing: f64, width: f64, reach: (f64, f64)) -> Vec<Uv> {
     let a = (tread + nosing) * 0.5;
     let mid = (tread - nosing) * 0.5;
-    let mut pts = Vec::with_capacity(2 * APRON_STEPS + 2);
-    for i in 0..=APRON_STEPS {
-        let phi = std::f64::consts::PI * i as f64 / APRON_STEPS as f64;
-        pts.push((mid + a * phi.cos(), -flare * phi.sin()));
+    let mut pts = Vec::with_capacity(2 * APRON_STEPS + 4);
+    if reach.0 > 1e-9 {
+        for i in 0..=APRON_STEPS {
+            let phi = std::f64::consts::PI * i as f64 / APRON_STEPS as f64;
+            pts.push((mid + a * phi.cos(), -reach.0 * phi.sin()));
+        }
+    } else {
+        pts.push((mid + a, 0.0));
+        pts.push((mid - a, 0.0));
     }
-    for i in 0..=APRON_STEPS {
-        let phi = std::f64::consts::PI * (1.0 - i as f64 / APRON_STEPS as f64);
-        pts.push((mid + a * phi.cos(), width + flare * phi.sin()));
+    if reach.1 > 1e-9 {
+        for i in 0..=APRON_STEPS {
+            let phi = std::f64::consts::PI * (1.0 - i as f64 / APRON_STEPS as f64);
+            pts.push((mid + a * phi.cos(), width + reach.1 * phi.sin()));
+        }
+    } else {
+        pts.push((mid - a, width));
+        pts.push((mid + a, width));
     }
     pts
 }
 
 impl Layout {
-    /// The flared first tread of the first flight, as local points, when the
-    /// stair has one ([`StairParams::flare`] on a stepped, straight-run
-    /// start).
-    pub(crate) fn apron(&self, params: &crate::StairParams) -> Option<Vec<Uv>> {
-        let f = self.flights.first()?;
-        if params.flare <= 1e-9
+    /// The rounded starter treads (the apron of the bottom tread and, with
+    /// two starters, the second one) as `(tread number, outline)`; empty
+    /// when the stair has none, or is a ramp, landing or curve.
+    pub(crate) fn aprons(&self, params: &crate::StairParams) -> Vec<(u32, Vec<Uv>)> {
+        let Some(f) = self.flights.first() else {
+            return Vec::new();
+        };
+        let reach = params.apron_reach();
+        if (reach.0 <= 1e-9 && reach.1 <= 1e-9)
             || self.is_ramp
             || self.is_landing
             || self.curve.is_some()
             || f.treads == 0
         {
-            return None;
+            return Vec::new();
         }
-        Some(
-            apron_outline(self.tread_depth, params.nosing, f.width, params.flare)
-                .into_iter()
-                .map(|(s, lat)| f.at(s, lat))
-                .collect(),
-        )
+        let n = params.starter.count().max(1).min(f.treads);
+        (1..=n)
+            .map(|j| {
+                let scale = f64::from(n - j + 1) / f64::from(n);
+                let outline = apron_outline(
+                    self.tread_depth,
+                    params.nosing,
+                    f.width,
+                    (reach.0 * scale, reach.1 * scale),
+                );
+                let shift = f64::from(j - 1) * self.tread_depth;
+                let pts = outline
+                    .into_iter()
+                    .map(|(s, lat)| f.at(s + shift, lat))
+                    .collect();
+                (j, pts)
+            })
+            .collect()
+    }
+
+    /// How far the flared sides of the stair stand out past its edges at
+    /// distance `s` along flight `i`: `(left, right)`.
+    pub(crate) fn reach(&self, params: &crate::StairParams, i: usize, s: f64) -> (f64, f64) {
+        let fl = &params.flare_shape;
+        if fl.corners.iter().all(|c| c.abs() < 1e-9)
+            || self.is_ramp
+            || self.is_landing
+            || self.curve.is_some()
+        {
+            return (0.0, 0.0);
+        }
+        let Some(f) = self.flights.get(i) else {
+            return (0.0, 0.0);
+        };
+        let ease = |x: f64| {
+            let x = x.clamp(0.0, 1.0);
+            (1.0 - fl.soften.clamp(0.0, 1.0)) * x + fl.soften.clamp(0.0, 1.0) * x * x
+        };
+        let zone = if fl.start > 1e-9 {
+            f.len * fl.start.min(1.0)
+        } else {
+            f.len
+        }
+        .max(1e-9);
+        let (mut l, mut r) = (0.0, 0.0);
+        if i == 0 {
+            let x = ease(1.0 - s / zone);
+            l += fl.corners[0].max(0.0) * x;
+            r += fl.corners[1].max(0.0) * x;
+        }
+        if i + 1 == self.flights.len() {
+            let x = ease(1.0 - (f.len - s) / zone);
+            l += fl.corners[2].max(0.0) * x;
+            r += fl.corners[3].max(0.0) * x;
+        }
+        (l, r)
+    }
+
+    /// The bulge of the front edge of tread `j` (1 is the bottom one) of
+    /// flight `i`: positive curves it down the stair.
+    pub(crate) fn bulge(&self, params: &crate::StairParams, i: usize, j: u32) -> f64 {
+        let fl = &params.flare_shape;
+        let mut b = fl.curve_all;
+        if i == 0 && j <= 2 {
+            b += fl.curve_bottom;
+        }
+        b
+    }
+
+    /// The line across flight `i` at distance `s`, with its flared ends and
+    /// its bulge: two points when it is straight, else a chain.
+    pub(crate) fn across(
+        &self,
+        params: &crate::StairParams,
+        i: usize,
+        s: f64,
+        bulge: f64,
+    ) -> Vec<Uv> {
+        let f = &self.flights[i];
+        let (l, r) = self.reach(params, i, s);
+        if bulge.abs() < 1e-9 {
+            return vec![f.at(s, -l), f.at(s, f.width + r)];
+        }
+        const N: usize = 8;
+        let (lo, hi) = (-l, f.width + r);
+        let (mid, half) = ((lo + hi) / 2.0, ((hi - lo) / 2.0).max(1e-9));
+        (0..=N)
+            .map(|k| {
+                let lat = lo + (hi - lo) * k as f64 / N as f64;
+                let off = bulge * (1.0 - ((lat - mid) / half).powi(2));
+                f.at(s - off, lat)
+            })
+            .collect()
+    }
+
+    /// One side of flight `i` from its start to distance `len`, following
+    /// the flare.
+    pub(crate) fn edge_chain(
+        &self,
+        params: &crate::StairParams,
+        i: usize,
+        len: f64,
+        right: bool,
+    ) -> Vec<Uv> {
+        let f = &self.flights[i];
+        let flared = params.flare_shape.corners.iter().any(|c| c.abs() > 1e-9);
+        let steps = if flared { 10 } else { 1 };
+        (0..=steps)
+            .map(|k| {
+                let s = len * k as f64 / steps as f64;
+                let (l, r) = self.reach(params, i, s);
+                f.at(s, if right { f.width + r } else { -l })
+            })
+            .collect()
     }
 }
 
@@ -251,6 +407,93 @@ fn dedupe(mut pts: Vec<Uv>) -> Vec<Uv> {
         }
     }
     pts
+}
+
+/// The layout of a curved ramp: runs of at most 30" of rise on the arc,
+/// joined by flat landings 60" long at the walkline.
+fn curved_ramp(frame: Frame, p: &crate::StairParams, slope: f64, inner: f64) -> Layout {
+    let w = p.width;
+    let left = p.turn == Turn::Left;
+    let rise = p.total_rise.max(0.0);
+    let runs = ramp_runs(rise);
+    let run_rise = rise / f64::from(runs);
+    let mut curve = Curve {
+        center: if left {
+            (0.0, -inner)
+        } else {
+            (0.0, w + inner)
+        },
+        inner,
+        width: w,
+        walk_off: w / 2.0,
+        left,
+        step: 1.0,
+        treads: 1,
+        risers: 0,
+    };
+    let walk = curve.walk().max(1e-9);
+    let run_sweep = run_rise * slope.max(0.0) / walk;
+    let landing_sweep = RAMP_LANDING / walk;
+    let mut segs = Vec::new();
+    let mut outlines = Vec::new();
+    let mut slabs = Vec::new();
+    let mut a = 0.0;
+    for k in 0..runs {
+        segs.push((a, a + run_sweep, f64::from(k) * run_rise, run_rise));
+        a += run_sweep;
+        if k + 1 < runs {
+            let poly = arc_band(&curve, a, a + landing_sweep);
+            segs.push((a, a + landing_sweep, f64::from(k + 1) * run_rise, 0.0));
+            outlines.push(poly.clone());
+            slabs.push(Slab {
+                poly,
+                top: f64::from(k + 1) * run_rise,
+            });
+            a += landing_sweep;
+        }
+    }
+    curve.step = a.max(1e-9);
+    let end = curve.at(a, curve.walk());
+    let start = curve.at(0.0, curve.walk());
+    let flight = Flight {
+        start: (0.0, 0.0),
+        dir: (1.0, 0.0),
+        base: 0.0,
+        risers: 0,
+        treads: 0,
+        len: ((end.0 - start.0).powi(2) + (end.1 - start.1).powi(2)).sqrt(),
+        width: w,
+        rise,
+    };
+    Layout {
+        frame,
+        riser_height: 0.0,
+        tread_depth: 0.0,
+        flights: vec![flight],
+        outlines,
+        slabs,
+        turn_risers: Vec::new(),
+        footprint: curve_footprint(&curve),
+        total_rise: rise,
+        is_ramp: true,
+        is_landing: false,
+        curve: None,
+        ramp_arc: Some(RampArc { curve, segs }),
+    }
+}
+
+/// The band of an arc between two angles, as a polygon: the outer edge
+/// out, the inner edge back.
+pub(crate) fn arc_band(c: &Curve, a0: f64, a1: f64) -> Vec<Uv> {
+    let n = (((a1 - a0).abs().to_degrees() / 7.5).ceil() as usize).max(1);
+    let mut pts = Vec::new();
+    for i in 0..=n {
+        pts.push(c.at_lat(a0 + (a1 - a0) * i as f64 / n as f64, 0.0));
+    }
+    for i in (0..=n).rev() {
+        pts.push(c.at_lat(a0 + (a1 - a0) * i as f64 / n as f64, c.width));
+    }
+    dedupe(pts)
 }
 
 impl Layout {
@@ -293,7 +536,12 @@ impl Layout {
                 is_ramp: false,
                 is_landing: true,
                 curve: None,
+                ramp_arc: None,
             };
+        }
+
+        if let (StairShape::Ramp { slope_1_in }, Some(inner)) = (p.shape, p.ramp_curve) {
+            return curved_ramp(frame, p, slope_1_in, inner.max(0.0));
         }
 
         if let StairShape::Ramp { slope_1_in } = p.shape {
@@ -348,6 +596,7 @@ impl Layout {
                 is_ramp: true,
                 is_landing: false,
                 curve: None,
+                ramp_arc: None,
             };
         }
 
@@ -365,6 +614,7 @@ impl Layout {
             is_ramp: false,
             is_landing: false,
             curve: None,
+            ramp_arc: None,
         };
 
         if let StairShape::Curved { inner_radius } = p.shape {
@@ -379,8 +629,9 @@ impl Layout {
                 },
                 inner,
                 width: w,
+                walk_off: p.walk_offset(),
                 left,
-                step: t / (inner + w / 2.0).max(1e-9),
+                step: t / (inner + p.walk_offset()).max(1e-9),
                 treads,
                 risers: sol.risers,
             };
@@ -429,6 +680,8 @@ impl Layout {
             effective_landing(p)
         };
         let landing_top = f64::from(sp.t1 + 1) * h;
+        let gap = if is_u { p.u_gap.max(0.0) } else { 0.0 };
+        let split_landing = is_u && p.split_landing && sp.winders == 0;
 
         layout.flights.push(Flight {
             start: (0.0, 0.0),
@@ -470,35 +723,71 @@ impl Layout {
                 ],
             ),
             (true, true) => (
-                (u1, 0.0),
+                (u1, -gap),
                 (-1.0, 0.0),
-                [(u1, -w), (u1 + ld, -w), (u1 + ld, w), (u1, w)],
-                vec![
-                    (0.0, w),
-                    (u1 + ld, w),
-                    (u1 + ld, -w),
-                    (u1 - l2, -w),
-                    (u1 - l2, 0.0),
-                    (0.0, 0.0),
-                ],
+                [(u1, -w - gap), (u1 + ld, -w - gap), (u1 + ld, w), (u1, w)],
+                if gap > 1e-9 {
+                    vec![
+                        (0.0, w),
+                        (u1 + ld, w),
+                        (u1 + ld, -w - gap),
+                        (u1 - l2, -w - gap),
+                        (u1 - l2, -gap),
+                        (u1, -gap),
+                        (u1, 0.0),
+                        (0.0, 0.0),
+                    ]
+                } else {
+                    vec![
+                        (0.0, w),
+                        (u1 + ld, w),
+                        (u1 + ld, -w),
+                        (u1 - l2, -w),
+                        (u1 - l2, 0.0),
+                        (0.0, 0.0),
+                    ]
+                },
             ),
             (true, false) => (
-                (u1, 2.0 * w),
+                (u1, 2.0 * w + gap),
                 (-1.0, 0.0),
-                [(u1, 0.0), (u1 + ld, 0.0), (u1 + ld, 2.0 * w), (u1, 2.0 * w)],
-                vec![
-                    (0.0, 0.0),
+                [
+                    (u1, 0.0),
                     (u1 + ld, 0.0),
-                    (u1 + ld, 2.0 * w),
-                    (u1 - l2, 2.0 * w),
-                    (u1 - l2, w),
-                    (0.0, w),
+                    (u1 + ld, 2.0 * w + gap),
+                    (u1, 2.0 * w + gap),
                 ],
+                if gap > 1e-9 {
+                    vec![
+                        (0.0, 0.0),
+                        (u1 + ld, 0.0),
+                        (u1 + ld, 2.0 * w + gap),
+                        (u1 - l2, 2.0 * w + gap),
+                        (u1 - l2, w + gap),
+                        (u1, w + gap),
+                        (u1, w),
+                        (0.0, w),
+                    ]
+                } else {
+                    vec![
+                        (0.0, 0.0),
+                        (u1 + ld, 0.0),
+                        (u1 + ld, 2.0 * w),
+                        (u1 - l2, 2.0 * w),
+                        (u1 - l2, w),
+                        (0.0, w),
+                    ]
+                },
             ),
         };
 
+        // A split landing is two platforms side by side, the second one
+        // riser higher; the second flight starts from it.
+        let landing_top2 = landing_top + h;
         let base2 = if sp.winders > 0 {
             f64::from(sp.t1 + sp.winders) * h
+        } else if split_landing {
+            landing_top2
         } else {
             landing_top
         };
@@ -512,21 +801,76 @@ impl Layout {
             width: w,
             rise: f64::from(sp.t2) * h,
         });
-        layout.outlines.push(landing.to_vec());
         layout.footprint = dedupe(footprint);
 
-        if sp.winders == 0 {
+        if sp.winders == 0 && split_landing {
+            // The first platform continues flight 1, the second flight 2;
+            // the strip of gap between them is open.
+            let (first, second): ([Uv; 4], [Uv; 4]) = if left {
+                (
+                    [(u1, 0.0), (u1 + ld, 0.0), (u1 + ld, w), (u1, w)],
+                    [
+                        (u1, -w - gap),
+                        (u1 + ld, -w - gap),
+                        (u1 + ld, -gap),
+                        (u1, -gap),
+                    ],
+                )
+            } else {
+                (
+                    [(u1, 0.0), (u1 + ld, 0.0), (u1 + ld, w), (u1, w)],
+                    [
+                        (u1, w + gap),
+                        (u1 + ld, w + gap),
+                        (u1 + ld, 2.0 * w + gap),
+                        (u1, 2.0 * w + gap),
+                    ],
+                )
+            };
+            layout.outlines.push(first.to_vec());
+            layout.outlines.push(second.to_vec());
             layout.slabs.push(Slab {
-                poly: landing.to_vec(),
+                poly: first.to_vec(),
                 top: landing_top,
             });
+            layout.slabs.push(Slab {
+                poly: second.to_vec(),
+                top: landing_top2,
+            });
+            if gap < 1e-9 {
+                // The riser between the two platforms.
+                let (a, b, th) = if left {
+                    ((u1, 0.0), (u1 + ld, 0.0), (0.0, -p.riser_thickness))
+                } else {
+                    ((u1, w), (u1 + ld, w), (0.0, p.riser_thickness))
+                };
+                layout.turn_risers.push(TurnRiser {
+                    a,
+                    b,
+                    thickness: th,
+                    base: landing_top,
+                });
+            }
         } else {
-            layout.add_winders(&sp, u1, w, left, p.riser_thickness);
+            layout.outlines.push(landing.to_vec());
+            if sp.winders == 0 {
+                layout.slabs.push(Slab {
+                    poly: landing.to_vec(),
+                    top: landing_top,
+                });
+            } else {
+                layout.add_winders(&sp, u1, w, left, p.riser_thickness, p.winder_contraction);
+            }
         }
         layout
     }
 
     /// Fan the square landing into `winders` pie treads around the inside corner.
+    ///
+    /// `contraction` is the narrowest a tread may get at the inside corner
+    /// (Max Tread Contraction): the points of the wedges are cut off so the
+    /// inside end of every riser line is at least that wide. `0` keeps the
+    /// points.
     fn add_winders(
         &mut self,
         sp: &crate::Split,
@@ -534,11 +878,23 @@ impl Layout {
         w: f64,
         left: bool,
         riser_thickness: f64,
+        contraction: f64,
     ) {
         let n = f64::from(sp.winders);
         let mirror = |(u, v): Uv| if left { (u, v) } else { (u, w - v) };
         let pivot = (u1, 0.0);
         let phi = |k: u32| f64::from(k) * std::f64::consts::FRAC_PI_2 / n;
+        // Radius of the quarter circle the points are cut at, so the chord
+        // of one wedge is `contraction` wide.
+        let cut = if contraction > 1e-9 {
+            (contraction / (2.0 * (std::f64::consts::FRAC_PI_2 / n / 2.0).sin())).min(w * 0.45)
+        } else {
+            0.0
+        };
+        let inner = |k: u32| {
+            let (s, c) = phi(k).sin_cos();
+            (pivot.0 + s * cut, pivot.1 + c * cut)
+        };
         let hit = |k: u32| {
             let (s, c) = phi(k).sin_cos();
             let reach = w / s.max(c);
@@ -546,13 +902,20 @@ impl Layout {
         };
         let corner = (u1 + w, w);
         for k in 0..sp.winders {
-            let mut poly = vec![pivot, hit(k)];
+            let mut poly = if cut > 0.0 {
+                vec![inner(k), hit(k)]
+            } else {
+                vec![pivot, hit(k)]
+            };
             if phi(k) < std::f64::consts::FRAC_PI_4 - 1e-9
                 && phi(k + 1) > std::f64::consts::FRAC_PI_4 + 1e-9
             {
                 poly.push(corner);
             }
             poly.push(hit(k + 1));
+            if cut > 0.0 {
+                poly.push(inner(k + 1));
+            }
             self.slabs.push(Slab {
                 poly: poly.into_iter().map(mirror).collect(),
                 top: f64::from(sp.t1 + 1 + k) * self.riser_height,
@@ -563,7 +926,7 @@ impl Layout {
             let n_vec = (c * riser_thickness, -s * riser_thickness);
             let thickness = if left { n_vec } else { (n_vec.0, -n_vec.1) };
             self.turn_risers.push(TurnRiser {
-                a: mirror(pivot),
+                a: mirror(if cut > 0.0 { inner(k) } else { pivot }),
                 b: mirror(hit(k)),
                 thickness,
                 base: f64::from(sp.t1 + k) * self.riser_height,

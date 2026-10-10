@@ -1,10 +1,10 @@
 # plan-import
 Brings outside drawings into Plan Studio, like Chief's Import Drawing and CAD to Walls.
-- `parse_dxf`: tolerant ASCII DXF reader (CRLF/LF, padded or bare codes) giving a `DxfDrawing` with layers, units, extents, blocks and entities.
-- Supports LINE, LWPOLYLINE, POLYLINE/VERTEX, CIRCLE, ARC, TEXT, MTEXT, INSERT; anything else is counted in `skipped`.
-- `DxfDrawing::explode_inserts` expands block references (scale, rotation, base point, nesting).
-- `to_inches_factor` + `to_cad_objects` produce plan-core `CadObject`s in inches; bulged segments become sampled arcs.
+- `parse_dxf(text)` / `parse_dxf_bytes(bytes)`: tolerant DXF reader for **ASCII and binary** files, R12 through 2018 (`dxf/` has the tokenizers, the section reader, the model, curve geometry, MTEXT codes and the ACI colour table). Reads the header (`$ACADVER`, `$INSUNITS`, `$MEASUREMENT`, `$DIMSCALE`...), the LAYER, LTYPE, STYLE and DIMSTYLE tables, block definitions (anonymous dimension blocks, xrefs) and LINE, LWPOLYLINE, POLYLINE (spline frames, polyface meshes), CIRCLE, ARC, ELLIPSE, SPLINE, HATCH, SOLID, TRACE, 3DFACE, POINT, TEXT, MTEXT, ATTRIB, ATTDEF, DIMENSION, LEADER, MULTILEADER and INSERT/MINSERT; other kinds are counted in `skipped`.
+- `convert(drawing, &ImportOptions)` flattens the drawing (blocks expanded with BYBLOCK/layer 0 rules, attributes, arrays, dimensions kept as objects or drawn) and places it (units, scale, rotation, insertion point, layer mapping) into a `Converted`: CAD objects with their own look (`CadAttrs`: colour, weight, line style, fill, rich text, arrow ends, polyline arc edges), dimensions, CAD blocks, hatch requests and the plan layers needed. `add_objects` / `make_blocks` (or `apply_converted`) add that to a `Project`, with the duplicate-block policies. `to_cad_objects(_with)` is the plain objects-only form.
+- `to_inches_factor`, `default_units` (inches, or millimetres for a metric file that states no units), `layer_counts`, `drawing_bounds`, `unused_blocks`, `linetype_style`, `hatch_style`.
+- DWG is recognised by its `AC10xx` signature and refused with `ImportError::Dwg`, whose message says to save a DXF from AutoCAD, BricsCAD or LibreCAD.
 - `cad_to_walls` pairs parallel lines into wall proposals, measures thickness and closes corners and T-junctions.
 - `apply_walls` / `apply_cad` add the results to a `Project` with fresh ids.
-- DWG and binary DXF are not supported; convert to ASCII DXF first.
-- Round-trips `plan_core::write_dxf` output. Test with `cargo test -p plan-import`.
+- Round-trips `plan_core::write_dxf` output (and the export options' file). Test with `cargo test -p plan-import`.
+- 3D symbols: `parse_3d(ext, ...)` reads OBJ, glTF/GLB, STL (binary and ASCII), 3DS and COLLADA (.dae, own XML reader) into an `ImportedModel` in inches, Y up, with part colors, material names and texture file names. `suggest` gives the file's own unit and axis (COLLADA, glTF) or the format's axis (STL/3DS are Z up) and a size-based unit guess; `shape` turns (Symbol faces direction) and resizes (3D bounding box). SketchUp `.skp` is refused with how to export instead.

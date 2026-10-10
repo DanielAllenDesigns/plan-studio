@@ -12,19 +12,129 @@ Test counts are the workspace totals the commit messages and manual state.
 
 ## [Unreleased]
 
-Nothing yet beyond the Round 12 work below, which is in the working tree and not committed. Everything in this file from Round 10 on is uncommitted; the first tagged release (`v0.1.0`) will fold all of the rounds together (see [docs/release-checklist.md](docs/release-checklist.md)).
+### Added (Plan Agent, 2026-10-09)
+- **Plan Agent** (`crates/plan-agent`, `shell/agent_panel.rs`): a dock where a change is described in plain words ("add a 24' x 30' garage on the right with a door into the mudroom"); Claude edits the plan through 23 strict tools (walls, rectangles, openings, room names, floors, foundations, a plan validator, measure, tunable parameters) and the result lands as ONE undo step with Fix Wall Connections applied. Streaming transcript, "Tweaks" sliders, effort selector, usage and cost footer; Preferences > Plan Agent holds the masked key (user preferences only). Manual: `docs/manual/plan-agent.md`; decisions AG1 to AG7; `cargo run -p plan-agent --example smoke` for a live check.
+
+No version has been tagged yet; the first tagged release (`v0.1.0`) will fold all of the rounds together (see [docs/release-checklist.md](docs/release-checklist.md)). Round 13 is commit `9ba0ae7`; Round 14 is in the working tree.
+
+### Round 13 - 2026-10-08 (commit 9ba0ae7)
+
+#### Added
+
+- **System fonts** (`plan-app/fonts.rs`, `plan-docs`): text styles use the fonts installed on the machine (Replace Fonts, Preferences > Fonts); a family that is not installed falls back to the bundled font with one note on the status bar; the PDF writer embeds the fonts it may and says so when a font does not allow embedding.
+- **Openings in 3D** (`plan-3d/opening*`): casing, jambs and sills, open doors (Show Doors Open), transoms over doors, and openings in curved walls.
+- **3D view interaction** (`shell/view3d_panel/`): drag to move a picked object, an orbit centre at the picked point, hover highlight, and per-mesh colour for painted surfaces.
+- **Chief `.plan` import, stage 2** (`plan-chiefplan/import/`): cabinets, library symbols (as `chief-plan.<name>`; one the catalog does not know draws as a labelled box in plan and a labelled block in 3D), electrical devices, stairs, roof planes and room labels, and the X17 and X16 dimension layouts.
+- **Roofs**: dormer overhangs, Dutch gable faces and roof plane handles.
+- **Stairs**: spiral stairs, flared bottom treads, landing rails and stair labels.
+- **Walls**: radius-to and lock on the wall tool, Reverse Layers.
+- **Layout**: page templates, bent leaders, the revision table, XLSX schedule export and the print preview modes.
+
+### Rounds 14, 15 and 16 (this merge)
+
+Rounds 14-16 ran as 60+ parallel builder briefs against two audits: a menu/toolbar/dialog
+coverage audit (`docs/chief-feature-coverage.md`, 1,099 features) and a seven-part audit of
+Chief's Reference Manual and Tutorial Guide (`docs/chief-manual-coverage/`, 3,296 features
+and 1,169 tutorial steps, ~1,500 new parity rows, 215 deduplicated gaps, 62 decision
+corrections, a 35-brief Round 16 plan). Headlines, by area:
+
+- **Walls**: 3+ wall junctions, Through Wall At Start/End, Structure, Foundation and Wall Cap
+  tabs, multi-wall Open Object, Roof tab on interior walls, bearing and retain-framing flags,
+  Wall Covering, Newels/Balusters, Rails, Materials, Components, Object Information and
+  Schedule tabs; shared opening-placement rules in `plan-core`.
+- **Doors and windows**: placement ghost and alignment snaps, 2 in junction clearance,
+  thresholds, sill lines, both swing arcs, jambs and opening indicators in plan, Schedule tab
+  and Renumber, Rough Opening, Framing, Energy, Object Information, Shape, Treatments and
+  Materials tabs, double-door swing options, curved-wall casing modes, bay/box/bow roof options.
+- **Rooms, floors, foundations**: Build Foundation types (footings, piers, monolithic slab),
+  basements and crawl spaces, attic floor, finish thicknesses in 3D, per-room moldings and
+  surface materials, Room Types, decks with framing and planking, fireplaces and chimneys
+  (3-2-10 rule, roof cut, chase), split-level floors, tray and coffered ceilings, layered
+  floor/ceiling/roof assemblies with a Material Layers Definition dialog, Elevation Reference.
+- **Roofs**: style presets, half hip, per-wall roof buttons, wings at different plate heights,
+  Extend Slope Downward, Edit All Roof Planes, Structure > Define, polygon holes, dormer
+  tools, roof trim (rafter tails, ridge caps, gutters, frieze, shadow boards, boxed/flush
+  soffits), Gable/Roof Line objects, skylight shapes and Edit Skylight Shape.
+- **Cabinets and stairs**: all 14 Cabinet Specification tabs, push/bump, library door styles,
+  face item and shelf specifications, special cabinet types, custom countertops, automatic
+  fillers, module lines and Chief-style labels (3DB24), multi-cabinet Open Object; stair
+  handrail sides, bullnose, dashed treads through the stairwell, Stair Schedule, spiral stairs.
+- **Framing**: Build Framing dialog, ceiling joists, bearing lines, retain flags, span checks,
+  Framing Overview, dimensioned wall details, tray-ceiling framing.
+- **Electrical**: 3-way and 4-way switch promotion, WP and dedicated outlets, default heights,
+  exterior outlets in Auto Place, schedule rows.
+- **Dimensions, text, CAD**: text boxes with alignment, border and fill, Text Style
+  Management, per-dimension Format and Arrow overrides, multi-point strings, Add/Delete
+  Extension Line, links kept on paste, typeable CAD temporary dimensions, every Chief dimension
+  tool with per-tool Locate defaults, callouts (ten shapes, cross-section lines, linked
+  callouts), markers, notes and note schedules, the rich text edit bar, construction lines and
+  the full Reference Display, custom line styles, the fill style system with poché, Boolean
+  polylines, drawing groups (CAD default 21), Multiple Copy, Trim and Extend, DXF export
+  options, Plan Footprint from outer faces.
+- **Layout and print**: multiple layout files, Page Specification, program-wide sheet sizes,
+  true Print Preview, 3D scenes in elevation boxes, schedules in DXF and the construction set,
+  multi-sheet XLSX, site and metric scale lists to 1" = 100', watermark, sheet setup per view,
+  revision tables per page (partial), page numbering with # prefixes (partial).
+- **3D and cameras**: four-tab Camera Specification, Floor and Glass House cameras, backdrop
+  images from Chief's folder at run time, wedge and tilt handles, Lighting dialog and light
+  sets, Save Camera, key-frame walkthroughs recorded to PNG sequences or Motion-JPEG video,
+  360 panorama with a self-contained HTML viewer, Vector View and Technical Illustration
+  pictures, progressive Final View, Undo Zoom in 3D.
+- **Materials**: Material Specification (Pattern, Texture, Properties, Materials List),
+  painter modes with scope, Materials Defaults per object class, by-surface take-off,
+  Lightbeans PBR material packages (zip import, normal/roughness/metallic/AO/opacity maps in
+  the viewport and ray tracer, a Lightbeans folder in the Library Browser, a Downloads watch).
+- **Library**: Chief's catalog tree with Trash, filters and previews, Library Object
+  Specification, Convert to Symbol, Replace From Library, JSON export of user items; 3D symbol
+  import from STL, 3DS and COLLADA; Export Picture of any view.
+- **Terrain**: feature kinds, road markings, stepped retaining walls, plant forms and chooser,
+  survey import from DXF, GPX and XYZ, cut-and-fill report, Terrain Specification parity,
+  import assistants.
+- **Checks and code**: 22 IRC 2021 rules with a Georgia preset and rule groups, 31 NKBA
+  kitchen and bath guidelines with a report, header/joist/rafter/stair/deck calculators, and
+  code minimums wired into the tools (code-legal defaults, inline "Set to code" notices, live
+  check while drawing).
+- **Data and files**: Property Manager with custom properties on every object, Excel export
+  for editing and import with a review dialog, DXF import (ASCII and binary, every entity) with
+  the Import Drawing Assistant, Chief `.plan` import stage 3 (catalog GUIDs, roof edge flags,
+  stair heights, connections), data-safety fixes QA-20 to QA-29 (unknown keys preserved, id
+  repair, NaN sanitising, undo grouping, foreign records kept), Windows and Linux packaging
+  with a tagged-release workflow, README and contributor docs, the manual through chapter 20.
+- **Preferences and defaults**: 15 Preferences pages, grouped hotkeys with conflict
+  resolution and Chief XML export, toolbar customisation, the full 29-group Default Settings
+  tree, saved defaults and saved plan views (partial), window commands (tiling, swap, zoom,
+  Reverse Plan, Rotate Plan View), Layer and Object Painters, spell check.
+
+Known gaps are tracked in `docs/integration-queue.md`; tests of half-built Round 16 features
+are tagged `#[ignore = "R16-xx in progress"]`, and `plan-app` carries a temporary crate-level
+`allow(dead_code)` until the Round 16 gate.
+
+#### Round 14 integration pass
+
+#### Added
+
+- **Plan Check Settings** in the Tools > Checks menu opens the Plan Check window with its Settings dialog showing (`dialogs/plan_check.rs`); a text report window (`open_text_report`) for logs that are not findings.
+- **Camera steps in the 3D menu** (`shell/view3d_panel/nudge.rs`): Move Camera with Mouse and with Keyboard, Move Camera, Orbit Camera, Tilt Camera and View Direction (eight compass snaps); 24" per Move step, 15 degrees per Orbit or Turn step, 5 degrees per Tilt step. Isometric Views and Undo Zoom in 3D are still open (`docs/integration-queue.md`).
+- **Default Settings > Terrain > Terrain Defaults** (`dialogs/default_settings_terrain.rs`) opens the Terrain Specification on the plan's terrain record, one undo step.
+- **Stand-in blocks**: a placed symbol whose catalog item is unknown (the importer's `chief-plan.<name>`, a Chief object whose catalog is not installed) is a labelled box in plan and a block with the same label painted over it in 3D (`plan_library::standin`, `view3d_panel/stand_in.rs`); a Chief object whose catalog is missing used to draw nothing in 3D.
+- **Tests**: `scenarios/r14_integration.rs` (11 tests), including one that runs every row of the Tools menu.
+
+#### Changed
+
+- File > Import > Chief Plan... asks about unsaved changes first, like File > Open (`Pending::ImportChief`); the status bar gets a one-line headline of the counts and the full summary (counts and warnings) opens in a report window.
+- Font notes (a family that is not installed, a font that does not allow embedding) reach the status bar, once each (`fonts::post_notes`).
+- The "Known issues" line of Round 12 about the Chief import having no prompt and no report window is fixed by the two changes above.
 
 ### Planned
 
-- Open doors, casing, sills and thresholds in the editor's 3D view; threshold marks in plan; a transom over a door.
 - Attic floors from Build Roof.
-- Replace Fonts; ties from dimensions to stairs, roof planes and framing.
+- Ties from dimensions to stairs, roof planes and framing.
 - Layout: Save As Template, opening labels on pages, CAD-detail boxes from the Send to Layout dialog.
 - Bump maps, and the ray tracer drawing pictures with their bitmaps.
-- Chief `.plan` import: cabinets, roof planes, library symbols and the other classes that are recognized but not decoded.
+- Chief `.plan` import: framing and the other classes that are recognized but not decoded.
 - A live manual QA pass on macOS, Windows and Linux, then the first tagged release.
 
-## Round 12 - 2026-10-08 (working tree; the commit is not made yet)
+## Round 12 - 2026-10-08 (`066ea0d`, with Rounds 10 to 12)
 
 About 3,120 tests (3,161 `#[test]` functions less 39 that are `#[ignore]`d, counted from the source, not from a `cargo test` run; Round 11 was about 2,750 at its last count). Run `cargo test --workspace` for the exact number before tagging. Round 12 also finished the Round 11 work that was still in flight when that section was written.
 
@@ -57,7 +167,7 @@ About 3,120 tests (3,161 `#[test]` functions less 39 that are `#[ignore]`d, coun
 - The Status column of `docs/qa-findings.md` may still say "open" for QA-08 to QA-11 although no scenario test is `#[ignore]`d any more.
 - The `#[allow(dead_code)]` comments in `dialogs/cabinet.rs` and `dialogs/framing.rs` still say the Cabinet and Framing Defaults windows are not opened from a menu; they are.
 
-## Round 11 - 2026-10-08 (working tree; the commit is not made yet; the parts that were still in flight when this section was first written landed in Round 12)
+## Round 11 - 2026-10-08 (`066ea0d`, with Rounds 10 to 12; the parts that were still in flight when this section was first written landed in Round 12)
 
 About 2,750 tests (2,821 `#[test]` functions less 45 that are `#[ignore]`d, at the last count; the number is still rising as the unfinished Round 11 work lands, counted from the source, not from a `cargo test` run; Round 10 was about 2,430). Run `cargo test --workspace` for the exact number before tagging.
 
@@ -81,7 +191,7 @@ About 2,750 tests (2,821 `#[test]` functions less 45 that are `#[ignore]`d, at t
 
 - (Fixed in Round 12.) The standard widths and the tab values new openings start with were not saved with the plan defaults.
 
-## Round 10 - 2026-10-08 (working tree; the commit is not made yet)
+## Round 10 - 2026-10-08 (`066ea0d`, with Rounds 10 to 12)
 
 About 2,430 tests. The figure is counted from the source (the `#[test]` functions that are not `#[ignore]`d), not from a `cargo test` run; the same count matched the reported totals within ten at Rounds 7 and 8. Run `cargo test --workspace` for the exact number before tagging.
 

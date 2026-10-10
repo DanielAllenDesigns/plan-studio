@@ -60,12 +60,17 @@ impl fmt::Display for ModelError {
 impl std::error::Error for ModelError {}
 
 /// One colored piece (an OBJ group or material run, a glTF primitive).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct ImportedPart {
     /// Name from the file (may be empty).
     pub name: String,
     /// sRGB color when the file gives one.
     pub color: Option<[u8; 3]>,
+    /// Material name from the file (OBJ `usemtl`, 3DS / COLLADA material).
+    pub material: Option<String>,
+    /// Texture image file name the material refers to (diffuse map), as
+    /// written in the file; the app maps it to a `plan-materials` entry.
+    pub texture: Option<String>,
     /// Vertex positions.
     pub positions: Vec<[f32; 3]>,
     /// Triangle indices, three per triangle.
@@ -156,6 +161,8 @@ impl ImportedModel {
                 parts.push(ImportedPart {
                     name: part.name.clone(),
                     color: part.color,
+                    material: part.material.clone(),
+                    texture: part.texture.clone(),
                     positions,
                     indices,
                 });

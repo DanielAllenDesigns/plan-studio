@@ -119,12 +119,13 @@ fn a_deck_has_no_ceiling_platform_but_keeps_its_floor() {
         "the other room keeps its ceiling"
     );
     assert!(!heights(&p, Material::Floor, 140.0, 240.0).is_empty());
-    // Porch likewise.
+    // A porch is a hybrid room: it generates a ceiling and a roof by default
+    // (manual p. 446, Round 16 brief 15), unlike an exterior room.
     let mut q = two_rooms();
     q.floors[0]
         .room_names
         .push(named("Porch", "Porch", Point::new(180.0, 60.0)));
-    assert_eq!(heights(&q, Material::Ceiling, 140.0, 240.0).len(), 0);
+    assert!(!heights(&q, Material::Ceiling, 140.0, 240.0).is_empty());
 }
 
 #[test]

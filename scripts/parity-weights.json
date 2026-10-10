@@ -1,0 +1,21 @@
+{
+  "_comment": "Weights for scripts/parity-score.py. Each key is an Area exactly as written in the area column of docs/parity-status.md. A parity id counts with its area weight; an id cited in the 'Next 25 gaps for daily residential work' table has its weight multiplied by next25_bonus. Weight 3 = daily residential work comes first (the doc's own ordering), 2 = frequent, 1 = occasional. An area in the doc with no entry here gets weight 1 and a warning.",
+  "next25_bonus": 2,
+  "Walls": 3,
+  "Doors/Windows": 3,
+  "Rooms/Floors": 3,
+  "Dimensions": 3,
+  "Cabinets": 3,
+  "Roofs": 3,
+  "Layout/Docs": 3,
+  "Select": 2,
+  "Text": 2,
+  "CAD": 2,
+  "Layers": 2,
+  "Stairs": 2,
+  "3D/Cameras": 1,
+  "Framing": 1,
+  "Terrain": 1,
+  "Library": 1,
+  "Electrical": 1
+}

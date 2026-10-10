@@ -1,5 +1,6 @@
 //! Placing devices: by hand on walls or free, and automatically.
 
+use crate::defaults::ElectricalDefaults;
 use crate::device::{Device, DeviceKind, COUNTER_OUTLET_HEIGHT, OUTLET_HEIGHT, SWITCH_HEIGHT};
 use plan_core::geometry::{dist_to_segment, point_in_polygon};
 use plan_core::{Floor, Opening, OpeningKind, Point, Room, Wall};
@@ -85,6 +86,43 @@ pub fn place_free(kind: DeviceKind, pos: Point) -> Device {
     }
 }
 
+/// How far past a wall face the probe point for [`face_is_exterior`] lies, inches.
+const PROBE_BEYOND_FACE: f64 = 4.0;
+
+/// Is the face of `wall` on `side` outdoors at `offset` along the wall?
+///
+/// A face is outdoors when the point just past it lies in an exterior room
+/// (`is_exterior_room`: a deck, balcony or court), or when it lies in no room
+/// at all and the wall is an exterior wall. The tools place a weatherproof
+/// outlet, switch or wall light there (manual p. 693).
+pub fn face_is_exterior(
+    wall: &Wall,
+    side: WallSide,
+    offset: f64,
+    rooms: &[Room],
+    is_exterior_room: &dyn Fn(&Room) -> bool,
+) -> bool {
+    let normal = wall.normal() * side.sign();
+    let probe = wall.point_at(offset.clamp(0.0, wall.length()))
+        + normal * (wall.thickness * 0.5 + PROBE_BEYOND_FACE);
+    let here: Vec<&Room> = rooms.iter().filter(|r| r.contains(probe)).collect();
+    if here.is_empty() {
+        wall.kind == plan_core::WallKind::Exterior
+    } else {
+        here.iter().all(|r| is_exterior_room(r))
+    }
+}
+
+/// The kind a tool places at a click: the `tool` kind indoors, its
+/// [`outdoor`](DeviceKind::outdoor) counterpart where `exterior`.
+pub fn kind_for_setting(tool: DeviceKind, exterior: bool) -> DeviceKind {
+    if exterior {
+        tool.outdoor()
+    } else {
+        tool
+    }
+}
+
 /// Knobs for [`auto_place_outlets`]; lengths in inches.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AutoOutletOptions {
@@ -101,6 +139,92 @@ pub struct AutoOutletOptions {
     /// When true, garages and baths use plain wall spacing; when false they get
     /// kitchen-style counter-height outlets too.
     pub skip_garage_bath_counters: bool,
+    /// Height of a general receptacle, inches (12").
+    pub outlet_height: f64,
+    /// Height of a kitchen counter receptacle, inches (44").
+    pub counter_height: f64,
+    /// Height of a weatherproof exterior receptacle, inches (18").
+    pub wp_height: f64,
+    /// Auto Place Outlets also adds the exterior weatherproof GFCI receptacles
+    /// (NEC 210.52(E): one at the front and one at the back of the house).
+    pub exterior_wp: bool,
+    /// A wall space in a bath, kitchen, laundry or garage shorter than
+    /// `min_wall_segment` still gets one receptacle when it is at least this
+    /// long and the room would otherwise have none, inches.
+    pub min_wet_segment: f64,
+    /// The footprints of the plan's counter-carrying cabinets (base, corner,
+    /// blind and filler cabinets, countertops), plan inches. Counter-height
+    /// outlets go only on the wall spaces a run of these stands against; a
+    /// room with no cabinet on its walls keeps outlets on every wall. Empty
+    /// (the default) ignores cabinets; the application supplies it because
+    /// this crate does not depend on `plan-cabinets`.
+    #[serde(default)]
+    pub counter_runs: Vec<Vec<Point>>,
+}
+
+/// How far from a wall's face a cabinet may stand and still count as against
+/// it, inches.
+const COUNTER_AGAINST_WALL: f64 = 6.0;
+/// The deepest a counter run reaches from the wall face (a 25.5" base cabinet
+/// plus overhang), inches; a bigger polygon is an island, not a run.
+const COUNTER_MAX_DEPTH: f64 = 40.0;
+/// The shortest stretch of counter that gets an outlet, inches.
+const COUNTER_MIN_RUN: f64 = 12.0;
+
+/// The stretches of `wall` (offsets along it) a run of `counters` stands
+/// against: each polygon with a side within [`COUNTER_AGAINST_WALL`] of the
+/// wall face and no deeper than [`COUNTER_MAX_DEPTH`], by its extent along
+/// the wall.
+fn counter_intervals(wall: &Wall, counters: &[Vec<Point>]) -> Vec<(f64, f64)> {
+    let dir = wall.direction();
+    let normal = dir.perp();
+    let half = wall.thickness * 0.5;
+    let mut out: Vec<(f64, f64)> = Vec::new();
+    for poly in counters {
+        if poly.len() < 3 {
+            continue;
+        }
+        let (mut near, mut far) = (f64::MAX, 0.0_f64);
+        let (mut t0, mut t1) = (f64::MAX, f64::MIN);
+        for v in poly {
+            let d = v.sub(wall.start);
+            let off = d.dot(normal).abs() - half;
+            near = near.min(off);
+            far = far.max(off);
+            let t = d.dot(dir);
+            t0 = t0.min(t);
+            t1 = t1.max(t);
+        }
+        if near <= COUNTER_AGAINST_WALL
+            && far <= COUNTER_MAX_DEPTH
+            && t1 > 0.0
+            && t0 < wall.length()
+        {
+            out.push((t0.max(0.0), t1.min(wall.length())));
+        }
+    }
+    out.sort_by(|a, b| a.0.total_cmp(&b.0));
+    // Join neighbours that touch.
+    let mut joined: Vec<(f64, f64)> = Vec::new();
+    for (a, b) in out {
+        match joined.last_mut() {
+            Some(last) if a <= last.1 + 1.0 => last.1 = last.1.max(b),
+            _ => joined.push((a, b)),
+        }
+    }
+    joined
+}
+
+impl AutoOutletOptions {
+    /// The defaults with the heights of the plan's [`ElectricalDefaults`].
+    pub fn with_defaults(defaults: &ElectricalDefaults) -> Self {
+        Self {
+            outlet_height: defaults.height(DeviceKind::Outlet110),
+            counter_height: defaults.counter_height(),
+            wp_height: defaults.height(DeviceKind::OutletWp),
+            ..Self::default()
+        }
+    }
 }
 
 impl Default for AutoOutletOptions {
@@ -112,6 +236,12 @@ impl Default for AutoOutletOptions {
             kitchen_counter_spacing: 48.0,
             gfci_in_wet_rooms: true,
             skip_garage_bath_counters: true,
+            outlet_height: OUTLET_HEIGHT,
+            counter_height: COUNTER_OUTLET_HEIGHT,
+            wp_height: crate::device::WP_OUTLET_HEIGHT,
+            exterior_wp: true,
+            min_wet_segment: 12.0,
+            counter_runs: Vec::new(),
         }
     }
 }
@@ -326,29 +456,65 @@ pub fn auto_place_outlets(
         let (kind, height, max_gap) = match (counters, gfci) {
             (true, true) => (
                 DeviceKind::Gfci,
-                COUNTER_OUTLET_HEIGHT,
+                opts.counter_height,
                 opts.kitchen_counter_spacing,
             ),
             (true, false) => (
                 DeviceKind::Outlet110,
-                COUNTER_OUTLET_HEIGHT,
+                opts.counter_height,
                 opts.kitchen_counter_spacing,
             ),
-            (false, true) => (DeviceKind::Gfci, OUTLET_HEIGHT, opts.max_spacing),
-            (false, false) => (DeviceKind::Outlet110, OUTLET_HEIGHT, opts.max_spacing),
+            (false, true) => (DeviceKind::Gfci, opts.outlet_height, opts.max_spacing),
+            (false, false) => (DeviceKind::Outlet110, opts.outlet_height, opts.max_spacing),
         };
 
-        let mut spans: Vec<Span> = Vec::new();
-        for run in &runs {
-            for (a, b) in wall_spaces(floor, run.wall, run.lo, run.hi, opts.min_wall_segment) {
-                spans.push(Span {
-                    wall: run.wall,
-                    side: run.side,
-                    a,
-                    b,
-                    at: spread(a, b, max_gap, opts.from_opening),
-                });
+        // Counter outlets follow the cabinets when the room's walls have
+        // any: only the spaces a run of base cabinets stands against.
+        let counter_cover: Vec<Vec<(f64, f64)>> = runs
+            .iter()
+            .map(|r| {
+                if counters {
+                    counter_intervals(r.wall, &opts.counter_runs)
+                } else {
+                    Vec::new()
+                }
+            })
+            .collect();
+        let follow_cabinets = counter_cover.iter().any(|c| !c.is_empty());
+        let collect = |min_len: f64| -> Vec<Span> {
+            let mut spans: Vec<Span> = Vec::new();
+            for (ri, run) in runs.iter().enumerate() {
+                for (a, b) in wall_spaces(floor, run.wall, run.lo, run.hi, min_len) {
+                    let pieces: Vec<(f64, f64)> = if follow_cabinets {
+                        counter_cover[ri]
+                            .iter()
+                            .map(|&(c0, c1)| (a.max(c0), b.min(c1)))
+                            .filter(|(x, y)| y - x >= COUNTER_MIN_RUN)
+                            .collect()
+                    } else {
+                        vec![(a, b)]
+                    };
+                    for (a, b) in pieces {
+                        spans.push(Span {
+                            wall: run.wall,
+                            side: run.side,
+                            a,
+                            b,
+                            at: spread(a, b, max_gap, opts.from_opening),
+                        });
+                    }
+                }
             }
+            spans
+        };
+        let mut spans = collect(opts.min_wall_segment);
+        // A small bath, kitchen, laundry or garage still gets a receptacle.
+        let needs_one = gfci || counters || function == RoomFunction::Laundry;
+        if spans.is_empty() && needs_one && opts.min_wet_segment < opts.min_wall_segment {
+            let mut small = collect(opts.min_wet_segment);
+            small.sort_by(|x, y| (y.b - y.a).total_cmp(&(x.b - x.a)));
+            small.truncate(1);
+            spans = small;
         }
 
         if function == RoomFunction::Garage {
@@ -438,4 +604,73 @@ pub fn auto_place_switch(room: &Room, door_opening: &Opening, wall: &Wall) -> De
     d.height = SWITCH_HEIGHT;
     d.label = room.label.clone();
     d
+}
+
+/// Weatherproof GFCI receptacles on the outside of the house (NEC 210.52(E)):
+/// one at the front and one at the back, each on the exterior face of an
+/// exterior wall, in its widest stretch clear of doors, at `opts.wp_height`.
+///
+/// The front is the longest exterior wall; the back is the longest exterior
+/// wall that faces the opposite way (the other side of the house). With no
+/// opposite wall only the front gets one. The exterior face is the side of
+/// the wall that lies outside every room. Returned devices have id `0`.
+pub fn auto_place_exterior_outlets(
+    floor: &Floor,
+    rooms: &[Room],
+    opts: &AutoOutletOptions,
+) -> Vec<Device> {
+    // (wall index, exterior side, outward normal, widest wall space)
+    let mut cands: Vec<(usize, WallSide, Point, (f64, f64))> = Vec::new();
+    for (i, w) in floor.walls.iter().enumerate() {
+        if w.kind != plan_core::WallKind::Exterior || w.length() < 48.0 || w.curve.is_some() {
+            continue;
+        }
+        let probe = |side: WallSide| {
+            let p = w.point_at(w.length() * 0.5)
+                + w.normal() * (side.sign() * (w.thickness * 0.5 + 6.0));
+            rooms.iter().any(|r| point_in_polygon(p, &r.polygon))
+        };
+        let side = match (probe(WallSide::Left), probe(WallSide::Right)) {
+            (true, false) => WallSide::Right,
+            (false, true) => WallSide::Left,
+            (false, false) => match w.exterior_side {
+                plan_core::Side::Left => WallSide::Left,
+                plan_core::Side::Right => WallSide::Right,
+            },
+            // Rooms on both sides: not on the outside of the house.
+            (true, true) => continue,
+        };
+        let spaces = wall_spaces(floor, w, 0.0, w.length(), opts.min_wall_segment);
+        let Some(best) = spaces
+            .into_iter()
+            .max_by(|x, y| (x.1 - x.0).total_cmp(&(y.1 - y.0)))
+        else {
+            continue;
+        };
+        cands.push((i, side, w.normal() * side.sign(), best));
+    }
+    cands.sort_by(|x, y| {
+        floor.walls[y.0]
+            .length()
+            .total_cmp(&floor.walls[x.0].length())
+            .then(floor.walls[x.0].id.cmp(&floor.walls[y.0].id))
+    });
+    let mut chosen: Vec<usize> = Vec::new();
+    if let Some(front) = cands.first() {
+        chosen.push(0);
+        if let Some(back) = cands.iter().position(|c| c.2.dot(front.2) < -0.5) {
+            chosen.push(back);
+        }
+    }
+    chosen
+        .into_iter()
+        .map(|ci| {
+            let (wi, side, _, (a, b)) = cands[ci];
+            let w = &floor.walls[wi];
+            let mut d = place_on_wall(DeviceKind::OutletWp, w, (a + b) * 0.5, side);
+            d.height = opts.wp_height;
+            d.label = "Exterior".into();
+            d
+        })
+        .collect()
 }

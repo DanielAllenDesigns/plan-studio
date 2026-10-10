@@ -10,16 +10,24 @@ use eframe::egui::{
 };
 use plan_core::defaults::{OpeningDefaults, WindowDefaults};
 use plan_core::extras::OpeningExtras as StoredExtras;
-use plan_core::opening_symbol::{bifold_panels, plan_symbol, sliding_panels, PartKind, PROJECTION};
+use plan_core::opening_symbol::{bifold_panels, plan_symbol, sliding_panels, PartKind};
+use plan_core::openings::mull::MulledSpec;
+use plan_core::openings::types::{DefaultKey, DynGroup};
 use plan_core::openings::{
-    door_panel_count, ArchType, CasingProfile, HandleStyle, LintelStyle, LiteStyle, OpeningSpec,
-    ShutterSides, ShutterStyle, StandardWidths,
+    door_panel_count, ArchType, CasingProfile, HandleStyle, LintelStyle, LiteStyle, OpenMode,
+    OpeningSpec, RecessTo, ShutterSides, ShutterStyle, StandardWidths, WindowType,
 };
 use plan_core::{
     Casing, Id, LabelMode, LabelPlacement, LabelSettings, Opening, OpeningKind,
     OpeningLabelDefaults, OpeningStyle, OpeningVariantDefaults, Project, SizeFormat, SizeStyle,
     Wall, WallKind,
 };
+
+#[path = "bay_window.rs"]
+mod bay_window;
+#[path = "mulled_unit.rs"]
+mod mulled_unit;
+mod tabs;
 
 /// Minimum clear distance between an opening jamb and a wall end or another
 /// opening. Mirrors the private constant `Project::add_opening` uses.
@@ -29,36 +37,38 @@ const DEFAULT_DOOR_KEY: Id = Id::MAX - 2;
 const DEFAULT_WINDOW_KEY: Id = Id::MAX - 3;
 const DEFAULT_EXTERIOR_DOOR_KEY: Id = Id::MAX - 4;
 
-const WINDOW_TYPES: [&str; 6] = [
-    "Single Casement",
-    "Double Hung",
-    "Slider",
-    "Fixed Glass",
-    "Awning",
-    "Picture",
-];
+/// The index of `t` in the Window Type list ([`WindowType::ALL`]).
+fn type_index(t: WindowType) -> usize {
+    WindowType::ALL.iter().position(|x| *x == t).unwrap_or(2)
+}
+
+/// The Window Type of a stored or typed name; a double hung window when the
+/// name is unknown.
+fn type_of_name(name: &str) -> usize {
+    type_index(WindowType::from_name(name).unwrap_or_default())
+}
 
 const DOOR_TABS: &[Tab] = &[
     on("General"),
     on("Options"),
     on("Casing"),
     on("Lintel"),
-    off("Sill/Threshold"),
+    on("Sill/Threshold"),
     on("Lites"),
     on("Jamb"),
     on("Arch"),
     on("Hardware"),
     on("Shutters"),
-    off("Opening Indicators"),
-    off("Rough Opening"),
-    off("Framing"),
-    off("Energy Values"),
-    off("Layer"),
-    off("Materials"),
+    on("Opening Indicators"),
+    on("Rough Opening"),
+    on("Framing"),
+    on("Energy Values"),
+    on("Layer"),
+    on("Materials"),
     on("Label"),
     off("Components"),
-    off("Object Information"),
-    off("Schedule"),
+    on("Object Information"),
+    on("Schedule"),
 ];
 
 const WINDOW_TABS: &[Tab] = &[
@@ -66,24 +76,24 @@ const WINDOW_TABS: &[Tab] = &[
     on("Options"),
     on("Casing"),
     on("Lintel"),
-    off("Sill/Threshold"),
+    on("Sill/Threshold"),
     on("Sash"),
     on("Frame"),
     on("Lites"),
-    off("Shape"),
+    on("Shape"),
     on("Arch"),
-    off("Treatments"),
+    on("Treatments"),
     on("Shutters"),
-    off("Opening Indicators"),
-    off("Rough Opening"),
-    off("Framing"),
-    off("Energy Values"),
-    off("Layer"),
-    off("Materials"),
+    on("Opening Indicators"),
+    on("Rough Opening"),
+    on("Framing"),
+    on("Energy Values"),
+    on("Layer"),
+    on("Materials"),
     on("Label"),
     off("Components"),
-    off("Object Information"),
-    off("Schedule"),
+    on("Object Information"),
+    on("Schedule"),
 ];
 
 /// What an opening dialog is bound to.
@@ -145,6 +155,12 @@ pub struct OpeningExtras {
     jamb_depth: f64,
     jamb_inset: f64,
     mitered_corners: bool,
+    /// Minimum Separation of the Window Defaults, inches.
+    min_separation: f64,
+    /// The Mulled Unit Defaults of the Window Defaults.
+    mulled: MulledSpec,
+    /// Ignore Casing for Opening Resize.
+    ignore_casing: bool,
     /// The Specification tabs of a default door or window (a placed opening
     /// keeps them on itself, `Opening.extras.spec`).
     spec: OpeningSpec,
@@ -157,7 +173,7 @@ impl Default for OpeningExtras {
     fn default() -> Self {
         Self {
             style_name: String::new(),
-            window_type: 0,
+            window_type: type_index(WindowType::DoubleHung),
             thickness: 1.375,
             swing_angle: 90.0,
             show_open_2d: true,
@@ -183,6 +199,9 @@ impl Default for OpeningExtras {
             jamb_depth: 6.0,
             jamb_inset: 0.0,
             mitered_corners: false,
+            min_separation: plan_core::openings::placement::DEFAULT_MIN_SEPARATION,
+            mulled: MulledSpec::default(),
+            ignore_casing: false,
             spec: OpeningSpec::default(),
             widths: None,
         }
@@ -217,11 +236,11 @@ impl OpeningExtras {
     /// Extras for a window seeded from the plan defaults.
     pub fn from_window_defaults(d: &WindowDefaults) -> Self {
         Self {
-            window_type: WINDOW_TYPES
-                .iter()
-                .position(|t| *t == d.window_type)
-                .unwrap_or(0),
+            window_type: type_of_name(&d.window_type),
             style_name: d.window_type.clone(),
+            min_separation: d.min_separation,
+            mulled: d.mulled.clone(),
+            ignore_casing: d.ignore_casing,
             egress: d.egress,
             tempered: d.tempered,
             lites_across: d.lites_across,
@@ -240,8 +259,8 @@ impl OpeningExtras {
         if let Some(name) = &stored.style_name {
             self.style_name = name.clone();
             if kind == OpeningKind::Window {
-                if let Some(i) = WINDOW_TYPES.iter().position(|t| *t == name) {
-                    self.window_type = i;
+                if let Some(t) = WindowType::from_name(name) {
+                    self.window_type = type_index(t);
                 }
             }
         }
@@ -249,9 +268,10 @@ impl OpeningExtras {
             if let Some(t) = stored.thickness {
                 self.thickness = t;
             }
-            if let Some(a) = stored.swing_angle_deg {
-                self.swing_angle = a;
-            }
+        }
+        // A door's swing angle; a casement, awning or hopper window's too.
+        if let Some(a) = stored.swing_angle_deg {
+            self.swing_angle = a;
         }
         let jamb = match kind {
             OpeningKind::Door => stored.jamb_width,
@@ -278,8 +298,11 @@ impl OpeningExtras {
                 out.jamb_width = Some(self.jamb_side);
             }
             OpeningKind::Window => {
-                out.style_name = Some(WINDOW_TYPES[self.window_type].to_string());
+                out.style_name = Some(WindowType::ALL[self.window_type].name().to_string());
                 out.frame_width = Some(self.jamb_side);
+                if keep.swing_angle_deg.is_some() || self.swing_angle != 90.0 {
+                    out.swing_angle_deg = Some(self.swing_angle);
+                }
             }
         }
         out.show_open_in_plan = self.show_open_2d;
@@ -327,7 +350,10 @@ impl OpeningExtras {
             width: draft.width,
             height: draft.height,
             sill_height: draft.sill_height,
-            window_type: WINDOW_TYPES[self.window_type].to_string(),
+            window_type: WindowType::ALL[self.window_type].name().to_string(),
+            min_separation: self.min_separation.max(0.0),
+            mulled: self.mulled.clone(),
+            ignore_casing: self.ignore_casing,
             frame_width: self.jamb_side,
             sash_width: base.sash_width,
             lites_across: self.lites_across,
@@ -372,6 +398,21 @@ struct OpeningForm {
     /// The style whose standard widths the General tab edits, and the text.
     widths_style: OpeningStyle,
     widths_text: String,
+    /// The Materials tab's search text and the library it lists (read when
+    /// the tab is first shown).
+    material_filter: String,
+    material_lib: Option<plan_materials::MaterialLibrary>,
+    /// The layers the Layer tab lists (empty: the usual ones).
+    layer_choices: Vec<String>,
+    /// The opening as the dialog first showed it: what an edit is measured
+    /// against to tell which groups stop using the default.
+    original: Opening,
+    /// The Use Default boxes the user touched (they are not released by the
+    /// edit that follows).
+    dyn_touched: Vec<DynGroup>,
+    /// The revision of the mulled unit's specification this dialog started
+    /// from.
+    unit_revision: u32,
 }
 
 /// `0.25, 0.5` as `25, 50`.
@@ -465,6 +506,21 @@ impl OpeningDialog {
                 extras.muntin_width = draft.extras.spec.muntin_width;
             }
         }
+        // The Window Type shown is the one the opening holds; one that
+        // disagrees with its style (an old plan) takes the style's.
+        if draft.kind == OpeningKind::Window {
+            let held = draft.extras.spec.window_type;
+            if draft.extras.style_name.is_none()
+                || extras.window_type == type_index(WindowType::DoubleHung)
+            {
+                extras.window_type = type_index(held);
+            }
+            if WindowType::ALL[extras.window_type].style() != draft.style {
+                if let Some(t) = WindowType::for_style(draft.style) {
+                    extras.window_type = type_index(t);
+                }
+            }
+        }
         let label = draft.extras.label.clone().unwrap_or_default();
         let title = match draft.kind {
             OpeningKind::Door => "Door Specification",
@@ -484,7 +540,9 @@ impl OpeningDialog {
             kind,
             OpeningStyle::default_for(kind),
         );
-        Self {
+        let original = draft.clone();
+        let unit_revision = draft.extras.spec.mulled.as_ref().map_or(0, |m| m.revision);
+        let me = Self {
             frame: SpecDialog::new(title, key),
             form: OpeningForm {
                 target,
@@ -500,8 +558,23 @@ impl OpeningDialog {
                 custom_up,
                 widths_style: OpeningStyle::default_for(kind),
                 widths_text,
+                material_filter: String::new(),
+                material_lib: None,
+                layer_choices: Vec::new(),
+                original,
+                dyn_touched: Vec::new(),
+                unit_revision,
             },
-        }
+        };
+        // What the first sync writes (the stored values) is not an edit: the
+        // Use Default flags stay as the opening has them, and the opening as it
+        // stands then is what edits are measured against.
+        let mut me = me;
+        let flags = me.form.draft.extras.spec.dynamic;
+        me.sync_stored();
+        me.form.draft.extras.spec.dynamic = flags;
+        me.form.original = me.form.draft.clone();
+        me
     }
 
     pub fn show(&mut self, ctx: &egui::Context) -> Outcome {
@@ -542,6 +615,33 @@ impl OpeningDialog {
         if !matches!(f.target, OpeningTarget::Placed(_)) {
             f.extras.spec = f.draft.extras.spec.clone();
         }
+        // The Window Type the list shows is the one the window holds.
+        if f.draft.kind == OpeningKind::Window {
+            f.draft.extras.spec.window_type = WindowType::ALL[f.extras.window_type];
+        }
+        // A lowered ceiling or raised floor of 0 is none (manual p. 640).
+        let bay = &mut f.draft.extras.spec.bay;
+        if bay.lowered_ceiling.is_some_and(|c| c.height <= 0.0) {
+            bay.lowered_ceiling = None;
+        }
+        if bay.raised_floor.is_some_and(|r| r.height <= 0.0) {
+            bay.raised_floor = None;
+        }
+        // A group of settings the user edited stops using the default
+        // (manual p. 103), unless the Use Default box was touched.
+        if matches!(f.target, OpeningTarget::Placed(_)) {
+            for g in DynGroup::of_kind(f.draft.kind) {
+                if f.dyn_touched.contains(g) {
+                    continue;
+                }
+                if f.original.extras.spec.dynamic.get(*g)
+                    && f.draft.extras.spec.dynamic.get(*g)
+                    && !plan_core::openings::group_eq(&f.original, &f.draft, *g)
+                {
+                    f.draft.extras.spec.dynamic.set(*g, false);
+                }
+            }
+        }
         // The label is stored with a placed opening once the Label tab
         // changed it; until then the Default Settings keep governing it.
         f.draft.extras.label = if f.label != f.label_start {
@@ -559,6 +659,14 @@ impl OpeningDialog {
         let base = defaults.for_kind(f.draft.kind).clone();
         f.label = f.label_own.clone().unwrap_or(base);
         f.label_start = f.label.clone();
+        self
+    }
+
+    /// The layers of the plan, for the Layer tab to list. Call before the
+    /// dialog is shown; without it the tab lists the usual opening layers.
+    #[allow(dead_code)] // main.rs calls it where the dialog opens (docs/integration-queue.md)
+    pub fn with_layer_choices(mut self, layers: Vec<String>) -> Self {
+        self.form.layer_choices = layers;
         self
     }
 
@@ -581,6 +689,21 @@ impl OpeningDialog {
         match f.draft.kind {
             OpeningKind::Door => v.door_spec = f.draft.extras.spec.clone(),
             OpeningKind::Window => v.window_spec = f.draft.extras.spec.clone(),
+        }
+        // The default of this door or window type: the opening the Defaults
+        // dialog shows, so new ones start from it and the placed ones that
+        // use the default follow it (manual pp. 103, 571, 603).
+        let key = match f.target {
+            OpeningTarget::DefaultDoor => DefaultKey::new(OpeningKind::Door, f.draft.style, false),
+            OpeningTarget::DefaultExteriorDoor => {
+                DefaultKey::new(OpeningKind::Door, f.draft.style, true)
+            }
+            _ => DefaultKey::main_window(),
+        };
+        // Only once the dialog changed something, or the type already has a
+        // default: opening and closing it leaves the plan defaults alone.
+        if f.draft != f.original || v.type_default(key).is_some() {
+            v.set_type_default(key, f.draft.clone());
         }
     }
 
@@ -607,6 +730,25 @@ impl OpeningDialog {
 
     pub fn extras(&self) -> &OpeningExtras {
         &self.form.extras
+    }
+
+    /// Draws the tab called `tab` in a headless frame, so a test runs that
+    /// page's code; false when the dialog has no live tab of that name.
+    #[cfg(test)]
+    pub fn draw_tab_for_test(&mut self, ctx: &egui::Context, tab: &str) -> bool {
+        let Some(i) = self
+            .form
+            .tabs()
+            .iter()
+            .position(|t| t.name == tab && t.enabled)
+        else {
+            return false;
+        };
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| self.form.page(ui, i));
+        });
+        self.sync_stored();
+        true
     }
 }
 
@@ -645,8 +787,11 @@ pub fn place_from_template(
     opening.wall_id = wall_id;
     opening.center_offset =
         center_offset.clamp(half + OPENING_MARGIN, wall_len - half - OPENING_MARGIN);
+    let separation = project.opening_display.min_separation;
     let f = &mut project.floors[floor];
-    let overlaps = f.openings_on(wall_id).any(|o| overlap(&opening, o));
+    let overlaps = f
+        .openings_on(wall_id)
+        .any(|o| plan_core::openings::placement::conflict_with(&opening, o, separation));
     if overlaps {
         return None;
     }
@@ -676,8 +821,9 @@ fn plan_3d_arch_applies(kind: OpeningKind, style: OpeningStyle) -> bool {
 }
 
 fn overlap(a: &Opening, b: &Opening) -> bool {
-    // A window standing over a door (a transom) shares no height with it.
-    plan_core::openings::openings_conflict(a, b, OPENING_MARGIN)
+    // The shared placement rules: a window standing over a door shares no
+    // height with it, and two windows may touch (DW-4).
+    plan_core::openings::placement::conflict(a, b)
 }
 
 impl OpeningForm {
@@ -731,6 +877,7 @@ impl OpeningForm {
             }
             row(ui, "Door Type", |ui| dis_combo(ui, "door_type", "Hinged"));
         } else {
+            let before = self.draft.style;
             row(ui, "Window Style", |ui| {
                 egui::ComboBox::from_id_salt("window_style")
                     .selected_text(self.draft.style.name(OpeningKind::Window))
@@ -746,17 +893,65 @@ impl OpeningForm {
                     .response
                     .on_hover_text("The style sets the plan symbol and the 3D window");
             });
-            row(ui, "Window Type", |ui| {
-                egui::ComboBox::from_id_salt("window_type")
-                    .selected_text(WINDOW_TYPES[self.extras.window_type])
-                    .show_ui(ui, |ui| {
-                        for (i, s) in WINDOW_TYPES.iter().enumerate() {
-                            ui.selectable_value(&mut self.extras.window_type, i, *s);
-                        }
-                    })
-                    .response
-                    .on_hover_text("The window type is stored with the window");
+            if self.draft.style != before {
+                // The type follows the style it is drawn by.
+                if let Some(t) = WindowType::for_style(self.draft.style) {
+                    if WindowType::ALL[self.extras.window_type].style() != self.draft.style {
+                        self.extras.window_type = type_index(t);
+                        self.draft.extras.spec.window_type = t;
+                    }
+                }
+            }
+            if self.draft.style.projects() {
+                self.bay_general(ui);
+            } else {
+                self.window_type_rows(ui);
+            }
+        }
+        row(ui, "Window Level", |ui| {
+            let mut level = i32::from(self.draft.extras.spec.level);
+            if ui
+                .add(egui::DragValue::new(&mut level).range(0..=9))
+                .on_hover_text(
+                    "Level 0 draws in the layer colour and is picked first; the others draw light grey",
+                )
+                .changed()
+            {
+                self.draft.extras.spec.level = level.clamp(0, 9) as u8;
+            }
+        });
+        if door
+            && matches!(
+                self.draft.style,
+                OpeningStyle::Hinged | OpeningStyle::Sliding
+            )
+        {
+            row(ui, "Door Location", |ui| {
+                let e = &mut self.draft.extras.spec.exterior_door;
+                ui.radio_value(e, None, "From wall");
+                ui.radio_value(e, Some(false), "Interior");
+                ui.radio_value(e, Some(true), "Exterior");
             });
+        }
+        if self.target == OpeningTarget::DefaultWindow {
+            row(ui, "Minimum Separation", |ui| {
+                ui.add(
+                    egui::DragValue::new(&mut self.extras.min_separation)
+                        .range(0.0..=48.0)
+                        .speed(0.25)
+                        .suffix(" in"),
+                )
+                .on_hover_text(
+                    "How close window and door units may stand, and the width of the casing windows share",
+                );
+            });
+            ui.checkbox(
+                &mut self.extras.ignore_casing,
+                "Ignore Casing for Opening Resize",
+            )
+            .on_hover_text(
+                "Doors and windows may run right up to an intersecting wall instead of stopping where their casing meets it",
+            );
         }
 
         section(ui, "Size and Position");
@@ -779,9 +974,7 @@ impl OpeningForm {
         {
             self.extras.thickness = self.extras.thickness.max(0.25);
         }
-        row(ui, "Elevation Reference", |ui| {
-            dis_combo(ui, "elev_ref", "From Floor")
-        });
+        super::elevation_ref::row(ui, "Elevation Reference");
         let mut top = self.draft.sill_height + self.draft.height;
         if self.fields.length_row(ui, "Floor to Top", "top", &mut top) {
             self.draft.height = (top - self.draft.sill_height).max(6.0);
@@ -793,6 +986,8 @@ impl OpeningForm {
         {
             self.draft.sill_height = bottom.max(0.0);
         }
+        // Egress size of a bedroom window / the required exit door (code minimums).
+        super::code_notice::opening_notices(ui, &mut self.draft);
 
         section(ui, "Position");
         match self.wall.as_ref().map(|w| w.length) {
@@ -828,6 +1023,127 @@ impl OpeningForm {
         }
         if !matches!(self.target, OpeningTarget::Placed(_)) {
             self.standard_widths(ui);
+        }
+    }
+
+    /// The Window Type list with Use Default first, then Percent Open or
+    /// Swing Angle by the type, the Component Options and the Louver Size
+    /// (manual pp. 619, 620).
+    fn window_type_rows(&mut self, ui: &mut Ui) {
+        let placed = matches!(self.target, OpeningTarget::Placed(_));
+        let use_default = placed && self.draft.extras.spec.dynamic.window_type;
+        let current = WindowType::ALL[self.extras.window_type];
+        let text = if use_default {
+            "Use Default"
+        } else {
+            current.name()
+        };
+        row(ui, "Window Type", |ui| {
+            egui::ComboBox::from_id_salt("window_type")
+                .selected_text(text)
+                .show_ui(ui, |ui| {
+                    if placed
+                        && ui
+                            .selectable_label(use_default, "Use Default")
+                            .on_hover_text("Follows the type of the Window Defaults")
+                            .clicked()
+                    {
+                        self.draft.extras.spec.dynamic.window_type = true;
+                        if !self.dyn_touched.contains(&DynGroup::Type) {
+                            self.dyn_touched.push(DynGroup::Type);
+                        }
+                    }
+                    for (i, t) in WindowType::ALL.iter().enumerate() {
+                        let on = !use_default && self.extras.window_type == i;
+                        if ui.selectable_label(on, t.name()).clicked() {
+                            self.extras.window_type = i;
+                            self.draft.extras.spec.window_type = *t;
+                            self.draft.extras.spec.dynamic.window_type = false;
+                            if !self.draft.style.projects()
+                                && self.draft.style != OpeningStyle::WallNiche
+                            {
+                                self.draft.style = t.style();
+                            }
+                        }
+                    }
+                })
+                .response
+                .on_hover_text("The window type is stored with the window");
+        });
+        let wt = WindowType::ALL[self.extras.window_type];
+        match wt.open_mode() {
+            OpenMode::Percent => {
+                row(ui, "Percent Open", |ui| {
+                    let spec = &mut self.draft.extras.spec;
+                    let mut pct = (spec.open_fraction * 100.0).round();
+                    if ui
+                        .add(
+                            egui::DragValue::new(&mut pct)
+                                .range(0.0..=100.0)
+                                .suffix(" %"),
+                        )
+                        .on_hover_text("How far open the window is in 3D views")
+                        .changed()
+                    {
+                        spec.open_fraction = pct / 100.0;
+                    }
+                });
+            }
+            OpenMode::Angle => {
+                row(ui, "Swing Angle", |ui| {
+                    ui.add(
+                        egui::DragValue::new(&mut self.extras.swing_angle)
+                            .range(0.0..=180.0)
+                            .speed(1.0)
+                            .suffix("\u{B0}"),
+                    )
+                    .on_hover_text("How far open the sash swings in 3D views");
+                });
+            }
+            OpenMode::Never => {}
+        }
+        if let Some(label) = wt.component_size_label() {
+            let mut size = self.draft.extras.spec.component_size;
+            if self
+                .fields
+                .length_row(ui, label, "component_size", &mut size)
+            {
+                self.draft.extras.spec.component_size = size.max(0.0);
+            }
+            ui.weak("A size of 0 makes the components the same size.");
+        }
+        if wt.is_louvered() {
+            let mut size = self.draft.extras.spec.louver_size;
+            if self
+                .fields
+                .length_row(ui, "Louver Size", "louver_size", &mut size)
+            {
+                self.draft.extras.spec.louver_size = size.max(0.25);
+            }
+        }
+    }
+
+    /// The Use Default box of a dynamic group of a placed opening (manual
+    /// p. 103). Editing the group's values releases it; ticking it again
+    /// makes the opening follow the default once more.
+    fn use_default_row(&mut self, ui: &mut Ui, g: DynGroup) {
+        if !matches!(self.target, OpeningTarget::Placed(_))
+            || !DynGroup::of_kind(self.draft.kind).contains(&g)
+        {
+            return;
+        }
+        let mut on = self.draft.extras.spec.dynamic.get(g);
+        if ui
+            .checkbox(&mut on, "Use Default")
+            .on_hover_text(
+                "Follows the default of this type: when the default changes, so does this opening",
+            )
+            .changed()
+        {
+            self.draft.extras.spec.dynamic.set(g, on);
+            if !self.dyn_touched.contains(&g) {
+                self.dyn_touched.push(g);
+            }
         }
     }
 
@@ -917,6 +1233,7 @@ impl OpeningForm {
             }
             _ => {}
         }
+        self.mulled_unit_section(ui);
         section(ui, "Open/Close Display");
         ui.checkbox(&mut self.extras.show_open_2d, "Show Open in 2D")
             .on_hover_text("Draws the open leaf and swing; unchecked draws the door closed");
@@ -955,6 +1272,17 @@ impl OpeningForm {
                 ));
             }
         }
+        if self.draft.effective_style() == OpeningStyle::DoubleDoor {
+            self.door_swing_group(ui);
+        }
+        if matches!(style, OpeningStyle::Hinged | OpeningStyle::DoubleDoor) {
+            ui.checkbox(
+                &mut self.draft.extras.spec.swings_both,
+                "Swings Both Directions",
+            )
+            .on_hover_text("A double-acting door: the plan draws the swing arc on both sides");
+        }
+        self.recessed_into_wall(ui);
         ui.add_enabled_ui(false, |ui| {
             dis_check(ui, "All Glass", false);
             section(ui, "Plan Display");
@@ -966,12 +1294,49 @@ impl OpeningForm {
             section(ui, "Safety");
             dis_check(ui, "Tempered Glass", false);
             dis_check(ui, "Fire Door", false);
-            section(ui, "Recessed into Wall");
-            dis_check(ui, "Recessed To Layer", true);
             section(ui, "Plinth Blocks");
             dis_check(ui, "Interior Plinth Block", false);
             dis_check(ui, "Exterior Plinth Block", false);
         });
+    }
+
+    /// Options tab, Bay Roof: the roof over a bay, box or bow window.
+    fn bay_roof(&mut self, ui: &mut Ui) {
+        section(ui, "Bay Roof");
+        let box_window = self.draft.style == OpeningStyle::BoxWindow;
+        let roof = &mut self.draft.extras.spec.bay_roof;
+        row(ui, "Roof", |ui| {
+            egui::ComboBox::from_id_salt("bay_roof_kind")
+                .selected_text(roof.kind.name())
+                .show_ui(ui, |ui| {
+                    for k in plan_core::openings::BayRoofKind::ALL {
+                        ui.selectable_value(&mut roof.kind, k, k.name());
+                    }
+                });
+        });
+        let sloped = matches!(
+            roof.kind.resolved(box_window),
+            plan_core::openings::BayRoofKind::Hip | plan_core::openings::BayRoofKind::Shed
+        );
+        ui.add_enabled_ui(sloped, |ui| {
+            row(ui, "Pitch (rise per 12)", |ui| {
+                ui.add(
+                    egui::DragValue::new(&mut roof.pitch)
+                        .range(0.0..=24.0)
+                        .speed(0.1),
+                )
+            });
+        });
+        let mut overhang = roof.overhang;
+        let changed = ui
+            .add_enabled_ui(sloped, |ui| {
+                self.fields
+                    .length_row(ui, "Overhang", "bay_roof_overhang", &mut overhang)
+            })
+            .inner;
+        if changed {
+            self.draft.extras.spec.bay_roof.overhang = overhang.max(0.0);
+        }
     }
 
     fn window_options(&mut self, ui: &mut Ui) {
@@ -999,9 +1364,10 @@ impl OpeningForm {
                 section(ui, "Projecting Window");
                 ui.label(format!(
                     "Projects {} from the exterior face with its own seat and roof",
-                    fmt_short(PROJECTION)
+                    fmt_short(self.draft.extras.spec.bay.depth_for(self.draft.style))
                 ));
                 ui.checkbox(&mut self.draft.swing_flipped, "Project to the other side");
+                self.bay_options(ui);
             }
             OpeningStyle::PassThrough => {
                 section(ui, "Pass-Through");
@@ -1025,6 +1391,7 @@ impl OpeningForm {
             }
             _ => {}
         }
+        self.mulled_unit_section(ui);
         section(ui, "Options");
         dis_check(ui, "Interior Corner Block", false);
         dis_check(ui, "Exterior Corner Block", false);
@@ -1059,6 +1426,7 @@ impl OpeningForm {
     }
 
     fn casing(&mut self, ui: &mut Ui) {
+        self.use_default_row(ui, DynGroup::Casing);
         let e = &mut self.extras;
         let exterior_ok = self
             .wall
@@ -1115,17 +1483,24 @@ impl OpeningForm {
                 dis_radio(ui, "Enlarged", false);
                 dis_radio(ui, "Double", false);
             });
-            section(ui, "Curved Wall Casing");
-            row(ui, "Curved wall", |ui| {
-                dis_radio(ui, "Straight", false);
-                dis_radio(ui, "Radial", true);
-                dis_radio(ui, "Parallel", false);
-            });
         });
+        section(ui, "Curved Wall Casing");
+        row(ui, "Curved wall", |ui| {
+            for m in plan_core::openings::spec::CurvedCasing::ALL {
+                ui.radio_value(&mut self.draft.extras.spec.curved_casing, m, m.name());
+            }
+        });
+        ui.weak("Radial boards stand square to the wall where each one is; straight boards are square at the middle of the opening; parallel boards bend with the curve.");
     }
 
     /// The Jamb tab (doors) and Frame tab (windows) share their controls.
     fn jamb_or_frame(&mut self, ui: &mut Ui) {
+        let group = if self.is_door() {
+            DynGroup::Jamb
+        } else {
+            DynGroup::Frame
+        };
+        self.use_default_row(ui, group);
         let door = self.is_door();
         let e = &mut self.extras;
         let (has, positioning) = if door {
@@ -1137,14 +1512,21 @@ impl OpeningForm {
         ui.checkbox(&mut e.has_jamb, has)
             .on_hover_text(super::SESSION_NOTE);
         ui.add_enabled_ui(e.has_jamb, |ui| {
+            // Stored with the opening: the plan clears a wider opening in the
+            // wall when the size leaves the frame out (DW-82).
+            let spec = &mut self.draft.extras.spec;
             row(ui, "Positioning", |ui| {
-                ui.radio_value(&mut e.size_includes_jamb, true, positioning);
+                ui.radio_value(&mut spec.size_includes_frame, true, positioning);
                 ui.radio_value(
-                    &mut e.size_includes_jamb,
+                    &mut spec.size_includes_frame,
                     false,
                     positioning.replace("Includes", "Excludes"),
                 );
             });
+            if door {
+                ui.checkbox(&mut spec.jamb_in_plan, "Show Jamb in Plan")
+                    .on_hover_text("The jamb blocks beside each jamb line of the plan symbol");
+            }
             self.fields
                 .length_row(ui, "Sides Width", "j_side", &mut e.jamb_side);
             self.fields
@@ -1261,6 +1643,7 @@ impl OpeningForm {
 
     /// The Sash tab (windows): the sash widths and the post between sashes.
     fn sash(&mut self, ui: &mut Ui) {
+        self.use_default_row(ui, DynGroup::Sash);
         section(ui, "Sash");
         ui.checkbox(&mut self.draft.extras.spec.has_sash, "Has Sash")
             .on_hover_text("A window without a sash is glass straight in the frame");
@@ -1293,6 +1676,7 @@ impl OpeningForm {
 
     /// The Lintel tab: trim over the head, and the exterior sill of a window.
     fn lintel(&mut self, ui: &mut Ui) {
+        self.use_default_row(ui, DynGroup::Lintel);
         let window = !self.is_door();
         let spec = &mut self.draft.extras.spec;
         section(ui, "Lintel");
@@ -1380,6 +1764,7 @@ impl OpeningForm {
 
     /// The Hardware tab (doors): handle and hinges, drawn as simple shapes.
     fn hardware(&mut self, ui: &mut Ui) {
+        self.use_default_row(ui, DynGroup::Hardware);
         let hw = &mut self.draft.extras.spec.hardware;
         section(ui, "Hardware");
         ui.checkbox(&mut hw.enabled, "Show Hardware in 3D");
@@ -1507,6 +1892,135 @@ impl OpeningForm {
         if widths != start {
             self.extras.widths = Some(widths);
         }
+    }
+
+    /// "Recessed into Wall" (DW-57): the leaf stands this far in from the
+    /// exterior face instead of on the wall centerline, in plan.
+    fn recessed_into_wall(&mut self, ui: &mut Ui) {
+        section(ui, "Recessed into Wall");
+        let thick = self.wall.as_ref().map_or(4.5, |w| w.thickness);
+        let spec = &mut self.draft.extras.spec;
+        let mut on = spec.recess_depth.is_some() || spec.recess_to != RecessTo::Depth;
+        if ui
+            .checkbox(&mut on, "Recessed To Layer")
+            .on_hover_text("Stands the door leaf and its swing in from the exterior face")
+            .changed()
+        {
+            spec.recess_depth = on.then_some(thick * 0.5);
+            if !on {
+                spec.recess_to = RecessTo::Depth;
+            }
+        }
+        if on {
+            row(ui, "Recessed To", |ui| {
+                ui.radio_value(&mut spec.recess_to, RecessTo::Depth, "Depth");
+                ui.radio_value(&mut spec.recess_to, RecessTo::MainLayer, "Main Layer")
+                    .on_hover_text("The exterior side of the wall's main (structural) layer");
+                ui.radio_value(
+                    &mut spec.recess_to,
+                    RecessTo::SheathingLayer,
+                    "Sheathing Layer",
+                );
+            });
+        }
+        if let Some(d) = spec.recess_depth {
+            let mut depth = d;
+            let typed = spec.recess_to == RecessTo::Depth;
+            let changed = ui
+                .add_enabled_ui(typed, |ui| {
+                    self.fields
+                        .length_row(ui, "Depth from Exterior Face", "recess_d", &mut depth)
+                })
+                .inner;
+            if changed {
+                spec.recess_depth = Some(depth.clamp(0.0, thick));
+            }
+        }
+    }
+
+    /// The Sill/Threshold tab (DW-81, DW-85): the threshold line of an
+    /// exterior door, the exterior sill of a window.
+    fn sill_threshold(&mut self, ui: &mut Ui) {
+        if self.is_door() {
+            let spec = &mut self.draft.extras.spec;
+            section(ui, "Threshold");
+            ui.checkbox(&mut spec.threshold, "Show Threshold in Plan")
+                .on_hover_text("A thin line across the opening of a door in an exterior wall");
+            ui.weak("Hinged, double, sliding and fixed doors in exterior walls.");
+        } else {
+            let spec = &mut self.draft.extras.spec;
+            section(ui, "Exterior Sill");
+            ui.checkbox(&mut spec.sill.enabled, "Use Exterior Sill")
+                .on_hover_text("Also under Lintel; the plan draws it past the exterior face");
+            ui.add_enabled_ui(spec.sill.enabled, |ui| {
+                self.fields
+                    .length_row(ui, "Projection", "sill_d", &mut spec.sill.depth);
+                self.fields
+                    .length_row(ui, "Extend", "sill_x", &mut spec.sill.extend);
+            });
+            spec.sill.depth = spec.sill.depth.max(0.25);
+            spec.sill.extend = spec.sill.extend.max(0.0);
+        }
+    }
+
+    /// The Opening Indicators tab (DW-83).
+    fn indicators(&mut self, ui: &mut Ui) {
+        let swings = matches!(
+            self.draft.effective_style(),
+            OpeningStyle::Hinged
+                | OpeningStyle::DoubleDoor
+                | OpeningStyle::Shower
+                | OpeningStyle::Casement
+        );
+        let ind = &mut self.draft.extras.spec.indicators;
+        section(ui, "Plan Display");
+        ui.checkbox(&mut ind.show_in_plan, "Show Opening Indicators in Plan")
+            .on_hover_text(
+                "An X over a fixed unit, an arrow for the way an awning or hopper opens",
+            );
+        ui.add_enabled_ui(swings, |ui| {
+            ui.checkbox(&mut ind.swing_arrows, "Swing Direction Arrows")
+                .on_hover_text("An arrowhead at the free end of the swing arc");
+        });
+        if !swings {
+            ui.weak("This style has no swing arc.");
+        }
+    }
+
+    /// The Schedule tab (L-29, DW-61): the mark and the supplier data the
+    /// door and window schedules list.
+    fn schedule_tab(&mut self, ui: &mut Ui) {
+        section(ui, "Schedule");
+        ui.checkbox(
+            &mut self.draft.extras.spec.schedule.include,
+            "Include in Schedule",
+        )
+        .on_hover_text("A cleared box leaves it out of the schedule and its numbering");
+        let mut mark = self.draft.schedule_number.clone().unwrap_or_default();
+        row(ui, "Mark", |ui| {
+            ui.add(egui::TextEdit::singleline(&mut mark).desired_width(120.0))
+                .on_hover_text("Blank numbers it automatically (D01, W03); Renumber Schedule sets them in draw order");
+        });
+        self.draft.schedule_number = (!mark.trim().is_empty()).then(|| mark.trim().to_string());
+        let sch = &mut self.draft.extras.spec.schedule;
+        section(ui, "Product");
+        for (label, text) in [
+            ("Manufacturer", &mut sch.manufacturer),
+            ("Model", &mut sch.model),
+            ("Supplier", &mut sch.supplier),
+        ] {
+            row(ui, label, |ui| {
+                ui.add(egui::TextEdit::singleline(text).desired_width(260.0));
+            });
+        }
+        row(ui, "Comment", |ui| {
+            ui.add(
+                egui::TextEdit::multiline(&mut sch.comment)
+                    .desired_rows(3)
+                    .desired_width(260.0),
+            );
+        });
+        ui.weak("Add the Manufacturer, Model, Supplier and Comment columns in the schedule's Specification.");
     }
 
     fn label(&mut self, ui: &mut Ui) {
@@ -1651,6 +2165,17 @@ impl SpecPages for OpeningForm {
             "Hardware" => self.hardware(ui),
             "Shutters" => self.shutters(ui),
             "Label" => self.label(ui),
+            "Sill/Threshold" => self.sill_threshold(ui),
+            "Opening Indicators" => self.indicators(ui),
+            "Schedule" => self.schedule_tab(ui),
+            "Rough Opening" => self.rough_opening(ui),
+            "Framing" => self.framing(ui),
+            "Energy Values" => self.energy_values(ui),
+            "Layer" => self.layer_tab(ui),
+            "Materials" => self.materials_tab(ui),
+            "Object Information" => self.object_information(ui),
+            "Shape" => self.shape_tab(ui),
+            "Treatments" => self.treatments_tab(ui),
             _ => {}
         }
     }
@@ -1746,8 +2271,8 @@ fn plan_preview(p: &Painter, area: Rect, len: f64, thick: f64, o: &Opening) {
     p.rect_stroke(body, 0.0, ink, StrokeKind::Inside);
     // The cut across the opening.
     let (a, b) = (
-        to(Point::new(o.start_offset(), 0.0)).x,
-        to(Point::new(o.end_offset(), 0.0)).x,
+        to(Point::new(sym.span.0, 0.0)).x,
+        to(Point::new(sym.span.1, 0.0)).x,
     );
     let (lo, hi) = (sym.cut.0 as f32, sym.cut.1 as f32);
     let (top, bottom) = (
@@ -1975,9 +2500,50 @@ fn dimension_text(p: &Painter, r: Rect, floor_y: f32, o: &Opening) {
     );
 }
 
+/// A window with a Shape tab outline: the outline filled with glass and the
+/// lite dividers clipped to it.
+fn shaped_window_elevation(p: &Painter, r: Rect, floor_y: f32, o: &Opening, e: &OpeningExtras) {
+    let s = r.width() / o.width.max(1.0) as f32;
+    let at = |q: (f64, f64)| Pos2::new(r.min.x + q.0 as f32 * s, r.max.y - q.1 as f32 * s);
+    let shape = &o.extras.spec.shape;
+    let pts: Vec<Pos2> = shape
+        .outline(o.width, o.height)
+        .into_iter()
+        .map(at)
+        .collect();
+    p.add(Shape::convex_polygon(
+        pts,
+        PV_GLASS,
+        Stroke::new(2.0_f32, PV_INK),
+    ));
+    let muntin = Stroke::new((e.muntin_width as f32 * s).clamp(0.8, 3.0), PV_INK);
+    for (a, b) in shape.lite_lines(
+        &o.extras.spec,
+        (e.lites_across, e.lites_vertical),
+        o.width,
+        o.height,
+        1.0,
+    ) {
+        p.line_segment([at(a), at(b)], muntin);
+    }
+    p.rect_filled(
+        Rect::from_min_max(
+            Pos2::new(r.min.x - 6.0, r.max.y + 3.0),
+            Pos2::new(r.max.x + 6.0, r.max.y + 6.0),
+        ),
+        0.0,
+        PV_WALL,
+    );
+    dimension_text(p, r, floor_y, o);
+}
+
 fn window_elevation(p: &Painter, area: Rect, o: &Opening, e: &OpeningExtras) {
     let (r, floor_y) = fit_on_floor(area, o.width, o.height, o.sill_height);
     p.hline(area.x_range(), floor_y, Stroke::new(1.0_f32, PV_INK));
+    if o.is_shaped() {
+        shaped_window_elevation(p, r, floor_y, o, e);
+        return;
+    }
     outlined(p, r.expand(3.0), PV_TRIM);
     let glass = r.shrink(3.0);
     outlined(p, glass, PV_GLASS);
@@ -2142,7 +2708,7 @@ mod tests {
         let mut win = Opening::default_window(6, 1, 100.0);
         win.extras.sash_width = Some(1.25);
         let mut d = OpeningDialog::for_opening(win, &host(), Vec::new(), OpeningExtras::default());
-        d.form.extras.window_type = 1;
+        d.form.extras.window_type = type_index(WindowType::DoubleHung);
         d.form.extras.jamb_side = 0.5;
         d.sync_stored();
         let x = d.draft().extras.clone();
@@ -2156,8 +2722,77 @@ mod tests {
             Vec::new(),
             OpeningExtras::default(),
         );
-        assert_eq!(d2.extras().window_type, 1);
+        assert_eq!(d2.extras().window_type, type_index(WindowType::DoubleHung));
         assert_eq!(d2.extras().jamb_side, 0.5);
+    }
+
+    #[test]
+    fn editing_a_group_releases_use_default_and_the_other_groups_keep_it() {
+        use plan_core::openings::UseDefault;
+        let mut win = Opening::default_window(6, 1, 100.0);
+        win.extras.spec.dynamic = UseDefault::all(OpeningKind::Window);
+        let mut d = OpeningDialog::for_opening(win, &host(), Vec::new(), OpeningExtras::default());
+        // Showing the dialog is not an edit.
+        d.sync_stored_for_test();
+        let dynamic = d.draft().extras.spec.dynamic;
+        assert_eq!(dynamic, UseDefault::all(OpeningKind::Window));
+        // The Lintel tab's values changed: that group stops following.
+        d.draft_mut().extras.spec.lintel.exterior = true;
+        d.sync_stored_for_test();
+        let dynamic = d.draft().extras.spec.dynamic;
+        assert!(!dynamic.lintel && dynamic.casing && dynamic.sash && dynamic.window_type);
+        // Every tab with a Use Default box draws.
+        let ctx = egui::Context::default();
+        for tab in [
+            "Casing",
+            "Lintel",
+            "Sash",
+            "Frame",
+            "Treatments",
+            "Framing",
+            "Rough Opening",
+            "Materials",
+        ] {
+            assert!(d.draw_tab_for_test(&ctx, tab), "{tab}");
+        }
+    }
+
+    #[test]
+    #[ignore = "R16-22 in progress: per-type window defaults"]
+    fn the_window_defaults_hold_the_separation_and_make_the_main_window_default() {
+        let d = plan_core::PlanDefaults::chief_x18_daniel();
+        let mut e = OpeningExtras::from_window_defaults(&d.window);
+        assert_eq!(e.min_separation, 2.0);
+        e.min_separation = 5.0;
+        e.ignore_casing = true;
+        e.mulled.single_hole = true;
+        let w = Opening::default_window(0, 0, 0.0);
+        let back = e.to_window_defaults(&w, &d.window);
+        assert_eq!(back.min_separation, 5.0);
+        assert!(back.ignore_casing && back.mulled.single_hole);
+        // OK on the Window Defaults stores the main window default.
+        let dialog = OpeningDialog::for_default(OpeningTarget::DefaultWindow, w, e);
+        let mut v = OpeningVariantDefaults::default();
+        dialog.apply_to_variants(&mut v);
+        assert!(v
+            .type_default(plan_core::openings::DefaultKey::main_window())
+            .is_some());
+        assert!(v.needs_follow());
+    }
+
+    #[test]
+    fn the_general_panel_of_a_window_draws_for_every_type() {
+        let ctx = egui::Context::default();
+        for t in WindowType::ALL {
+            let mut win = Opening::default_window(6, 1, 100.0);
+            win.style = t.style();
+            win.extras.spec.window_type = t;
+            let mut d =
+                OpeningDialog::for_opening(win, &host(), Vec::new(), OpeningExtras::default());
+            assert!(d.draw_tab_for_test(&ctx, "General"), "{t:?}");
+            // The dialog shows the type the window holds.
+            assert_eq!(d.extras().window_type, type_index(t), "{t:?}");
+        }
     }
 
     #[test]
@@ -2302,7 +2937,7 @@ mod tests {
 
         let win = OpeningExtras::from_window_defaults(&d.window);
         assert!(win.egress && win.tempered);
-        assert_eq!(win.window_type, 0);
+        assert_eq!(win.window_type, type_index(WindowType::SingleCasement));
         let w = Opening::default_window(0, 0, 0.0);
         let back = win.to_window_defaults(&w, &d.window);
         assert_eq!(back.window_type, "Single Casement");
@@ -2537,5 +3172,195 @@ mod tests {
         let _ = ctx.run(egui::RawInput::default(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| d.form.page(ui, 0));
         });
+    }
+    #[test]
+    fn the_schedule_indicator_and_sill_threshold_tabs_are_live() {
+        for o in [
+            Opening::default_door(5, 1, 100.0),
+            Opening::default_window(6, 1, 100.0),
+        ] {
+            let d = OpeningDialog::for_opening(o, &host(), Vec::new(), OpeningExtras::default());
+            for name in ["Schedule", "Opening Indicators", "Sill/Threshold"] {
+                let tab = d
+                    .form
+                    .tabs()
+                    .iter()
+                    .find(|t| t.name == name)
+                    .unwrap_or_else(|| panic!("no {name} tab"));
+                assert!(tab.enabled, "{name} is dimmed");
+            }
+        }
+    }
+
+    #[test]
+    fn schedule_plan_detail_values_are_stored_with_the_opening() {
+        let mut d = OpeningDialog::for_opening(
+            Opening::default_door(5, 1, 100.0),
+            &host(),
+            Vec::new(),
+            OpeningExtras::default(),
+        );
+        {
+            let o = d.draft_mut();
+            o.schedule_number = Some("A7".into());
+            let spec = &mut o.extras.spec;
+            spec.schedule.include = false;
+            spec.schedule.supplier = "Acme".into();
+            spec.schedule.comment = "Primed".into();
+            spec.swings_both = true;
+            spec.threshold = false;
+            spec.recess_depth = Some(1.5);
+            spec.size_includes_frame = false;
+            spec.indicators.swing_arrows = true;
+        }
+        d.sync_stored();
+        let back: Opening =
+            serde_json::from_str(&serde_json::to_string(d.draft()).unwrap()).unwrap();
+        assert_eq!(format!("{back:?}"), format!("{:?}", d.draft()));
+        assert_eq!(back.schedule_number.as_deref(), Some("A7"));
+        assert!(!back.extras.spec.schedule.include);
+        assert_eq!(back.extras.spec.schedule.supplier, "Acme");
+        assert_eq!(back.extras.spec.recess_depth, Some(1.5));
+        // A plan from before the tabs reads with their defaults.
+        let mut v: serde_json::Value = serde_json::to_value(&back).unwrap();
+        let spec = v["extras"]["spec"].as_object_mut().unwrap();
+        for k in [
+            "swings_both",
+            "threshold",
+            "jamb_in_plan",
+            "size_includes_frame",
+            "recess_depth",
+            "indicators",
+            "schedule",
+        ] {
+            spec.remove(k);
+        }
+        let old: Opening = serde_json::from_value(v).unwrap();
+        let spec = &old.extras.spec;
+        assert!(spec.schedule.include && spec.threshold && spec.jamb_in_plan);
+        assert!(spec.size_includes_frame && !spec.swings_both);
+        assert_eq!(spec.recess_depth, None);
+        assert_eq!(
+            spec.indicators,
+            plan_core::openings::spec::OpeningIndicators::default()
+        );
+    }
+
+    #[test]
+    fn two_windows_keep_the_minimum_separation_and_so_does_a_door() {
+        let mut p = Project::new("t");
+        let w = p.add_wall(
+            0,
+            Point::new(0.0, 0.0),
+            Point::new(300.0, 0.0),
+            6.0,
+            109.125,
+            WallKind::Exterior,
+        );
+        let mut win = Opening::default_window(0, 0, 0.0);
+        win.width = 36.0;
+        place_from_template(&mut p, 0, w, 100.0, &win).unwrap();
+        // Flush against the first (82..118) is closer than the 2" separation;
+        // 2" clear is fine: 120..156, centered 138.
+        assert!(place_from_template(&mut p, 0, w, 136.0, &win).is_none());
+        assert!(place_from_template(&mut p, 0, w, 138.0, &win).is_some());
+        // The third one: 1" short of the separation is refused, 2" is fine.
+        assert!(place_from_template(&mut p, 0, w, 175.0, &win).is_none());
+        assert!(place_from_template(&mut p, 0, w, 176.0, &win).is_some());
+        // A door beside a window keeps the same distance.
+        let mut door = Opening::default_door(0, 0, 0.0);
+        door.width = 30.0;
+        door.sill_height = 0.0;
+        assert!(place_from_template(&mut p, 0, w, 120.0, &door).is_none());
+        // Touching the last window (ending at 194) is too close, 2" clear is fine.
+        assert!(place_from_template(&mut p, 0, w, 209.0, &door).is_none());
+        assert!(place_from_template(&mut p, 0, w, 211.0, &door).is_some());
+        // The plan's Minimum Separation moves the stop: flush against that
+        // door (196..226) is refused with 2", fine with none.
+        assert!(place_from_template(&mut p, 0, w, 241.0, &door).is_none());
+        p.opening_display.min_separation = 0.0;
+        assert!(place_from_template(&mut p, 0, w, 241.0, &door).is_some());
+    }
+
+    #[test]
+    fn the_round_15_tabs_are_live_and_their_values_survive_the_dialog() {
+        use plan_core::openings::spec::{CurtainStyle, ShapeKind, WindowShape};
+        let ctx = egui::Context::default();
+        let door_tabs = [
+            "Rough Opening",
+            "Framing",
+            "Energy Values",
+            "Layer",
+            "Materials",
+            "Object Information",
+        ];
+        let mut d = OpeningDialog::for_opening(
+            Opening::default_door(5, 1, 100.0),
+            &host(),
+            Vec::new(),
+            OpeningExtras::default(),
+        );
+        for tab in door_tabs {
+            assert!(d.draw_tab_for_test(&ctx, tab), "door {tab}");
+        }
+        // Only a window has a Shape and a Treatments tab.
+        assert!(!d.draw_tab_for_test(&ctx, "Shape"));
+        assert!(!d.draw_tab_for_test(&ctx, "Treatments"));
+        // The Components tab is still dimmed.
+        assert!(!d.draw_tab_for_test(&ctx, "Components"));
+        let mut w = OpeningDialog::for_opening(
+            Opening::default_window(6, 1, 100.0),
+            &host(),
+            Vec::new(),
+            OpeningExtras::default(),
+        );
+        for tab in door_tabs.iter().copied().chain(["Shape", "Treatments"]) {
+            assert!(w.draw_tab_for_test(&ctx, tab), "window {tab}");
+        }
+        // What the pages edit stays on the draft through the per-frame sync.
+        {
+            let (width, height) = (w.draft().width, w.draft().height);
+            let spec = &mut w.draft_mut().extras.spec;
+            spec.shape = WindowShape::preset(ShapeKind::Triangle, width, height);
+            spec.treatments.curtain = CurtainStyle::Pleated;
+            spec.rough.add_width = 2.0;
+            spec.framing.trimmers = Some(2);
+            spec.energy.u_factor = 0.25;
+            spec.layer = Some("Windows, Labels".into());
+            spec.materials.set("Frame", Some(("Oak", [1, 2, 3])));
+            spec.info.id = "W-9".into();
+        }
+        for tab in ["Shape", "Treatments", "Rough Opening", "Materials"] {
+            assert!(w.draw_tab_for_test(&ctx, tab));
+        }
+        let spec = &w.draft().extras.spec;
+        assert!(spec.shape.is_shaped());
+        assert_eq!(spec.treatments.curtain, CurtainStyle::Pleated);
+        assert_eq!(spec.rough.add_width, 2.0);
+        assert_eq!(spec.framing.trimmers, Some(2));
+        assert_eq!(spec.energy.u_factor, 0.25);
+        assert_eq!(w.draft().layer_name(), "Windows, Labels");
+        assert_eq!(spec.materials.color("Frame"), Some([1, 2, 3]));
+        assert_eq!(spec.info.id, "W-9");
+        // A double door shows its Door Swing group on the Options tab.
+        let mut dd = Opening::default_door(7, 1, 100.0);
+        dd.style = OpeningStyle::DoubleDoor;
+        dd.width = 60.0;
+        let mut dd = OpeningDialog::for_opening(dd, &host(), Vec::new(), OpeningExtras::default());
+        assert!(dd.draw_tab_for_test(&ctx, "Options"));
+        // The default window dialog hands the new values to the variants.
+        let mut defaults = OpeningDialog::for_default(
+            OpeningTarget::DefaultWindow,
+            Opening::default_window(0, 0, 0.0),
+            OpeningExtras::default(),
+        );
+        defaults.draft_mut().extras.spec.treatments.curtain = CurtainStyle::Panels;
+        defaults.draft_mut().extras.spec.energy.u_factor = 0.2;
+        defaults.sync_stored();
+        let mut v = OpeningVariantDefaults::default();
+        defaults.apply_to_variants(&mut v);
+        assert_eq!(v.window_spec.treatments.curtain, CurtainStyle::Panels);
+        assert_eq!(v.window_spec.energy.u_factor, 0.2);
+        assert_eq!(v.door_spec, OpeningSpec::default());
     }
 }

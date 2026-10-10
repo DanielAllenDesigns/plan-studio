@@ -878,6 +878,26 @@ pub struct CadAttrs {
     pub text_style: Option<String>,
     /// Rich text runs; their plain text is the text item's `text`.
     pub runs: Vec<RichRun>,
+    /// Wrap width, alignment, border and background of a text (TXT-1,
+    /// TXT-3, TXT-16); plain unless the user made a box.
+    pub text_box: crate::text_box::TextBox,
+    /// Polyline edges drawn as arcs (CAD-22): the polyline's points between
+    /// the ends of each span are samples along the arc, so every consumer
+    /// (drawing, DXF, layout) sees a smooth curve in plain points. Empty for
+    /// anything but a polyline with an arc edge.
+    pub arc_edges: Vec<PolyArc>,
+}
+
+/// One arc edge of a polyline: `points[from..=to]` sample an arc that leaves
+/// `points[from]` and reaches `points[to]` (an index equal to the number of
+/// points means the first point, on a closed polyline).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct PolyArc {
+    pub from: usize,
+    pub to: usize,
+    /// `tan(sweep / 4)`, positive when the edge turns counter-clockwise
+    /// from `from` to `to`.
+    pub bulge: f64,
 }
 
 impl CadAttrs {

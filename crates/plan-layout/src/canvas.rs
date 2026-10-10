@@ -131,7 +131,7 @@ pub(crate) enum Prim {
 }
 
 /// `p` turned `turns` quarter turns counter-clockwise about `c`.
-fn turn_point(p: Pt, c: Pt, turns: u8) -> Pt {
+pub(crate) fn turn_point(p: Pt, c: Pt, turns: u8) -> Pt {
     let (dx, dy) = (p.0 - c.0, p.1 - c.1);
     match turns % 4 {
         0 => p,

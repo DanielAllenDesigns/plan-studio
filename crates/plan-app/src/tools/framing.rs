@@ -252,7 +252,7 @@ impl FramingTool {
                 }
                 _ => framing_view::add_record(cx, &label, |id| Record::BearingLine {
                     id,
-                    line: BearingLine { line: (a, b) },
+                    line: BearingLine::new((a, b)),
                 }),
             }
         };
@@ -284,7 +284,7 @@ impl FramingTool {
         let v = self.variant;
         let label = format!("Place {}", v.name());
         let id = if let Some(kind) = v.member_kind() {
-            let m = framing_view::new_member(cx.floor(), kind, at, at);
+            let m = framing_view::new_member_in(cx, kind, at, at);
             framing_view::add_record(cx, &label, |id| Record::Manual(FramingMember { id, ..m }))
         } else {
             framing_view::add_record(cx, &label, |id| Record::Marker {
@@ -547,7 +547,7 @@ impl Tool for FramingTool {
             }
             (Draw::Spot, _, Some(h)) => {
                 if let Some(kind) = v.member_kind() {
-                    let m = framing_view::new_member(cx.floor(), kind, h, h);
+                    let m = framing_view::new_member_in(cx, kind, h, h);
                     framing_view::paint_member(painter, cam, &m, pal.ghost_stroke, ghost);
                 } else {
                     painter.circle_stroke(cam.world_to_screen(h), 6.0, ghost);
@@ -762,6 +762,25 @@ mod tests {
         assert!(matches!(&recs[3], Record::BearingLine { .. }));
         assert!(matches!(&recs[4], Record::TrussDirection { dir, .. }
             if (dir.spacing - 24.0).abs() < 1e-9));
+    }
+
+    #[test]
+    fn the_post_tools_start_with_the_posts_tab_of_build_framing() {
+        let mut cx = cx();
+        let mut st = framing_view::settings(&cx.project);
+        st.build.posts.size = plan_framing::LumberSize::SIX_BY_SIX;
+        st.build.posts.footing = true;
+        framing_view::set_settings(&mut cx, st);
+        let mut post = tool(FramingVariant::Post);
+        click(&mut post, &mut cx, 100.0, 100.0);
+        let recs = records(&cx);
+        let Some(Record::Manual(m)) = recs.last() else {
+            panic!("no post placed")
+        };
+        assert_eq!(m.kind, ManualMemberKind::PostWithFooting);
+        assert_eq!(m.lumber, plan_framing::LumberSize::SIX_BY_SIX);
+        assert!((m.width - 5.5).abs() < 1e-9 && (m.depth - 5.5).abs() < 1e-9);
+        assert!(m.footing().is_some());
     }
 
     #[test]

@@ -43,7 +43,25 @@ pub(crate) struct Surface {
     pub metallic: f32,
     /// Transmission colour for [`Kind::Glass`].
     pub tint: V3,
+    /// Light the surface gives off (linear radiance), 0 for most materials.
+    pub emission: V3,
 }
+
+/// A mesh's own look (`Mesh::color`, and the surface the Material Painter
+/// gave it): the scene material it is drawn as, its colour and the surface
+/// properties that replace the material's.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Custom {
+    pub material: Material,
+    pub color: [u8; 3],
+    pub paint: Option<plan_3d::surface::PaintSurface>,
+    /// Key of the material package maps painting the mesh
+    /// (`plan_materials::pbr`), if any.
+    pub maps: Option<u64>,
+}
+
+/// Radiance of a fully emissive surface, in units of its colour.
+const EMISSIVE_SCALE: f32 = 4.0;
 
 impl Surface {
     /// The per-material table for a technique, indexed by `Material::index()`.
@@ -59,6 +77,7 @@ impl Surface {
                     roughness: 0.0,
                     metallic: 0.0,
                     tint: V3::ONE - (V3::ONE - rgb) * a,
+                    emission: V3::ZERO,
                 },
                 Technique::PhysicallyBased => Surface {
                     kind: Kind::Opaque,
@@ -66,6 +85,7 @@ impl Surface {
                     roughness: roughness_of(m),
                     metallic: plan_materials::scene_surface(m).metallic,
                     tint: V3::ONE,
+                    emission: V3::ZERO,
                 },
                 Technique::Clay | Technique::Ambient => Surface {
                     kind: if translucent {
@@ -77,22 +97,69 @@ impl Surface {
                     roughness: 1.0,
                     metallic: 0.0,
                     tint: V3::ONE,
+                    emission: V3::ZERO,
                 },
             }
         })
     }
 
     /// The table of [`Surface::table`] followed by one entry for each
-    /// `(material, colour)` pair of `custom` (a mesh's own `color`): the
-    /// material's surface with its base colour replaced. Clay and ambient
-    /// occlusion ignore colour, so those entries are the material's own.
-    pub fn table_with(technique: Technique, custom: &[(Material, [u8; 3])]) -> Vec<Surface> {
+    /// [`Custom`] (a mesh's own `color`): the material's surface with its base
+    /// colour replaced and, for a painted mesh, its roughness, metalness,
+    /// transparency and emission. Clay and ambient occlusion ignore colour
+    /// and gloss, so those entries are the material's own.
+    pub fn table_with(technique: Technique, custom: &[Custom]) -> Vec<Surface> {
         let mut table = Self::table(technique).to_vec();
-        for &(m, rgb) in custom {
-            let base = table[m.index()];
-            table.push(base.recolored(technique, m, rgb));
+        for c in custom {
+            let base = table[c.material.index()];
+            let coloured = base.recolored(technique, c.material, c.color);
+            table.push(match c.paint {
+                Some(p) if technique == Technique::PhysicallyBased => {
+                    coloured.painted(c.material, c.color, p)
+                }
+                _ => coloured,
+            });
         }
         table
+    }
+
+    /// This (recoloured) surface with a painted material's properties: it
+    /// turns into a glass sheet when it is mostly transparent, becomes clear
+    /// when it is entirely so, and glows when it is emissive.
+    fn painted(self, m: Material, rgb: [u8; 3], p: plan_3d::surface::PaintSurface) -> Surface {
+        let [r, g, b] = plan_3d::Mesh::linear_rgb(rgb);
+        let c = V3::new(r, g, b);
+        let opacity = (1.0 - p.transparency).clamp(0.0, 1.0);
+        let roughness = p.roughness.clamp(0.0, 1.0);
+        let metallic = p.metallic.clamp(0.0, 1.0);
+        // The scene material's own translucency (window glass, water) counts
+        // too: a clear pane stays clear when it is painted.
+        let own = m.color()[3];
+        let opacity = opacity.min(own);
+        if opacity < 0.02 {
+            return Surface {
+                kind: Kind::Clear,
+                ..self
+            };
+        }
+        if opacity < 0.999 {
+            return Surface {
+                kind: Kind::Glass,
+                albedo: V3::ZERO,
+                roughness: 0.0,
+                metallic: 0.0,
+                tint: V3::ONE - (V3::ONE - c) * opacity,
+                emission: V3::ZERO,
+            };
+        }
+        Surface {
+            kind: Kind::Opaque,
+            albedo: c,
+            roughness,
+            metallic,
+            tint: V3::ONE,
+            emission: c * (p.emissive.clamp(0.0, 1.0) * EMISSIVE_SCALE),
+        }
     }
 
     /// This surface with its base colour replaced by `rgb` (sRGB bytes,

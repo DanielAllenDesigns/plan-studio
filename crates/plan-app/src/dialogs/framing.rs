@@ -2,16 +2,33 @@
 //!
 //! * General: the member type, lumber size, material, plies, length (plan
 //!   length, or height for a post), rise, bottom elevation, rotation (roll
-//!   about the member's own axis) and the cut-list label; for a post with
-//!   footing also the footing size and thickness.
-//! * Truss (truss types only): truss type, pitch, heel height, overhang and
-//!   the number of chords and webs the truss gets; the span is the length.
+//!   about the member's own axis); for a post with footing also the footing
+//!   size and thickness; and the Options: Bearing Beam, Treated, Show Cross,
+//!   Show Multi-Ply Lines and the Rotate choice (Flat to Inside or Outside).
+//! * End Profile (joists, beams, rafters, General Framing): a shape and size
+//!   for each end.
 //! * Line Style: line style and weight follow the member's layer, so they
 //!   are shown disabled.
+//! * Fill Style: the fill in plan view and in a Wall Detail.
+//! * Label: Automatic or a Specified label with Insert Macro (Nominal Size,
+//!   Width, Depth, Length ...).
 //! * Layer: the layer the member is drawn on.
+//! * A truss has the panels of `dialogs/truss.rs` instead of General.
+//!
+//! A Joist Direction Line and a Roof Truss Direction Line open the same window
+//! with their own Specification (`DirectionForm`).
 //!
 //! The dialog edits a cloned [`FramingMember`]; the tool stores the draft on OK
-//! (`framing_view::apply_edit`).
+//! (`FramingMemberDialog::apply`).
+//!
+//! [`FramingDefaultsDialog`] is two views of one window. Opened as a command
+//! (Build > Framing > Build Framing, after [`request_build`]) it is Chief's
+//! Build Framing dialog: the Automatic Framing Defaults button, the
+//! Automatically Rebuild Framing choices and Build Framing Once with a floor
+//! choice; OK saves them and builds (`framing_view::set_settings` runs the
+//! build when the draft asks). The Automatic Framing Defaults button switches
+//! the window to the defaults panels (Floor Levels, Wall, Openings, Roof,
+//! Trusses, Posts), which are also what Default Settings > Framing opens.
 
 use super::{
     dis_combo, fmt_short, on, pv_text, row, section, Fields, Outcome, SpecDialog, SpecPages, Tab,
@@ -20,12 +37,37 @@ use super::{
 use crate::editor::framing_view::FramingSettings;
 use eframe::egui::{self, Align2, Painter, Pos2, Rect, Stroke, Ui};
 use plan_core::geometry::Point;
+use plan_framing::span::{allowable_span, SpanUse};
 use plan_framing::{
-    FramingMaterial, FramingMember, LumberSize, ManualMemberKind, Truss, TrussSpec, TrussType,
+    BearingMode, BlockingStyle, Connection, EndShape, FlatTo, FloorPick, FramingMaterial,
+    FramingMember, Group, JoistDirection, LumberSize, ManualMemberKind, OverframeLayer, Splice,
+    Truss, TrussSpec, TrussType, WallConnection,
 };
 
-const TABS_PLAIN: &[Tab] = &[on("General"), on("Line Style"), on("Layer")];
-const TABS_TRUSS: &[Tab] = &[on("General"), on("Truss"), on("Line Style"), on("Layer")];
+/// Member types that take a decorative End Profile.
+fn takes_end_profile(kind: ManualMemberKind) -> bool {
+    use ManualMemberKind as K;
+    matches!(
+        kind,
+        K::Joist | K::FloorCeilingBeam | K::RoofBeam | K::Rafter | K::GeneralFraming
+    )
+}
+
+const TABS_PLAIN: &[Tab] = &[
+    on("General"),
+    on("End Profile"),
+    on("Line Style"),
+    on("Fill Style"),
+    on("Label"),
+    on("Layer"),
+];
+const TABS_NO_PROFILE: &[Tab] = &[
+    on("General"),
+    on("Line Style"),
+    on("Fill Style"),
+    on("Label"),
+    on("Layer"),
+];
 
 /// The member types the dialog can switch between (layout lines have no
 /// lumber and are not members).
@@ -46,14 +88,7 @@ pub const KINDS: [ManualMemberKind; 14] = [
     ManualMemberKind::GirderTruss,
 ];
 
-pub const TRUSS_TYPES: [TrussType; 6] = [
-    TrussType::Fink,
-    TrussType::Howe,
-    TrussType::KingPost,
-    TrussType::Scissor,
-    TrussType::Attic,
-    TrussType::Mono,
-];
+pub const TRUSS_TYPES: [TrussType; 8] = super::truss::TYPES;
 
 const MATERIALS: [FramingMaterial; 5] = [
     FramingMaterial::Lumber,
@@ -115,9 +150,21 @@ pub fn lumber_presets() -> Vec<LumberSize> {
     ]
 }
 
+/// What the Framing Member Specification window is editing.
+enum Subject {
+    /// A member placed by hand or laid out by Build Framing.
+    Member,
+    /// A Joist Direction Line.
+    JoistDirection(plan_core::Id),
+    /// A Roof Truss Direction Line.
+    TrussDirection(plan_core::Id),
+}
+
 pub struct FramingMemberDialog {
     frame: SpecDialog,
     form: Form,
+    subject: Subject,
+    direction: Option<DirectionForm>,
 }
 
 struct Form {
@@ -126,6 +173,10 @@ struct Form {
     /// Plan length (post: height) as edited.
     length: f64,
     layers: Vec<String>,
+    /// The truss panel's Options that are not in the spec.
+    switches: super::truss::Switches,
+    /// Plan View Fill Style or Wall Detail Fill Style being edited.
+    fill_width: f64,
 }
 
 impl FramingMemberDialog {
@@ -143,14 +194,74 @@ impl FramingMemberDialog {
             draft: member.clone(),
             fields: Fields::default(),
             layers,
+            switches: super::truss::Switches::default(),
+            fill_width: 12.0,
+        };
+        let title = match member.kind {
+            ManualMemberKind::RoofTruss => "Roof Truss Specification",
+            ManualMemberKind::GirderTruss => "Girder Truss Specification",
+            ManualMemberKind::FloorCeilingTruss => "Floor/Ceiling Truss Specification",
+            _ => "Framing Member Specification",
         };
         Self {
-            frame: SpecDialog::new(
-                "Framing Member Specification",
-                ("framing_member", member.id),
-            ),
+            frame: SpecDialog::new(title, ("framing_member", member.id)),
             form,
+            subject: Subject::Member,
+            direction: None,
         }
+    }
+
+    /// The dialog of a truss that Build Framing laid out: its
+    /// "Automatically Generated Truss" box is on, and stays on unless the
+    /// user unchecks it.
+    pub fn for_built(mut self) -> Self {
+        self.form.switches = super::truss::Switches {
+            auto: true,
+            was_auto: true,
+        };
+        self
+    }
+
+    /// The Specification of a Joist Direction Line or a Roof Truss Direction
+    /// Line (`None` for any other record).
+    pub fn for_direction(rec: &crate::editor::framing_view::Record) -> Option<Self> {
+        use crate::editor::framing_view::Record;
+        let (subject, form, title) = match rec {
+            Record::JoistDirection { id, dir } => (
+                Subject::JoistDirection(*id),
+                DirectionForm::joist(dir.clone()),
+                "Joist Direction Specification",
+            ),
+            Record::TrussDirection { id, dir } => (
+                Subject::TrussDirection(*id),
+                DirectionForm::truss(dir.clone()),
+                "Roof Truss Direction Specification",
+            ),
+            _ => return None,
+        };
+        let key = match subject {
+            Subject::JoistDirection(i) | Subject::TrussDirection(i) => i,
+            Subject::Member => 0,
+        };
+        let placeholder = FramingMember::new(
+            key,
+            ManualMemberKind::GeneralFraming,
+            Point::ZERO,
+            Point::new(1.0, 0.0),
+        );
+        Some(Self {
+            frame: SpecDialog::new(title, ("framing_direction", key)),
+            form: Form {
+                draft: placeholder,
+                fields: Fields::default(),
+                length: 1.0,
+                layers: Vec::new(),
+                switches: super::truss::Switches::default(),
+                fill_width: 12.0,
+            },
+            subject,
+            direction: Some(form),
+        })
     }
 
     #[cfg(test)]
@@ -159,11 +270,48 @@ impl FramingMemberDialog {
     }
 
     pub fn show(&mut self, ctx: &egui::Context) -> Outcome {
-        self.frame.show(ctx, &mut self.form)
+        match self.direction.as_mut() {
+            Some(d) => self.frame.show(ctx, d),
+            None => self.frame.show(ctx, &mut self.form),
+        }
     }
 
     pub fn draft(&self) -> &FramingMember {
         &self.form.draft
+    }
+
+    /// Stores the edit on the plan (OK): a member's specification, or a
+    /// direction line's. Returns whether anything changed.
+    pub fn apply(&self, cx: &mut crate::editor::EditorContext) -> bool {
+        use crate::editor::framing_view as fv;
+        match (&self.subject, &self.direction) {
+            (Subject::JoistDirection(id), Some(DirectionForm::Joist(dir))) => {
+                fv::apply_record_edit(
+                    cx,
+                    "Joist Direction Specification",
+                    fv::Record::JoistDirection {
+                        id: *id,
+                        dir: dir.clone(),
+                    },
+                )
+            }
+            (Subject::TrussDirection(id), Some(DirectionForm::Truss(dir))) => {
+                fv::apply_record_edit(
+                    cx,
+                    "Roof Truss Direction Specification",
+                    fv::Record::TrussDirection {
+                        id: *id,
+                        dir: dir.clone(),
+                    },
+                )
+            }
+            _ => {
+                // A truss that was laid out stays laid out while its
+                // Automatically Generated Truss box is checked.
+                let keep = self.form.switches.was_auto && self.form.switches.auto;
+                fv::apply_edit_keep(cx, self.form.draft.clone(), keep)
+            }
+        }
     }
 
     /// Edit hooks (what the controls call), public so tests can drive them.
@@ -206,11 +354,188 @@ impl FramingMemberDialog {
         }
     }
 
+    /// The truss spec being edited (tests change it like the controls do).
+    #[cfg(test)]
+    pub fn truss_mut(&mut self) -> Option<&mut TrussSpec> {
+        self.form.draft.truss.as_mut()
+    }
+
+    /// The draft member (tests change the options like the controls do).
+    #[cfg(test)]
+    pub fn draft_mut(&mut self) -> &mut FramingMember {
+        &mut self.form.draft
+    }
+
+    /// The Direction Line being edited.
+    #[cfg(test)]
+    pub fn direction_mut(&mut self) -> Option<&mut DirectionForm> {
+        self.direction.as_mut()
+    }
+
+    /// The Automatically Generated Truss box.
+    #[cfg(test)]
+    pub fn set_auto(&mut self, on: bool) {
+        self.form.switches.auto = on;
+    }
+
     /// Chords and webs the truss gets for the current inputs (0 for other
     /// members).
     #[cfg(test)]
     pub fn truss_member_count(&self) -> usize {
         self.form.truss_member_count()
+    }
+}
+
+/// The Specification of a direction line.
+#[derive(Clone, Debug, PartialEq)]
+pub enum DirectionForm {
+    Joist(plan_framing::JoistDirectionLine),
+    Truss(plan_framing::RoofTrussDirection),
+}
+
+const DIR_TABS: &[Tab] = &[on("General"), on("Line Style"), on("Arrow")];
+const TRUSS_DIR_TABS: &[Tab] = &[on("Roof Trusses"), on("Line Style"), on("Arrow")];
+
+impl DirectionForm {
+    pub fn joist(d: plan_framing::JoistDirectionLine) -> Self {
+        DirectionForm::Joist(d)
+    }
+
+    pub fn truss(d: plan_framing::RoofTrussDirection) -> Self {
+        DirectionForm::Truss(d)
+    }
+}
+
+/// Framing Member Default names the Construction list offers until the
+/// management dialog lists the plan's own.
+const CONSTRUCTIONS: [&str; 5] = [
+    "Floor Joist",
+    "Ceiling Joist",
+    "I-Joist",
+    "Floor Truss",
+    "Engineered Joist",
+];
+
+impl SpecPages for DirectionForm {
+    fn tabs(&self) -> &'static [Tab] {
+        match self {
+            DirectionForm::Joist(_) => DIR_TABS,
+            DirectionForm::Truss(_) => TRUSS_DIR_TABS,
+        }
+    }
+
+    fn error(&self) -> Option<String> {
+        let spacing = match self {
+            DirectionForm::Joist(d) => d.spacing,
+            DirectionForm::Truss(d) => d.spacing,
+        };
+        (spacing < 0.0).then(|| "The spacing cannot be negative".to_string())
+    }
+
+    fn page(&mut self, ui: &mut Ui, tab: usize) {
+        match (self.tabs()[tab].name, &mut *self) {
+            ("General", DirectionForm::Joist(d)) => {
+                section(ui, "Joists");
+                row(ui, "Construction", |ui| {
+                    egui::ComboBox::from_id_salt("dir_construction")
+                        .selected_text(if d.construction.is_empty() {
+                            "Platform default"
+                        } else {
+                            d.construction.as_str()
+                        })
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut d.construction,
+                                String::new(),
+                                "Platform default",
+                            );
+                            for c in CONSTRUCTIONS {
+                                ui.selectable_value(&mut d.construction, c.to_string(), c);
+                            }
+                        });
+                    ui.add_enabled(false, egui::Button::new("Define\u{2026}"))
+                        .on_hover_text("The Framing Member Defaults Management dialog");
+                });
+                row(ui, "Depth (0 = platform's)", |ui| {
+                    ui.add(
+                        egui::DragValue::new(&mut d.depth)
+                            .range(0.0..=24.0)
+                            .suffix(" in"),
+                    )
+                });
+                row(ui, "Width (0 = platform's)", |ui| {
+                    ui.add(
+                        egui::DragValue::new(&mut d.width)
+                            .range(0.0..=12.0)
+                            .suffix(" in"),
+                    )
+                });
+                row(ui, "Spacing (0 = platform's)", |ui| {
+                    ui.add(
+                        egui::DragValue::new(&mut d.spacing)
+                            .range(0.0..=96.0)
+                            .suffix(" in"),
+                    )
+                });
+                ui.add_space(6.0);
+                ui.weak("These override the Room Specification's joists for the platform the line is drawn in. They apply the next time the framing is built.");
+            }
+            ("Roof Trusses", DirectionForm::Truss(d)) => {
+                section(ui, "Roof Trusses");
+                row(ui, "Truss Spacing", |ui| {
+                    ui.add(
+                        egui::DragValue::new(&mut d.spacing)
+                            .range(0.0..=120.0)
+                            .suffix(" in"),
+                    )
+                });
+                for (label, v) in [
+                    ("Top Chord depth (0 = default)", &mut d.top_chord_depth),
+                    (
+                        "Bottom Chord depth (0 = top chord's)",
+                        &mut d.bottom_chord_depth,
+                    ),
+                    ("Webbing depth (0 = top chord's)", &mut d.web_depth),
+                    ("Maximum Horizontal Span (0 = none)", &mut d.max_span),
+                ] {
+                    row(ui, label, |ui| {
+                        ui.add(egui::DragValue::new(v).range(0.0..=480.0).suffix(" in"))
+                    });
+                }
+                ui.checkbox(&mut d.require_kingpost, "Require Kingpost");
+            }
+            ("Line Style", _) => {
+                section(ui, "Line Style");
+                row(ui, "Line style", |ui| dis_combo(ui, "dir_ls", "By layer"));
+                row(ui, "Line weight", |ui| dis_combo(ui, "dir_lw", "By layer"));
+            }
+            ("Arrow", _) => {
+                section(ui, "Arrow");
+                row(ui, "Arrowheads", |ui| {
+                    dis_combo(ui, "dir_arrow", "Both ends")
+                });
+                ui.weak("Joist and Roof Truss Direction Lines do not use Attach or Auto Position.");
+            }
+            _ => {}
+        }
+    }
+
+    fn preview(&self, painter: &Painter, rect: Rect) {
+        let (name, spacing) = match self {
+            DirectionForm::Joist(d) => ("Joist Direction", d.spacing),
+            DirectionForm::Truss(d) => ("Roof Truss Direction", d.spacing),
+        };
+        pv_text(
+            painter,
+            rect.center(),
+            Align2::CENTER_CENTER,
+            if spacing > 0.0 {
+                format!("{name}\n{}\" o.c.", fmt_short(spacing))
+            } else {
+                name.to_string()
+            },
+            12.0,
+        );
     }
 }
 
@@ -358,9 +683,6 @@ impl Form {
                 self.set_plies(plies);
             }
         });
-        row(ui, "Label", |ui| {
-            ui.add(egui::TextEdit::singleline(&mut self.draft.label).desired_width(200.0))
-        });
 
         section(ui, "Dimensions");
         let label = if self.draft.kind.is_vertical() {
@@ -391,6 +713,7 @@ impl Form {
             self.fields
                 .degrees_row(ui, "Rotation", "deg_rotation", &mut self.draft.rotation);
         }
+        self.options(ui);
         if self.draft.kind == ManualMemberKind::PostWithFooting {
             section(ui, "Footing");
             self.fields.length_row(
@@ -408,39 +731,139 @@ impl Form {
         }
     }
 
-    fn truss(&mut self, ui: &mut Ui) {
-        section(ui, "Truss");
-        let span = self.draft.plan_length();
-        let count = self.truss_member_count();
-        let Some(spec) = self.draft.truss.as_mut() else {
-            ui.weak("This member type is not a truss.");
-            return;
-        };
-        row(ui, "Truss Type", |ui| {
-            egui::ComboBox::from_id_salt("framing_truss_type")
-                .selected_text(spec.kind.name())
-                .show_ui(ui, |ui| {
-                    for t in TRUSS_TYPES {
-                        ui.selectable_value(&mut spec.kind, t, t.name());
+    /// The Options of the General panel (manual p. 929).
+    fn options(&mut self, ui: &mut Ui) {
+        use ManualMemberKind as K;
+        section(ui, "Options");
+        let kind = self.draft.kind;
+        ui.add_enabled_ui(kind == K::FloorCeilingBeam, |ui| {
+            ui.checkbox(&mut self.draft.bearing_beam, "Bearing Beam").on_hover_text(
+                "Joists run across the beam and lap or butt over it; a beam standing 1\" or more above the joists holds them by its sides",
+            );
+        });
+        ui.checkbox(&mut self.draft.treated, "Treated");
+        ui.add_enabled_ui(kind.is_vertical(), |ui| {
+            ui.checkbox(&mut self.draft.show_cross, "Show Cross")
+                .on_hover_text("Draws the post as a cross box in plan view");
+        });
+        ui.add_enabled_ui(
+            matches!(
+                kind,
+                K::Post | K::PostWithFooting | K::FloorCeilingBeam | K::RoofBeam
+            ) && self.draft.plies > 1,
+            |ui| {
+                ui.checkbox(&mut self.draft.show_ply_lines, "Show Multi-Ply Lines");
+            },
+        );
+        ui.add_enabled_ui(matches!(kind, K::GeneralFraming | K::Blocking), |ui| {
+            row(ui, "Rotate", |ui| {
+                egui::ComboBox::from_id_salt("framing_flat")
+                    .selected_text(self.draft.flat.name())
+                    .show_ui(ui, |ui| {
+                        for f in FlatTo::ALL {
+                            ui.selectable_value(&mut self.draft.flat, f, f.name());
+                        }
+                    });
+            });
+        });
+    }
+
+    /// The End Profile panel: a shape and size for each end.
+    fn profile(&mut self, ui: &mut Ui) {
+        section(ui, "End Profile");
+        for (i, name) in ["Start", "End"].into_iter().enumerate() {
+            row(ui, name, |ui| {
+                let p = &mut self.draft.end_profile[i];
+                egui::ComboBox::from_id_salt(("framing_end_shape", i))
+                    .selected_text(p.shape.name())
+                    .show_ui(ui, |ui| {
+                        for s in EndShape::ALL {
+                            ui.selectable_value(&mut p.shape, s, s.name());
+                        }
+                    });
+                ui.add_enabled(
+                    p.shape != EndShape::Square,
+                    egui::DragValue::new(&mut p.size)
+                        .range(0.0..=24.0)
+                        .speed(0.1)
+                        .suffix(" in"),
+                );
+            });
+        }
+        ui.add_space(6.0);
+        ui.weak("A decorative profile cut into the end of a joist, beam, rafter or General Framing member; it shows in the specification and the cut list.");
+    }
+
+    /// The Fill Style panel: the fill in plan view and in a Wall Detail.
+    fn fill(&mut self, ui: &mut Ui) {
+        use plan_core::fill_styles::FillStyle;
+        let layer_rgb = [180, 140, 60];
+        for (salt, title, wall_detail) in [
+            ("fill_plan", "Plan View Fill Style", false),
+            ("fill_detail", "Wall Detail Fill Style", true),
+        ] {
+            section(ui, title);
+            let slot = if wall_detail {
+                &mut self.draft.detail_fill
+            } else {
+                &mut self.draft.fill
+            };
+            let mut custom = slot.is_some();
+            if ui
+                .checkbox(&mut custom, "Custom fill for this member")
+                .changed()
+            {
+                *slot = custom.then(FillStyle::default);
+            }
+            if let Some(style) = slot.as_mut() {
+                super::fill_style::panel(
+                    ui,
+                    salt,
+                    style,
+                    &[],
+                    layer_rgb,
+                    &mut self.fill_width,
+                    false,
+                );
+            }
+        }
+    }
+
+    /// The Label panel: Automatic Label or a Specified one with macros.
+    fn label(&mut self, ui: &mut Ui) {
+        section(ui, "Label");
+        let mut specify = !self.draft.custom_label.is_empty();
+        ui.horizontal(|ui| {
+            if ui.radio(!specify, "Automatic Label").clicked() {
+                self.draft.custom_label.clear();
+                specify = false;
+            }
+            if ui.radio(specify, "Specify Label").clicked() && !specify {
+                self.draft.custom_label = "%nominal_size%".into();
+                specify = true;
+            }
+        });
+        if specify {
+            ui.horizontal(|ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.draft.custom_label).desired_width(240.0),
+                );
+                ui.menu_button("Insert Macro", |ui| {
+                    for (name, help) in crate::editor::framing_view::LABEL_MACROS {
+                        if ui.button(*name).on_hover_text(*help).clicked() {
+                            self.draft.custom_label.push_str(&format!("%{name}%"));
+                            ui.close_menu();
+                        }
                     }
                 });
-        });
-        row(ui, "Span", |ui| ui.label(fmt_short(span)));
-        row(ui, "Pitch (rise per 12)", |ui| {
-            ui.add(
-                egui::DragValue::new(&mut spec.pitch)
-                    .range(0.0..=MAX_PITCH)
-                    .speed(0.1)
-                    .suffix(":12"),
-            )
-        });
-        self.fields
-            .length_row(ui, "Heel height", "heel", &mut spec.heel_height);
-        self.fields
-            .length_row(ui, "Overhang", "overhang", &mut spec.overhang);
-        row(ui, "Plies", |ui| ui.label(spec.plies.to_string()));
-        ui.add_space(6.0);
-        ui.weak(format!("This truss gets {count} chords and webs."));
+            });
+            ui.weak(format!(
+                "The label reads: {}",
+                crate::editor::framing_view::label_text(&self.draft)
+            ));
+        } else {
+            ui.weak("A framing member has no automatic label on the plan; specify one to show it on the \"Framing, Labels\" layer.");
+        }
     }
 
     fn line_style(&mut self, ui: &mut Ui) {
@@ -476,9 +899,11 @@ fn default_label(m: &FramingMember) -> String {
 impl SpecPages for Form {
     fn tabs(&self) -> &'static [Tab] {
         if self.is_truss() {
-            TABS_TRUSS
-        } else {
+            super::truss::ROOF_TABS
+        } else if takes_end_profile(self.draft.kind) {
             TABS_PLAIN
+        } else {
+            TABS_NO_PROFILE
         }
     }
 
@@ -502,9 +927,28 @@ impl SpecPages for Form {
 
     fn page(&mut self, ui: &mut Ui, tab: usize) {
         match self.tabs()[tab].name {
+            "General" if self.is_truss() => {
+                let Form {
+                    draft,
+                    switches,
+                    fields,
+                    ..
+                } = self;
+                super::truss::general(draft, switches, fields, ui);
+                // The span is the member's length; the plies make its width.
+                let len = draft.plan_length();
+                if let Some(t) = draft.truss.as_mut() {
+                    t.span = len;
+                    t.plies = t.plies.max(1);
+                    draft.plies = t.plies;
+                    draft.width = t.thickness();
+                }
+            }
             "General" => self.general(ui),
-            "Truss" => self.truss(ui),
+            "End Profile" => self.profile(ui),
             "Line Style" => self.line_style(ui),
+            "Fill Style" => self.fill(ui),
+            "Label" => self.label(ui),
             "Layer" => self.layer(ui),
             _ => {}
         }
@@ -571,7 +1015,31 @@ impl SpecPages for Form {
 // Framing Defaults
 // ===================================================================
 
-const DEFAULTS_TABS: &[Tab] = &[on("Walls"), on("Headers"), on("Floor"), on("Roof")];
+/// The panels of the Automatic Framing Defaults (manual p. 889): the floor
+/// levels, the walls and their openings, the roof, trusses and posts.
+const DEFAULTS_TABS: &[Tab] = &[
+    on("Floor Levels"),
+    on("Wall"),
+    on("Openings"),
+    on("Roof"),
+    on("Trusses"),
+    on("Posts"),
+];
+
+/// The Build Framing command (manual p. 914).
+const BUILD_TABS: &[Tab] = &[on("Build Framing")];
+
+thread_local! {
+    /// Set by [`request_build`]; the next [`FramingDefaultsDialog`] opens as
+    /// the Build Framing dialog.
+    static BUILD_REQUEST: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+/// Makes the next Framing dialog the Build Framing dialog (Build > Framing >
+/// Build Framing...). `all_floors` starts with "Build every floor" checked.
+pub fn request_build(all_floors: bool) {
+    BUILD_REQUEST.with(|c| c.set(Some(all_floors)));
+}
 
 /// The lumber sizes the Framing Defaults page offers for a member kind.
 const SIZES: [plan_framing::Lumber; 5] = [
@@ -595,25 +1063,99 @@ pub struct FramingDefaultsDialog {
 struct DefaultsForm {
     draft: FramingSettings,
     fields: Fields,
+    /// The Build Framing command rather than the Framing Defaults page.
+    build_mode: bool,
+    /// The Build Framing command is showing its Automatic Framing Defaults.
+    sub: bool,
+    /// The draft as it was when the defaults opened, for Cancel.
+    backup: Option<FramingSettings>,
+    /// The window goes back to its first tab on the next frame.
+    reset_tab: bool,
 }
 
 impl FramingDefaultsDialog {
+    /// The Framing Defaults page, or the Build Framing dialog when
+    /// [`request_build`] was called since the last one opened.
     pub fn new(settings: &FramingSettings) -> Self {
+        let request = BUILD_REQUEST.with(std::cell::Cell::take);
+        let mut draft = settings.clone();
+        draft.build_on_ok = request;
         Self {
-            frame: SpecDialog::new("Framing Defaults", "framing_defaults"),
+            frame: if request.is_some() {
+                SpecDialog::new("Build Framing", "framing_build")
+            } else {
+                SpecDialog::new("Framing Defaults", "framing_defaults")
+            },
             form: DefaultsForm {
-                draft: settings.clone(),
+                draft,
                 fields: Fields::default(),
+                build_mode: request.is_some(),
+                sub: false,
+                backup: None,
+                reset_tab: false,
             },
         }
     }
 
+    /// Whether this is the Build Framing dialog (OK builds).
+    #[cfg(test)]
+    pub fn is_build(&self) -> bool {
+        self.form.build_mode
+    }
+
     pub fn show(&mut self, ctx: &egui::Context) -> Outcome {
-        self.frame.show(ctx, &mut self.form)
+        let out = self.frame.show(ctx, &mut self.form);
+        if self.form.build_mode && self.form.sub {
+            // OK and Cancel of the Automatic Framing Defaults return to the
+            // Build Framing command (Cancel puts the defaults back).
+            match out {
+                Outcome::Ok => {
+                    self.form.sub = false;
+                    self.form.backup = None;
+                    self.frame.start_on(0);
+                    return Outcome::Open;
+                }
+                Outcome::Cancel => {
+                    if let Some(b) = self.form.backup.take() {
+                        self.form.draft = b;
+                    }
+                    self.form.sub = false;
+                    self.frame.start_on(0);
+                    return Outcome::Open;
+                }
+                Outcome::Open => {}
+            }
+        }
+        if self.form.reset_tab {
+            self.form.reset_tab = false;
+            self.frame.start_on(0);
+        }
+        out
     }
 
     pub fn draft(&self) -> &FramingSettings {
         &self.form.draft
+    }
+
+    /// Opens on the tab at index `tab` (Default Settings > Framing leaves);
+    /// the Build Framing dialog keeps its first tab.
+    pub fn start_on(&mut self, tab: usize) {
+        if !self.form.build_mode {
+            self.frame.start_on(tab.min(DEFAULTS_TABS.len() - 1));
+        }
+    }
+
+    /// Presses the Automatic Framing Defaults button of the Build Framing
+    /// command (tests drive it like the button).
+    #[cfg(test)]
+    pub fn open_automatic_defaults(&mut self) {
+        self.form.enter_defaults();
+    }
+
+    /// Whether the window is showing the Automatic Framing Defaults.
+    #[cfg(test)]
+    pub fn in_defaults(&self) -> bool {
+        !self.form.build_mode || self.form.sub
     }
 
     #[cfg(test)]
@@ -674,6 +1216,38 @@ impl DefaultsForm {
                 &mut d.wall_blocking_spacing,
             );
         });
+        let o = &mut self.draft.build.detail;
+        ui.checkbox(&mut o.stagger_blocking, "Stagger Blocking")
+            .on_hover_text("Blocking alternates on either side of a horizontal centre line");
+        section(ui, "Wall connections");
+        row(ui, "Wall corners", |ui| {
+            connection_combo(ui, "fd_corner", &mut o.corner_style, true)
+        });
+        row(ui, "Wall intersections", |ui| {
+            connection_combo(ui, "fd_tee", &mut o.tee_style, false)
+        });
+        ui.weak("Standard: three studs. Reduced Stud: two. Laddered: two with ladder blocking. U Shaped (corners only): three in a U.");
+        section(ui, "Plates");
+        row(ui, "Top plate connection", |ui| {
+            style_combo(ui, "fd_plate_conn", &mut o.top_plate_connection)
+        });
+        section(ui, "Mitre ends of angled walls");
+        ui.checkbox(&mut o.mitre_plate_ends, "Mitre Plate Ends");
+        ui.checkbox(&mut o.rotate_end_studs, "Rotate End Studs");
+        ui.checkbox(&mut o.frame_through_horizontal, "Horizontal Frame Through");
+        section(ui, "Wall Detail views");
+        ui.checkbox(
+            &mut o.details_from_exterior,
+            "Build Wall Framing Details from Exterior",
+        );
+        ui.checkbox(
+            &mut o.show_cross,
+            "Draw studs and posts as cross boxes in plan",
+        );
+        ui.checkbox(
+            &mut o.bearing_wall_headers,
+            "Bearing walls: double plates and headers",
+        );
     }
 
     fn headers(&mut self, ui: &mut Ui) {
@@ -731,6 +1305,17 @@ impl DefaultsForm {
             "fd_header_depth",
             &mut d.header_depth,
         );
+        let o = &mut self.draft.build.detail;
+        section(ui, "Maximum depth");
+        self.fields.length_row(
+            ui,
+            "Maximum Depth (0 = off)",
+            "fd_header_max",
+            &mut o.header_max_depth,
+        );
+        ui.weak("An opening whose top is this close to the top plate gets one solid header filling the space and no cripples.");
+        section(ui, "Materials List");
+        ui.checkbox(&mut o.list_cut_header_lengths, "List Cut Header Lengths");
     }
 
     fn floor(&mut self, ui: &mut Ui) {
@@ -747,9 +1332,85 @@ impl DefaultsForm {
         );
         ui.checkbox(&mut d.rim_joist, "Rim joists");
         ui.checkbox(&mut d.blocking, "Mid-span blocking");
+        row(ui, "Joists run", |ui| {
+            direction_combo(ui, "fd_joist_dir", &mut d.joist_direction)
+        });
+        row(ui, "Joists bear on", |ui| {
+            egui::ComboBox::from_id_salt("fd_bearing")
+                .selected_text(d.bearing.name())
+                .show_ui(ui, |ui| {
+                    for m in BearingMode::ALL {
+                        ui.selectable_value(&mut d.bearing, m, m.name());
+                    }
+                });
+        });
+        ui.weak("Bearing Lines drawn with the Bearing Line tool always carry joists, and so do walls marked Bearing Wall and beams marked Bearing Beam when only the exterior walls bear. Rooms with no floor (Open Below, decks) get no floor framing.");
+        Self::span_note(ui, SpanUse::Floor, d.joist_size, d.joist_spacing);
+        section(ui, "Ceiling joists");
+        row(ui, "Ceiling joist size", |ui| {
+            size_combo(ui, "fd_ceiling_joist", &mut d.ceiling_joist_size)
+        });
+        self.fields.length_row(
+            ui,
+            "Ceiling joist spacing",
+            "fd_ceiling_spacing",
+            &mut d.ceiling_joist_spacing,
+        );
+        Self::span_note(
+            ui,
+            SpanUse::Ceiling,
+            d.ceiling_joist_size,
+            d.ceiling_joist_spacing,
+        );
         section(ui, "Holes (stairwells)");
         count_row(ui, "Header and trimmer plies", &mut d.hole_plies, 4);
         ui.weak("Trimmers run beside the hole, headers across its ends.");
+        let o = &mut self.draft.build.detail;
+        section(ui, "Joists over bearing walls and beams");
+        row(ui, "Floor joists", |ui| {
+            splice_combo(ui, "fd_splice", &mut o.splice)
+        });
+        row(ui, "Ceiling joists", |ui| {
+            splice_combo(ui, "fd_csplice", &mut o.ceiling_splice)
+        });
+        ui.weak("Lap: side by side, 8\" of lap centred on the support. Butt: end to end over the support.");
+        section(ui, "Blocking");
+        row(ui, "Floor blocking", |ui| {
+            blocking_combo(ui, "fd_fblock", &mut o.blocking_style)
+        });
+        row(ui, "Ceiling blocking", |ui| {
+            blocking_combo(ui, "fd_cblock", &mut o.ceiling_blocking_style)
+        });
+        section(ui, "Rim joists");
+        self.fields
+            .length_row(ui, "Rim Joist Width", "fd_rim_width", &mut o.rim_width);
+        row(ui, "Rim Joist Connection", |ui| {
+            style_combo(ui, "fd_rim_conn", &mut o.rim_connection)
+        });
+        self.fields.length_row(
+            ui,
+            "Max Rim Joist Length (0 = full)",
+            "fd_rim_max",
+            &mut o.max_rim_length,
+        );
+        section(ui, "Use Framing Reference");
+        let names = self.draft.floor_names.clone();
+        let build = &mut self.draft.build;
+        if names.is_empty() {
+            ui.weak("The plan has no floors.");
+        }
+        for (i, name) in names.iter().enumerate() {
+            let mut on_ = build.uses_reference(i);
+            if ui
+                .checkbox(
+                    &mut on_,
+                    format!("{name}: start the joist layout at the Framing Reference Marker"),
+                )
+                .changed()
+            {
+                build.set_reference(i, on_);
+            }
+        }
     }
 
     fn roof(&mut self, ui: &mut Ui) {
@@ -761,6 +1422,7 @@ impl DefaultsForm {
         });
         self.fields
             .length_row(ui, "Rafter spacing", "fd_rafter_spacing", &mut r.spacing);
+        Self::span_note(ui, SpanUse::Rafter, r.rafter, r.spacing);
         row(ui, "Ridge", |ui| size_combo(ui, "fd_ridge", &mut r.ridge));
         row(ui, "Hip and valley", |ui| {
             size_combo(ui, "fd_hip", &mut r.hip_valley);
@@ -805,12 +1467,358 @@ impl DefaultsForm {
             "fd_truss_span",
             &mut r.use_trusses_over_span,
         );
+        section(ui, "Layout");
+        ui.checkbox(
+            &mut self.draft.build.roof_reference,
+            "Use Framing Reference",
+        )
+        .on_hover_text(
+            "Rafters and trusses start at the Framing Reference Marker (useful for gable roofs)",
+        );
+        ui.checkbox(&mut r.trim_to_soffits, "Trim Framing To Soffits");
+        section(ui, "Roof Lookouts");
+        ui.checkbox(&mut r.lookouts, "Lookouts under gable overhangs");
+        ui.add_enabled_ui(r.lookouts, |ui| {
+            self.fields
+                .length_row(ui, "Lookout Spacing", "fd_lookout", &mut r.lookout_spacing);
+            self.fields.length_row(
+                ui,
+                "Offset from Subfascia (0 = match spacing)",
+                "fd_lookout_off",
+                &mut r.lookout_offset,
+            );
+            self.fields
+                .length_row(ui, "Gable overhang", "fd_rake", &mut r.rake_overhang);
+        });
+        section(ui, "Hip Girder Truss");
+        count_row(ui, "Count", &mut r.hip_girder_count, 4);
+        self.fields.length_row(
+            ui,
+            "Distance from Wall Main Layer (0 = automatic)",
+            "fd_girder",
+            &mut r.hip_girder_distance,
+        );
+        section(ui, "Roof Overframing");
+        ui.checkbox(&mut r.overframing, "Roof Overframing (shoe plates)");
+        ui.add_enabled_ui(r.overframing, |ui| {
+            row(ui, "Overframe Layer", |ui| {
+                egui::ComboBox::from_id_salt("fd_overframe")
+                    .selected_text(r.overframe_layer.name())
+                    .show_ui(ui, |ui| {
+                        for l in OverframeLayer::ALL {
+                            ui.selectable_value(&mut r.overframe_layer, l, l.name());
+                        }
+                    });
+            });
+        });
+    }
+}
+
+fn splice_combo(ui: &mut Ui, salt: &str, v: &mut Splice) {
+    egui::ComboBox::from_id_salt(salt)
+        .selected_text(v.name())
+        .show_ui(ui, |ui| {
+            for s in Splice::ALL {
+                ui.selectable_value(v, s, s.name());
+            }
+        });
+}
+
+fn blocking_combo(ui: &mut Ui, salt: &str, v: &mut BlockingStyle) {
+    egui::ComboBox::from_id_salt(salt)
+        .selected_text(v.name())
+        .show_ui(ui, |ui| {
+            for s in BlockingStyle::ALL {
+                ui.selectable_value(v, s, s.name());
+            }
+        });
+}
+
+fn style_combo(ui: &mut Ui, salt: &str, v: &mut Connection) {
+    egui::ComboBox::from_id_salt(salt)
+        .selected_text(v.name())
+        .show_ui(ui, |ui| {
+            for s in Connection::ALL {
+                ui.selectable_value(v, s, s.name());
+            }
+        });
+}
+
+fn connection_combo(ui: &mut Ui, salt: &str, v: &mut WallConnection, corner: bool) {
+    egui::ComboBox::from_id_salt(salt)
+        .selected_text(v.name())
+        .show_ui(ui, |ui| {
+            for s in WallConnection::ALL {
+                // U Shaped is only for corners.
+                if s == WallConnection::UShaped && !corner {
+                    continue;
+                }
+                ui.selectable_value(v, s, s.name());
+            }
+        });
+}
+
+/// A combo over the joist directions.
+fn direction_combo(ui: &mut Ui, salt: &str, value: &mut JoistDirection) {
+    egui::ComboBox::from_id_salt(salt)
+        .selected_text(direction_name(*value))
+        .show_ui(ui, |ui| {
+            for d in [
+                JoistDirection::Auto,
+                JoistDirection::AlongX,
+                JoistDirection::AlongY,
+            ] {
+                ui.selectable_value(value, d, direction_name(d));
+            }
+        });
+}
+
+fn direction_name(d: JoistDirection) -> &'static str {
+    match d {
+        JoistDirection::Auto => "Across the shorter side",
+        JoistDirection::AlongX => "Parallel to X (left to right)",
+        JoistDirection::AlongY => "Parallel to Y (up and down)",
+    }
+}
+
+/// `15' 7"` for a span in inches.
+fn feet_inches(inches: f64) -> String {
+    let ft = (inches / 12.0).floor();
+    format!("{ft}' {}\"", (inches - ft * 12.0).round())
+}
+
+impl DefaultsForm {
+    /// The Automatic Framing Defaults button of the Build Framing command.
+    fn enter_defaults(&mut self) {
+        self.backup = Some(self.draft.clone());
+        self.sub = true;
+        self.reset_tab = true;
+    }
+
+    fn span_note(ui: &mut Ui, use_: SpanUse, lumber: plan_framing::Lumber, spacing: f64) {
+        let kind = match use_ {
+            SpanUse::Floor => super::code_notice::SpanKind::Floor,
+            SpanUse::Ceiling => super::code_notice::SpanKind::Ceiling,
+            SpanUse::Rafter => super::code_notice::SpanKind::Rafter,
+        };
+        super::code_notice::span_check(ui, kind, lumber.depth, spacing);
+        ui.weak(format!(
+            "A {} at {}\" o.c. carries about {} as a {} (planning value, not a code check).",
+            lumber.nominal_name(),
+            fmt_short(spacing),
+            feet_inches(allowable_span(use_, lumber, spacing)),
+            use_.name()
+        ));
+    }
+
+    fn posts(&mut self, ui: &mut Ui) {
+        section(ui, "New posts");
+        let p = &mut self.draft.build.posts;
+        row(ui, "Post size", |ui| {
+            egui::ComboBox::from_id_salt("bp_size")
+                .selected_text(p.size.name())
+                .show_ui(ui, |ui| {
+                    for l in lumber_presets() {
+                        ui.selectable_value(&mut p.size, l, l.name());
+                    }
+                });
+        });
+        row(ui, "Material", |ui| {
+            egui::ComboBox::from_id_salt("bp_material")
+                .selected_text(p.material.name())
+                .show_ui(ui, |ui| {
+                    for m in MATERIALS {
+                        ui.selectable_value(&mut p.material, m, m.name());
+                    }
+                });
+        });
+        ui.checkbox(&mut p.footing, "Footing under every new post");
+        ui.weak("The Post and Post with Footing tools start with these.");
+    }
+
+    fn trusses(&mut self, ui: &mut Ui) {
+        section(ui, "Trusses over a Truss Base");
+        let t = &mut self.draft.build.trusses;
+        row(ui, "Truss type", |ui| {
+            egui::ComboBox::from_id_salt("bt_type")
+                .selected_text(t.kind.name())
+                .show_ui(ui, |ui| {
+                    for k in TRUSS_TYPES {
+                        ui.selectable_value(&mut t.kind, k, k.name());
+                    }
+                });
+        });
+        row(ui, "Top chord pitch (rise per 12)", |ui| {
+            ui.add(
+                egui::DragValue::new(&mut t.pitch)
+                    .range(0.0..=MAX_PITCH)
+                    .speed(0.1),
+            );
+        });
+        self.fields
+            .length_row(ui, "Heel height", "bt_heel", &mut t.heel_height);
+        self.fields
+            .length_row(ui, "Overhang", "bt_overhang", &mut t.overhang);
+        self.fields
+            .length_row(ui, "Spacing", "bt_spacing", &mut t.spacing);
+        ui.weak(
+            "Used where a Truss Base is drawn and no Roof Truss Direction gives its own spacing.",
+        );
+        section(ui, "Roof planes");
+        let r = &mut self.draft.roof;
+        ui.checkbox(&mut r.trusses, "Trusses instead of rafters");
+        self.fields.length_row(
+            ui,
+            "Roof truss spacing",
+            "bt_roof_spacing",
+            &mut r.truss_spacing,
+        );
+        self.fields.length_row(
+            ui,
+            "Trusses over a span of (0 = never)",
+            "bt_span",
+            &mut r.use_trusses_over_span,
+        );
+    }
+
+    /// A group's switch in the Automatically Rebuild Framing list.
+    fn auto_row(&mut self, ui: &mut Ui, g: Group, label: &str, hint: &str) {
+        let opts = &mut self.draft.build;
+        let mut auto = opts.auto_rebuild.get(g);
+        ui.checkbox(&mut auto, label).on_hover_text(hint);
+        opts.auto_rebuild.set(g, auto);
+    }
+
+    /// The floor choice of a Build Framing Once line.
+    fn floor_pick(ui: &mut Ui, salt: &str, pick: &mut FloorPick, names: &[String]) {
+        let label = |p: FloorPick| match p {
+            FloorPick::Same => "Current Floor".to_string(),
+            FloorPick::All => "All Floors".to_string(),
+            FloorPick::Floor(i) => names
+                .get(i)
+                .cloned()
+                .unwrap_or_else(|| format!("Floor {i}")),
+        };
+        egui::ComboBox::from_id_salt(salt)
+            .selected_text(label(*pick))
+            .show_ui(ui, |ui| {
+                for p in [FloorPick::Same, FloorPick::All] {
+                    ui.selectable_value(pick, p, label(p));
+                }
+                for (i, _) in names.iter().enumerate() {
+                    ui.selectable_value(pick, FloorPick::Floor(i), label(FloorPick::Floor(i)));
+                }
+            });
+    }
+
+    /// The Build Framing command (manual pp. 914, 915): the Automatic Framing
+    /// Defaults button, the Automatically Rebuild Framing choices and the
+    /// Build Framing Once choices with their floor selectors.
+    fn build_page(&mut self, ui: &mut Ui) {
+        if ui.button("Automatic Framing Defaults\u{2026}").clicked() {
+            self.enter_defaults();
+        }
+        section(ui, "Automatically Rebuild Framing");
+        self.auto_row(ui, Group::Floor, "Floor", "Rebuilds the floor framing when the walls, rooms or layout lines it is made from change.");
+        self.auto_row(
+            ui,
+            Group::Ceiling,
+            "Ceiling",
+            "Rebuilds the ceiling framing when its rooms or walls change.",
+        );
+        self.auto_row(
+            ui,
+            Group::Wall,
+            "Wall",
+            "Rebuilds the wall framing when the walls or their openings change.",
+        );
+        self.auto_row(
+            ui,
+            Group::Roof,
+            "Roof",
+            "Rebuilds the roof framing when the roof planes change.",
+        );
+        section(ui, "Build Framing Once");
+        let names = self.draft.floor_names.clone();
+        for (g, label, salt) in [
+            (Group::Floor, "Floor", "bo_floor"),
+            (Group::Ceiling, "Ceiling", "bo_ceiling"),
+        ] {
+            ui.horizontal(|ui| {
+                let mut on_ = self.draft.build.build.get(g);
+                ui.checkbox(&mut on_, label);
+                self.draft.build.build.set(g, on_);
+                ui.add_enabled_ui(on_, |ui| {
+                    let pick = if g == Group::Floor {
+                        &mut self.draft.build.floor_pick
+                    } else {
+                        &mut self.draft.build.ceiling_pick
+                    };
+                    Self::floor_pick(ui, salt, pick, &names);
+                });
+            });
+        }
+        for (g, label) in [(Group::Wall, "Wall"), (Group::Roof, "Roof")] {
+            let mut on_ = self.draft.build.build.get(g);
+            ui.checkbox(&mut on_, label);
+            self.draft.build.build.set(g, on_);
+        }
+        let mut all = self.draft.build_on_ok == Some(true);
+        if ui
+            .checkbox(&mut all, "Build the walls and roof of every floor")
+            .changed()
+        {
+            self.draft.build_on_ok = Some(all);
+        }
+        ui.weak("OK builds the checked parts once, as one undo step. A part that is not checked keeps the framing it has.");
+        section(ui, "Retain existing framing");
+        for g in Group::ALL {
+            let mut keep = self.draft.build.retain.get(g);
+            ui.checkbox(
+                &mut keep,
+                format!("Retain all existing {} framing", g.name().to_lowercase()),
+            )
+            .on_hover_text("A build leaves this part of the plan as it is, so edits to its members survive. Retain Framing on a wall, room, roof plane or tray ceiling protects just that object.");
+            self.draft.build.retain.set(g, keep);
+        }
+        let (nw, np) = (
+            self.draft.build.retain_walls.len(),
+            self.draft.build.retain_planes.len(),
+        );
+        row(ui, "Retain Wall Framing", |ui| {
+            ui.label(format!("{nw} wall(s)"));
+            if ui
+                .add_enabled(nw > 0, egui::Button::new("Clear"))
+                .on_hover_text(
+                    "Walls marked Retain Wall Framing keep their framing through a build.",
+                )
+                .clicked()
+            {
+                self.draft.build.retain_walls.clear();
+            }
+        });
+        row(ui, "Retain Framing on roof planes", |ui| {
+            ui.label(format!("{np} plane(s)"));
+            if ui.add_enabled(np > 0, egui::Button::new("Clear")).clicked() {
+                self.draft.build.retain_planes.clear();
+            }
+        });
+        section(ui, "After a build");
+        ui.checkbox(
+            &mut self.draft.build.show_layers,
+            "Turn the framing layers on",
+        );
+        ui.weak("Framing layers start off in a new plan, like Chief's. Leave this checked to see the result.");
     }
 }
 
 impl SpecPages for DefaultsForm {
     fn tabs(&self) -> &'static [Tab] {
-        DEFAULTS_TABS
+        if self.build_mode && !self.sub {
+            BUILD_TABS
+        } else {
+            DEFAULTS_TABS
+        }
     }
 
     fn error(&self) -> Option<String> {
@@ -818,8 +1826,13 @@ impl SpecPages for DefaultsForm {
             return Some("Fix the highlighted field".into());
         }
         let w = &self.draft.walls;
-        if w.stud_spacing < 4.0 || w.joist_spacing < 4.0 || self.draft.roof.spacing < 4.0 {
-            return Some("Spacings must be at least 4\"".into());
+        if w.stud_spacing < 4.0
+            || w.joist_spacing < 4.0
+            || w.ceiling_joist_spacing < 4.0
+            || self.draft.roof.spacing < 4.0
+            || self.draft.build.trusses.spacing < 6.0
+        {
+            return Some("Spacings must be at least 4\" (trusses 6\")".into());
         }
         if w.header_table.is_empty() {
             return Some("The header table needs a row".into());
@@ -827,15 +1840,23 @@ impl SpecPages for DefaultsForm {
         if w.wall_blocking && w.wall_blocking_spacing < 12.0 {
             return Some("Blocking rows must be at least 12\" apart".into());
         }
+        let o = &self.draft.build.detail;
+        if o.rim_width < 0.5 {
+            return Some("The rim joist width must be at least 1/2\"".into());
+        }
         None
     }
 
     fn page(&mut self, ui: &mut Ui, tab: usize) {
-        match DEFAULTS_TABS[tab].name {
-            "Walls" => self.walls(ui),
-            "Headers" => self.headers(ui),
-            "Floor" => self.floor(ui),
+        let name = self.tabs()[tab].name;
+        match name {
+            "Build Framing" => self.build_page(ui),
+            "Floor Levels" => self.floor(ui),
+            "Wall" => self.walls(ui),
+            "Openings" => self.headers(ui),
             "Roof" => self.roof(ui),
+            "Trusses" => self.trusses(ui),
+            "Posts" => self.posts(ui),
             _ => {}
         }
     }
@@ -875,8 +1896,90 @@ impl SpecPages for DefaultsForm {
     }
 }
 
+// ===================================================================
+// The Framing Group question
+// ===================================================================
+
+thread_local! {
+    /// A Build Framing for Selected Object(s) waiting for the answer to
+    /// "create a new Framing Group?": the room and whether it came from the
+    /// Parent Object(s) button.
+    static GROUP_PROMPT: std::cell::Cell<Option<(usize, bool)>> = const { std::cell::Cell::new(None) };
+}
+
+/// Opens the Framing Group question for room `room` (manual p. 917): the room
+/// stands beside rooms of its Framing Group.
+pub fn ask_framing_group(room: usize, parent: bool) {
+    GROUP_PROMPT.with(|c| c.set(Some((room, parent))));
+}
+
+/// Whether the Framing Group question is open.
+pub fn framing_group_asked() -> bool {
+    GROUP_PROMPT.with(|c| c.get().is_some())
+}
+
+/// Answers the question: Yes creates a new Framing Group for the room and
+/// builds its platform; No builds across the whole platform with the groups
+/// as they are. Returns the outcome of the build.
+pub fn answer_framing_group(
+    cx: &mut crate::editor::EditorContext,
+    yes: bool,
+) -> Option<crate::editor::framing_view::Outcome> {
+    let (_, parent) = GROUP_PROMPT.with(std::cell::Cell::take)?;
+    Some(if parent {
+        crate::editor::framing_view::build_parents(cx, Some(yes))
+    } else {
+        crate::editor::framing_view::build_selected(cx, Some(yes))
+    })
+}
+
+/// Cancels the question.
+pub fn cancel_framing_group() {
+    GROUP_PROMPT.with(std::cell::Cell::take);
+}
+
+/// Draws the Framing Group question when it is open. Called every frame by
+/// the shell with the other dialogs.
+pub fn host_frame(cx: &mut crate::editor::EditorContext, ctx: &egui::Context) {
+    super::truss_detail::host_frame(cx, ctx);
+    if !framing_group_asked() {
+        return;
+    }
+    let mut answer: Option<Option<bool>> = None;
+    egui::Window::new("Framing Group")
+        .collapsible(false)
+        .resizable(false)
+        .anchor(Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+        .show(ctx, |ui| {
+            ui.label(
+                "This room is next to rooms that are in the same Framing Group.\n\
+                 Create a new Framing Group for it and frame it on its own?",
+            );
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                if ui.button("Yes").clicked() {
+                    answer = Some(Some(true));
+                }
+                if ui.button("No").clicked() {
+                    answer = Some(Some(false));
+                }
+                if ui.button("Cancel").clicked() {
+                    answer = Some(None);
+                }
+            });
+        });
+    match answer {
+        Some(Some(yes)) => {
+            answer_framing_group(cx, yes);
+        }
+        Some(None) => cancel_framing_group(),
+        None => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::field_reassign_with_default)]
     use super::*;
 
     fn joist() -> FramingMember {
@@ -952,6 +2055,12 @@ mod tests {
                 Point::new(240.0, 0.0),
             ),
             FramingMember::new(
+                5,
+                ManualMemberKind::FloorCeilingTruss,
+                Point::ZERO,
+                Point::new(240.0, 0.0),
+            ),
+            FramingMember::new(
                 4,
                 ManualMemberKind::PostWithFooting,
                 Point::ZERO,
@@ -959,13 +2068,145 @@ mod tests {
             ),
         ] {
             let mut d = FramingMemberDialog::new(&m, layers());
-            assert_eq!(d.form.tabs().len(), if m.kind.is_truss() { 4 } else { 3 });
+            // Joists take an End Profile; trusses their own General; posts neither.
+            let want = if m.kind.is_truss() {
+                5
+            } else if takes_end_profile(m.kind) {
+                6
+            } else {
+                5
+            };
+            assert_eq!(d.form.tabs().len(), want, "{:?}", m.kind);
+            assert!(d.form.tabs().iter().any(|t| t.name == "Fill Style"));
+            assert!(d.form.tabs().iter().any(|t| t.name == "Label"));
+            for tab in 0..d.form.tabs().len() {
+                let mut ui_form = FramingMemberDialog::new(&m, layers());
+                let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| ui_form.form.page(ui, tab));
+                });
+            }
             for _ in 0..2 {
                 let _ = ctx.run(egui::RawInput::default(), |ctx| {
                     assert_eq!(d.show(ctx), Outcome::Open);
                 });
             }
             assert!(d.form.error().is_none());
+        }
+    }
+
+    #[test]
+    fn the_new_member_options_are_in_the_draft() {
+        let mut beam = FramingMember::new(
+            8,
+            ManualMemberKind::FloorCeilingBeam,
+            Point::ZERO,
+            Point::new(144.0, 0.0),
+        );
+        assert!(!beam.bearing_beam);
+        beam.bearing_beam = true;
+        beam.end_profile[1].shape = EndShape::Round;
+        beam.end_profile[1].size = 3.0;
+        let mut g = FramingMember::new(
+            9,
+            ManualMemberKind::GeneralFraming,
+            Point::ZERO,
+            Point::new(48.0, 0.0),
+        );
+        g.flat = FlatTo::Inside;
+        g.custom_label = "%nominal_size% blk".into();
+        assert_eq!(
+            crate::editor::framing_view::label_text(&g),
+            "2x4 blk",
+            "the macro is the nominal size"
+        );
+        let ctx = egui::Context::default();
+        for m in [beam, g] {
+            let mut d = FramingMemberDialog::new(&m, layers());
+            // Every panel draws, with the options on.
+            for tab in 0..d.form.tabs().len() {
+                let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| d.form.page(ui, tab));
+                });
+            }
+            assert_eq!(d.draft().flat, m.flat);
+            assert_eq!(d.draft().bearing_beam, m.bearing_beam);
+        }
+    }
+
+    #[test]
+    fn a_truss_dialog_edits_the_spec_and_old_trusses_open() {
+        let mut t = FramingMember::new(
+            3,
+            ManualMemberKind::RoofTruss,
+            Point::ZERO,
+            Point::new(288.0, 0.0),
+        );
+        let mut d = FramingMemberDialog::new(&t, layers());
+        {
+            let s = d.truss_mut().unwrap();
+            s.locked = true;
+            s.end_truss = true;
+            s.max_span_bottom = 60.0;
+        }
+        let ctx = egui::Context::default();
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| d.form.page(ui, 0));
+        });
+        // The panel keeps the span the member's length and does not unlock.
+        let s = d.draft().truss.as_ref().unwrap();
+        assert!(s.locked && s.end_truss && (s.span - 288.0).abs() < 1e-9);
+        assert!(!s.force_rebuild, "a locked truss cannot be forced");
+        t.truss = Some(TrussSpec::new(TrussType::DoubleFink, 288.0, 8.0));
+        assert!(FramingMemberDialog::new(&t, layers()).truss_member_count() > 15);
+    }
+
+    #[test]
+    fn direction_lines_have_a_specification() {
+        use crate::editor::framing_view::Record;
+        let rec = Record::JoistDirection {
+            id: 11,
+            dir: plan_framing::JoistDirectionLine::new(
+                (Point::new(0.0, 0.0), Point::new(0.0, 50.0)),
+                16.0,
+            ),
+        };
+        let mut d = FramingMemberDialog::for_direction(&rec).expect("a dialog");
+        let ctx = egui::Context::default();
+        for _ in 0..2 {
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                assert_eq!(d.show(ctx), Outcome::Open);
+            });
+        }
+        if let Some(DirectionForm::Joist(j)) = d.direction_mut() {
+            j.depth = 11.25;
+            j.spacing = 12.0;
+        }
+        let tr = Record::TrussDirection {
+            id: 12,
+            dir: plan_framing::RoofTrussDirection::new(
+                (Point::new(0.0, 0.0), Point::new(0.0, 50.0)),
+                24.0,
+            ),
+        };
+        assert!(FramingMemberDialog::for_direction(&tr).is_some());
+        let marker = Record::Marker {
+            id: 13,
+            marker: plan_framing::ReferenceMarker {
+                point: Point::ZERO,
+                angle: 0.0,
+            },
+        };
+        assert!(FramingMemberDialog::for_direction(&marker).is_none());
+    }
+
+    fn form(draft: FramingSettings, build_mode: bool) -> DefaultsForm {
+        DefaultsForm {
+            draft,
+            fields: Fields::default(),
+            build_mode,
+            sub: false,
+            backup: None,
+            reset_tab: false,
         }
     }
 
@@ -991,26 +2232,131 @@ mod tests {
                 assert_eq!(d.show(ctx), Outcome::Open);
             });
         }
+        // The Automatic Framing Defaults panels, Chief's names.
+        let names: Vec<&str> = DEFAULTS_TABS.iter().map(|t| t.name).collect();
+        assert_eq!(
+            names,
+            [
+                "Floor Levels",
+                "Wall",
+                "Openings",
+                "Roof",
+                "Trusses",
+                "Posts"
+            ]
+        );
         // Each page draws without panicking.
         for tab in 0..DEFAULTS_TABS.len() {
-            let mut form = DefaultsForm {
-                draft: d.draft().clone(),
-                fields: Fields::default(),
-            };
+            let mut f = form(d.draft().clone(), false);
             let _ = ctx.run(egui::RawInput::default(), |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| form.page(ui, tab));
+                egui::CentralPanel::default().show(ctx, |ui| f.page(ui, tab));
             });
-            assert!(form.error().is_none());
+            assert!(f.error().is_none());
         }
         // Bad values are refused.
-        let mut bad = DefaultsForm {
-            draft: d.draft().clone(),
-            fields: Fields::default(),
-        };
+        let mut bad = form(d.draft().clone(), false);
         bad.draft.walls.stud_spacing = 1.0;
         assert!(bad.error().is_some());
         bad.draft.walls.stud_spacing = 16.0;
         bad.draft.walls.header_table.clear();
         assert!(bad.error().is_some());
+        let mut thin = form(d.draft().clone(), false);
+        thin.draft.build.detail.rim_width = 0.1;
+        assert!(thin.error().is_some());
+    }
+
+    #[test]
+    fn the_build_framing_command_has_the_defaults_button_and_the_once_choices() {
+        request_build(true);
+        let mut stored = FramingSettings::default();
+        stored.floor_names = vec!["1st Floor".into(), "2nd Floor".into()];
+        let mut d = FramingDefaultsDialog::new(&stored);
+        assert!(d.is_build());
+        assert!(!d.in_defaults());
+        assert_eq!(d.draft().build_on_ok, Some(true), "Build All Framing");
+        let names: Vec<&str> = BUILD_TABS.iter().map(|t| t.name).collect();
+        assert_eq!(names, ["Build Framing"]);
+        let ctx = egui::Context::default();
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            assert_eq!(d.show(ctx), Outcome::Open);
+        });
+        // The command page draws, with the floor selectors and both lists.
+        let mut f = form(d.draft().clone(), true);
+        f.draft.build.floor_pick = FloorPick::Floor(1);
+        f.draft.build.ceiling_pick = FloorPick::All;
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| f.page(ui, 0));
+        });
+        assert!(f.error().is_none());
+        // The Automatic Framing Defaults button leads to the panels, and
+        // Cancel there puts the defaults back.
+        d.open_automatic_defaults();
+        assert!(d.in_defaults());
+        d.draft_mut().walls.stud_spacing = 24.0;
+        assert_eq!(d.form.tabs().len(), DEFAULTS_TABS.len());
+        // The request is used up: the next window is the plain defaults page.
+        let plain = FramingDefaultsDialog::new(&stored);
+        assert!(!plain.is_build());
+        assert_eq!(plain.draft().build_on_ok, None);
+        // Bad truss spacing is refused.
+        let mut bad = form(stored.clone(), true);
+        bad.draft.build.trusses.spacing = 2.0;
+        assert!(bad.error().is_some());
+    }
+
+    #[test]
+    fn the_framing_group_question_is_answered_once() {
+        use crate::editor::EditorContext;
+        let mut cx = EditorContext::new(crate::plan_defaults::embedded());
+        assert!(!framing_group_asked());
+        ask_framing_group(0, false);
+        assert!(framing_group_asked());
+        cancel_framing_group();
+        assert!(!framing_group_asked());
+        assert!(answer_framing_group(&mut cx, true).is_none());
+        // The window draws while the question is open.
+        ask_framing_group(0, true);
+        let ctx = egui::Context::default();
+        let _ = ctx.run(egui::RawInput::default(), |ctx| host_frame(&mut cx, ctx));
+        assert!(framing_group_asked());
+        cancel_framing_group();
+    }
+
+    #[test]
+    fn ok_in_the_build_dialog_saves_the_options_and_builds() {
+        use crate::editor::{framing_view, EditorContext};
+        use plan_core::WallKind;
+        let mut cx = EditorContext::new(crate::plan_defaults::embedded());
+        let c = [
+            Point::new(0.0, 0.0),
+            Point::new(240.0, 0.0),
+            Point::new(240.0, 192.0),
+            Point::new(0.0, 192.0),
+        ];
+        for i in 0..4 {
+            cx.project
+                .add_wall(0, c[i], c[(i + 1) % 4], 6.5, 109.125, WallKind::Exterior);
+        }
+        cx.refresh();
+        request_build(false);
+        let mut d = FramingDefaultsDialog::new(&framing_view::settings(&cx.project));
+        d.draft_mut().build.build.ceiling = true;
+        d.draft_mut().build.auto_rebuild.wall = true;
+        d.draft_mut().walls.ceiling_joist_spacing = 24.0;
+        framing_view::set_settings(&mut cx, d.draft().clone());
+        let st = framing_view::settings(&cx.project);
+        assert!(st.build.build.ceiling && st.build.auto_rebuild.wall);
+        assert_eq!(st.walls.ceiling_joist_spacing, 24.0);
+        assert!(cx
+            .framing
+            .iter()
+            .any(|m| m.kind == plan_framing::MemberKind::CeilingJoist));
+        assert_eq!(cx.undo_label(), Some("Build Framing"));
+    }
+
+    #[test]
+    fn spans_print_in_feet_and_inches() {
+        assert_eq!(feet_inches(185.0), "15' 5\"");
+        assert_eq!(feet_inches(96.0), "8' 0\"");
     }
 }

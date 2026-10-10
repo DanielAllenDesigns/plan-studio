@@ -142,6 +142,9 @@ pub fn slot_key(s: &Slot) -> Option<&'static str> {
         Slot::Flyout(f) => Some(f.group),
         Slot::ViewSelector => Some("View Selector"),
         Slot::FloorLabel => Some("Floor Number"),
+        Slot::LayerSetSelector => Some("Active Layer Set"),
+        Slot::DimensionDefaultsSelector => Some("Active Dimension Defaults"),
+        Slot::DefaultSetSelector => Some("Active Default Set"),
         Slot::Separator => None,
     }
 }
@@ -160,7 +163,7 @@ const ROW1_GROUPS: [&str; 11] = [
     "Materials",
     "Toolbar Configurations",
 ];
-const ROW2_GROUPS: [&str; 11] = [
+const ROW2_GROUPS: [&str; 12] = [
     "Select",
     "Walls and Railings",
     "Doors and Windows",
@@ -172,6 +175,7 @@ const ROW2_GROUPS: [&str; 11] = [
     "Text and Notes",
     "CAD Drawing",
     "Detail",
+    "Painters",
 ];
 const VIEW_GROUPS: [&str; 4] = ["Browsers", "Zoom", "Navigation", "Display Toggles"];
 
@@ -205,6 +209,24 @@ fn describe(slot: &Slot) -> (EntryKind, &'static str, String, Vec<&'static str>)
             "The number of the floor being edited".into(),
             Vec::new(),
         ),
+        Slot::LayerSetSelector => (
+            EntryKind::Special,
+            "layer_display",
+            "The layer set the plan view shows".into(),
+            Vec::new(),
+        ),
+        Slot::DimensionDefaultsSelector => (
+            EntryKind::Special,
+            "default_settings",
+            "The saved dimension defaults new dimensions use".into(),
+            Vec::new(),
+        ),
+        Slot::DefaultSetSelector => (
+            EntryKind::Special,
+            "default_settings",
+            "The Default Set in use (saved defaults and layers)".into(),
+            Vec::new(),
+        ),
         Slot::Separator => (EntryKind::Special, "select", String::new(), Vec::new()),
     }
 }
@@ -230,6 +252,16 @@ fn layout_slots() -> Vec<Slot> {
         layout_item("floor_up", "Next Page", L::NextPage),
         layout_item("plan_database", "Page Table", L::PageTable),
         layout_item("default_settings", "Page Setup", L::PageSetup),
+        layout_item("default_settings", "Page Information", L::PageInformation),
+        layout_item(
+            "drawing_sheet",
+            "Customize Sheet Sizes",
+            L::CustomizeSheetSizes,
+        ),
+        layout_item("file_new", "New Layout File", L::NewLayoutFile),
+        layout_item("view_plan", "Open Source View", L::OpenSourceView),
+        layout_item("drawing_sheet", "Copy Layout Box to Page", L::CopyBoxToPage),
+        layout_item("file_save", "Export Table to Excel", L::ExportTableExcel),
         layout_item("view_save", "Update Layout Views", L::UpdateViews),
         layout_item("fill_window", "Fit Page in Window", L::FitPage),
         layout_item("note", "Add Text Box", L::AddTextBox),
@@ -271,6 +303,25 @@ fn sources() -> Vec<Source> {
         }
     }
     let extras: Vec<(&str, Slot)> = vec![
+        ("Saved Views", Slot::LayerSetSelector),
+        ("Saved Views", Slot::DimensionDefaultsSelector),
+        ("Saved Views", Slot::DefaultSetSelector),
+        (
+            "Saved Views",
+            Slot::Button(super::item(
+                "default_settings",
+                "Default Sets",
+                Action::Custom(crate::dialogs::default_sets::DEFAULT_SETS),
+            )),
+        ),
+        (
+            "Saved Views",
+            Slot::Button(super::item(
+                "default_settings",
+                "Active Defaults",
+                Action::Custom(crate::dialogs::default_sets::ACTIVE_DEFAULTS),
+            )),
+        ),
         ("Walls and Railings", Slot::Flyout(fencing())),
         ("Images and Objects", Slot::Flyout(image())),
         ("Images and Objects", Slot::Flyout(distributed_objects())),
@@ -556,6 +607,62 @@ impl ViewSet {
         };
         self.bars.push(BarLayout::new(&id, &name, Vec::new()));
         id
+    }
+
+    /// Renames a row (the standard ones keep their id). False for an empty
+    /// name or an unknown row.
+    pub fn rename_row(&mut self, id: &str, name: &str) -> bool {
+        let name = name.trim();
+        match self.bar_mut(id) {
+            Some(b) if !name.is_empty() => {
+                b.name = name.to_string();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Moves a row the user added one place up or down among the user's
+    /// rows (the standard bars stay first, in their order).
+    pub fn move_row(&mut self, id: &str, down: bool) -> bool {
+        if is_builtin(id) {
+            return false;
+        }
+        let custom: Vec<usize> = self
+            .bars
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| !b.is_builtin())
+            .map(|(i, _)| i)
+            .collect();
+        let Some(at) = custom.iter().position(|&i| self.bars[i].id == id) else {
+            return false;
+        };
+        let to = if down {
+            if at + 1 >= custom.len() {
+                return false;
+            }
+            at + 1
+        } else {
+            if at == 0 {
+                return false;
+            }
+            at - 1
+        };
+        self.bars.swap(custom[at], custom[to]);
+        true
+    }
+
+    /// Adds a copy of a row (its buttons and separators) after the user's
+    /// last row and returns the new row's id.
+    pub fn duplicate_row(&mut self, id: &str) -> Option<String> {
+        let src = self.bar(id)?.clone();
+        let new_id = self.add_row(&format!("{} copy", src.name));
+        let bar = self.bar_mut(&new_id)?;
+        bar.items = src.items;
+        bar.visible = src.visible;
+        bar.tidy();
+        Some(new_id)
     }
 
     /// Deletes a row the user added. The standard bars cannot be deleted
@@ -913,6 +1020,14 @@ pub fn set_current(mut cfg: ToolbarConfig) -> Result<(), String> {
     };
     with_current(|c| *c = cfg);
     saved
+}
+
+/// Reset Toolbars: every view type back to Daniel's Chief set (the lock is
+/// kept), live and saved. Returns the save error, if any.
+pub fn reset_all_live() -> Result<(), String> {
+    let mut cfg = current();
+    cfg.reset_all();
+    set_current(cfg)
 }
 
 /// Replaces the live configuration without touching the disk (tests).

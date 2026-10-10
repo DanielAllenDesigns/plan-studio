@@ -83,16 +83,35 @@ pub struct ImportOptions {
     pub roofs: bool,
     /// Name rooms from typed text labels (class 48).
     pub room_labels: bool,
-    /// Maps a library object's name and tags to a Plan Studio catalog id
-    /// (`chief.<catalog-uuid>.<object id>`); `None` return keeps the stand-in
-    /// `chief-plan.<name>` id. The plan stores no catalog link, so only a caller
-    /// that has the catalogs can resolve one.
+    /// Maps a placed library object (its catalog GUID, name and tags) to a
+    /// Plan Studio catalog id (`chief.<catalog-uuid>.<object id>`); a `None`
+    /// return keeps the stand-in `chief-plan.<name>` id. Only a caller that
+    /// has the catalogs can resolve one.
     pub symbol_resolver: Option<SymbolResolver>,
 }
 
-/// A name-to-catalog-id lookup for placed library objects; see
+/// What the plan says about a placed library object, for
+/// [`ImportOptions::symbol_resolver`]. The plan's class 114 entry holds the
+/// library item's GUID (the catalogs' `LibraryObjects.UniqueId`) for the
+/// items of the X13 to X18 catalogs; the items of the 2010-era libraries have
+/// a GUID no installed catalog holds and are found by name.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SymbolQuery {
+    /// The object's name (`Elongated Toilet`).
+    pub name: String,
+    /// The category tags after the name (`ADA`, `Universal Design`).
+    pub tags: Vec<String>,
+    /// The library item's GUID in the catalogs' `UniqueId` text form
+    /// (`8-4-4-4-12`, lower case), read at the entry's anchor.
+    pub unique_id: Option<String>,
+    /// Other GUID-shaped windows of the entry (the item GUID of an entry in a
+    /// newer layout), in the same text form.
+    pub candidates: Vec<String>,
+}
+
+/// A lookup from a placed library object to a catalog id; see
 /// [`ImportOptions::symbol_resolver`].
-pub type SymbolResolver = fn(name: &str, tags: &[String]) -> Option<String>;
+pub type SymbolResolver = fn(&SymbolQuery) -> Option<String>;
 
 impl Default for ImportOptions {
     fn default() -> Self {
@@ -146,10 +165,14 @@ pub struct ImportReport {
     /// `floors`, `walls`, `doors`, `windows`, `rooms`, `rooms_named`,
     /// `dimensions`, `wall_types`, `texts`, `cabinets` (boxes of every kind),
     /// `cabinet_soffits`, `countertops` (free-form), `symbols`,
+    /// `symbols_with_guid` (the entry carried a catalog GUID),
+    /// `symbols_linked` (a resolver found a catalog item),
     /// `symbols_in_cabinets` (left to their cabinet), `electrical_devices`,
-    /// `electrical_on_wall`, `stairs` (flights), `stair_landings`,
-    /// `roof_planes`, `roof_duplicates`, `room_labels`,
-    /// `room_labels_applied`.
+    /// `electrical_on_wall`, `electrical_in_groups` (devices of a multi-gang
+    /// box), `electrical_connections`, `stairs` (flights), `stair_landings`,
+    /// `stairs_stacked` (flights above a landing), `roof_planes`,
+    /// `roof_duplicates`, `roof_edges_joined`, `roof_gable_edges`,
+    /// `roof_overhangs`, `room_labels`, `room_labels_applied`.
     pub counts: BTreeMap<String, usize>,
     pub floors: Vec<FloorReport>,
     pub skipped_classes: Vec<SkippedClass>,

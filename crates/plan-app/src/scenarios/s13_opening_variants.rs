@@ -157,19 +157,19 @@ const WINDOWS: &[Case] = &[
     (
         "Bay Window",
         OpeningStyle::BayWindow,
-        96.0,
+        50.0,
         &[(PartKind::Frame, 2), (PartKind::Jamb, 2)],
     ),
     (
         "Bow Window",
         OpeningStyle::BowWindow,
-        96.0,
+        70.0,
         &[(PartKind::Frame, 2), (PartKind::Jamb, 2)],
     ),
     (
         "Box Window",
         OpeningStyle::BoxWindow,
-        60.0,
+        50.0,
         &[(PartKind::Frame, 2), (PartKind::Jamb, 2)],
     ),
     (
@@ -447,10 +447,12 @@ fn resize_stops_at_the_wall_end_and_the_neighbour() {
     sim.drag((from.x, from.y), (from.x + 300.0, from.y));
     let ob = opening(&sim, b);
     assert!((opening(&sim, a).end_offset() - (ob.start_offset() - 2.0)).abs() < 1e-9);
-    // The first window's start handle stops at the wall end clearance.
+    // The first window's start handle stops where its casing meets the side
+    // wall of the shell (Round 16), 3 3/4" off its face.
     let from = handle(&sim, HandleKind::ResizeStart);
     sim.drag((from.x, from.y), (from.x - 500.0, from.y));
-    assert_eq!(opening(&sim, a).start_offset(), 2.0);
+    let start = opening(&sim, a).start_offset();
+    assert!(start > 2.0 && start < 12.0, "{start}");
 }
 
 #[test]
@@ -599,13 +601,19 @@ fn two_adjacent_windows_mull_into_one_unit_and_unmull_splits_it() {
     assert!(opening(&sim, b).start_offset() - opening(&sim, a).end_offset() < 12.0);
     sim.app.cx.selection.set(ObjectRef::Opening(a));
     sim.app.cx.selection.toggle(ObjectRef::Opening(b));
-    sim.app.cx.run_custom(crate::editor::opening_edit::MULL);
-    assert_eq!(
-        opening(&sim, a).end_offset(),
-        opening(&sim, b).start_offset()
+    let (gap_before, a0) = (
+        opening(&sim, b).start_offset() - opening(&sim, a).end_offset(),
+        opening(&sim, a).start_offset(),
     );
+    sim.app.cx.run_custom(crate::editor::opening_edit::MULL);
+    // Make Mulled Unit blocks them where they stand (Round 16).
+    assert_eq!(
+        opening(&sim, b).start_offset() - opening(&sim, a).end_offset(),
+        gap_before
+    );
+    assert_eq!(opening(&sim, a).start_offset(), a0);
     assert!(opening(&sim, a).mull_group.is_some());
-    assert_eq!(sim.app.cx.undo_label(), Some("Mull Windows"));
+    assert_eq!(sim.app.cx.undo_label(), Some("Make Mulled Unit"));
     // One width for the unit shows in the dimensions.
     sim.app.cx.selection.set(ObjectRef::Opening(a));
     sim.app.cx.refresh();
@@ -618,7 +626,10 @@ fn two_adjacent_windows_mull_into_one_unit_and_unmull_splits_it() {
         .find(|d| d.kind == TempDimKind::OpeningUnitWidth)
         .unwrap()
         .value;
-    assert_eq!(unit, opening(&sim, a).width + opening(&sim, b).width);
+    assert_eq!(
+        unit,
+        opening(&sim, b).end_offset() - opening(&sim, a).start_offset()
+    );
     // Dragging one moves both.
     let from = handle(&sim, HandleKind::PerpendicularMove);
     let (sa, sb) = (
@@ -635,7 +646,7 @@ fn two_adjacent_windows_mull_into_one_unit_and_unmull_splits_it() {
     // Unmull.
     sim.app.cx.run_custom(crate::editor::opening_edit::UNMULL);
     assert!(openings(&sim).iter().all(|o| o.mull_group.is_none()));
-    assert_eq!(sim.app.cx.undo_label(), Some("Unmull Windows"));
+    assert_eq!(sim.app.cx.undo_label(), Some("Explode Mulled Unit"));
 }
 
 #[test]

@@ -175,7 +175,8 @@ impl FoundationTool {
                 names.push(own);
             }
         }
-        let dialog = FoundationDialog::new(&layer, r, names);
+        let dialog = FoundationDialog::new(&layer, r, names)
+            .map(|d| d.with_datums(crate::dialogs::foundation::datums_for(cx, &layer, r)));
         let opened = dialog.is_some();
         *self.dialog.borrow_mut() = dialog;
         opened
@@ -263,6 +264,9 @@ impl FoundationTool {
         let Some(r) = self.delete_target(cx) else {
             return ToolResult::ignored();
         };
+        if fv::warn_locked(cx) {
+            return ToolResult::consumed();
+        }
         let label = format!("Delete {}", r.name());
         fv::delete(cx, r);
         ToolResult {
@@ -420,6 +424,11 @@ impl Tool for FoundationTool {
             return r;
         }
         if self.dialog_open() {
+            return ToolResult::consumed();
+        }
+        // Floor 0 is closed to hand editing while Auto Rebuild Foundation is
+        // on: a rebuild would delete what is drawn (manual p. 745).
+        if fv::warn_locked(cx) {
             return ToolResult::consumed();
         }
         if self.points.is_empty() && Self::is_move_click(&p) {

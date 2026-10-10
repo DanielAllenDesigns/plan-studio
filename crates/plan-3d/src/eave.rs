@@ -15,9 +15,15 @@ use serde::{Deserialize, Serialize};
 
 type V3d = [f64; 3];
 
+mod trim;
+pub use trim::{
+    roof_trim_lines, soffit_boxed, RafterTailRecipe, RafterTailSpec, RidgeCapEdge, RidgeCapSpec,
+    RoofTrimOptions, SoffitStyle, TrimKind, TrimLine, TrimSpec,
+};
+
 /// Eave options one roof plane sets for itself (Roof Plane Specification >
 /// Eaves); `None` follows the roof's [`RoofDetail`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct EaveOverrides {
     pub eave_cut: Option<EaveCut>,
@@ -26,6 +32,13 @@ pub struct EaveOverrides {
     pub soffit: Option<bool>,
     pub frieze: Option<bool>,
     pub gutters: Option<bool>,
+    /// The plane's own structure (Roof Plane Specification > Structure >
+    /// Define, RF-36): thickness along the normal, rafter spacing, width and
+    /// depth, inches.
+    pub thickness: Option<f64>,
+    pub rafter_spacing: Option<f64>,
+    pub rafter_width: Option<f64>,
+    pub rafter_depth: Option<f64>,
 }
 
 impl EaveOverrides {
@@ -54,6 +67,18 @@ impl EaveOverrides {
         }
         if let Some(v) = self.gutters {
             d.gutters = v;
+        }
+        if let Some(v) = self.thickness {
+            d.thickness = v;
+        }
+        if let Some(v) = self.rafter_spacing {
+            d.rafter_spacing = v;
+        }
+        if let Some(v) = self.rafter_width {
+            d.rafter_width = v;
+        }
+        if let Some(v) = self.rafter_depth {
+            d.rafter_depth = v;
         }
         d
     }

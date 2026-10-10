@@ -9,9 +9,11 @@
 use crate::builder::{MeshBuilder, MeshSet};
 use crate::cover::RoofDetail;
 use crate::eave::{eave_detail_meshes, EavePlane};
+use crate::frame::Frame;
 use crate::mesh::{Material, Mesh};
 use crate::triangulate::ear_clip_with_holes;
-use plan_core::Point;
+use plan_core::openings::{BayRoof, BayRoofKind};
+use plan_core::{OpeningStyle, Point};
 use plan_roof::{
     CeilingPlane, Dormer, DormerWall, Roof, RoofHole, RoofPlane, RoofPolygonWithHoles, Skylight,
     WindowOpening,
@@ -257,6 +259,89 @@ fn add_polygon_with_holes(set: &mut MeshSet, poly: &RoofPolygonWithHoles, thickn
     for sky in &poly.skylights {
         skylight_into(set, sky);
     }
+}
+
+/// Thickness of that roof, inches.
+pub const BAY_ROOF_THICKNESS: f64 = 2.0;
+
+/// A small roof over a projecting window (RF-29, DW-48): `outline` is the
+/// unit's open footprint in wall-local `(s, t)` (starting and ending on the
+/// wall face, see `plan_core::opening_symbol::projection_footprint`), `head`
+/// the height of the roof's eave above the floor of `frame`. A bay or bow
+/// gets a hip roof whose back edge rises to the wall, a box window a shed roof
+/// that slopes away from the wall (`options` picks the kind, pitch and
+/// overhang). Returns `false` (and adds nothing) when the outline has no area
+/// or the kind is not a sloping one; the caller then draws its flat slab or
+/// nothing.
+pub fn bay_roof_into(
+    set: &mut MeshSet,
+    frame: &Frame,
+    outline: &[(f64, f64)],
+    head: f64,
+    style: OpeningStyle,
+    options: &BayRoof,
+) -> bool {
+    let kind = options.kind.resolved(style == OpeningStyle::BoxWindow);
+    if outline.len() < 3 || !matches!(kind, BayRoofKind::Hip | BayRoofKind::Shed) {
+        return false;
+    }
+    let (pitch, overhang) = (options.pitch.max(0.0), options.overhang.max(0.0));
+    let plan = |(s, t): (f64, f64)| {
+        let v = frame.point(s, t, head);
+        Point::new(f64::from(v[0]), -f64::from(v[2]))
+    };
+    let eave = f64::from(frame.point(0.0, 0.0, head)[1]);
+    let mut ring: Vec<Point> = outline.iter().map(|p| plan(*p)).collect();
+    if plan_core::geometry::polygon_area(&ring) < 0.0 {
+        ring.reverse();
+    }
+    // The closing edge (last point back to the first) lies on the wall; it
+    // is the last edge whichever way the ring runs.
+    let n = ring.len();
+    let closing = n - 1;
+    let hip = plan_roof::EdgeRoofSpec {
+        pitch,
+        overhang,
+        ..plan_roof::EdgeRoofSpec::default()
+    };
+    let mut specs = vec![hip; n];
+    // Against the wall the roof rises to the wall: no plane, no overhang.
+    specs[closing] = plan_roof::EdgeRoofSpec {
+        high_shed_gable: true,
+        overhang: 0.0,
+        ..hip
+    };
+    if kind == BayRoofKind::Shed {
+        // A shed roof: the two edges beside the wall are gable ends, only the
+        // front slopes.
+        for (i, spec) in specs.iter_mut().enumerate() {
+            if i == 0 || i + 2 == n {
+                spec.full_gable_wall = true;
+                spec.overhang = overhang;
+            }
+        }
+    }
+    let roof = plan_roof::build_roof_with_specs(&ring, &specs, eave);
+    if roof.planes.is_empty() {
+        return false;
+    }
+    for plane in &roof.planes {
+        let Some(normal) = unit(newell(&plane.polygon3d)) else {
+            continue;
+        };
+        if normal[1] < 0.0 {
+            continue;
+        }
+        add_extruded(
+            set,
+            Skin::all(Material::Roof),
+            &plane.polygon3d,
+            &[],
+            normal,
+            BAY_ROOF_THICKNESS,
+        );
+    }
+    true
 }
 
 /// Every plane of `roof` as a slab, cutting in whichever of `holes` fit on

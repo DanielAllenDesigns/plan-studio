@@ -10,7 +10,7 @@ use super::{row, section, Outcome, ERROR_RED};
 use eframe::egui::{self, Align, Align2, Key, Layout, Modifiers, RichText, Ui};
 use plan_core::{Id, Point};
 use plan_docs::{Scale, SheetSize};
-use plan_layout::{BoxSource, LayoutBox};
+use plan_layout::{BoxSource, CustomSheetSize, LayoutBox, SheetChoice};
 
 /// Shared dialog frame: a centered window with an OK / Cancel row. Enter is
 /// OK (unless a text field has focus) and Esc is Cancel.
@@ -75,21 +75,23 @@ fn scale_combo(ui: &mut Ui, salt: &str, current: &mut Scale) {
     egui::ComboBox::from_id_salt(salt)
         .selected_text(current.label())
         .show_ui(ui, |ui| {
-            for s in Scale::ALL {
-                ui.selectable_value(current, s, s.label());
+            let choices = Scale::choices();
+            for s in &choices {
+                ui.selectable_value(current, *s, s.label());
             }
-            if !Scale::ALL.contains(current) {
+            if !choices.contains(current) {
                 let c = *current;
                 ui.selectable_value(current, c, c.label());
             }
         });
 }
 
-/// `(sheet number, title)` of every page, for the page drop-downs.
+/// `(page number, "label  title")` of every page, for the page drop-downs.
 pub type PageList = Vec<(u32, String)>;
 
 fn page_label(p: &(u32, String)) -> String {
-    format!("A-{}  {}", p.0, p.1)
+    // The text already holds the page's label and title (`A0.2  Plans`).
+    p.1.clone()
 }
 
 // ---------------------------------------------------------------- send --
@@ -134,12 +136,51 @@ pub struct SendSpec {
     pub placement: Placement,
 }
 
+/// Which layout file receives the box (L-2): the plan can hold several, one
+/// of them open at a time.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub enum LayoutTarget {
+    /// The layout that is open.
+    #[default]
+    Current,
+    /// One of the plan's other layout files, by name.
+    Existing(String),
+    /// A new layout file with this name.
+    New(String),
+}
+
+/// A picture of the 3D view as it is, sent instead of the camera view: the
+/// size of the box on the page and the quality it is traced at.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SnapshotSpec {
+    /// Width of the box, paper inches (the height follows the view).
+    pub width_in: f64,
+    pub dpi: u32,
+    pub samples: u32,
+}
+
+impl Default for SnapshotSpec {
+    fn default() -> Self {
+        Self {
+            width_in: 6.0,
+            dpi: plan_layout::DEFAULT_PERSPECTIVE_DPI,
+            samples: plan_layout::DEFAULT_PERSPECTIVE_SAMPLES,
+        }
+    }
+}
+
 /// Send to Layout (L-2).
 pub struct SendDialog {
     spec: SendSpec,
     pages: PageList,
     floors: Vec<String>,
     layer_sets: Vec<String>,
+    /// Names of the plan's layout files, the open one first.
+    layouts: Vec<String>,
+    target: LayoutTarget,
+    /// The 3D view can be sent as a picture.
+    snapshot_offered: bool,
+    snapshot: Option<SnapshotSpec>,
 }
 
 impl SendDialog {
@@ -164,21 +205,116 @@ impl SendDialog {
             pages,
             floors,
             layer_sets,
+            layouts: Vec::new(),
+            target: LayoutTarget::Current,
+            snapshot_offered: false,
+            snapshot: None,
         }
+    }
+
+    /// Offers the plan's layout files (the open one first) to send to.
+    pub fn with_layouts(mut self, names: Vec<String>) -> Self {
+        self.layouts = names;
+        self
+    }
+
+    /// Offers the 3D view as a picture; `chosen` starts with it picked.
+    pub fn with_snapshot(mut self, chosen: bool) -> Self {
+        self.snapshot_offered = true;
+        self.snapshot = chosen.then(SnapshotSpec::default);
+        self
     }
 
     pub fn spec(&self) -> &SendSpec {
         &self.spec
     }
 
+    /// The layout file the box goes to.
+    pub fn target(&self) -> &LayoutTarget {
+        &self.target
+    }
+
+    /// Send the 3D view as a picture with these settings, if chosen.
+    pub fn snapshot(&self) -> Option<SnapshotSpec> {
+        self.snapshot
+    }
+
+    /// Why the answers cannot be used, if they cannot.
+    fn error(&self) -> Option<&'static str> {
+        match &self.target {
+            LayoutTarget::New(n) if n.trim().is_empty() => Some("Name the new layout file"),
+            LayoutTarget::New(n)
+                if self
+                    .layouts
+                    .iter()
+                    .any(|l| l.trim().eq_ignore_ascii_case(n.trim())) =>
+            {
+                Some("A layout file with that name exists")
+            }
+            _ => None,
+        }
+    }
+
     pub fn show(&mut self, ctx: &egui::Context) -> Outcome {
+        let error = self.error();
         let Self {
             spec,
             pages,
             floors,
             layer_sets,
+            layouts,
+            target,
+            snapshot_offered,
+            snapshot,
         } = self;
-        frame(ctx, "Send to Layout", 380.0, None, |ui| {
+        frame(ctx, "Send to Layout", 380.0, error, |ui| {
+            if !layouts.is_empty() {
+                section(ui, "Layout file");
+                row(ui, "Send to", |ui| {
+                    let shown = match target {
+                        LayoutTarget::Current => layouts
+                            .first()
+                            .map_or("The open layout".to_string(), |n| format!("{n} (open)")),
+                        LayoutTarget::Existing(n) => n.clone(),
+                        LayoutTarget::New(_) => "New layout file".to_string(),
+                    };
+                    egui::ComboBox::from_id_salt("send_layout_file")
+                        .selected_text(shown)
+                        .show_ui(ui, |ui| {
+                            for (i, n) in layouts.iter().enumerate() {
+                                let value = if i == 0 {
+                                    LayoutTarget::Current
+                                } else {
+                                    LayoutTarget::Existing(n.clone())
+                                };
+                                let label = if i == 0 {
+                                    format!("{n} (open)")
+                                } else {
+                                    n.clone()
+                                };
+                                ui.selectable_value(target, value, label);
+                            }
+                            if ui
+                                .selectable_label(
+                                    matches!(target, LayoutTarget::New(_)),
+                                    "New layout file...",
+                                )
+                                .clicked()
+                                && !matches!(target, LayoutTarget::New(_))
+                            {
+                                *target = LayoutTarget::New(String::new());
+                            }
+                        });
+                });
+                if let LayoutTarget::New(name) = target {
+                    row(ui, "Name", |ui| {
+                        ui.add(egui::TextEdit::singleline(name).desired_width(220.0));
+                    });
+                }
+                if !matches!(target, LayoutTarget::Current) {
+                    ui.weak("The page list below is the open layout's; a new page is added in the chosen file.");
+                }
+            }
             section(ui, "View");
             match &mut spec.source {
                 SendSource::Plan { floor, layer_set } => {
@@ -208,6 +344,40 @@ impl SendDialog {
                 SendSource::Perspective { name, .. } => {
                     row(ui, "Perspective view", |ui| ui.label(name.as_str()));
                     ui.weak("Rendered at low quality for the page; Update Views renders it again.");
+                }
+            }
+            if *snapshot_offered {
+                let mut picture = snapshot.is_some();
+                if ui
+                    .checkbox(&mut picture, "Send a picture of the 3D view as it is now")
+                    .on_hover_text(
+                        "A frozen picture of the view on screen (its camera and everything it shows), embedded in the PDF",
+                    )
+                    .changed()
+                {
+                    *snapshot = picture.then(SnapshotSpec::default);
+                }
+                if let Some(sn) = snapshot {
+                    row(ui, "Width", |ui| {
+                        ui.add(
+                            egui::DragValue::new(&mut sn.width_in)
+                                .range(1.0..=60.0)
+                                .speed(0.1)
+                                .suffix("\""),
+                        );
+                    });
+                    row(ui, "Resolution", |ui| {
+                        ui.add(
+                            egui::DragValue::new(&mut sn.dpi)
+                                .range(20..=600)
+                                .suffix(" dpi"),
+                        );
+                        ui.add(
+                            egui::DragValue::new(&mut sn.samples)
+                                .range(1..=512)
+                                .suffix(" samples"),
+                        );
+                    });
                 }
             }
             section(ui, "Layout page");
@@ -240,7 +410,7 @@ impl SendDialog {
                     .selected_text(shown)
                     .show_ui(ui, |ui| {
                         ui.selectable_value(&mut spec.scale, None, "Largest that fits");
-                        for s in Scale::ALL {
+                        for s in Scale::choices() {
                             ui.selectable_value(&mut spec.scale, Some(s), s.label());
                         }
                     });
@@ -552,6 +722,8 @@ pub fn source_name(s: &BoxSource) -> String {
         BoxSource::Text { .. } => "Text".into(),
         BoxSource::Perspective { .. } => "Perspective view".into(),
         BoxSource::SheetIndex => "Sheet index".into(),
+        BoxSource::PageTable => "Layout Page Table".into(),
+        BoxSource::RevisionTable => "Layout Revision Table".into(),
         BoxSource::Materials { category, .. } => match category {
             Some(c) => format!("Materials List: {c}"),
             None => "Materials List".into(),
@@ -856,7 +1028,8 @@ impl LayoutLayersDialog {
 /// The Page Setup answers (Drawing Sheet Setup).
 #[derive(Clone, Debug, PartialEq)]
 pub struct PageSetup {
-    pub sheet: SheetSize,
+    /// The layout's sheet: a standard size or one of its custom sizes.
+    pub sheet: SheetChoice,
     pub margins_in: f64,
     pub page_background: bool,
     pub edge_line_weight: u32,
@@ -868,11 +1041,30 @@ pub struct PageSetup {
 /// Page Setup (sheet size, margins, background, edge weight).
 pub struct PageSetupDialog {
     setup: PageSetup,
+    /// The sizes the list offers (Customize Sheet Sizes decides which).
+    choices: Vec<SheetChoice>,
 }
 
 impl PageSetupDialog {
     pub fn new(setup: PageSetup) -> Self {
-        Self { setup }
+        let mut choices: Vec<SheetChoice> = SheetSize::ALL
+            .into_iter()
+            .map(SheetChoice::Standard)
+            .collect();
+        if !choices.contains(&setup.sheet) {
+            choices.push(setup.sheet.clone());
+        }
+        Self { setup, choices }
+    }
+
+    /// The sizes to offer (`Layout::size_choices`).
+    pub fn with_choices(mut self, choices: Vec<SheetChoice>) -> Self {
+        let current = self.setup.sheet.clone();
+        self.choices = choices;
+        if !self.choices.contains(&current) {
+            self.choices.insert(0, current);
+        }
+        self
     }
 
     pub fn setup(&self) -> &PageSetup {
@@ -886,6 +1078,7 @@ impl PageSetupDialog {
 
     pub fn show(&mut self, ctx: &egui::Context) -> Outcome {
         let error = self.error();
+        let choices = &self.choices;
         let s = &mut self.setup;
         frame(ctx, "Page Setup", 380.0, error, |ui| {
             section(ui, "Sheet");
@@ -893,8 +1086,8 @@ impl PageSetupDialog {
                 egui::ComboBox::from_id_salt("setup_sheet")
                     .selected_text(s.sheet.label())
                     .show_ui(ui, |ui| {
-                        for z in SheetSize::ALL {
-                            ui.selectable_value(&mut s.sheet, z, z.label());
+                        for z in choices {
+                            ui.selectable_value(&mut s.sheet, z.clone(), z.label());
                         }
                     });
             });
@@ -917,46 +1110,336 @@ impl PageSetupDialog {
     }
 }
 
-// ---------------------------------------------------------- page table --
+// --------------------------------------------- general layout defaults --
 
-/// One row of the Layout Page Table.
+/// The General Layout Defaults answers (L-230): file-specific, like Chief's.
 #[derive(Clone, Debug, PartialEq)]
-pub struct PageRow {
-    pub number: u32,
-    pub title: String,
-    pub template_page: bool,
+pub struct LayoutDefaults {
+    /// Use Snap Grid: drags on the page snap to the Grid Snap Unit.
+    pub snap_grid: bool,
+    /// Grid Snap Unit, paper inches. An arrow key nudges by one unit
+    /// (Shift: four).
+    pub snap_unit_in: f64,
 }
 
-/// Layout Page Table: titles and the template flag of every page.
-pub struct PageTableDialog {
-    rows: Vec<PageRow>,
+impl LayoutDefaults {
+    /// The defaults of `layout`.
+    pub fn of(layout: &plan_layout::Layout) -> Self {
+        Self {
+            snap_grid: layout.snap_grid,
+            snap_unit_in: layout.snap_unit_in,
+        }
+    }
 }
 
-impl PageTableDialog {
-    pub fn new(rows: Vec<PageRow>) -> Self {
-        Self { rows }
+/// General Layout Defaults: Use Snap Grid and the Grid Snap Unit.
+pub struct LayoutDefaultsDialog {
+    defaults: LayoutDefaults,
+}
+
+impl LayoutDefaultsDialog {
+    pub fn new(defaults: LayoutDefaults) -> Self {
+        Self { defaults }
     }
 
-    pub fn rows(&self) -> &[PageRow] {
-        &self.rows
+    pub fn defaults(&self) -> &LayoutDefaults {
+        &self.defaults
+    }
+
+    fn error(&self) -> Option<&'static str> {
+        let u = self.defaults.snap_unit_in;
+        (!(plan_layout::MIN_SNAP_UNIT_IN..=plan_layout::MAX_SNAP_UNIT_IN).contains(&u))
+            .then_some("The Grid Snap Unit must be between 1/64 and 12 inches")
     }
 
     pub fn show(&mut self, ctx: &egui::Context) -> Outcome {
-        let rows = &mut self.rows;
-        frame(ctx, "Layout Page Table", 440.0, None, |ui| {
-            egui::Grid::new("page_table").striped(true).show(ui, |ui| {
-                ui.strong("Sheet");
-                ui.strong("Title");
-                ui.strong("Page Template");
-                ui.end_row();
-                for r in rows.iter_mut() {
-                    ui.label(format!("A-{}", r.number));
-                    ui.add(egui::TextEdit::singleline(&mut r.title).desired_width(240.0));
-                    ui.checkbox(&mut r.template_page, "");
-                    ui.end_row();
-                }
+        let error = self.error();
+        let d = &mut self.defaults;
+        frame(ctx, "General Layout Defaults", 380.0, error, |ui| {
+            section(ui, "Snaps");
+            ui.checkbox(&mut d.snap_grid, "Use Snap Grid");
+            ui.add_enabled_ui(d.snap_grid, |ui| {
+                row(ui, "Grid Snap Unit", |ui| {
+                    ui.add(
+                        egui::DragValue::new(&mut d.snap_unit_in)
+                            .speed(0.01)
+                            .max_decimals(4)
+                            .suffix("\""),
+                    );
+                });
             });
-            ui.weak("A template page is not printed; its boxes repeat on every page.");
+            ui.weak("The arrow keys nudge the selection by one Grid Snap Unit (Shift: four).");
+        })
+    }
+}
+
+// ------------------------------------------------ customize sheet sizes --
+
+/// The Customize Sheet Sizes answers: sizes added and standard sizes left
+/// out of the lists.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct SheetSizes {
+    pub custom: Vec<CustomSheetSize>,
+    pub hidden: Vec<SheetSize>,
+}
+
+/// Customize Sheet Sizes (L-8): add named sizes, and choose which standard
+/// sizes the Page Setup and Page Specification lists show.
+pub struct SheetSizesDialog {
+    draft: SheetSizes,
+    /// The layout's sheet: its standard size stays in the list.
+    in_use: SheetSize,
+}
+
+impl SheetSizesDialog {
+    pub fn new(sizes: SheetSizes, in_use: SheetSize) -> Self {
+        Self {
+            draft: sizes,
+            in_use,
+        }
+    }
+
+    pub fn sizes(&self) -> &SheetSizes {
+        &self.draft
+    }
+
+    fn error(&self) -> Option<String> {
+        for (i, c) in self.draft.custom.iter().enumerate() {
+            if let Some(p) = c.problem() {
+                return Some(format!("Size {}: {p}", i + 1));
+            }
+            let name = c.name.trim();
+            if self
+                .draft
+                .custom
+                .iter()
+                .skip(i + 1)
+                .any(|o| o.name.trim().eq_ignore_ascii_case(name))
+                || SheetSize::ALL
+                    .iter()
+                    .any(|s| s.label().eq_ignore_ascii_case(name))
+            {
+                return Some(format!("There are two sizes called {name}"));
+            }
+        }
+        None
+    }
+
+    pub fn show(&mut self, ctx: &egui::Context) -> Outcome {
+        let error = self.error();
+        let in_use = self.in_use;
+        let d = &mut self.draft;
+        frame(
+            ctx,
+            "Customize Sheet Sizes",
+            460.0,
+            error.as_deref(),
+            |ui| {
+                section(ui, "Standard sizes");
+                ui.horizontal(|ui| {
+                    if ui
+                        .button("Daniel's sizes (ARCH)")
+                        .on_hover_text("Show the ARCH sizes only, 18 x 24 first")
+                        .clicked()
+                    {
+                        d.hidden = SheetSize::ALL
+                            .into_iter()
+                            .filter(|s| !plan_layout::DANIEL_SIZES.contains(s))
+                            .collect();
+                    }
+                    if ui.button("Show all").clicked() {
+                        d.hidden.clear();
+                    }
+                });
+                egui::Grid::new("sheet_sizes_standard")
+                    .num_columns(2)
+                    .striped(true)
+                    .show(ui, |ui| {
+                        for z in SheetSize::ALL {
+                            let mut shown = !d.hidden.contains(&z);
+                            let locked = z == in_use;
+                            let was = shown;
+                            ui.add_enabled(!locked, egui::Checkbox::new(&mut shown, z.label()));
+                            let (w, h) = z.inches();
+                            ui.weak(format!("{:.1} x {:.1} in", h, w));
+                            ui.end_row();
+                            if shown != was {
+                                if shown {
+                                    d.hidden.retain(|s| *s != z);
+                                } else {
+                                    d.hidden.push(z);
+                                }
+                            }
+                        }
+                    });
+                section(ui, "Custom sizes");
+                let mut remove = None;
+                egui::Grid::new("sheet_sizes_custom")
+                    .num_columns(4)
+                    .show(ui, |ui| {
+                        for (i, c) in d.custom.iter_mut().enumerate() {
+                            ui.add(egui::TextEdit::singleline(&mut c.name).desired_width(140.0));
+                            ui.add(
+                                egui::DragValue::new(&mut c.width_in)
+                                    .range(0.0..=400.0)
+                                    .speed(0.1)
+                                    .suffix("\""),
+                            );
+                            ui.add(
+                                egui::DragValue::new(&mut c.height_in)
+                                    .range(0.0..=400.0)
+                                    .speed(0.1)
+                                    .suffix("\""),
+                            );
+                            if ui.small_button("Delete").clicked() {
+                                remove = Some(i);
+                            }
+                            ui.end_row();
+                        }
+                    });
+                if let Some(i) = remove {
+                    d.custom.remove(i);
+                }
+                if ui.button("Add size").clicked() {
+                    let n = d.custom.len() + 1;
+                    d.custom
+                        .push(CustomSheetSize::new(format!("Custom {n}"), 24.0, 36.0));
+                }
+                ui.weak("The layout's own sheet always stays in the list.");
+            },
+        )
+    }
+}
+
+// ------------------------------------------------------------- copy box --
+
+/// Copy Box to Page: which page receives copies of the selected boxes (or,
+/// from [`drawings`](Self::drawings), of the page's border and drawings).
+pub struct CopyBoxDialog {
+    pages: PageList,
+    /// Sheet number of the receiving page.
+    to: u32,
+    count: usize,
+    drawings: bool,
+}
+
+impl CopyBoxDialog {
+    /// `current` is the page the boxes are on (the first choice is the page
+    /// after it, else the same page).
+    pub fn new(pages: PageList, current: u32, count: usize) -> Self {
+        let to = pages
+            .iter()
+            .map(|p| p.0)
+            .find(|n| *n > current)
+            .unwrap_or(current);
+        Self {
+            pages,
+            to,
+            count,
+            drawings: false,
+        }
+    }
+
+    /// Copy Drawings to Page: `count` drawings of the page `current`.
+    pub fn drawings(pages: PageList, current: u32, count: usize) -> Self {
+        Self {
+            drawings: true,
+            ..Self::new(pages, current, count)
+        }
+    }
+
+    /// Sheet number of the receiving page.
+    pub fn to(&self) -> u32 {
+        self.to
+    }
+
+    pub fn show(&mut self, ctx: &egui::Context) -> Outcome {
+        let Self {
+            pages,
+            to,
+            count,
+            drawings,
+        } = self;
+        let title = if *drawings {
+            "Copy Drawings to Page"
+        } else {
+            "Copy Layout Box to Page"
+        };
+        frame(ctx, title, 360.0, None, |ui| {
+            ui.label(match (*drawings, *count) {
+                (true, n) => format!("Copy the border and the {n} drawing(s) of this page to:"),
+                (false, 1) => "Copy the selected box to:".to_string(),
+                (false, n) => format!("Copy the {n} selected boxes to:"),
+            });
+            row(ui, "Page", |ui| {
+                let shown = pages
+                    .iter()
+                    .find(|p| p.0 == *to)
+                    .map_or_else(|| format!("A-{to}"), page_label);
+                egui::ComboBox::from_id_salt("copy_box_page")
+                    .selected_text(shown)
+                    .show_ui(ui, |ui| {
+                        for p in pages.iter() {
+                            ui.selectable_value(to, p.0, page_label(p));
+                        }
+                    });
+            });
+            ui.weak(if *drawings {
+                "The copies keep their place; the page keeps what it has."
+            } else {
+                "The copies keep their place on the new page; on the same page they land offset."
+            });
+        })
+    }
+}
+
+// ------------------------------------------------------- new layout file --
+
+/// A one-line name prompt: New Layout File.
+pub struct NameDialog {
+    title: String,
+    prompt: String,
+    name: String,
+    taken: Vec<String>,
+}
+
+impl NameDialog {
+    pub fn new(title: &str, prompt: &str, name: &str, taken: Vec<String>) -> Self {
+        Self {
+            title: title.to_string(),
+            prompt: prompt.to_string(),
+            name: name.to_string(),
+            taken,
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        self.name.trim()
+    }
+
+    fn error(&self) -> Option<&'static str> {
+        let n = self.name.trim();
+        if n.is_empty() {
+            Some("Enter a name")
+        } else if self.taken.iter().any(|t| t.trim().eq_ignore_ascii_case(n)) {
+            Some("A layout file with that name exists")
+        } else {
+            None
+        }
+    }
+
+    pub fn show(&mut self, ctx: &egui::Context) -> Outcome {
+        let error = self.error();
+        let Self {
+            title,
+            prompt,
+            name,
+            ..
+        } = self;
+        frame(ctx, title, 360.0, error, |ui| {
+            row(ui, prompt, |ui| {
+                ui.add(egui::TextEdit::singleline(name).desired_width(220.0));
+            });
         })
     }
 }
@@ -1249,7 +1732,7 @@ mod tests {
     #[test]
     fn page_setup_rejects_margins_wider_than_the_sheet() {
         let mut d = PageSetupDialog::new(PageSetup {
-            sheet: SheetSize::Letter,
+            sheet: SheetChoice::Standard(SheetSize::Letter),
             margins_in: 0.5,
             page_background: true,
             edge_line_weight: 18,
@@ -1324,8 +1807,125 @@ mod tests {
                 y.show(ctx);
             });
         }
-        assert_eq!(y.layers().layers.len(), 5);
+        assert_eq!(y.layers().layers.len(), 6);
         assert_eq!(c.spec().revision, "1");
+    }
+
+    #[test]
+    fn page_sheet_reads_a_pages_own_sheet() {
+        use super::super::page_info::PageSheet;
+        let mut l = plan_layout::Layout::new("t", SheetSize::ArchC);
+        l.add_page(1, "Plan").size_override_in = Some((36.0, 24.0));
+        l.add_page(2, "Detail").size_override_in = Some((24.0, 36.0));
+        l.add_page(3, "Odd").size_override_in = Some((30.0, 20.0));
+        l.add_page(4, "Plain");
+        let spec = |i: usize| PageSheet::of(&l.pages[i], &l);
+        assert_eq!(spec(0).sheet, Some(SheetChoice::Standard(SheetSize::ArchD)));
+        assert!(!spec(0).portrait);
+        assert!(spec(1).portrait, "taller than wide is portrait");
+        assert_eq!(spec(1).sheet, Some(SheetChoice::Standard(SheetSize::ArchD)));
+        match spec(2).sheet {
+            Some(SheetChoice::Custom(c)) => assert_eq!(c.inches(), (30.0, 20.0)),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(spec(3).sheet, None);
+    }
+
+    #[test]
+    fn layout_defaults_validate_the_grid_snap_unit() {
+        let mut l = plan_layout::Layout::new("t", SheetSize::ArchC);
+        let mut d = LayoutDefaultsDialog::new(LayoutDefaults::of(&l));
+        assert!(d.error().is_none());
+        assert_eq!(d.defaults().snap_unit_in, 1.0 / 16.0);
+        d.defaults.snap_unit_in = 0.0;
+        assert!(d.error().is_some());
+        d.defaults.snap_unit_in = 0.25;
+        d.defaults.snap_grid = false;
+        assert!(d.error().is_none());
+        l.snap_unit_in = d.defaults().snap_unit_in;
+        l.snap_grid = d.defaults().snap_grid;
+        assert_eq!(LayoutDefaults::of(&l), *d.defaults());
+    }
+
+    #[test]
+    fn sheet_size_and_name_dialogs_validate() {
+        let mut d = SheetSizesDialog::new(SheetSizes::default(), SheetSize::ArchC);
+        assert!(d.error().is_none());
+        d.draft
+            .custom
+            .push(CustomSheetSize::new("Poster", 30.0, 40.0));
+        assert!(d.error().is_none());
+        d.draft
+            .custom
+            .push(CustomSheetSize::new("poster", 24.0, 36.0));
+        assert!(d.error().unwrap().contains("two sizes"));
+        d.draft.custom.pop();
+        d.draft
+            .custom
+            .push(CustomSheetSize::new("ARCH C (18 x 24)", 10.0, 10.0));
+        assert!(d.error().is_some(), "a standard size's name is taken");
+        d.draft.custom.pop();
+        d.draft.custom.push(CustomSheetSize::new("Tiny", 1.0, 10.0));
+        assert!(d.error().unwrap().contains("Size 2"));
+        let mut n = NameDialog::new("New Layout File", "Name", "Set A", vec!["Set A".into()]);
+        assert!(n.error().is_some());
+        n.name = " Set B ".into();
+        assert!(n.error().is_none());
+        assert_eq!(n.name(), "Set B");
+        n.name.clear();
+        assert_eq!(n.error(), Some("Enter a name"));
+        // Copy Box starts on the page after the current one.
+        let pages = vec![
+            (1, "A".to_string()),
+            (2, "B".to_string()),
+            (5, "C".to_string()),
+        ];
+        assert_eq!(CopyBoxDialog::new(pages.clone(), 1, 2).to(), 2);
+        assert_eq!(CopyBoxDialog::new(pages.clone(), 2, 1).to(), 5);
+        assert_eq!(
+            CopyBoxDialog::new(pages, 5, 1).to(),
+            5,
+            "the last page: itself"
+        );
+    }
+
+    #[test]
+    fn the_send_dialog_offers_layout_files_and_the_3d_picture() {
+        let plan = SendSource::Plan {
+            floor: 0,
+            layer_set: "Default Set".into(),
+        };
+        let mut d = SendDialog::new(plan, vec![(1, "A".into())], Some(1), vec![], vec![])
+            .with_layouts(vec!["Open".into(), "Parked".into()])
+            .with_snapshot(true);
+        assert_eq!(d.target(), &LayoutTarget::Current);
+        assert_eq!(d.snapshot(), Some(SnapshotSpec::default()));
+        d.target = LayoutTarget::New("  ".into());
+        assert!(d.error().is_some());
+        d.target = LayoutTarget::New("parked".into());
+        assert_eq!(d.error(), Some("A layout file with that name exists"));
+        d.target = LayoutTarget::New("Permit Set".into());
+        assert!(d.error().is_none());
+        d.target = LayoutTarget::Existing("Parked".into());
+        assert!(d.error().is_none());
+        let ctx = egui::Context::default();
+        for _ in 0..2 {
+            let _ = ctx.run(egui::RawInput::default(), |c| {
+                d.show(c);
+            });
+        }
+        let off = SendDialog::new(
+            SendSource::Plan {
+                floor: 0,
+                layer_set: String::new(),
+            },
+            vec![],
+            None,
+            vec![],
+            vec![],
+        )
+        .with_snapshot(false);
+        assert_eq!(off.snapshot(), None);
     }
 
     #[test]
@@ -1351,7 +1951,7 @@ mod tests {
             bx.show(c);
         }));
         let mut ps = PageSetupDialog::new(PageSetup {
-            sheet: SheetSize::ArchC,
+            sheet: SheetChoice::Standard(SheetSize::ArchC),
             margins_in: 0.5,
             page_background: true,
             edge_line_weight: 18,
@@ -1361,17 +1961,35 @@ mod tests {
         dialogs.push(Box::new(move |c| {
             ps.show(c);
         }));
-        let mut pt = PageTableDialog::new(vec![PageRow {
-            number: 1,
-            title: "T".into(),
-            template_page: false,
-        }]);
-        dialogs.push(Box::new(move |c| {
-            pt.show(c);
-        }));
-        let mut pr = PrintDialog::for_layout(2, (36.0, 24.0), "Layout");
+        let mut pr = PrintDialog::for_layout(2, (36.0, 24.0), "Layout")
+            .with_custom_papers(vec![("Poster (30 x 40)".into(), (40.0, 30.0))]);
         dialogs.push(Box::new(move |c| {
             pr.show(c);
+        }));
+        let mut defaults = LayoutDefaultsDialog::new(LayoutDefaults {
+            snap_grid: true,
+            snap_unit_in: 0.0625,
+        });
+        dialogs.push(Box::new(move |c| {
+            defaults.show(c);
+        }));
+        let mut sizes = SheetSizesDialog::new(
+            SheetSizes {
+                custom: vec![CustomSheetSize::new("Poster", 30.0, 40.0)],
+                hidden: vec![SheetSize::IsoA0],
+            },
+            SheetSize::ArchC,
+        );
+        dialogs.push(Box::new(move |c| {
+            sizes.show(c);
+        }));
+        let mut copy = CopyBoxDialog::new(vec![(1, "A".into()), (2, "B".into())], 1, 2);
+        dialogs.push(Box::new(move |c| {
+            copy.show(c);
+        }));
+        let mut name = NameDialog::new("New Layout File", "Name", "Set B", vec![]);
+        dialogs.push(Box::new(move |c| {
+            name.show(c);
         }));
         for _ in 0..2 {
             for d in &mut dialogs {

@@ -14,9 +14,9 @@ use crate::toolbar::ViewFlag;
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Shape, Stroke, Vec2};
 use plan_core::cad::CadItem;
 use plan_core::geometry::Point;
-use plan_core::{
-    exterior_sign, Dimension, DimensionKind, Opening, OpeningKind, Wall, WallClass, WallKind,
-};
+#[cfg(test)]
+use plan_core::DimensionKind;
+use plan_core::{exterior_sign, Dimension, Opening, Wall, WallClass, WallKind};
 use std::collections::HashMap;
 
 /// Runs one stage of [`draw_plan`]. Test builds add the stage's time to
@@ -97,18 +97,30 @@ pub fn draw_plan(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
         "underlays",
         crate::tools::underlay::draw_underlays(cx, painter, cam)
     );
-    section!("reference floor", draw_reference_floor(cx, painter, cam));
+    section!(
+        "reference floor",
+        crate::editor::ref_overlay::draw_reference(cx, painter, cam, false)
+    );
     section!(
         "site",
         crate::editor::site_view::draw_site(cx, painter, cam)
     );
     section!("rooms", draw_rooms(cx, painter, cam));
+    // CAD objects in a drawing group below the walls' draw under them.
+    section!("cad behind walls", draw_cad_pass(cx, painter, cam, true));
+    // Construction lines in a drawing group below the walls' (group 21).
+    section!(
+        "construction lines behind walls",
+        crate::editor::ref_overlay::draw_construction(cx, painter, cam, true)
+    );
     // Slabs, pads and piers sit under the walls.
     section!(
         "foundation",
         crate::editor::foundation_view::draw_foundation(cx, painter, cam)
     );
     // Floor material regions, decks and 3D solids sit under the walls too.
+    // Fill Styles assigned to slabs and rooms (Fill Style panel).
+    section!("assigned fills", draw_assigned_fills(cx, painter, cam));
     section!(
         "details under",
         crate::editor::details_view::draw_under(cx, painter, cam)
@@ -121,11 +133,24 @@ pub fn draw_plan(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
         "placed",
         crate::editor::placed::draw_placed(cx, painter, cam)
     );
+    // Compound 3D solids, and the boxes and labels of architectural blocks.
+    section!(
+        "blocks and solids",
+        crate::editor::solids_view::draw(cx, painter, cam)
+    );
     section!(
         "roofs",
         crate::editor::roof_view::draw_roofs(cx, painter, cam)
     );
     section!("walls", draw_walls(cx, painter, cam));
+    // Poché: the dark fill over the cut walls (View > Poché).
+    section!("poche", draw_poche(cx, painter, cam));
+    // Fireplaces and chimney chases draw over the walls (CB-87), so one built
+    // into a wall shows its body over the wall lines.
+    section!(
+        "fireplaces",
+        crate::editor::fireplace_view::draw(cx, painter, cam)
+    );
     // Wall hatching and wall regions, corner trim and moldings over the walls.
     section!(
         "details over",
@@ -160,11 +185,9 @@ pub fn draw_plan(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
     section!(
         "dimensions",
         for d in &floor.dimensions {
-            let layer = match d.kind {
-                DimensionKind::AutoExterior => "Dimensions, Automatic",
-                _ => "Dimensions, Manual",
-            };
-            if cx.layers().is_visible(layer) {
+            let layer = d.layer_name(&cx.defaults.dimensions.setup);
+            let layer = layer.as_str();
+            if cx.layers().is_visible(layer) && d.segment_shows() {
                 let look = DimLook::of(cx, d);
                 set_text_face(face_of(dimension_style(cx, d)));
                 weighted(cx, painter, layer, || {
@@ -182,38 +205,22 @@ pub fn draw_plan(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
             }
         }
     );
-    section!("cad", let attrs = floor.cad_attr_map();
-    // Text objects are drawn in their text style's font; anything drawn
-    // after them (tool previews) in the Default Text Style's.
-    let default_face = face_of(
-        cx.project
-            .text_styles
-            .resolve(plan_core::text_styles::DEFAULT_TEXT_STYLE_NAME),
+    // CAD objects whose drawing group is above the walls' draw over everything.
+    section!("cad", draw_cad_pass(cx, painter, cam, false));
+    section!(
+        "construction lines",
+        crate::editor::ref_overlay::draw_construction(cx, painter, cam, false)
     );
-    for c in &floor.cad {
-        if !cx.layers().is_visible(&c.layer) {
-            continue;
-        }
-        if matches!(c.item, CadItem::Text { .. }) {
-            let style = cx.project.text_styles.style_of_text(
-                cx.layers(),
-                &c.layer,
-                attrs.get(&c.id).and_then(|a| a.text_style.as_deref()),
-            );
-            set_text_face(face_of(style));
-        }
-        // Text in a printed-size style is drawn at its size on paper for
-        // the sheet's scale.
-        let printed = printed_text_object(cx, c, attrs.get(&c.id));
-        let c = printed.as_ref().unwrap_or(c);
-        match attrs.get(&c.id) {
-            Some(a) => crate::tools::cad::draw_cad_styled(cx, painter, cam, c, Some(a)),
-            None => weighted(cx, painter, &c.layer, || {
-                draw_cad(painter, cam, &c.item, Stroke::new(1.0_f32, pal.text), pal)
-            }),
-        }
-    }
-    set_text_face(default_face));
+    // Reference rows above the Current line draw over the plan; a wall drawn
+    // exactly over its reference counterpart gets light blue edges (S-194).
+    section!(
+        "reference front",
+        crate::editor::ref_overlay::draw_reference(cx, painter, cam, true)
+    );
+    section!(
+        "reference alignment",
+        crate::editor::ref_overlay::draw_alignment(cx, painter, cam)
+    );
     section!(
         "space boxes",
         crate::editor::rooms_edit::draw_space_boxes(cx, painter, cam)
@@ -222,6 +229,11 @@ pub fn draw_plan(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
     section!(
         "schedules",
         crate::editor::schedule_view::draw_schedules(cx, painter, cam)
+    );
+    // Labels typed in the shared Label panels (Specify Label, offsets).
+    section!(
+        "object labels",
+        crate::dialogs::common_pages::draw_labels(cx, painter, cam)
     );
     section!(
         "camera symbols",
@@ -251,6 +263,61 @@ pub fn draw_plan(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
     }
 }
 
+/// The CAD objects (and text) in drawing-group order: with `behind` the ones
+/// whose group is below the walls' (they draw under the walls), otherwise the
+/// rest, over everything else (LAY-36, `plan_core::drawing_group`).
+fn draw_cad_pass(cx: &EditorContext, painter: &egui::Painter, cam: &Camera, behind: bool) {
+    let pal = &cx.palette;
+    let floor = cx.floor();
+    let (under, over) = floor.cad_by_walls(&cx.project.drawing_group_defaults);
+    let objects = if behind { under } else { over };
+    if objects.is_empty() {
+        return;
+    }
+    let attrs = floor.cad_attr_map();
+    // Construction lines are drawn by `ref_overlay` (infinite, with callouts).
+    let construction = floor.construction_ids();
+    // Text objects are drawn in their text style's font; anything drawn
+    // after them (tool previews) in the Default Text Style's.
+    let default_face = face_of(
+        cx.project
+            .text_styles
+            .resolve(plan_core::text_styles::DEFAULT_TEXT_STYLE_NAME),
+    );
+    for c in objects {
+        if !cx.layers().is_visible(&c.layer) || construction.contains(&c.id) {
+            continue;
+        }
+        if matches!(c.item, CadItem::Text { .. }) {
+            let style = cx.project.text_styles.style_of_text(
+                cx.layers(),
+                &c.layer,
+                attrs.get(&c.id).and_then(|a| a.text_style.as_deref()),
+            );
+            set_text_face(face_of(style));
+        }
+        // A library line style (Line Style Management) and an assigned Fill
+        // Style draw through the shared stroker and tiler.
+        if draw_styled_cad(cx, painter, cam, c, attrs.get(&c.id)) {
+            continue;
+        }
+        // Text in a printed-size style is drawn at its size on paper for
+        // the sheet's scale.
+        let printed = printed_text_object(cx, c, attrs.get(&c.id));
+        let c = printed.as_ref().unwrap_or(c);
+        match attrs.get(&c.id) {
+            Some(a) if matches!(c.item, CadItem::Text { .. }) && a.text_box.needs_layout() => {
+                draw_text_box(cx, painter, cam, c, a)
+            }
+            Some(a) => crate::tools::cad::draw_cad_styled(cx, painter, cam, c, Some(a)),
+            None => weighted(cx, painter, &c.layer, || {
+                draw_cad(painter, cam, &c.item, Stroke::new(1.0_f32, pal.text), pal)
+            }),
+        }
+    }
+    set_text_face(default_face);
+}
+
 /// The crosshair lines over the whole canvas (View > Crosshairs).
 pub fn draw_crosshairs(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
     if !cx.view_flags.contains(&ViewFlag::Crosshairs) {
@@ -270,11 +337,9 @@ pub fn draw_crosshairs(cx: &EditorContext, painter: &egui::Painter, cam: &Camera
     );
 }
 
-fn opening_layer(o: &Opening) -> &'static str {
-    match o.kind {
-        OpeningKind::Door => "Doors",
-        OpeningKind::Window => "Windows",
-    }
+/// The layer an opening draws on: its Layer tab's choice, else Doors or Windows.
+fn opening_layer(o: &Opening) -> &str {
+    o.layer_name()
 }
 
 fn quad(cam: &Camera, pts: &[Point]) -> Vec<Pos2> {
@@ -287,33 +352,44 @@ fn draw_grid(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
     while spacing * cam.px_per_in < 8.0 {
         spacing *= 5.0;
     }
-    let rect = cam.rect;
     if cx.view_flags.contains(&ViewFlag::ReferenceGrid) {
-        let tl = cam.screen_to_world(rect.left_top());
-        let br = cam.screen_to_world(rect.right_bottom());
+        // The canvas corners bound the grid; a rotated view needs all four.
+        let corners = cam.world_corners();
+        let lo = corners
+            .iter()
+            .fold(corners[0], |m, p| Point::new(m.x.min(p.x), m.y.min(p.y)));
+        let hi = corners
+            .iter()
+            .fold(corners[0], |m, p| Point::new(m.x.max(p.x), m.y.max(p.y)));
         let minor = Stroke::new(1.0_f32, pal.grid_minor);
         let major = Stroke::new(1.0_f32, pal.grid_major);
         let (x0, x1) = (
-            (tl.x / spacing).floor() as i64,
-            (br.x / spacing).ceil() as i64,
+            (lo.x / spacing).floor() as i64,
+            (hi.x / spacing).ceil() as i64,
         );
         for k in x0..=x1 {
-            let x = cam.world_to_screen(Point::new(k as f64 * spacing, 0.0)).x;
+            let x = k as f64 * spacing;
             let stroke = if k % 5 == 0 { major } else { minor };
             painter.line_segment(
-                [Pos2::new(x, rect.top()), Pos2::new(x, rect.bottom())],
+                [
+                    cam.world_to_screen(Point::new(x, lo.y)),
+                    cam.world_to_screen(Point::new(x, hi.y)),
+                ],
                 stroke,
             );
         }
         let (y0, y1) = (
-            (br.y / spacing).floor() as i64,
-            (tl.y / spacing).ceil() as i64,
+            (lo.y / spacing).floor() as i64,
+            (hi.y / spacing).ceil() as i64,
         );
         for k in y0..=y1 {
-            let y = cam.world_to_screen(Point::new(0.0, k as f64 * spacing)).y;
+            let y = k as f64 * spacing;
             let stroke = if k % 5 == 0 { major } else { minor };
             painter.line_segment(
-                [Pos2::new(rect.left(), y), Pos2::new(rect.right(), y)],
+                [
+                    cam.world_to_screen(Point::new(lo.x, y)),
+                    cam.world_to_screen(Point::new(hi.x, y)),
+                ],
                 stroke,
             );
         }
@@ -353,7 +429,11 @@ fn draw_rooms(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
                 cam.world_to_screen(crate::editor::rooms_edit::label_position(cx, room)),
                 Align2::CENTER_CENTER,
                 crate::editor::rooms_edit::room_label_text(cx, room),
-                match face_of(cx.project.text_styles.resolve("Room Label Style")) {
+                match face_of(
+                    cx.project
+                        .text_styles
+                        .resolve(&crate::editor::rooms_edit::label_text_style(cx, room)),
+                ) {
                     Some(spec) => crate::fonts::font_id(
                         painter.ctx(),
                         &spec,
@@ -460,6 +540,8 @@ fn draw_walls(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
             draw_one_wall(cx, painter, cam, wall)
         });
     }
+    // Walls left whole across each other draw as one shape (W-36).
+    crate::editor::wall_edit::draw_crossing_merges(cx, painter, cam);
 }
 
 /// The wall's left and right face lines (a straight wall's footprint edges,
@@ -779,12 +861,256 @@ fn draw_one_wall(cx: &EditorContext, painter: &egui::Painter, cam: &Camera, wall
         if l.is_main {
             painter.add(Shape::convex_polygon(pts.clone(), main_fill, Stroke::NONE));
         }
+        // The Fill Style of this layer of the wall type (Layer Fill Style).
+        if let Some(style) = wall
+            .wall_type
+            .as_deref()
+            .and_then(|t| cx.project.wall_layer_fill(t, l.layer_index))
+        {
+            paint_style_fill(cx, painter, cam, &l.polygon, &[], style, &wall.layer);
+        }
         painter.add(Shape::closed_line(pts.clone(), thin));
         if l.is_main && pts.len() == 4 {
             // Start-left to end-left and end-right to start-right.
             painter.line_segment([pts[0], pts[1]], heavy);
             painter.line_segment([pts[2], pts[3]], heavy);
         }
+    }
+}
+
+/// Plan inches per paper inch of the active drawing scale.
+fn plan_per_paper(cx: &EditorContext) -> f64 {
+    let r = 12.0 / cx.sheet.scale.inches_per_foot();
+    if r.is_finite() && r > 0.0 {
+        r
+    } else {
+        48.0
+    }
+}
+
+fn color_rgb(c: Color32) -> [u8; 3] {
+    [c.r(), c.g(), c.b()]
+}
+
+/// Draws a Fill Style over `outer` minus `holes`; Use Layer takes the fill
+/// style assigned to `layer` (nothing when it has none).
+fn paint_style_fill(
+    cx: &EditorContext,
+    painter: &egui::Painter,
+    cam: &Camera,
+    outer: &[Point],
+    holes: &[Vec<Point>],
+    style: &plan_core::fill_styles::FillStyle,
+    layer: &str,
+) {
+    use plan_core::fill_styles::{FillStyle, FillTarget, PatternType};
+    let layer_style = cx
+        .project
+        .styles
+        .fill_for(&FillTarget::Layer(layer.to_string()))
+        .cloned()
+        .unwrap_or_else(FillStyle::use_layer);
+    let style = style.resolved(&layer_style);
+    if style.pattern == PatternType::UseLayer {
+        return;
+    }
+    let layer_rgb = cx.layers().get(layer).map_or([0, 0, 0], |l| l.color);
+    let k = if cx.view_flags.contains(&ViewFlag::LineWeights) {
+        1.0
+    } else {
+        25.0 / style.line_weight.max(1) as f32
+    };
+    let patterns = cx.project.styles.all_patterns();
+    crate::dialogs::fill_style::paint_fill(
+        painter,
+        &|p| cam.world_to_screen(p),
+        cam.px_per_in as f32,
+        outer,
+        holes,
+        style,
+        &patterns,
+        layer_rgb,
+        color_rgb(cx.palette.background),
+        k,
+    );
+}
+
+/// The polygon a closed CAD item fills.
+fn cad_fill_polygon(item: &CadItem) -> Option<Vec<Point>> {
+    match item {
+        CadItem::Polyline {
+            points,
+            closed: true,
+        } if points.len() >= 3 => Some(points.clone()),
+        CadItem::Circle { .. } => crate::dialogs::line_style::item_path(item).map(|(p, _)| p),
+        _ => None,
+    }
+}
+
+/// A CAD object with a library line style or an assigned Fill Style. Draws
+/// the fill (and, with a line style, the outline); returns true when the
+/// object is completely drawn.
+fn draw_styled_cad(
+    cx: &EditorContext,
+    painter: &egui::Painter,
+    cam: &Camera,
+    c: &plan_core::CadObject,
+    attrs: Option<&plan_core::cad::CadAttrs>,
+) -> bool {
+    use plan_core::fill_styles::FillTarget;
+    let fill = cx.project.styles.fill_for(&FillTarget::Cad(c.id));
+    let line = cx.project.assigned_line_style(c.id, &c.layer);
+    if fill.is_none() && line.is_none() {
+        return false;
+    }
+    if let (Some(style), Some(poly)) = (fill, cad_fill_polygon(&c.item)) {
+        weighted(cx, painter, &c.layer, || {
+            paint_style_fill(cx, painter, cam, &poly, &[], style, &c.layer)
+        });
+    }
+    let Some(def) = line else { return false };
+    // Arrow ends keep the legacy drawing.
+    if attrs.is_some_and(|a| {
+        a.arrow_start != plan_core::cad::ArrowStyle::None
+            || a.arrow_end != plan_core::cad::ArrowStyle::None
+    }) {
+        return false;
+    }
+    let Some((pts, closed)) = crate::dialogs::line_style::item_path(&c.item) else {
+        return false;
+    };
+    let color = attrs
+        .and_then(|a| a.color)
+        .map_or(cx.palette.text, |c| Color32::from_rgb(c[0], c[1], c[2]));
+    // A legacy solid fill under the outline.
+    if fill.is_none() {
+        if let Some(f) = attrs
+            .and_then(|a| a.fill.as_ref())
+            .filter(|f| f.pattern.is_empty())
+        {
+            if let (Some(style), Some(poly)) = (
+                plan_core::fill_styles::FillStyle::from_fill_attr(f),
+                cad_fill_polygon(&c.item),
+            ) {
+                paint_style_fill(cx, painter, cam, &poly, &[], &style, &c.layer);
+            }
+        }
+    }
+    let scale = plan_per_paper(cx);
+    weighted(cx, painter, &c.layer, || {
+        crate::dialogs::line_style::paint_path(
+            painter,
+            cam,
+            &def,
+            &pts,
+            closed,
+            scale,
+            Stroke::new(1.0_f32, color),
+        )
+    });
+    true
+}
+
+/// Fill Styles assigned to slabs and rooms, over what those draw themselves.
+fn draw_assigned_fills(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
+    use plan_core::fill_styles::FillTarget;
+    let styles = &cx.project.styles;
+    if styles.fill_assign.is_empty() {
+        return;
+    }
+    let slabs = crate::dialogs::fill_style::slabs(cx);
+    for (target, style) in &styles.fill_assign {
+        match target {
+            FillTarget::Slab(id) => {
+                if let Some(s) = slabs.iter().find(|s| s.id == *id) {
+                    if cx.layers().is_visible(&s.layer) {
+                        paint_style_fill(cx, painter, cam, &s.outline, &s.holes, style, &s.layer);
+                    }
+                }
+            }
+            FillTarget::Room(anchor) => {
+                if let Some(r) = cx
+                    .rooms
+                    .iter()
+                    .find(|r| crate::editor::rooms_edit::room_anchor(r).dist(*anchor) < 1.0)
+                {
+                    if cx.layers().is_visible("Rooms") {
+                        paint_style_fill(
+                            cx,
+                            painter,
+                            cam,
+                            &r.inner_polygon,
+                            &r.holes,
+                            style,
+                            "Rooms",
+                        );
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Is poché on in the view that is showing (View > Poché)?
+pub fn poche_on(cx: &EditorContext) -> bool {
+    let on = cx.project.styles.poche.is_on(
+        &cx.project.active_plan_view,
+        plan_core::fill_styles::PocheView::Plan,
+    );
+    crate::dialogs::fill_style::note_poche(on);
+    on
+}
+
+/// Poché: the dark fill over the cut walls, for every layer of a wall that
+/// has no Fill Style of its own. Not on glass walls, invisible walls, room
+/// dividers, railings, fencing or raised walls (manual p. 226).
+fn draw_poche(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
+    if !poche_on(cx) {
+        return;
+    }
+    let pal = &cx.palette;
+    let c = cx.project.styles.poche.color();
+    let fill = Color32::from_rgb(c[0], c[1], c[2]);
+    for wall in &cx.floor().walls {
+        if !cx.layers().is_visible(&wall.layer) || !plan_core::fill_styles::wall_gets_poche(wall) {
+            continue;
+        }
+        weighted(cx, painter, &wall.layer, || {
+            let typed: Vec<&plan_core::joins::WallLayerOutline> = cx
+                .layer_outlines
+                .iter()
+                .filter(|l| l.wall_id == wall.id)
+                .collect();
+            if typed.is_empty() || wall.is_curved() {
+                let poly = wall_polygon_at(cx, wall, cam.px_per_in);
+                fill_wall(
+                    painter,
+                    cam,
+                    wall,
+                    &poly,
+                    fill,
+                    Stroke::new(1.0_f32, pal.wall_stroke),
+                );
+                return;
+            }
+            for l in typed {
+                let styled = wall
+                    .wall_type
+                    .as_deref()
+                    .and_then(|t| cx.project.wall_layer_fill(t, l.layer_index))
+                    .is_some();
+                if styled {
+                    continue;
+                }
+                let pts = quad(cam, &l.polygon);
+                painter.add(Shape::convex_polygon(
+                    pts,
+                    fill,
+                    Stroke::new(1.0_f32, pal.wall_stroke),
+                ));
+            }
+        });
     }
 }
 
@@ -810,22 +1136,12 @@ fn weighted(cx: &EditorContext, painter: &egui::Painter, layer: &str, draw: impl
 /// the floor above or another floor. Nothing when the display is off, when
 /// there is no such floor, or for walls on layers the chosen layer set hides
 /// or whose Ref box (LAY-10) is off.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn reference_polygons(cx: &EditorContext) -> Vec<Vec<Point>> {
     crate::dialogs::reference_display::reference_walls(cx)
         .iter()
         .map(|w| w.footprint().to_vec())
         .collect()
-}
-
-/// Reference Display: the chosen floor, walls only, dimmed in the chosen
-/// color (gray by default).
-fn draw_reference_floor(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
-    let [r, g, b] = crate::dialogs::reference_display::settings(&cx.project).color;
-    let fill = Color32::from_rgba_unmultiplied(r, g, b, 70);
-    let edge = Stroke::new(0.75_f32, Color32::from_rgba_unmultiplied(r, g, b, 170));
-    for poly in reference_polygons(cx) {
-        painter.add(Shape::convex_polygon(quad(cam, &poly), fill, edge));
-    }
 }
 
 /// The parts of `clip` that lie outside `sheet` (up to four rectangles).
@@ -919,6 +1235,177 @@ pub fn printed_text_object(
     Some(o)
 }
 
+/// A text with a box (TXT-1, TXT-3, TXT-16): background fill, wrapped lines
+/// aligned inside the box, and the border. `c` is the text at its drawn
+/// size (see [`printed_text_object`]). Lines are laid out by
+/// [`plan_core::text_box`]; their runs are placed by the glyph widths of the
+/// face in use so alignment is exact on screen.
+pub fn draw_text_box(
+    cx: &EditorContext,
+    painter: &egui::Painter,
+    cam: &Camera,
+    c: &plan_core::CadObject,
+    attrs: &plan_core::cad::CadAttrs,
+) {
+    use plan_core::text_box::{BoxLayout, HAlign};
+    let Some(pb) = plan_core::text_box::placed(&c.item, attrs) else {
+        return;
+    };
+    let pal = &cx.palette;
+    let px = cam.px_per_in as f32;
+    let (pos, angle, tb) = (pb.pos, pb.angle, pb.tb);
+    // Screen angle: plan angles run counter-clockwise, the screen's clockwise;
+    // a rotated plan view turns the text with the plan.
+    let screen_angle = angle + cam.rotation;
+    let (sin_a, cos_a) = (screen_angle.sin() as f32, screen_angle.cos() as f32);
+    let along = Vec2::new(cos_a, -sin_a);
+    let sc = |x: f64, y: f64| cam.world_to_screen(BoxLayout::to_plan(pos, angle, Point::new(x, y)));
+    // Glyphs first: their widths decide where each line starts and, for an
+    // unwrapped box, how wide the box is.
+    struct Piece {
+        galley: std::sync::Arc<egui::Galley>,
+        run: plan_core::text_styles::RichRun,
+        color: Color32,
+    }
+    let base_px = (pb.text_height as f32 * px).clamp(6.0, 200.0);
+    let lines: Vec<Vec<Piece>> = pb
+        .layout
+        .lines
+        .iter()
+        .map(|l| {
+            l.runs
+                .iter()
+                .filter(|r| !r.text.is_empty())
+                .map(|r| {
+                    let color = r
+                        .color
+                        .map_or(pal.text, |k| Color32::from_rgb(k[0], k[1], k[2]));
+                    let size = (base_px * r.scale as f32).clamp(6.0, 200.0);
+                    // A run set in its own font family (Rich Text Edit Bar).
+                    let font = match &r.font {
+                        Some(f) => crate::fonts::font_id(
+                            painter.ctx(),
+                            &crate::fonts::spec_named(f, r.bold, r.italic),
+                            size,
+                        ),
+                        None => text_font(painter, size),
+                    };
+                    Piece {
+                        galley: painter.layout_no_wrap(r.text.clone(), font, color),
+                        run: r.clone(),
+                        color,
+                    }
+                })
+                .collect()
+        })
+        .collect();
+    let line_px: Vec<f32> = lines
+        .iter()
+        .map(|l| l.iter().map(|p| p.galley.size().x).sum())
+        .collect();
+    let box_w = if tb.width > 0.0 {
+        tb.width
+    } else {
+        f64::from(line_px.iter().copied().fold(0.0_f32, f32::max)) / f64::from(px.max(1e-6))
+    };
+    let box_h = pb.layout.height;
+    let grow = pb.grow();
+    // Background, then the frame.
+    let quad_pts = |g: f64| -> Vec<Pos2> {
+        vec![
+            sc(-g, -g),
+            sc(box_w + g, -g),
+            sc(box_w + g, box_h + g),
+            sc(-g, box_h + g),
+        ]
+    };
+    if let Some(k) = tb.background {
+        painter.add(Shape::convex_polygon(
+            quad_pts(grow),
+            Color32::from_rgb(k[0], k[1], k[2]),
+            Stroke::NONE,
+        ));
+    }
+    if tb.border {
+        let k = if cx.view_flags.contains(&ViewFlag::LineWeights) && tb.border_weight > 0 {
+            restyle::weight_factor(tb.border_weight)
+        } else {
+            1.0
+        };
+        painter.add(Shape::closed_line(quad_pts(grow), Stroke::new(k, pal.text)));
+    }
+    for ((line, pieces), w_px) in pb.layout.lines.iter().zip(&lines).zip(&line_px) {
+        let w_in = f64::from(*w_px) / f64::from(px.max(1e-6));
+        let x0 = match tb.halign {
+            HAlign::Left => 0.0,
+            HAlign::Center => (box_w - w_in) * 0.5,
+            HAlign::Right => box_w - w_in,
+        };
+        let mut x_px = 0.0_f32;
+        for piece in pieces {
+            let size = piece.galley.size();
+            let h_in = f64::from(size.y) / f64::from(px.max(1e-6));
+            // The galley's top-left, `h_in` above the line's bottom.
+            let top_left = sc(
+                x0 + f64::from(x_px) / f64::from(px.max(1e-6)),
+                line.y + h_in,
+            );
+            let shape = egui::epaint::TextShape::new(top_left, piece.galley.clone(), piece.color)
+                .with_angle(-screen_angle as f32);
+            if piece.run.bold {
+                let nudge = along * 0.7;
+                let mut bold = shape.clone();
+                bold.pos += nudge;
+                painter.add(bold);
+            }
+            painter.add(shape);
+            if piece.run.underline {
+                let a = sc(x0 + f64::from(x_px) / f64::from(px.max(1e-6)), line.y)
+                    - Vec2::new(-sin_a, -cos_a) * 1.0;
+                let b = a + along * size.x;
+                painter.line_segment([a, b], Stroke::new(1.0_f32, piece.color));
+            }
+            if piece.run.strike {
+                let a = sc(
+                    x0 + f64::from(x_px) / f64::from(px.max(1e-6)),
+                    line.y + h_in * 0.35,
+                );
+                let b = a + along * size.x;
+                painter.line_segment([a, b], Stroke::new(1.0_f32, piece.color));
+            }
+            x_px += size.x;
+        }
+    }
+}
+
+/// The outline of a text's box and frame, for the selection and hover
+/// highlight.
+fn highlight_text_box(
+    cx: &EditorContext,
+    painter: &egui::Painter,
+    cam: &Camera,
+    c: &plan_core::CadObject,
+    stroke: Stroke,
+) -> bool {
+    let attrs = cx.floor().cad_attrs(c.id);
+    let Some(attrs) = attrs.filter(|a| a.text_box.needs_layout()) else {
+        return false;
+    };
+    let drawn = printed_text_object(cx, c, Some(&attrs));
+    let item = drawn.as_ref().map_or(&c.item, |o| &o.item);
+    let Some(pb) = plan_core::text_box::placed(item, &attrs) else {
+        return false;
+    };
+    let pts: Vec<Pos2> = pb
+        .layout
+        .corners(pb.pos, pb.angle, pb.grow())
+        .iter()
+        .map(|p| cam.world_to_screen(*p))
+        .collect();
+    painter.add(Shape::closed_line(pts, stroke));
+    true
+}
+
 /// Settles the CAD text hits of `hits` (from the stored-height picking) with
 /// the drawn size: a printed-size text found by its stored box but not by the
 /// drawn one is dropped, one found only by the drawn box is added.
@@ -933,13 +1420,21 @@ pub fn settle_text_hits(
     let mut drop = Vec::new();
     let mut add = Vec::new();
     for c in floor.cad.iter().rev() {
-        let Some(drawn) = printed_text_object(cx, c, attrs.get(&c.id)) else {
+        // A text with a box is hit by its box and frame (TXT-1, S-25).
+        let printed = printed_text_object(cx, c, attrs.get(&c.id));
+        let boxed = attrs.get(&c.id).and_then(|a| {
+            plan_core::text_box::placed(printed.as_ref().map_or(&c.item, |o| &o.item), a)
+        });
+        let Some(drawn) = printed.or_else(|| boxed.as_ref().map(|_| c.clone())) else {
             continue;
         };
         let r = ObjectRef::Cad(c.id);
         let found = hits.contains(&r);
-        let now = cx.layers().is_visible(&c.layer)
-            && crate::editor::selection::cad_distance(&drawn.item, p) <= tol;
+        let dist = match &boxed {
+            Some(pb) => pb.distance(p),
+            None => crate::editor::selection::cad_distance(&drawn.item, p),
+        };
+        let now = cx.layers().is_visible(&c.layer) && dist <= tol;
         match (found, now) {
             (true, false) => drop.push(r),
             (false, true) => add.push(r),
@@ -966,6 +1461,16 @@ pub struct DimLook {
     pub past: f64,
     /// Number above the line (otherwise centered on it, over a break).
     pub above: bool,
+    /// A fixed extension line length back from the dimension line.
+    pub ext_length: Option<f64>,
+    /// The end mark (Arrow tab) and whether an arrowhead or dot is solid.
+    pub mark: plan_core::dimension::DimArrow,
+    pub filled: bool,
+    /// The leader line style of a moved label.
+    pub leader: plan_core::dimension::LeaderStyle,
+    /// The leader settings of the Dimension Defaults (second segment,
+    /// arrowhead).
+    pub lead: plan_core::dimension::LeaderDefaults,
 }
 
 impl DimLook {
@@ -995,12 +1500,25 @@ impl DimLook {
             1.0
         };
         let or = |v: f64, fallback: f64| if v > 0.0 { v } else { fallback };
+        // What the dimension sets for itself wins (DIM-31, DIM-38).
+        let o = &d.look;
         DimLook {
-            text_h,
-            arrow: or(set.arrow_size, 2.25) * k,
-            gap: set.extension_gap.max(0.0) * k,
-            past: set.extension_past.max(0.0) * k,
+            text_h: o.number_height.filter(|h| *h > 0.0).unwrap_or(text_h),
+            arrow: o.arrow_size.unwrap_or(or(set.arrow_size, 2.25) * k),
+            gap: o.ext_gap.unwrap_or(set.extension_gap.max(0.0) * k),
+            past: o.ext_past.unwrap_or(set.extension_past.max(0.0) * k),
             above: set.text_above_line,
+            ext_length: o.ext_length.filter(|l| *l > 0.0),
+            mark: o
+                .arrow
+                .unwrap_or_else(|| plan_core::dimension::DimArrow::from_name(&set.arrow_style)),
+            filled: o.arrow_filled.unwrap_or(true),
+            leader: plan_core::dimension::LeaderStyle::from_name(&set.leader_style),
+            lead: plan_core::dimension::LeaderDefaults {
+                second_segment: set.setup.leader_second_segment,
+                second_length: set.setup.leader_second_length,
+                arrow: set.setup.leader_arrow,
+            },
         }
     }
 
@@ -1013,6 +1531,11 @@ impl DimLook {
             gap: 0.0,
             past: 0.0,
             above: false,
+            ext_length: None,
+            mark: plan_core::dimension::DimArrow::Tick,
+            filled: true,
+            leader: plan_core::dimension::LeaderStyle::SquareCorner,
+            lead: plan_core::dimension::LeaderDefaults::default(),
         }
     }
 }
@@ -1044,7 +1567,12 @@ pub fn upright_angle(a: Pos2, b: Pos2) -> f32 {
     ang
 }
 
-/// Draws a dimension with the sizes in `look` (see [`DimLook::of`]).
+/// Draws a dimension with the sizes in `look` (see [`DimLook::of`]): the
+/// extension lines, the dimension line (a straight line, or the arc of a
+/// radius, arc length or angle), the end marks, the centerline marks and the
+/// label laid out by [`Dimension::label_layout`] (above, centered or below
+/// the line, a second format on the other side, moved or turned, with a
+/// leader line, rich runs).
 pub fn draw_dimension_look(
     painter: &egui::Painter,
     cam: &Camera,
@@ -1054,96 +1582,252 @@ pub fn draw_dimension_look(
     pal: &Palette,
     look: &DimLook,
 ) {
+    use plan_core::dimension::LabelParams;
     let px = cam.px_per_in as f32;
     let ext_stroke = Stroke::new(0.7_f32, stroke.color.gamma_multiply(0.8));
+    let sc = |p: Point| cam.world_to_screen(p);
+    let geom = d.curve_geom(look.gap, look.past);
     // Extension lines start `gap` off the measured point and run `past` the
     // dimension line; a point's can be switched off.
-    for ((m, e), hidden) in d.extension_lines().into_iter().zip(d.hide_ext) {
-        if hidden {
-            continue;
+    let exts: Vec<(Point, Point)> = match &geom {
+        Some(g) => g.extensions.clone(),
+        None => d
+            .extension_lines()
+            .into_iter()
+            .zip(d.hide_ext)
+            .enumerate()
+            .filter(|(_, (_, hidden))| !hidden)
+            .filter_map(|(k, ((m, e), _))| {
+                // An extension line with its own length settings (the
+                // Extensions/Markers panel) uses them.
+                let (gap, past, length) = match d.look.seg.ext[k].len {
+                    Some(l) => match l.reach {
+                        plan_core::dimension::ExtReach::Towards(t) => (look.gap, l.away, Some(t)),
+                        plan_core::dimension::ExtReach::Gap(g) => (g, l.away, None),
+                    },
+                    None => (look.gap, look.past, look.ext_length),
+                };
+                plan_core::dimension::extension_segment(m, e, gap, past, length)
+            })
+            .collect(),
+    };
+    for (from, to) in exts {
+        painter.line_segment([sc(from), sc(to)], ext_stroke);
+    }
+    // The dimension line and where its ends point.
+    let (line, fwd_start, fwd_end): (Vec<Point>, Point, Point) = match &geom {
+        Some(g) => (g.line.clone(), g.inward[0], g.inward[1].scale(-1.0)),
+        None => {
+            let (p, q) = d.line_points();
+            let u = q.sub(p).normalized();
+            (vec![p, q], u, u)
         }
-        let v = e.sub(m);
-        let len = v.length();
-        if len < 1e-6 {
-            continue;
-        }
-        let u = v.scale(1.0 / len);
-        let from = if len > look.gap {
-            m.add(u.scale(look.gap))
+    };
+    let screen_line: Vec<Pos2> = line.iter().map(|p| sc(*p)).collect();
+    painter.add(Shape::line(screen_line.clone(), stroke));
+    // A plan direction as a unit vector on screen.
+    let dir_at = |at: Point, v: Point| -> Vec2 {
+        let (a, b) = (sc(at), sc(at.add(v.scale(1.0))));
+        let s = b - a;
+        if s.length() > 1e-6 {
+            s / s.length()
         } else {
-            m
-        };
-        let to = e.add(u.scale(look.past));
-        painter.line_segment(
-            [cam.world_to_screen(from), cam.world_to_screen(to)],
-            ext_stroke,
+            Vec2::X
+        }
+    };
+    if let (Some(first), Some(last)) = (line.first(), line.last()) {
+        draw_dimension_end(
+            painter,
+            sc(*first),
+            dir_at(*first, fwd_start),
+            1.0,
+            look,
+            px,
+            stroke,
+        );
+        draw_dimension_end(
+            painter,
+            sc(*last),
+            dir_at(*last, fwd_end),
+            -1.0,
+            look,
+            px,
+            stroke,
         );
     }
-    let (p, q) = d.line_points();
-    let (sp, sq) = (cam.world_to_screen(p), cam.world_to_screen(q));
-    painter.line_segment([sp, sq], stroke);
-    let line = sq - sp;
-    let line_px = line.length();
-    let dir = if line_px > 1e-3 {
-        line / line_px
-    } else {
-        Vec2::X
-    };
-    let tick = Vec2::new(-dir.y, dir.x) * (look.arrow as f32 * px * 0.5).clamp(2.5, 14.0);
-    for s in [sp, sq] {
-        painter.line_segment([s - tick, s + tick], stroke);
+    // Centerline marks on the extension lines (Extensions panel).
+    for (k, on) in d.look.seg.centerline.iter().enumerate() {
+        if !*on {
+            continue;
+        }
+        let (m, e) = d.extension_lines()[k];
+        let out = e.add(e.sub(m).normalized().scale(look.text_h));
+        let font = text_font(painter, (look.text_h as f32 * px * 0.8).clamp(6.0, 120.0));
+        painter.text(
+            sc(out),
+            Align2::CENTER_CENTER,
+            "CL",
+            font,
+            pal.dimension_text,
+        );
     }
 
-    let font_px = (look.text_h as f32 * px).clamp(6.0, 200.0);
-    let galley = painter.layout_no_wrap(
-        d.label(fmt),
-        text_font(painter, font_px),
-        pal.dimension_text,
-    );
-    let size = galley.size();
-    let ang = upright_angle(sp, sq);
-    let (sin, cos) = ang.sin_cos();
-    let along = Vec2::new(cos, sin);
-    let up = Vec2::new(sin, -cos);
-    let mid = Pos2::new((sp.x + sq.x) * 0.5, (sp.y + sq.y) * 0.5);
-    // DIM-9: a number that does not fit between the extension lines moves
-    // outside them, beside the end of the line, with a short leader.
-    let fits = size.x + 6.0 <= line_px;
-    let center = if fits {
-        if look.above {
-            mid + up * (size.y * 0.5 + 2.0)
-        } else {
-            mid
-        }
-    } else {
-        // Past the end of the line that is farther along the text direction.
-        let end = if (sq - sp).dot(along) >= 0.0 { sq } else { sp };
-        let lead = 6.0 + size.x * 0.5;
-        let c = end + along * lead;
-        painter.line_segment([end, end + along * 4.0], Stroke::new(0.7_f32, stroke.color));
-        if look.above {
-            c + up * (size.y * 0.5 + 2.0)
-        } else {
-            c
+    // The label.
+    let (anchor, dirv, run, len) = match &geom {
+        Some(g) => (g.label_at, g.label_dir, None, f64::INFINITY),
+        None => {
+            let (p, q) = d.line_points();
+            (
+                Point::lerp(p, q, 0.5),
+                q.sub(p).normalized(),
+                Some((p, q)),
+                p.dist(q),
+            )
         }
     };
-    if fits && !look.above {
-        // Break the line behind the number.
-        let (hx, hy) = (along * (size.x * 0.5 + 3.0), up * (size.y * 0.5 + 1.0));
+    let font_px = (look.text_h as f32 * px).clamp(6.0, 200.0);
+    let width = |t: &str| {
+        painter
+            .layout_no_wrap(
+                t.to_string(),
+                text_font(painter, font_px),
+                pal.dimension_text,
+            )
+            .size()
+            .x as f64
+            / cam.px_per_in.max(1e-9)
+    };
+    let params = LabelParams {
+        text_h: look.text_h,
+        width: &width,
+        view_rotation: cam.rotation,
+        leader: look.leader,
+    };
+    let lay = d.label_layout_with(fmt, anchor, dirv, run, len, &params, &look.lead);
+    if let Some(k) = lay.knockout {
         painter.add(Shape::convex_polygon(
-            vec![
-                center - hx - hy,
-                center + hx - hy,
-                center + hx + hy,
-                center - hx + hy,
-            ],
+            k.iter().map(|p| sc(*p)).collect(),
             pal.background.gamma_multiply(0.85),
             Stroke::NONE,
         ));
     }
-    let half = size * 0.5;
-    let top_left = center - Vec2::new(half.x * cos - half.y * sin, half.x * sin + half.y * cos);
-    painter.add(egui::epaint::TextShape::new(top_left, galley, pal.dimension_text).with_angle(ang));
+    if lay.leader.len() >= 2 {
+        painter.add(Shape::line(
+            lay.leader.iter().map(|p| sc(*p)).collect(),
+            Stroke::new(0.7_f32, stroke.color),
+        ));
+    }
+    // The leader's arrowhead sits on the dimension line end of the leader.
+    if let Some((tip, toward)) = lay.leader_arrow {
+        let dirv = dir_at(tip, toward.sub(tip).normalized());
+        draw_dimension_end(painter, sc(tip), dirv, 1.0, look, px, stroke);
+    }
+    if let Some((a, b)) = lay.stub {
+        painter.line_segment([sc(a), sc(b)], Stroke::new(0.7_f32, stroke.color));
+    }
+    // Screen angle of the text: y runs down on screen and the view may be
+    // turned.
+    let ang = -((lay.angle + cam.rotation) as f32);
+    let (sin, cos) = ang.sin_cos();
+    let rich = d.look.seg.runs.clone();
+    for (i, line) in lay.lines.iter().enumerate() {
+        let galley = if i == 0 && !rich.is_empty() {
+            let mut job = egui::text::LayoutJob::default();
+            for r in &rich {
+                job.append(
+                    &r.text,
+                    0.0,
+                    egui::text::TextFormat {
+                        font_id: text_font(painter, (font_px * r.scale as f32).clamp(4.0, 400.0)),
+                        color: r
+                            .color
+                            .map_or(pal.dimension_text, |c| Color32::from_rgb(c[0], c[1], c[2])),
+                        italics: r.italic,
+                        underline: if r.underline {
+                            Stroke::new(1.0_f32, pal.dimension_text)
+                        } else {
+                            Stroke::NONE
+                        },
+                        strikethrough: if r.strike {
+                            Stroke::new(1.0_f32, pal.dimension_text)
+                        } else {
+                            Stroke::NONE
+                        },
+                        ..Default::default()
+                    },
+                );
+            }
+            painter.layout_job(job)
+        } else {
+            painter.layout_no_wrap(
+                line.text.clone(),
+                text_font(painter, font_px),
+                pal.dimension_text,
+            )
+        };
+        let c = sc(line.center);
+        let half = galley.size() * 0.5;
+        let top_left = c - Vec2::new(half.x * cos - half.y * sin, half.x * sin + half.y * cos);
+        painter.add(
+            egui::epaint::TextShape::new(top_left, galley, pal.dimension_text).with_angle(ang),
+        );
+    }
+}
+
+/// One end mark of a dimension line at `at` (screen), `dir` the unit
+/// direction the line runs in there (from its first end to its last) and
+/// `sign` `1.0` for the first end and `-1.0` for the last: a tick across the
+/// line, a slash, an arrowhead pointing outward, a dot or nothing (the Arrow
+/// tab).
+fn draw_dimension_end(
+    painter: &egui::Painter,
+    at: Pos2,
+    dir: Vec2,
+    sign: f32,
+    look: &DimLook,
+    px: f32,
+    stroke: Stroke,
+) {
+    use plan_core::dimension::DimArrow;
+    let perp = Vec2::new(-dir.y, dir.x);
+    let size = look.arrow as f32 * px;
+    match look.mark {
+        DimArrow::None => {}
+        DimArrow::Tick => {
+            let tick = perp * (size * 0.5).clamp(2.5, 14.0);
+            painter.line_segment([at - tick, at + tick], stroke);
+        }
+        DimArrow::Slash => {
+            // A long drafting slash, steeper than the tick (about 60 degrees).
+            let len = (size * 0.6).clamp(4.0, 20.0);
+            let slash = perp * len + dir * (len * 0.58);
+            painter.line_segment([at - slash, at + slash], stroke);
+        }
+        DimArrow::Dot => {
+            let r = (size * 0.25).clamp(1.5, 6.0);
+            if look.filled {
+                painter.circle_filled(at, r, stroke.color);
+            } else {
+                painter.circle_stroke(at, r, stroke);
+            }
+        }
+        DimArrow::Arrow => {
+            let len = size.clamp(5.0, 30.0);
+            let half = len * 0.3;
+            // The tip is at the end of the line; the base lies along it.
+            let base = at + dir * (sign * len);
+            if look.filled {
+                painter.add(Shape::convex_polygon(
+                    vec![at, base + perp * half, base - perp * half],
+                    stroke.color,
+                    Stroke::NONE,
+                ));
+            } else {
+                painter.line_segment([at, base + perp * half], stroke);
+                painter.line_segment([at, base - perp * half], stroke);
+            }
+        }
+    }
 }
 
 /// A CAD primitive in `stroke`.
@@ -1247,7 +1931,9 @@ fn highlight(
         }
         ObjectRef::Cad(id) | ObjectRef::Text(id) => {
             if let Some(c) = floor.cad.iter().find(|c| c.id == id) {
-                draw_cad(painter, cam, &c.item, stroke, &cx.palette);
+                if !highlight_text_box(cx, painter, cam, c, stroke) {
+                    draw_cad(painter, cam, &c.item, stroke, &cx.palette);
+                }
             }
         }
         ObjectRef::Device(id) => {
@@ -1271,6 +1957,10 @@ fn highlight(
             if let Some(c) = cx.project.camera(id) {
                 painter.circle_stroke(cam.world_to_screen(c.position), 14.0, stroke);
             }
+        }
+        // Compound 3D solids and the box of an architectural block.
+        ObjectRef::Solid(_) | ObjectRef::Block(_) => {
+            crate::editor::solids_view::highlight(cx, painter, cam, o, stroke)
         }
         // Stairs, cabinets, symbols and foundation objects draw their own
         // selection.
@@ -1316,6 +2006,7 @@ pub fn draw_snap_marker(painter: &egui::Painter, cam: &Camera, s: &SnapResult, c
 mod tests {
     use super::*;
     use crate::plan_defaults;
+    use plan_core::OpeningKind;
 
     /// Draws a plan with every object kind, a selection and a hover through a
     /// headless egui context; a panic here means a drawing bug.

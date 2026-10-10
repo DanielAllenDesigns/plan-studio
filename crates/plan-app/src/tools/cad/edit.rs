@@ -82,13 +82,16 @@ pub fn hatch_pattern(i: usize, spacing: f64) -> Option<Pattern> {
 
 /// The CAD edit tools as Edit toolbar commands: `(mode, command id)`. Run a
 /// command with [`run_edit_command`]; the ids are `EditActionKind::Custom` ids.
-pub const EDIT_COMMANDS: [(CadMode, &str); 12] = [
+pub const EDIT_COMMANDS: [(CadMode, &str); 15] = [
     (CadMode::Fillet, "cad.fillet"),
     (CadMode::Chamfer, "cad.chamfer"),
     (CadMode::Offset, "cad.offset"),
     (CadMode::Trim, "cad.trim"),
     (CadMode::Extend, "cad.extend"),
     (CadMode::BreakLine, "cad.break"),
+    (CadMode::ChangeLineArc, "cad.change_line_arc"),
+    (CadMode::DeleteBreak, "cad.delete_break"),
+    (CadMode::MakeArcTangent, "cad.arc_tangent"),
     (CadMode::ReverseDirection, "cad.reverse"),
     (CadMode::MakeParallel, "cad.parallel"),
     (CadMode::MakePerpendicular, "cad.perpendicular"),
@@ -490,6 +493,9 @@ impl CadTool {
             CadMode::Trim => self.trim_click(cx, &p),
             CadMode::Extend => self.extend_click(cx, &p),
             CadMode::BreakLine => self.break_click(cx, &p),
+            CadMode::ChangeLineArc => self.change_arc_click(cx, &p),
+            CadMode::DeleteBreak => self.delete_break_click(cx, &p),
+            CadMode::MakeArcTangent => self.arc_tangent_click(cx, &p),
             CadMode::ReverseDirection => self.reverse_click(cx, &p),
             CadMode::MakeParallel | CadMode::MakePerpendicular => self.turn_click(cx, &p),
             CadMode::Hatch => self.hatch_click(cx, &p),
@@ -666,8 +672,14 @@ impl CadTool {
                     }
                 }
             }
+            CadItem::Arc { .. } | CadItem::Circle { .. } => {
+                match crate::tools::cad_ops::trim_for_tool(cx, &obj.item, p.world, &cutters) {
+                    Some(v) => v,
+                    None => return ToolResult::consumed(),
+                }
+            }
             _ => {
-                cx.status = "Trim Line works on lines and polylines".into();
+                cx.status = "Trim Line works on lines, polylines, arcs and circles".into();
                 return ToolResult::consumed();
             }
         };
@@ -693,8 +705,10 @@ impl CadTool {
             cx.status = "Extend Line: click the end of a line".into();
             return ToolResult::consumed();
         };
+        if !matches!(obj.item, CadItem::Line { .. }) {
+            return crate::tools::cad_ops::extend_for_tool(cx, obj.id, p.world);
+        }
         let CadItem::Line { a, b } = obj.item else {
-            cx.status = "Extend Line works on lines".into();
             return ToolResult::consumed();
         };
         let bounds = Self::others(cx, obj.id);

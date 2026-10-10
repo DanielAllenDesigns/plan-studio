@@ -40,6 +40,101 @@ impl Schedule {
         out
     }
 
+    /// Swap Rows/Columns: one column per object, headed by the object's
+    /// first cell (its number), with the attribute names down the first
+    /// column. The headings of the original columns become the first cell of
+    /// each row.
+    pub fn transposed(&self) -> Schedule {
+        let Some(first) = self.columns.first() else {
+            return self.clone();
+        };
+        let mut columns = vec![first.clone()];
+        columns.extend(
+            self.rows
+                .iter()
+                .map(|r| r.first().cloned().unwrap_or_default()),
+        );
+        let rows = (1..self.columns.len())
+            .map(|i| {
+                let mut row = vec![self.columns[i].clone()];
+                row.extend(
+                    self.rows
+                        .iter()
+                        .map(|r| r.get(i).cloned().unwrap_or_default()),
+                );
+                row
+            })
+            .collect();
+        Schedule {
+            title: self.title.clone(),
+            columns,
+            rows,
+        }
+    }
+
+    /// Wrapping: the rows cut into consecutive tables of `counts` rows each
+    /// (see [`wrap_counts`]). The last `tail` rows (the Totals row) stay with
+    /// the last table. The tables share the title and the columns.
+    pub fn wrapped(&self, counts: &[usize], tail: usize) -> Vec<Schedule> {
+        let body = self.rows.len().saturating_sub(tail);
+        let mut cuts: Vec<(usize, usize)> = Vec::new();
+        let mut at = 0;
+        for n in counts {
+            if at >= body {
+                break;
+            }
+            let end = (at + (*n).max(1)).min(body);
+            cuts.push((at, end));
+            at = end;
+        }
+        if at < body {
+            cuts.push((at, body));
+        }
+        if cuts.is_empty() {
+            cuts.push((0, body));
+        }
+        let last = cuts.len() - 1;
+        cuts.into_iter()
+            .enumerate()
+            .map(|(i, (from, to))| {
+                let mut rows = self.rows[from..to].to_vec();
+                if i == last {
+                    rows.extend(self.rows[body..].iter().cloned());
+                }
+                Schedule {
+                    title: self.title.clone(),
+                    columns: self.columns.clone(),
+                    rows,
+                }
+            })
+            .collect()
+    }
+
+    /// Schedule to Text: the table as tab-delimited text, the title line
+    /// first when `title` is set and the column headings next when `headings`
+    /// is, one line per row.
+    pub fn to_tsv(&self, title: bool, headings: bool) -> String {
+        let mut out = String::new();
+        if title {
+            out.push_str(&self.title);
+            out.push('\n');
+        }
+        let line = |cells: &[String]| {
+            let cells: Vec<String> = cells
+                .iter()
+                .map(|c| c.replace(['\t', '\n', '\r'], " "))
+                .collect();
+            format!("{}\n", cells.join("\t"))
+        };
+        if headings {
+            out.push_str(&line(&self.columns));
+        }
+        for r in &self.rows {
+            out.push_str(&line(r));
+        }
+        out
+    }
+
     /// A Markdown section: `### title` followed by a pipe table.
     pub fn to_markdown(&self) -> String {
         let esc = |s: &str| s.replace('|', "\\|");
@@ -55,6 +150,46 @@ impl Schedule {
         }
         out
     }
+}
+
+/// Where a wrapped schedule breaks: how many items (rows, or columns when
+/// swapped) go into each table. `sizes` is the length of each item along the
+/// wrap direction (a row's height, a column's width), `first` the length the
+/// first table spends before its items (the title and the heading row) and
+/// `rest` what each later table spends (zero when the title and headings are
+/// shown only once). Every table holds at least one item.
+///
+/// `by` is Entries per Table (a fixed count) or Max Table Size (a length).
+pub fn wrap_counts(
+    sizes: &[f64],
+    first: f64,
+    rest: f64,
+    by: plan_core::schedules::WrapBy,
+) -> Vec<usize> {
+    use plan_core::schedules::WrapBy;
+    if sizes.is_empty() {
+        return vec![0];
+    }
+    let mut counts = Vec::new();
+    let mut i = 0;
+    while i < sizes.len() {
+        let overhead = if counts.is_empty() { first } else { rest };
+        let n = match by {
+            WrapBy::Entries(k) => k.max(1).min(sizes.len() - i),
+            WrapBy::MaxSize(max) => {
+                let mut used = overhead;
+                let mut n = 0;
+                while i + n < sizes.len() && (n == 0 || used + sizes[i + n] <= max + 1e-9) {
+                    used += sizes[i + n];
+                    n += 1;
+                }
+                n
+            }
+        };
+        counts.push(n);
+        i += n;
+    }
+    counts
 }
 
 /// Quote a CSV field when needed.
@@ -84,7 +219,14 @@ pub(crate) fn floor_of(project: &Project, floor: usize) -> Option<&Floor> {
 /// Wall ids in reading order of their midpoints, paired with their number
 /// (`WL01`, `WL02`, ...).
 pub(crate) fn wall_numbers(f: &Floor) -> Vec<(&Wall, String)> {
-    let mut walls: Vec<&Wall> = f.walls.iter().collect();
+    // "Include in Schedule" (Wall Specification, Schedule tab): a cleared box
+    // leaves the wall out; the invisible walls generated between platforms
+    // are not drawn walls and are never listed.
+    let mut walls: Vec<&Wall> = f
+        .walls
+        .iter()
+        .filter(|w| w.spec.schedule.include && !w.flags.auto_generated)
+        .collect();
     walls.sort_by_key(|w| (reading_key(w.start.add(w.end).scale(0.5)), w.id));
     walls
         .into_iter()
@@ -99,7 +241,8 @@ pub(crate) fn ordered_openings(f: &Floor, kind: OpeningKind) -> Vec<(&Opening, &
     let mut v: Vec<(&Opening, &Wall, Point)> = f
         .openings
         .iter()
-        .filter(|o| o.kind == kind)
+        // "Include in Schedule" (L-29): a cleared box leaves it out.
+        .filter(|o| o.kind == kind && o.extras.spec.schedule.include)
         .filter_map(|o| {
             let w = f.wall(o.wall_id)?;
             Some((o, w, w.point_at(o.center_offset)))

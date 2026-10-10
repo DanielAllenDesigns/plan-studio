@@ -57,8 +57,16 @@ pub fn nearest_by_color(rgb: [u8; 3]) -> Material {
 
 /// The scene material that stands for `def` in the 3D view.
 pub fn scene_material(def: &MaterialDef) -> Material {
-    if def.transparency >= 0.5 {
+    let surface = def.surface();
+    if surface.transparency >= 0.5 {
         return Material::Glass;
+    }
+    if matches!(
+        def.class,
+        crate::MaterialClass::Mirror | crate::MaterialClass::Metal
+    ) && surface.metallic >= 0.8
+    {
+        return Material::Metal;
     }
     let kind = match &def.texture {
         Texture::Procedural(k) => Some(k),
@@ -122,6 +130,82 @@ pub fn scene_material(def: &MaterialDef) -> Material {
         Some(ProceduralKind::Grass) => Material::Grass,
         Some(ProceduralKind::Tile { .. } | ProceduralKind::Carpet) => Material::Floor,
         _ => nearest_by_color(def.color),
+    }
+}
+
+/// What one click of the Material Painter reaches (the mode buttons of the
+/// Material Painter palette).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PaintMode {
+    /// The clicked surface of the clicked object.
+    Component,
+    /// Every surface of the clicked object.
+    #[default]
+    Object,
+    /// Everything that bounds or stands in the clicked room.
+    Room,
+    /// Everything on the clicked object's floor.
+    Floor,
+    /// Everything in the plan.
+    Plan,
+    /// Mixes the active material into what the surface shows now instead of
+    /// replacing it.
+    BlendColors,
+}
+
+impl PaintMode {
+    pub const ALL: [PaintMode; 6] = [
+        PaintMode::Component,
+        PaintMode::Object,
+        PaintMode::Room,
+        PaintMode::Floor,
+        PaintMode::Plan,
+        PaintMode::BlendColors,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            PaintMode::Component => "Component",
+            PaintMode::Object => "Object",
+            PaintMode::Room => "Room",
+            PaintMode::Floor => "Floor",
+            PaintMode::Plan => "Plan",
+            PaintMode::BlendColors => "Blend Colors",
+        }
+    }
+
+    /// Does the mode reach more than the one clicked object?
+    pub fn is_wide(self) -> bool {
+        matches!(self, PaintMode::Room | PaintMode::Floor | PaintMode::Plan)
+    }
+}
+
+/// Which of the surfaces a mode reaches are painted (the Scope dropdown).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PaintScope {
+    /// All of them.
+    #[default]
+    AllSurfaces,
+    /// Only those that show the same material as the clicked surface.
+    SameMaterial,
+    /// Only those of the clicked object's kind (walls with walls, windows
+    /// with windows).
+    SameType,
+}
+
+impl PaintScope {
+    pub const ALL: [PaintScope; 3] = [
+        PaintScope::AllSurfaces,
+        PaintScope::SameMaterial,
+        PaintScope::SameType,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            PaintScope::AllSurfaces => "All Surfaces",
+            PaintScope::SameMaterial => "Same Material",
+            PaintScope::SameType => "Same Object Type",
+        }
     }
 }
 

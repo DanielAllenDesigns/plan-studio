@@ -286,6 +286,338 @@ fn skylight_on(plane: &RoofPlane, ring: &[V3], normal: V3, spec: SkylightSpec) -
     }
 }
 
+// ===================================================================
+// Skylight shapes, inside hole rim and ceiling hole (RF-43, RF-87)
+// ===================================================================
+
+/// The shape of a skylight's opening (Skylight Specification, General
+/// panel).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum SkylightShape {
+    #[default]
+    Rectangle,
+    /// A circle of the width as diameter.
+    Circle,
+    Ellipse,
+    /// A stadium: two straight sides and half-circle ends.
+    Oval,
+    /// The outline was edited by hand (Edit Skylight Shape): it is whatever
+    /// the polyline says.
+    Custom,
+}
+
+impl SkylightShape {
+    pub const ALL: [SkylightShape; 5] = [
+        SkylightShape::Rectangle,
+        SkylightShape::Circle,
+        SkylightShape::Ellipse,
+        SkylightShape::Oval,
+        SkylightShape::Custom,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SkylightShape::Rectangle => "Rectangle",
+            SkylightShape::Circle => "Circle",
+            SkylightShape::Ellipse => "Ellipse",
+            SkylightShape::Oval => "Oval",
+            SkylightShape::Custom => "Custom",
+        }
+    }
+}
+
+/// Segments in a full circle of a round skylight outline.
+pub const SKYLIGHT_FACETS: usize = 32;
+/// Size of the default skylight, inches (a click without a drag, 2 by 2 ft).
+pub const DEFAULT_SKYLIGHT_SIZE: f64 = 24.0;
+
+/// The plan outline of a skylight of `shape` centred on `center`:
+/// `width` across `across` (a unit plan vector, normally across the slope)
+/// and `length` along its perpendicular, counter-clockwise. A circle is
+/// `width` in diameter. [`SkylightShape::Custom`] has no outline of its own:
+/// an empty list comes back.
+pub fn shape_outline(
+    shape: SkylightShape,
+    center: Point,
+    across: Point,
+    width: f64,
+    length: f64,
+    facets: usize,
+) -> Vec<Point> {
+    let a = if across.length() < 1e-9 {
+        Point::new(1.0, 0.0)
+    } else {
+        across.normalized()
+    };
+    let b = a.perp();
+    let at = |x: f64, y: f64| center.add(a.scale(x)).add(b.scale(y));
+    let (hw, hl) = (width.max(0.0) * 0.5, length.max(0.0) * 0.5);
+    let n = facets.max(8);
+    match shape {
+        SkylightShape::Custom => Vec::new(),
+        _ if hw < 1e-9 || hl < 1e-9 => Vec::new(),
+        SkylightShape::Rectangle => vec![at(-hw, -hl), at(hw, -hl), at(hw, hl), at(-hw, hl)],
+        SkylightShape::Circle => (0..n)
+            .map(|i| {
+                let t = std::f64::consts::TAU * i as f64 / n as f64;
+                at(hw * t.cos(), hw * t.sin())
+            })
+            .collect(),
+        SkylightShape::Ellipse => (0..n)
+            .map(|i| {
+                let t = std::f64::consts::TAU * i as f64 / n as f64;
+                at(hw * t.cos(), hl * t.sin())
+            })
+            .collect(),
+        SkylightShape::Oval => {
+            // Straight sides along b between two half circles of radius hw; an
+            // oval no longer than it is wide is a circle.
+            if hl <= hw {
+                return shape_outline(SkylightShape::Circle, center, a, width, width, facets);
+            }
+            let straight = hl - hw;
+            let half = n / 2;
+            let mut out = Vec::with_capacity(2 * half + 2);
+            for i in 0..=half {
+                let t = std::f64::consts::PI * i as f64 / half as f64;
+                out.push(at(hw * t.cos(), straight + hw * t.sin()));
+            }
+            for i in 0..=half {
+                let t = std::f64::consts::PI * (1.0 + i as f64 / half as f64);
+                out.push(at(hw * t.cos(), -straight + hw * t.sin()));
+            }
+            out
+        }
+    }
+}
+
+/// How the walls inside the opening, from the roof down to the ceiling, are
+/// cut (Skylight Specification, Inside Hole Rim).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum HoleRim {
+    /// Square to the roof surface: the walls along the slope are vertical,
+    /// the head and sill lean with the roof.
+    #[default]
+    Square,
+    /// Every wall vertical.
+    Plumb,
+    /// The sill (low side) is plumb, the head (high side) is square to the
+    /// roof.
+    PlumbSquare,
+}
+
+impl HoleRim {
+    pub const ALL: [HoleRim; 3] = [HoleRim::Square, HoleRim::Plumb, HoleRim::PlumbSquare];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            HoleRim::Square => "Square",
+            HoleRim::Plumb => "Plumb",
+            HoleRim::PlumbSquare => "Plumb/Square",
+        }
+    }
+}
+
+/// What is done to the ceiling under a skylight (Ceiling Hole).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum CeilingHole {
+    /// A hole where the rim meets the ceiling.
+    #[default]
+    Automatic,
+    /// A hole of a polyline the user drew.
+    Manual,
+    /// Do Not Cut: the ceiling stays whole.
+    DoNotCut,
+}
+
+impl CeilingHole {
+    pub const ALL: [CeilingHole; 3] = [
+        CeilingHole::Automatic,
+        CeilingHole::Manual,
+        CeilingHole::DoNotCut,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            CeilingHole::Automatic => "Automatically Generate",
+            CeilingHole::Manual => "Use Manual Polyline",
+            CeilingHole::DoNotCut => "Do Not Cut",
+        }
+    }
+}
+
+/// Skylight settings that go with [`SkylightSpec`]: shape, size, rim and
+/// ceiling hole.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SkylightOptions {
+    pub shape: SkylightShape,
+    /// Size of the opening, inches: across the slope and along it.
+    pub width: f64,
+    pub length: f64,
+    pub rim: HoleRim,
+    pub ceiling_hole: CeilingHole,
+    /// Draw the glass and frame in plan view (Display in Plan View).
+    pub display_in_plan: bool,
+}
+
+impl Default for SkylightOptions {
+    fn default() -> Self {
+        Self {
+            shape: SkylightShape::Rectangle,
+            width: DEFAULT_SKYLIGHT_SIZE,
+            length: DEFAULT_SKYLIGHT_SIZE,
+            rim: HoleRim::Square,
+            ceiling_hole: CeilingHole::Automatic,
+            display_in_plan: true,
+        }
+    }
+}
+
+/// The wall of the opening between the roof and the ceiling, as one quad per
+/// outline edge: the two corners on the roof surface, then the two below.
+pub type RimWall = [V3; 4];
+
+/// The inside walls of an opening `outline` through `plane`, down to the
+/// level `bottom_y` (the ceiling), cut as `rim` says. The first two corners
+/// of each wall are on the roof surface. Empty when the outline does not lie
+/// over the plane or the plane is vertical.
+pub fn rim_walls(
+    plane: &RoofPlane,
+    outline: &[Point],
+    rim: HoleRim,
+    bottom_y: f64,
+) -> Vec<RimWall> {
+    let ring = geom::ccw(outline);
+    if ring.len() < 3 {
+        return Vec::new();
+    }
+    let Some(top) = ring
+        .iter()
+        .map(|&p| plane.height_at(p).map(|y| (p, y)))
+        .collect::<Option<Vec<_>>>()
+    else {
+        return Vec::new();
+    };
+    let bottoms = rim_bottoms(plane, &ring, &top, rim, bottom_y);
+    let n = ring.len();
+    (0..n)
+        .map(|i| {
+            let j = (i + 1) % n;
+            [
+                geom::lift(top[i].0, top[i].1),
+                geom::lift(top[j].0, top[j].1),
+                geom::lift(bottoms[j], bottom_y),
+                geom::lift(bottoms[i], bottom_y),
+            ]
+        })
+        .collect()
+}
+
+/// Plan positions where each rim corner meets the level `bottom_y`.
+fn rim_bottoms(
+    plane: &RoofPlane,
+    ring: &[Point],
+    top: &[(Point, f64)],
+    rim: HoleRim,
+    bottom_y: f64,
+) -> Vec<Point> {
+    // The roof rises toward `up`; a square wall leans back up the slope: it
+    // runs along minus the normal, which has the horizontal part `-up`.
+    let n = plane.normal();
+    let flat = (n[0] * n[0] + n[2] * n[2]).sqrt();
+    let up = if flat < 1e-9 {
+        Point::ZERO
+    } else {
+        // The normal's horizontal part points downhill: roof space has
+        // z = -plan y.
+        Point::new(-n[0] / flat, n[2] / flat)
+    };
+    let centre = plan_core::geometry::polygon_centroid(ring);
+    ring.iter()
+        .zip(top)
+        .map(|(&p, &(_, y))| {
+            let square = match rim {
+                HoleRim::Square => true,
+                HoleRim::Plumb => false,
+                HoleRim::PlumbSquare => p.sub(centre).dot(up) > 1e-6,
+            };
+            if !square || flat < 1e-9 || n[1] < 1e-9 {
+                return p;
+            }
+            // Down the wall by `drop` inches along the inward normal moves
+            // `drop * flat / n_y` sideways, up the slope.
+            let drop = (y - bottom_y).max(0.0);
+            p.add(up.scale(drop * flat / n[1]))
+        })
+        .collect()
+}
+
+/// The outline of the hole in the ceiling under an opening, or `None` when
+/// the ceiling is not cut. Automatic follows the rim down to `ceiling_y`;
+/// Manual takes `manual` (when the polyline has at least three corners, else
+/// it falls back to Automatic).
+pub fn ceiling_hole_outline(
+    plane: &RoofPlane,
+    outline: &[Point],
+    rim: HoleRim,
+    mode: CeilingHole,
+    ceiling_y: f64,
+    manual: Option<&[Point]>,
+) -> Option<Vec<Point>> {
+    match mode {
+        CeilingHole::DoNotCut => None,
+        CeilingHole::Manual if manual.is_some_and(|m| m.len() >= 3) => {
+            manual.map(<[Point]>::to_vec)
+        }
+        _ => {
+            let ring = geom::ccw(outline);
+            let top: Vec<(Point, f64)> = ring
+                .iter()
+                .map(|&p| plane.height_at(p).map(|y| (p, y)))
+                .collect::<Option<_>>()?;
+            (ring.len() >= 3).then(|| rim_bottoms(plane, &ring, &top, rim, ceiling_y))
+        }
+    }
+}
+
+/// Edit Skylight Shape: the outline with corner `index` moved to `to`. The
+/// shape becomes [`SkylightShape::Custom`]. False when `index` is out of
+/// range or the new outline would cross itself.
+pub fn move_shape_corner(
+    outline: &mut [Point],
+    shape: &mut SkylightShape,
+    index: usize,
+    to: Point,
+) -> bool {
+    if index >= outline.len() {
+        return false;
+    }
+    let old = outline[index];
+    outline[index] = to;
+    let n = outline.len();
+    for i in 0..n {
+        for j in (i + 1)..n {
+            if j == i + 1 || (i == 0 && j == n - 1) {
+                continue;
+            }
+            let (a, b, c, d) = (
+                outline[i],
+                outline[(i + 1) % n],
+                outline[j],
+                outline[(j + 1) % n],
+            );
+            let side = |o: Point, u: Point, v: Point| u.sub(o).cross(v.sub(o));
+            if side(a, b, c) * side(a, b, d) < 0.0 && side(c, d, a) * side(c, d, b) < 0.0 {
+                outline[index] = old;
+                return false;
+            }
+        }
+    }
+    *shape = SkylightShape::Custom;
+    true
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -403,5 +735,172 @@ pub(crate) mod tests {
         );
         assert_eq!(r.holes.len(), 1);
         assert_eq!(r.skipped_holes, vec![1, 2]);
+    }
+
+    #[test]
+    fn skylight_shapes_have_the_areas_of_their_shapes() {
+        let c = Point::new(100.0, 100.0);
+        let across = Point::new(1.0, 0.0);
+        let area = |s, w, l| polygon_area(&shape_outline(s, c, across, w, l, 128)).abs();
+        assert!((area(SkylightShape::Rectangle, 24.0, 48.0) - 24.0 * 48.0).abs() < 1e-6);
+        let circle = std::f64::consts::PI * 144.0;
+        assert!((area(SkylightShape::Circle, 24.0, 99.0) - circle).abs() < 0.01 * circle);
+        let ellipse = std::f64::consts::PI * 12.0 * 24.0;
+        assert!((area(SkylightShape::Ellipse, 24.0, 48.0) - ellipse).abs() < 0.01 * ellipse);
+        // A stadium: the rectangle between the half circles plus the circle.
+        let oval = 24.0 * (48.0 - 24.0) + circle;
+        assert!((area(SkylightShape::Oval, 24.0, 48.0) - oval).abs() < 0.01 * oval);
+        // An oval no longer than wide is a circle; Custom has no outline.
+        assert!((area(SkylightShape::Oval, 24.0, 20.0) - circle).abs() < 0.01 * circle);
+        assert!(shape_outline(SkylightShape::Custom, c, across, 24.0, 24.0, 32).is_empty());
+        assert!(shape_outline(SkylightShape::Rectangle, c, across, 0.0, 24.0, 32).is_empty());
+    }
+
+    #[test]
+    fn a_shape_follows_the_across_direction_and_stays_counter_clockwise() {
+        let c = Point::ZERO;
+        for s in [
+            SkylightShape::Rectangle,
+            SkylightShape::Oval,
+            SkylightShape::Ellipse,
+        ] {
+            let o = shape_outline(s, c, Point::new(0.0, 1.0), 20.0, 60.0, 32);
+            assert!(polygon_area(&o) > 0.0, "{s:?}");
+            // Width lies along the given direction (y), length along -x.
+            let (lo, hi) = o
+                .iter()
+                .fold((f64::MAX, f64::MIN), |m, p| (m.0.min(p.x), m.1.max(p.x)));
+            assert!(((hi - lo) - 60.0).abs() < 1e-6, "{s:?} length {}", hi - lo);
+        }
+    }
+
+    fn south() -> RoofPlane {
+        gable_roof_planes()
+            .into_iter()
+            .find(|p| p.source_edge == 0)
+            .unwrap()
+    }
+
+    #[test]
+    fn a_plumb_rim_drops_straight_and_a_square_rim_leans_up_the_slope() {
+        let plane = south();
+        let outline = RoofHole::rect(Point::new(200.0, 60.0), Point::new(260.0, 120.0));
+        let floor_y = 96.0;
+        let plumb = rim_walls(&plane, &outline, HoleRim::Plumb, floor_y);
+        assert_eq!(plumb.len(), 4);
+        for w in &plumb {
+            assert!((w[0][0] - w[3][0]).abs() < 1e-9 && (w[0][2] - w[3][2]).abs() < 1e-9);
+            assert!((w[3][1] - floor_y).abs() < 1e-9 && (w[2][1] - floor_y).abs() < 1e-9);
+        }
+        // Square: each corner drops (roof y - 96) and moves up the slope by
+        // that drop times the pitch (the plane rises toward +y here).
+        let square = rim_walls(&plane, &outline, HoleRim::Square, floor_y);
+        for w in &square {
+            let drop = w[0][1] - floor_y;
+            let dy = -(w[3][2] - w[0][2]);
+            assert!((dy - drop * 8.0 / 12.0).abs() < 1e-6, "{dy} vs {drop}");
+            assert!((w[3][0] - w[0][0]).abs() < 1e-9, "no sideways lean");
+        }
+        // The wall along the slope stays in a vertical plane; head and sill lean.
+        // Plumb/Square: the sill (low side) plumb, the head square.
+        let mixed = rim_walls(&plane, &outline, HoleRim::PlumbSquare, floor_y);
+        let sill = &mixed[0];
+        let head = &mixed[2];
+        assert!((sill[3][2] - sill[0][2]).abs() < 1e-9, "sill is plumb");
+        assert!((head[3][2] - head[0][2]).abs() > 1.0, "head leans");
+    }
+
+    #[test]
+    fn the_ceiling_hole_follows_the_rim_unless_it_is_manual_or_off() {
+        let plane = south();
+        let outline = RoofHole::rect(Point::new(200.0, 60.0), Point::new(260.0, 120.0));
+        let auto = |rim| {
+            ceiling_hole_outline(&plane, &outline, rim, CeilingHole::Automatic, 96.0, None).unwrap()
+        };
+        // Plumb: the hole is the opening itself.
+        let plumb = auto(HoleRim::Plumb);
+        assert!((polygon_area(&plumb).abs() - 3600.0).abs() < 1e-6);
+        // Square: each corner moves up the slope by its drop times the pitch.
+        // The head is 40 inches higher than the sill, so it moves 40 * 8/12
+        // further: the hole is that much longer.
+        let square = auto(HoleRim::Square);
+        let longer = 60.0 + 40.0 * 8.0 / 12.0;
+        assert!((polygon_area(&square).abs() - 60.0 * longer).abs() < 1e-6);
+        let shift: Vec<f64> = (0..4)
+            .map(|i| {
+                let plan_y = geom::ccw(&outline)[i].y;
+                let q = square[i];
+                assert!((q.x - geom::ccw(&outline)[i].x).abs() < 1e-9);
+                let roof = plane.height_at(Point::new(q.x, plan_y)).unwrap();
+                (q.y - plan_y) - (roof - 96.0) * 8.0 / 12.0
+            })
+            .collect();
+        assert!(shift.iter().all(|d| d.abs() < 1e-6), "{shift:?}");
+        let manual = [
+            Point::new(0.0, 0.0),
+            Point::new(40.0, 0.0),
+            Point::new(0.0, 40.0),
+        ];
+        let got = ceiling_hole_outline(
+            &plane,
+            &outline,
+            HoleRim::Square,
+            CeilingHole::Manual,
+            96.0,
+            Some(&manual),
+        );
+        assert_eq!(got.as_deref(), Some(&manual[..]));
+        // A manual hole with no polyline falls back to the automatic one.
+        let fallback = ceiling_hole_outline(
+            &plane,
+            &outline,
+            HoleRim::Plumb,
+            CeilingHole::Manual,
+            96.0,
+            None,
+        );
+        assert_eq!(fallback.unwrap().len(), 4);
+        assert!(ceiling_hole_outline(
+            &plane,
+            &outline,
+            HoleRim::Square,
+            CeilingHole::DoNotCut,
+            96.0,
+            None
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn editing_the_shape_makes_it_custom_and_refuses_a_crossing_outline() {
+        let mut outline = shape_outline(
+            SkylightShape::Rectangle,
+            Point::new(100.0, 100.0),
+            Point::new(1.0, 0.0),
+            24.0,
+            24.0,
+            32,
+        );
+        let mut shape = SkylightShape::Rectangle;
+        assert!(move_shape_corner(
+            &mut outline,
+            &mut shape,
+            2,
+            Point::new(150.0, 150.0)
+        ));
+        assert_eq!(shape, SkylightShape::Custom);
+        assert_eq!(outline[2], Point::new(150.0, 150.0));
+        // Dragging a corner across the opposite side would cross the outline.
+        let mut shape = SkylightShape::Rectangle;
+        let before = outline.clone();
+        assert!(!move_shape_corner(
+            &mut outline,
+            &mut shape,
+            0,
+            Point::new(200.0, 140.0)
+        ));
+        assert_eq!(outline, before);
+        assert_eq!(shape, SkylightShape::Rectangle);
+        assert!(!move_shape_corner(&mut outline, &mut shape, 9, Point::ZERO));
     }
 }

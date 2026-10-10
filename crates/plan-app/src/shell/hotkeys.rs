@@ -394,6 +394,8 @@ pub struct HotkeyMap {
     commands: Vec<Command>,
     bindings: Bindings,
     defaults: Bindings,
+    /// Chief's own defaults and Plan Studio's extras, without Daniel's file.
+    chief: Bindings,
     index: HashMap<Vec<Chord>, Action>,
     prefixes: HashSet<Vec<Chord>>,
     unmapped: Vec<UnmappedBinding>,
@@ -545,6 +547,8 @@ impl HotkeyMap {
             }
         }
 
+        let chief = bindings.clone();
+
         // Daniel's bindings.
         let cfg = load_daniel_config();
         let mut daniel: Bindings = BTreeMap::new();
@@ -628,6 +632,7 @@ impl HotkeyMap {
         let mut map = HotkeyMap {
             commands,
             defaults: bindings.clone(),
+            chief,
             bindings,
             index: HashMap::new(),
             prefixes: HashSet::new(),
@@ -857,6 +862,180 @@ impl HotkeyMap {
     pub fn reset(&mut self) {
         self.bindings = self.defaults.clone();
         self.rebuild();
+    }
+
+    /// Back to Chief's own defaults (and Plan Studio's extra keys), dropping
+    /// Daniel's `UserHotkeys.xml` as well as every user edit.
+    pub fn reset_to_chief_defaults(&mut self) {
+        self.bindings = self.chief.clone();
+        self.rebuild();
+    }
+
+    /// Is the map exactly what Reset gives (Chief's defaults plus Daniel's file)?
+    pub fn is_default(&self) -> bool {
+        self.bindings == self.defaults
+    }
+
+    /// Sequences that are different here but land on the same key where
+    /// Control and Command are one key (Windows, Linux). On the Mac a
+    /// sequence with Control+K and one with Command+K are two keys; folded
+    /// ([`Chord::normalized`] for the other platforms) they are one. Each
+    /// entry is the folded sequence, as it will read there, with the commands
+    /// that would share it (or start each other's sequences).
+    pub fn folded_collisions(&self) -> Vec<FoldedCollision> {
+        let fold = |c: &Chord| {
+            let (ctrl, meta) = platform_modifiers(c.ctrl, c.meta, false);
+            Chord { ctrl, meta, ..*c }
+        };
+        let mut folded: Vec<(Vec<Chord>, &str, &Vec<Chord>)> = Vec::new();
+        for c in &self.commands {
+            for seq in self.sequences(&c.name) {
+                folded.push((seq.iter().map(fold).collect(), c.name.as_str(), seq));
+            }
+        }
+        let mut out: Vec<FoldedCollision> = Vec::new();
+        for (i, (fa, na, oa)) in folded.iter().enumerate() {
+            for (fb, nb, ob) in folded.iter().skip(i + 1) {
+                // Same folded keys from sequences that differ as typed here.
+                // Folded they clash, typed here they do not.
+                let clash = (fa.starts_with(fb) || fb.starts_with(fa))
+                    && !(oa.starts_with(ob) || ob.starts_with(oa));
+                if !clash || na == nb {
+                    continue;
+                }
+                let short = if fa.len() <= fb.len() { fa } else { fb };
+                let label = label_for_platform(&sequence_label(short), false);
+                let mut names = vec![na.to_string(), nb.to_string()];
+                names.sort();
+                if !out
+                    .iter()
+                    .any(|f| f.sequence == label && f.commands == names)
+                {
+                    let mut owners = vec![
+                        (na.to_string(), (*oa).clone()),
+                        (nb.to_string(), (*ob).clone()),
+                    ];
+                    owners.sort_by(|a, b| a.0.cmp(&b.0));
+                    out.push(FoldedCollision {
+                        sequence: label,
+                        commands: names,
+                        owners,
+                    });
+                }
+            }
+        }
+        out.sort_by(|a, b| {
+            a.sequence
+                .cmp(&b.sequence)
+                .then(a.commands.cmp(&b.commands))
+        });
+        out
+    }
+
+    /// The map as a Chief `UserHotkeys.xml`, and what could not be carried.
+    ///
+    /// Chief's file lists every command by number and holds one key sequence
+    /// per command. The rows are Daniel's own file's (so the commands Plan
+    /// Studio does not have yet keep their keys): each id whose name is a
+    /// Plan Studio command takes that command's first sequence here (empty
+    /// when it has none), every other id keeps the key it has in the file.
+    pub fn to_chief_xml(&self) -> (String, ExportStats) {
+        let cfg = load_daniel_config();
+        let mut stats = ExportStats::default();
+        let mut rows = Vec::new();
+        let mut written: HashSet<&str> = HashSet::new();
+        let catalog = plan_config::daniel_catalog(&cfg.toolbars);
+        for id in &cfg.hotkeys.command_ids {
+            let bound = cfg.hotkeys.bindings.iter().find(|b| &b.command_id == id);
+            let name = catalog
+                .name_for_id(id)
+                .map(|(n, _)| n.to_string())
+                .or_else(|| bound.and_then(|b| b.command_name.clone()));
+            let ours = name
+                .as_deref()
+                .and_then(|n| self.command(n))
+                .map(|c| c.name.as_str());
+            let keys = match ours {
+                Some(n) if written.insert(n) => {
+                    let seqs = self.sequences(n);
+                    if seqs.len() > 1 {
+                        stats.extra_sequences += seqs.len() - 1;
+                    }
+                    stats.commands += 1;
+                    seqs.first()
+                        .map(|s| s.iter().map(|c| c.to_config()).collect::<Vec<KeyChord>>())
+                        .unwrap_or_default()
+                }
+                // A second id of a command already written has no key.
+                Some(_) => Vec::new(),
+                None => {
+                    stats.kept += 1;
+                    bound.map(|b| b.keys.clone()).unwrap_or_default()
+                }
+            };
+            rows.push(plan_config::ExportRow {
+                id: id.clone(),
+                keys,
+            });
+        }
+        for c in &self.commands {
+            if !self.sequences(&c.name).is_empty() && !written.contains(c.name.as_str()) {
+                stats.without_id.push(c.name.clone());
+            }
+        }
+        let text = plan_config::write_hotkeys_xml(
+            cfg.hotkeys.product.as_deref(),
+            cfg.hotkeys.product_version.as_deref(),
+            cfg.hotkeys.file_version.as_deref(),
+            &rows,
+        );
+        (text, stats)
+    }
+}
+
+/// Two or more commands whose keys are one key on the other platforms.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FoldedCollision {
+    /// The shared sequence as it reads without a Command key.
+    pub sequence: String,
+    pub commands: Vec<String>,
+    /// Each command with the sequence it has here, which folds onto the
+    /// shared one.
+    pub owners: Vec<(String, Vec<Chord>)>,
+}
+
+impl FoldedCollision {
+    /// How each owner's sequence reads on this platform.
+    pub fn as_typed(&self) -> Vec<String> {
+        self.owners
+            .iter()
+            .map(|(_, seq)| sequence_label(seq))
+            .collect()
+    }
+}
+
+/// What [`HotkeyMap::to_chief_xml`] wrote.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ExportStats {
+    /// Plan Studio commands written under their Chief id.
+    pub commands: usize,
+    /// Ids that kept the key the file had (no Plan Studio command).
+    pub kept: usize,
+    /// Sequences beyond a command's first: Chief keeps one per command.
+    pub extra_sequences: usize,
+    /// Commands with keys that have no Chief id, so are not in the file.
+    pub without_id: Vec<String>,
+}
+
+impl ExportStats {
+    pub fn summary(&self) -> String {
+        format!(
+            "Wrote {} commands ({} kept as Daniel's file has them); {} extra sequences and {} Plan Studio-only commands are not in Chief's file",
+            self.commands,
+            self.kept,
+            self.extra_sequences,
+            self.without_id.len()
+        )
     }
 }
 

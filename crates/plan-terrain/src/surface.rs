@@ -133,7 +133,7 @@ pub fn build_terrain_with_progress(
         return TerrainSurface::default();
     }
     let (lo, hi) = bounds(&perimeter).expect("perimeter is non-empty");
-    let requested = t.grid_spacing / f64::from(t.subdivision.max(1));
+    let requested = t.effective_grid_spacing();
     let spacing = sanitize_spacing(requested, hi.x - lo.x, hi.y - lo.y);
     let model = ElevationModel::new(t, spacing);
 
@@ -157,12 +157,18 @@ pub fn build_terrain_with_progress(
     let triangles = triangulate(&samples);
     progress(BuildStage::Clipping, 0.7);
 
-    let holes: Vec<&[Point]> = t
+    let mut holes: Vec<&[Point]> = t
         .features
         .iter()
         .filter(|f| f.kind == FeatureKind::Hole)
         .map(|f| f.polygon.as_slice())
         .collect();
+    // Hide Terrain Intersected by Building: no surface inside the footprint.
+    if t.hide_under_building {
+        if let Some(pad) = t.building_pad.as_ref().filter(|p| p.footprint.len() >= 3) {
+            holes.push(pad.footprint.as_slice());
+        }
+    }
     let kept: Vec<[usize; 3]> = triangles
         .into_iter()
         .filter(|tri| {
@@ -212,9 +218,9 @@ pub fn build_terrain_with_progress(
         })
         .collect();
     progress(BuildStage::Smoothing, 0.9);
-    smooth(&mut vertices, &tris, t.smoothing, &on_break);
+    smooth(&mut vertices, &tris, t.effective_smoothing(), &on_break);
     let mut surface = TerrainSurface::new(vertices, tris, grid);
-    if t.smoothing > 0 {
+    if t.effective_smoothing() > 0 {
         // Keep the exported grid consistent with the smoothed surface where it has data.
         let mut grid = std::mem::take(&mut surface.grid);
         for j in 0..grid.ny {
@@ -256,8 +262,17 @@ fn collect_samples(
     for line in &t.elevation_lines {
         add_if_on_lot(&mut set, densify(&line.points, half, false));
     }
-    for region in &t.elevation_regions {
+    for (i, region) in t.elevation_regions.iter().enumerate() {
         add_if_on_lot(&mut set, densify(&region.polygon, half, true));
+        let ex = t.extras(crate::spec::ObjectKey::Region(i));
+        if ex.interior_open && ex.tangent_to_edge {
+            for d in crate::elevation::TANGENT_RINGS {
+                add_if_on_lot(
+                    &mut set,
+                    densify(&offset_polygon(&region.polygon, -d), half, true),
+                );
+            }
+        }
     }
     for m in &t.modifiers {
         add_if_on_lot(&mut set, densify(&m.polygon, half, true));
@@ -275,6 +290,12 @@ fn collect_samples(
     }
     for f in t.features.iter().filter(|f| f.kind == FeatureKind::Hole) {
         add_if_on_lot(&mut set, densify(&f.polygon, half, true));
+    }
+    // The footprint hidden under the building is a hole with conforming edges.
+    if t.hide_under_building {
+        if let Some(pad) = t.building_pad.as_ref().filter(|p| p.footprint.len() >= 3) {
+            add_if_on_lot(&mut set, densify(&pad.footprint, half, true));
+        }
     }
     for brk in &t.breaks {
         add_if_on_lot(&mut set, densify(&brk.points, break_step(spacing), false));
@@ -307,11 +328,14 @@ fn collect_samples(
             }
         }
     }
-    for j in 0..grid.ny {
-        for i in 0..grid.nx {
-            let p = grid.node(i, j);
-            if point_in_polygon(p, perimeter) {
-                set.insert(p);
+    // Linear smoothing triangulates the data points alone (no resampled grid).
+    if t.smoothing_level != crate::spec::SmoothingLevel::Linear {
+        for j in 0..grid.ny {
+            for i in 0..grid.nx {
+                let p = grid.node(i, j);
+                if point_in_polygon(p, perimeter) {
+                    set.insert(p);
+                }
             }
         }
     }

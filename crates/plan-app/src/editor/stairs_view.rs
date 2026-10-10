@@ -20,11 +20,23 @@ use plan_core::foundation::{FoundationLayer, PlatformHole};
 use plan_core::geometry::{point_in_polygon, polygon_area, polygon_centroid, Point};
 use plan_core::{detect_rooms, Floor, Id, Project, Wall, WallKind};
 use plan_stairs::{
-    footprint, plan_symbol, solve, top_point, SideKind, Stair, StairParams, StairShape,
-    StairSolution, Stroke as PlanStroke, Turn,
+    footprint, plan_symbol, solve, top_point, DisplayRule, SideKind, Stair, StairParams,
+    StairShape, StairSolution, Starter, Stroke as PlanStroke, Turn, ViewMode,
 };
 use serde_json::{json, Value};
 use std::f64::consts::FRAC_PI_2;
+
+mod down;
+mod modes;
+mod posts;
+
+#[allow(unused_imports)]
+pub use down::{build_down, build_to_deck, terrain_drop, DECK_PICK_TOL, DEFAULT_DROP};
+pub use modes::{
+    complete_break, disconnect, edit_mode, has_arc, set_edit_mode, straight_family, EditMode,
+    MAX_FLARE,
+};
+pub use posts::{library_posts, part_meshes, PostKind};
 
 /// The layer stairs live on.
 pub const LAYER: &str = "Stairs";
@@ -92,10 +104,15 @@ pub enum StairKind {
     Spiral,
     Landing,
     Ramp,
+    /// Curved Ramp: click the centre, drag to the walking radius.
+    CurvedRamp,
+    /// Stairs to Deck: click a deck (or any room); stairs leave the nearest
+    /// edge and run down to the terrain.
+    ToDeck,
 }
 
 impl StairKind {
-    pub const ALL: [StairKind; 11] = [
+    pub const ALL: [StairKind; 13] = [
         StairKind::Draw,
         StairKind::Click,
         StairKind::Straight,
@@ -107,6 +124,8 @@ impl StairKind {
         StairKind::Spiral,
         StairKind::Landing,
         StairKind::Ramp,
+        StairKind::CurvedRamp,
+        StairKind::ToDeck,
     ];
 
     /// Chief's name (the flyout entry).
@@ -123,6 +142,8 @@ impl StairKind {
             StairKind::Spiral => "Spiral Stairs",
             StairKind::Landing => "Landing",
             StairKind::Ramp => "Draw Ramp",
+            StairKind::CurvedRamp => "Curved Ramp",
+            StairKind::ToDeck => "Stairs to Deck",
         }
     }
 
@@ -134,7 +155,7 @@ impl StairKind {
     pub fn hint(self) -> &'static str {
         match self {
             StairKind::Draw => {
-                "Draw Stairs: drag from the bottom of the run to the top; click places a default stair"
+                "Draw Stairs: drag from the bottom of the run to the top; Alt or right-drag draws downward (DN); Ctrl/Cmd skips snapping"
             }
             StairKind::Click => {
                 "Click Stairs: click to place a straight stair of default length toward the pointer"
@@ -148,14 +169,20 @@ impl StairKind {
             StairKind::Landing => {
                 "Landing: drag a rectangle, or click the corners and double-click the last; double-click alone places a 3' square"
             }
-            StairKind::Ramp => "Draw Ramp: drag the run; click places a 1:12 ramp",
+            StairKind::Ramp => "Draw Ramp: drag the run; click places a 1:12 ramp. Alt (or right-drag) draws it downward",
+            StairKind::CurvedRamp => {
+                "Curved Ramp: click the centre, drag to the walking radius (a click draws a 5' radius); Tab flips the turn"
+            }
+            StairKind::ToDeck => {
+                "Stairs to Deck: click a deck or room; stairs leave its nearest edge and run down to the terrain"
+            }
             StairKind::LShaped | StairKind::UShaped => {
                 "Drag the first flight in the direction of travel; Tab flips the turn"
             }
             StairKind::CurveLeft | StairKind::CurveRight => {
                 "Drag the direction of travel; click places a default curved (winder) stair"
             }
-            StairKind::Straight => "Straight Stairs: click to place, or drag to set direction and run",
+            StairKind::Straight => "Straight Stairs: click to place, or drag to set direction and run; Alt reverses the direction (DN)",
         }
     }
 }
@@ -664,12 +691,18 @@ pub fn build(
         width: DEFAULT_WIDTH,
         ..StairParams::default()
     };
+    // A new stair starts at the plan's code minimums (editor::code).
+    super::code::legalize_stair_params(&mut params);
     let mut direction = drag.map_or(FRAC_PI_2, |b| b.sub(a).angle());
     let run = drag.map(|b| a.dist(b));
     let mut anchor = a;
 
     match kind {
-        StairKind::Draw | StairKind::Click | StairKind::Straight | StairKind::Landing => {
+        StairKind::Draw
+        | StairKind::Click
+        | StairKind::Straight
+        | StairKind::Landing
+        | StairKind::ToDeck => {
             if let Some(l) = run {
                 let treads = solve(&params).treads;
                 if treads > 0 {
@@ -747,6 +780,29 @@ pub fn build(
             params.shape = StairShape::Ramp {
                 slope_1_in: slope.max(1.0),
             };
+            // A ramp has a handrail on both sides.
+            params.handrail = true;
+            extras.break_line = false;
+            extras.show_risers = false;
+        }
+        StairKind::CurvedRamp => {
+            // `a` is the centre; the ramp starts at `b` on the walking line
+            // (60" below the centre when only clicked), like Curved Stairs.
+            let start = b
+                .filter(|b| a.dist(*b) > 1e-6)
+                .unwrap_or_else(|| Point::new(a.x, a.y - DEFAULT_CURVE_RADIUS));
+            let walk = a.dist(start).max(1.0);
+            let phi = (start - a).angle();
+            params.total_rise = rise.min(RAMP_RISE);
+            params.turn = turn;
+            params.shape = StairShape::Ramp { slope_1_in: 12.0 };
+            params.ramp_curve = Some((walk - params.width / 2.0).max(0.0));
+            params.handrail = true;
+            direction = match turn {
+                Turn::Left => phi + FRAC_PI_2,
+                Turn::Right => phi - FRAC_PI_2,
+            };
+            anchor = start;
             extras.break_line = false;
             extras.show_risers = false;
         }
@@ -837,7 +893,14 @@ pub fn connect(project: &mut Project, fl: usize, id: Id) -> usize {
     // ... and a stair that starts on it begins there.
     for (stair, landing, _) in joints.iter().filter(|j| j.2 == Joint::Bottom) {
         let h = find(&project.floors[fl], landing.id()).map_or(0.0, |l| l.landing_height());
-        let rest = story - h;
+        // The stair keeps its top where it was (the next floor, for a stair
+        // drawn from the floor), so joining twice changes nothing.
+        let top = if stair.top_height() > h {
+            stair.top_height()
+        } else {
+            story
+        };
+        let rest = top - h;
         if rest > plan_stairs::MIN_RISER {
             update(project, fl, stair.id(), |s| {
                 s.stair.base = h;
@@ -898,6 +961,21 @@ pub enum StairHandleKind {
     WidthRight,
     /// Move corner `i` of a polygon landing's outline.
     Corner(usize),
+    /// Resize a curved stair from its inside edge.
+    InnerRadius,
+    /// Resize a curved stair from its outside edge.
+    OuterRadius,
+    /// Flare/Curve mode: corner `i` of the flare (bottom left, bottom right,
+    /// top left, top right).
+    Flare(u8),
+    /// Flare/Curve mode: where the flare starts.
+    FlareStart,
+    /// Flare/Curve mode: how much the start of the flare is rounded.
+    FlareSoften,
+    /// Flare/Curve mode: curve every tread of the section.
+    CurveAll,
+    /// Starter Tread mode: one or two starter treads.
+    Starter,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -910,6 +988,10 @@ pub struct StairHandle {
 /// The handles of a selected stair; `px_per_in` keeps the rotate handle a
 /// fixed number of pixels behind the bottom.
 pub fn handles(obj: &StairObj, px_per_in: f64) -> Vec<StairHandle> {
+    let mode = edit_mode(obj.id());
+    if mode != EditMode::Normal && straight_family(obj) {
+        return modes::mode_handles(obj, mode);
+    }
     let o = obj.stair.origin;
     let (along, right) = (obj.along(), obj.right());
     let w = obj.stair.params.width;
@@ -947,6 +1029,16 @@ pub fn handles(obj: &StairObj, px_per_in: f64) -> Vec<StairHandle> {
         pos: obj.bottom_center() - along * rotate_off,
         cursor: CursorIcon::Grab,
     });
+    // A curved stair or ramp is resized from its edges' radii.
+    if has_arc(obj) {
+        out.retain(|h| {
+            !matches!(
+                h.kind,
+                StairHandleKind::WidthLeft | StairHandleKind::WidthRight
+            )
+        });
+        out.extend(modes::radius_handles(obj));
+    }
     // A polygon landing moves, and each corner of its outline reshapes it.
     if obj.is_polygon_landing() {
         out.retain(|h| h.kind == StairHandleKind::Move);
@@ -980,6 +1072,13 @@ pub fn editor_handles(obj: &StairObj, px_per_in: f64) -> Vec<Handle> {
                 StairHandleKind::Run | StairHandleKind::WidthRight => HandleKind::ResizeEnd,
                 StairHandleKind::WidthLeft => HandleKind::ResizeStart,
                 StairHandleKind::Corner(i) => HandleKind::Reshape(i),
+                StairHandleKind::InnerRadius => HandleKind::ResizeStart,
+                StairHandleKind::OuterRadius => HandleKind::ResizeEnd,
+                StairHandleKind::Flare(i) => HandleKind::Reshape(usize::from(i)),
+                StairHandleKind::FlareStart
+                | StairHandleKind::FlareSoften
+                | StairHandleKind::CurveAll
+                | StairHandleKind::Starter => HandleKind::ResizeEnd,
             },
             pos: h.pos,
             cursor: h.cursor,
@@ -996,6 +1095,7 @@ pub fn drag_label(kind: StairHandleKind) -> &'static str {
         StairHandleKind::Run => "Resize Stair Run",
         StairHandleKind::WidthLeft | StairHandleKind::WidthRight => "Resize Stair Width",
         StairHandleKind::Corner(_) => "Reshape Landing",
+        k => modes::label(k).unwrap_or("Edit Stairs"),
     }
 }
 
@@ -1056,6 +1156,7 @@ pub fn drag_handle(orig: &StairObj, kind: StairHandleKind, start: Point, to: Poi
                 reshape_polygon_landing(&mut o);
             }
         }
+        k => modes::drag(&mut o, orig, k, start, to),
     }
     o
 }
@@ -1228,35 +1329,64 @@ fn keep_run(o: &mut StairObj, run: f64, was: u32, now: u32) {
 pub enum StairCommand {
     /// CB-29, CB-30.
     AutoStairwell,
-    /// Flare/Curve Stairs (CB-26): toggles the stair to winders and back.
+    /// Flare/Curve Stairs (CB-26, CB-144..CB-147): an edit mode with corner
+    /// flare handles and the tread curve; run again to leave it.
     FlareCurve,
+    /// Starter Tread (CB-26): an edit mode for one or two rounded starter
+    /// treads; run again to leave it.
+    StarterTread,
     /// Add/Remove Stair Breakline (CB-22).
     ToggleBreakLine,
     /// Make Railing (CB-31): a railing on both sides of the stair.
     MakeRailing,
+    /// Complete Break (CB-133): a flight divided into two sections with a
+    /// landing between them.
+    CompleteBreak,
+    /// Disconnect Selected Subsection (CB-133): an L or U stair as separate
+    /// sections.
+    DisconnectSubsection,
 }
 
 impl StairCommand {
-    pub const ALL: [StairCommand; 4] = [
+    pub const ALL: [StairCommand; 7] = [
         StairCommand::AutoStairwell,
         StairCommand::FlareCurve,
+        StairCommand::StarterTread,
         StairCommand::ToggleBreakLine,
         StairCommand::MakeRailing,
+        StairCommand::CompleteBreak,
+        StairCommand::DisconnectSubsection,
     ];
 
     pub fn label(self) -> &'static str {
         match self {
             StairCommand::AutoStairwell => "Auto Stairwell",
             StairCommand::FlareCurve => "Flare/Curve Stairs",
+            StairCommand::StarterTread => "Starter Tread",
             StairCommand::ToggleBreakLine => "Add/Remove Stair Breakline",
             StairCommand::MakeRailing => "Make Railing",
+            StairCommand::CompleteBreak => "Complete Break",
+            StairCommand::DisconnectSubsection => "Disconnect Subsection",
+        }
+    }
+
+    /// The command id the Edit toolbar and the dispatcher use.
+    pub fn id(self) -> &'static str {
+        match self {
+            StairCommand::AutoStairwell => "stair.auto_stairwell",
+            StairCommand::FlareCurve => "stair.flare_curve",
+            StairCommand::StarterTread => "stair.starter_tread",
+            StairCommand::ToggleBreakLine => "stair.breakline",
+            StairCommand::MakeRailing => "stair.railing",
+            StairCommand::CompleteBreak => "stair.complete_break",
+            StairCommand::DisconnectSubsection => "stair.disconnect_subsection",
         }
     }
 
     /// An icon id from `icons.rs`, when one fits.
     pub fn icon(self) -> Option<&'static str> {
         match self {
-            StairCommand::FlareCurve => Some("stairs_curved"),
+            StairCommand::FlareCurve | StairCommand::StarterTread => Some("stairs_curved"),
             StairCommand::MakeRailing => Some("railing"),
             _ => Some("stairs"),
         }
@@ -1285,8 +1415,16 @@ pub fn edit_commands(cx: &EditorContext) -> Vec<(StairCommand, bool)> {
                 StairCommand::AutoStairwell => {
                     !o.is_landing() && cx.floor + 1 < cx.project.floors.len()
                 }
-                StairCommand::FlareCurve | StairCommand::ToggleBreakLine => stepped,
+                StairCommand::ToggleBreakLine => stepped,
+                StairCommand::FlareCurve | StairCommand::StarterTread => straight_family(&o),
                 StairCommand::MakeRailing => !o.is_landing(),
+                StairCommand::CompleteBreak => {
+                    o.stair.params.shape == StairShape::Straight && o.solution().risers >= 4
+                }
+                StairCommand::DisconnectSubsection => matches!(
+                    o.stair.params.shape,
+                    StairShape::LShaped { .. } | StairShape::UShaped { .. }
+                ),
             };
             (c, on)
         })
@@ -1315,25 +1453,28 @@ pub fn run_command(cx: &mut EditorContext, cmd: StairCommand) -> bool {
                 false
             }
         },
-        StairCommand::FlareCurve => {
-            if obj.is_landing() || obj.is_ramp() {
-                cx.status = "Flare/Curve applies to stepped stairs".into();
+        StairCommand::FlareCurve | StairCommand::StarterTread => {
+            if !straight_family(&obj) {
+                cx.status = format!("{} applies to straight stairs", cmd.label());
                 return false;
             }
-            cx.begin_change("Flare/Curve Stairs");
-            let risers = obj.solution().risers;
-            update(&mut cx.project, fl, id, |o| {
-                o.stair.params.shape = match o.stair.params.shape {
-                    StairShape::Winder { .. } => StairShape::LShaped {
-                        treads_before_landing: risers.saturating_sub(2) / 2,
-                    },
-                    StairShape::Curved { .. } => StairShape::Straight,
-                    _ => StairShape::Winder { winders: 3 },
-                };
-            });
-            cx.mark_dirty();
-            cx.status = "Flare/Curve Stairs: toggled winders".into();
-            true
+            let want = if cmd == StairCommand::FlareCurve {
+                EditMode::FlareCurve
+            } else {
+                EditMode::StarterTread
+            };
+            if edit_mode(id) == want {
+                set_edit_mode(id, EditMode::Normal);
+                cx.status = format!("{}: done", cmd.label());
+            } else {
+                set_edit_mode(id, want);
+                cx.status = match want {
+                    EditMode::FlareCurve => "Flare/Curve Stairs: drag a corner handle out to flare the stair, the start and softening handles along its edge, and the bottom handle to curve the treads; run the command again to leave",
+                    _ => "Starter Tread: click the handle at the bottom tread to go round none, one and two starter treads, or drag it down the stair; run the command again to leave",
+                }
+                .into();
+            }
+            false
         }
         StairCommand::ToggleBreakLine => {
             if obj.is_landing() || obj.is_ramp() {
@@ -1356,6 +1497,23 @@ pub fn run_command(cx: &mut EditorContext, cmd: StairCommand) -> bool {
             cx.mark_dirty();
             cx.status = "Make Railing: railings with newels and balusters on both sides".into();
             true
+        }
+        StairCommand::CompleteBreak | StairCommand::DisconnectSubsection => {
+            let done = if cmd == StairCommand::CompleteBreak {
+                complete_break(cx, id)
+            } else {
+                disconnect(cx, id)
+            };
+            match done {
+                Ok(s) => {
+                    cx.status = s;
+                    true
+                }
+                Err(e) => {
+                    cx.status = e;
+                    false
+                }
+            }
         }
     }
 }
@@ -1697,8 +1855,8 @@ pub fn symbol_strokes(o: &StairObj) -> Vec<PlanStroke> {
         // Chief's label: "UP 15R @ 7 3/4"".
         for s in &mut out {
             if let PlanStroke::Text { text, .. } = s {
-                if text == "UP" {
-                    *text = format!("UP {}", riser_label(o));
+                if text == "UP" || text == "DN" {
+                    *text = format!("{text} {}", riser_label(o));
                 }
             }
         }
@@ -1740,6 +1898,12 @@ pub fn hidden_strokes(o: &StairObj) -> Vec<PlanStroke> {
     if o.is_landing() || o.is_ramp() || !o.x.break_line {
         return Vec::new();
     }
+    // Current Floor Display (Plan Display panel): the part beyond the break.
+    match o.stair.params.plan.beyond_view {
+        ViewMode::Nothing => return Vec::new(),
+        ViewMode::Outline => return vec![PlanStroke::Polyline(footprint(&o.stair), true)],
+        ViewMode::Normal => {}
+    }
     let full = plan_symbol(&o.stair, None);
     let lower = plan_symbol(&o.stair, Some(break_fraction(o)));
     full.into_iter()
@@ -1756,7 +1920,8 @@ pub fn hidden_strokes(o: &StairObj) -> Vec<PlanStroke> {
 /// the break line (the treads the lower floor's symbol leaves out), the
 /// outline and a "DN" arrow pointing back down (CB-33).
 pub fn upper_strokes(o: &StairObj) -> Vec<PlanStroke> {
-    if o.is_landing() {
+    // Display on Floor Above: Never keeps the stair off the floor above.
+    if o.is_landing() || o.stair.params.plan.floor_above == DisplayRule::Never {
         return Vec::new();
     }
     let full = plan_symbol(&o.stair, None);
@@ -1807,6 +1972,63 @@ pub fn upper_strokes(o: &StairObj) -> Vec<PlanStroke> {
         });
     }
     out
+}
+
+/// Does the stair open into the floor above it: it owns a stairwell hole in
+/// that floor's platform, or the middle of its footprint lies in a room of
+/// that floor that has no floor under it (an Open Below room)? `fl` is the
+/// stair's own floor.
+pub fn open_to_floor_above(project: &Project, fl: usize, o: &StairObj) -> bool {
+    if o.is_landing() || o.is_ramp() {
+        return false;
+    }
+    // Display on Floor Above (Plan Display panel): Always and Never override
+    // the automatic rule.
+    match o.stair.params.plan.floor_above {
+        DisplayRule::Always => return true,
+        DisplayRule::Never => return false,
+        DisplayRule::Automatic => {}
+    }
+    if o.x.stairwell_hole.is_some() {
+        return true;
+    }
+    let Some(above) = project.floors.get(fl + 1) else {
+        return false;
+    };
+    if above.room_names.iter().all(|n| n.has_floor) {
+        return false;
+    }
+    let centre = polygon_centroid(&o.footprint());
+    detect_rooms(&above.walls, 0.5).iter().any(|r| {
+        point_in_polygon(centre, &r.polygon)
+            && above
+                .room_names
+                .iter()
+                .any(|n| !n.has_floor && point_in_polygon(n.anchor, &r.polygon))
+    })
+}
+
+/// The treads a floor above sees through the opening the stair rises into
+/// (a stairwell hole or an Open Below room): the lines of the lower floor's
+/// symbol, up to the break line. [`draw_stairs`] draws them dashed and
+/// fainter than the part beyond the break (CB-33). Empty for landings and
+/// ramps.
+pub fn well_strokes(o: &StairObj) -> Vec<PlanStroke> {
+    if o.is_landing() || o.is_ramp() {
+        return Vec::new();
+    }
+    // Floor Above Display (Plan Display panel): the part before the break.
+    match o.stair.params.plan.above_view {
+        ViewMode::Nothing => return Vec::new(),
+        ViewMode::Outline => {
+            return vec![PlanStroke::Polyline(footprint(&o.stair), true)];
+        }
+        ViewMode::Normal => {}
+    }
+    plan_symbol(&o.stair, Some(break_fraction(o)))
+        .into_iter()
+        .filter(|s| matches!(s, PlanStroke::Line(..)))
+        .collect()
 }
 
 /// One line of the Components tab.
@@ -1921,11 +2143,24 @@ pub fn components(o: &StairObj) -> Vec<Component> {
             inch(p.slab_thickness),
             "Treads",
         );
-        if p.flare > 0.0 {
+        if p.bullnose != plan_stairs::Bullnose::None {
+            push(
+                "Bullnose bottom tread",
+                1,
+                p.bullnose.name().to_string(),
+                "Treads",
+            );
+        }
+        if p.flare > 0.0 && p.bullnose != plan_stairs::Bullnose::Both {
+            let past = if p.bullnose == plan_stairs::Bullnose::None {
+                "each side"
+            } else {
+                "the other end"
+            };
             push(
                 "Flared bottom tread",
                 1,
-                format!("{} past each side", inch(p.flare)),
+                format!("{} past {past}", inch(p.flare)),
                 "Treads",
             );
         }
@@ -1944,9 +2179,16 @@ pub fn components(o: &StairObj) -> Vec<Component> {
             );
         }
     }
-    let mut newels = 0;
-    let mut balusters = 0;
-    let mut rails = 0;
+    // Newels, balusters and rails per side: one set of rows when both sides
+    // share their settings, a row per side when they differ.
+    struct SideParts {
+        side: plan_stairs::RailSide,
+        newels: usize,
+        balusters: usize,
+        rails: usize,
+        railing: plan_stairs::RailingParams,
+    }
+    let mut sides: Vec<SideParts> = Vec::new();
     for (side, kind) in [
         (plan_stairs::RailSide::Left, p.left_side),
         (plan_stairs::RailSide::Right, p.right_side),
@@ -1954,49 +2196,97 @@ pub fn components(o: &StairObj) -> Vec<Component> {
         if kind != SideKind::Railing {
             continue;
         }
+        let railing = p.railing_for(side);
+        let mut part = SideParts {
+            side,
+            newels: 0,
+            balusters: 0,
+            rails: 0,
+            railing,
+        };
         if o.is_landing() {
             let g = plan_stairs::landing_edges(&o.stair, side);
-            rails += g.len();
-            newels += g.len() + 1;
+            part.rails = g.len();
+            part.newels = g.len() + 1;
         } else {
-            let g = plan_stairs::stair_railing_geometry(&o.stair, side, &p.railing);
-            rails += g.rails.len();
-            newels += g.newels.len();
-            balusters += g.balusters.len();
+            let g = plan_stairs::stair_railing_geometry(&o.stair, side, &railing);
+            part.rails = g.rails.len();
+            part.newels = g.newels.len();
+            part.balusters = g.balusters.len();
         }
+        sides.push(part);
     }
-    push(
-        "Newels",
-        newels,
-        format!("{} square", inch(p.railing.newel.size)),
-        "Handrail",
-    );
-    push(
-        "Balusters",
-        balusters,
-        match p.railing.style {
-            plan_stairs::RailStyle::Balusters { size, .. } => format!("{} square", inch(size)),
-            _ => String::new(),
-        },
-        "Balusters",
-    );
-    push(
-        "Rails",
-        rails,
-        format!(
-            "{} x {}",
-            inch(p.railing.top_rail.0),
-            inch(p.railing.top_rail.1)
-        ),
-        "Handrail",
-    );
+    let same = sides.windows(2).all(|w| w[0].railing == w[1].railing);
+    let groups: Vec<(String, usize, usize, usize, plan_stairs::RailingParams)> = if same {
+        sides
+            .first()
+            .map(|f| {
+                (
+                    String::new(),
+                    sides.iter().map(|s| s.newels).sum(),
+                    sides.iter().map(|s| s.balusters).sum(),
+                    sides.iter().map(|s| s.rails).sum(),
+                    f.railing,
+                )
+            })
+            .into_iter()
+            .collect()
+    } else {
+        sides
+            .iter()
+            .map(|s| {
+                let tag = match s.side {
+                    plan_stairs::RailSide::Left => " (left)",
+                    plan_stairs::RailSide::Right => " (right)",
+                };
+                (tag.to_string(), s.newels, s.balusters, s.rails, s.railing)
+            })
+            .collect()
+    };
+    for (tag, newels, balusters, rails, railing) in groups {
+        push(
+            &format!("Newels{tag}"),
+            newels,
+            format!("{} square", inch(railing.newel.size)),
+            "Handrail",
+        );
+        push(
+            &format!("Balusters{tag}"),
+            balusters,
+            match railing.style {
+                plan_stairs::RailStyle::Balusters { size, .. } => {
+                    format!("{} square", inch(size))
+                }
+                _ => String::new(),
+            },
+            "Balusters",
+        );
+        push(
+            &format!("Rails{tag}"),
+            rails,
+            format!(
+                "{} x {}",
+                inch(railing.top_rail.0),
+                inch(railing.top_rail.1)
+            ),
+            "Handrail",
+        );
+    }
     let walls = [p.left_side, p.right_side]
         .iter()
         .filter(|k| matches!(k, SideKind::Wall | SideKind::HalfWall))
         .count();
     push("Side walls", walls, String::new(), "Stringers");
-    if p.handrail && !o.is_landing() && !o.is_ramp() {
-        push("Handrails", 2, "on both sides".to_string(), "Handrail");
+    if !o.is_landing() && !o.is_ramp() {
+        let left = p.handrail || p.left_side == SideKind::Handrail;
+        let right = p.handrail || p.right_side == SideKind::Handrail;
+        let (n, where_) = match (left, right) {
+            (true, true) => (2, "on both sides"),
+            (true, false) => (1, "on the left"),
+            (false, true) => (1, "on the right"),
+            (false, false) => (0, ""),
+        };
+        push("Handrails", n, where_.to_string(), "Handrail");
     }
     out
 }
@@ -2059,7 +2349,8 @@ pub fn elevation_points(o: &StairObj) -> Vec<(f64, f64)> {
 pub fn scene_meshes(floor: &Floor) -> Vec<plan_3d::Mesh> {
     load(floor)
         .iter()
-        .flat_map(|o| plan_stairs::meshes(&o.stair))
+        .flat_map(|o| part_meshes(o, o.stair.floor_elevation))
+        .map(|(_, m)| m)
         .collect()
 }
 
@@ -2217,6 +2508,17 @@ pub fn draw_stairs(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
                 1.0,
                 true,
             );
+            // The treads below the break, seen through the opening.
+            if open_to_floor_above(&cx.project, cx.floor - 1, &o) {
+                draw_strokes(
+                    painter,
+                    cam,
+                    &well_strokes(&o),
+                    pal.text.gamma_multiply(0.4),
+                    0.75,
+                    true,
+                );
+            }
         }
     }
     let objs = load(cx.floor());

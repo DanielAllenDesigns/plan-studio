@@ -1198,3 +1198,192 @@ fn the_rail_of_an_l_stair_carries_across_the_landing_in_plan() {
         .count();
     assert!(landing_lines >= 4, "{landing_lines}");
 }
+
+// ----- bullnose, handrail sides, railings that differ by side (round 14) -----
+
+#[test]
+fn a_bullnose_rounds_the_chosen_ends_of_the_bottom_tread() {
+    let bottom_width = |b: Bullnose| {
+        let s = stair(StairParams {
+            bullnose: b,
+            ..params(109.125)
+        });
+        let mut t: Vec<plan_3d::Mesh> = tagged_meshes(&s)
+            .into_iter()
+            .filter(|(p, _)| *p == StairPart::Tread)
+            .map(|(_, m)| m)
+            .collect();
+        t.sort_by(|a, b| lowest_y(a).total_cmp(&lowest_y(b)));
+        lateral_extent(&t[0])
+    };
+    // Half the tread plus nosing (10 + 1) is the round's reach.
+    assert!(close(bottom_width(Bullnose::None), 36.0));
+    assert!(close(bottom_width(Bullnose::Left), 41.5));
+    assert!(close(bottom_width(Bullnose::Right), 41.5));
+    assert!(close(bottom_width(Bullnose::Both), 47.0));
+    // A bullnose end wins over the flare on that end only.
+    let mixed = stair(StairParams {
+        flare: 3.0,
+        bullnose: Bullnose::Left,
+        ..params(109.125)
+    });
+    assert_eq!(mixed.params.apron_reach(), (5.5, 3.0));
+    // The plan draws the rounded outline.
+    let apron = plan_symbol(
+        &stair(StairParams {
+            bullnose: Bullnose::Both,
+            ..params(109.125)
+        }),
+        None,
+    )
+    .into_iter()
+    .find_map(|s| match s {
+        Stroke::Polyline(pts, true) if pts.len() > 8 => Some(pts),
+        _ => None,
+    })
+    .expect("a rounded outline");
+    let (lo, hi) = (
+        apron.iter().map(|p| p.y).fold(f64::MAX, f64::min),
+        apron.iter().map(|p| p.y).fold(f64::MIN, f64::max),
+    );
+    assert!(close(hi, 50.0 + 5.5) && close(lo, 14.0 - 5.5), "{lo} {hi}");
+    assert!(Bullnose::ALL.iter().all(|b| !b.name().is_empty()));
+}
+
+#[test]
+fn a_handrail_side_is_a_rail_on_the_wall_and_not_a_guard() {
+    assert!(!SideKind::Handrail.is_guard());
+    assert!(SideKind::Railing.is_guard() && SideKind::Wall.is_guard());
+    assert_eq!(SideKind::ALL.len(), 5);
+    let rail_count = |l: SideKind, r: SideKind| {
+        let s = stair(StairParams {
+            left_side: l,
+            right_side: r,
+            ..params(109.125)
+        });
+        count(&tagged_meshes(&s), StairPart::Handrail)
+    };
+    let none = rail_count(SideKind::None, SideKind::None);
+    // One flight, one rail per handrail side.
+    assert_eq!(rail_count(SideKind::Handrail, SideKind::None), none + 1);
+    assert_eq!(rail_count(SideKind::Handrail, SideKind::Handrail), none + 2);
+    // A guard railing adds newels and balusters, far more parts.
+    assert!(rail_count(SideKind::Railing, SideKind::None) > none + 10);
+    // The plan shows a handrail as one thin line and no newel squares.
+    let strokes = |k| {
+        plan_symbol(
+            &stair(StairParams {
+                left_side: k,
+                ..params(109.125)
+            }),
+            None,
+        )
+    };
+    let (plain, with) = (strokes(SideKind::None), strokes(SideKind::Handrail));
+    assert_eq!(with.len(), plain.len() + 1);
+    let railed = strokes(SideKind::Railing);
+    assert!(railed.len() > with.len());
+}
+
+#[test]
+fn each_side_can_have_its_own_newels_and_balusters() {
+    let base = RailingParams::default();
+    let tall = RailingParams {
+        newel: NewelParams {
+            size: 5.0,
+            ..base.newel
+        },
+        style: RailStyle::Glass,
+        ..base
+    };
+    let mut p = StairParams {
+        left_side: SideKind::Railing,
+        right_side: SideKind::Railing,
+        ..params(109.125)
+    };
+    assert_eq!(p.railing_for(RailSide::Left), base);
+    p.right_railing = Some(tall);
+    assert_eq!(p.railing_for(RailSide::Left), base);
+    assert_eq!(p.railing_for(RailSide::Right), tall);
+    // The meshes follow: glass on one side has no balusters, so fewer parts.
+    let both = |p: &StairParams| count(&tagged_meshes(&stair(p.clone())), StairPart::Handrail);
+    let shared = StairParams {
+        right_railing: None,
+        ..p.clone()
+    };
+    assert!(both(&p) < both(&shared), "{} {}", both(&p), both(&shared));
+    // And the plan symbol uses the side's own newel size: 5" squares on the right.
+    let squares = |p: &StairParams| -> Vec<f64> {
+        plan_symbol(&stair(p.clone()), None)
+            .into_iter()
+            .filter_map(|s| match s {
+                Stroke::Polyline(pts, true) if pts.len() == 4 => {
+                    let w = pts.iter().map(|q| q.x).fold(f64::MIN, f64::max)
+                        - pts.iter().map(|q| q.x).fold(f64::MAX, f64::min);
+                    Some((w * 10.0).round() / 10.0)
+                }
+                _ => None,
+            })
+            .collect()
+    };
+    let sq = squares(&p);
+    assert!(sq.contains(&5.0) && sq.contains(&3.5), "{sq:?}");
+    // The old JSON (no per-side fields) still reads.
+    let json = serde_json::to_string(&shared).unwrap();
+    let back: StairParams = serde_json::from_str(&json).unwrap();
+    assert_eq!(back, shared);
+    let legacy = json.replace(",\"left_railing\":null,\"right_railing\":null", "");
+    let back: StairParams = serde_json::from_str(&legacy).unwrap();
+    assert_eq!(back.left_railing, None);
+}
+
+#[test]
+fn steps_down_from_a_floor_use_a_negative_base_everywhere() {
+    // Porch steps that go down 19.125" from the floor: footprint, plan
+    // symbol, railings and 3D meshes all stay finite and below the floor.
+    let mut st = stair(StairParams {
+        left_side: SideKind::Railing,
+        right_side: SideKind::HalfWall,
+        ..params(19.125)
+    });
+    st.floor_elevation = 100.0;
+    st.base = -19.125;
+    assert!(close(st.bottom_elevation(), 80.875));
+    let (_, z) = top_point(&st);
+    assert!(close(z, 100.0), "the stair arrives at the floor: {z}");
+    // The footprint does not depend on the base.
+    let flat = Stair {
+        base: 0.0,
+        ..st.clone()
+    };
+    assert_eq!(footprint(&st), footprint(&flat));
+    assert!(polygon_area(&footprint(&st)).abs() > 100.0);
+    assert!(!plan_symbol(&st, None).is_empty());
+    let parts = tagged_meshes(&st);
+    assert!(count(&parts, StairPart::Tread) >= 1);
+    let (mut lo, mut hi) = (f64::MAX, f64::MIN);
+    for (_, mesh) in &parts {
+        assert!(mesh
+            .vertices
+            .iter()
+            .all(|v| v.position.iter().all(|x| x.is_finite())));
+        if let Some((a, b)) = mesh.bounds() {
+            lo = lo.min(f64::from(a[1]));
+            hi = hi.max(f64::from(b[1]));
+        }
+    }
+    // Only the stringers hang below the bottom step, by their depth.
+    assert!(
+        lo >= 80.875 - 6.0,
+        "nothing far below the bottom step: {lo}"
+    );
+    assert!(lo < 100.0 - 19.125 + 0.1, "the steps really go down: {lo}");
+    // Treads top out at the floor; only railings stand above it.
+    let tread_top = parts
+        .iter()
+        .filter(|(p, _)| *p == StairPart::Tread)
+        .map(|(_, m)| f64::from(m.bounds().unwrap().1[1]))
+        .fold(f64::MIN, f64::max);
+    assert!(tread_top <= 100.0 + 1e-3, "{tread_top}");
+    assert!(hi > 100.0, "the railing stands above the floor: {hi}");
+}

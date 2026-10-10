@@ -48,6 +48,48 @@ fn xform(p: Point, origin: Point, angle: f64) -> Point {
 }
 
 impl Stroke {
+    /// Scale about the local origin by `k`.
+    pub fn scaled(&self, k: f64) -> Stroke {
+        let sp = |p: &Point| Point::new(p.x * k, p.y * k);
+        match self {
+            Stroke::Line { a, b } => Stroke::Line { a: sp(a), b: sp(b) },
+            Stroke::Polyline {
+                points,
+                closed,
+                filled,
+            } => Stroke::Polyline {
+                points: points.iter().map(sp).collect(),
+                closed: *closed,
+                filled: *filled,
+            },
+            Stroke::Arc {
+                center,
+                radius,
+                start,
+                sweep,
+            } => Stroke::Arc {
+                center: sp(center),
+                radius: radius * k,
+                start: *start,
+                sweep: *sweep,
+            },
+            Stroke::Circle {
+                center,
+                radius,
+                filled,
+            } => Stroke::Circle {
+                center: sp(center),
+                radius: radius * k,
+                filled: *filled,
+            },
+            Stroke::Text { at, text, height } => Stroke::Text {
+                at: sp(at),
+                text: text.clone(),
+                height: height * k,
+            },
+        }
+    }
+
     /// Rotate by `angle` radians about the local origin, then translate to `origin`.
     pub fn transformed(&self, origin: Point, angle: f64) -> Stroke {
         match self {
@@ -205,6 +247,22 @@ impl DeviceKind {
                 line(-1.6, -2.5, -1.6, 2.5),
                 line(0.0, -3.2, 0.0, 3.2),
                 line(1.6, -2.5, 1.6, 2.5),
+                text(7.5, 0.0, "220V", 2.5),
+            ],
+            // Weatherproof GFCI: the GFCI duplex with a WP tag.
+            DeviceKind::OutletWp => {
+                let mut s = duplex(3.0);
+                s.push(line(0.0, 3.0, 0.0, 4.5));
+                s.push(line(0.0, -3.0, 0.0, -4.5));
+                s.push(text(6.5, 0.0, "WP", 2.5));
+                s
+            }
+            // Dedicated: a single receptacle (one blade line, solid hub) tagged DED.
+            DeviceKind::OutletDedicated => vec![
+                circle(0.0, 0.0, 3.0, false),
+                line(0.0, -2.0, 0.0, 2.0),
+                circle(0.0, 0.0, 0.8, true),
+                text(6.5, 0.0, "DED", 2.5),
             ],
             DeviceKind::OutletFloor => {
                 let mut s = duplex(3.0);
@@ -216,6 +274,12 @@ impl DeviceKind {
                 s
             }
             DeviceKind::Switch => switch_base(),
+            // Weatherproof switch: the switch with a WP tag (verify in Chief).
+            DeviceKind::SwitchWp => {
+                let mut s = switch_base();
+                s.push(text(6.0, 4.5, "WP", 2.5));
+                s
+            }
             DeviceKind::Switch3Way => {
                 let mut s = switch_base();
                 s.push(text(6.0, 4.5, "3", 2.5));
@@ -245,6 +309,27 @@ impl DeviceKind {
                     sweep: PI,
                 },
                 line(0.0, -4.0, 0.0, 4.0),
+            ],
+            // Exterior wall light: the sconce's half circle with a WP tag
+            // (verify in Chief).
+            DeviceKind::WallLightExterior => vec![
+                Stroke::Arc {
+                    center: Point::ZERO,
+                    radius: 4.0,
+                    start: -FRAC_PI_2,
+                    sweep: PI,
+                },
+                line(0.0, -4.0, 0.0, 4.0),
+                text(7.0, 0.0, "WP", 2.0),
+            ],
+            // Path light: a small circle with four short rays.
+            DeviceKind::PathLight => vec![
+                circle(0.0, 0.0, 2.0, false),
+                circle(0.0, 0.0, 0.7, true),
+                line(3.0, 0.0, 5.0, 0.0),
+                line(-3.0, 0.0, -5.0, 0.0),
+                line(0.0, 3.0, 0.0, 5.0),
+                line(0.0, -3.0, 0.0, -5.0),
             ],
             DeviceKind::CeilingFan => {
                 let mut s = vec![circle(0.0, 0.0, 2.0, true)];

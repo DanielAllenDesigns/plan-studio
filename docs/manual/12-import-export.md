@@ -20,15 +20,17 @@ Library menu's catalog import is still dimmed. Chief catalogs are read in place 
 | PNG (the plan's lines, or a ray-traced picture of the open 3D view) | Write | Yes: File > Print > Print Image... (chapter 11.3) | `plan-app` |
 | PNG, baseline JPEG, scanned PDF (underlay pictures for tracing) | Read | Yes: File > Import > Underlay Picture... (12.4a) | `plan-app` |
 | PNG and JPEG (baseline and progressive) as textures and pictures | Read | Yes, in 3D: the textures of the 3D view and the ray tracer (Chief's own texture files when your install has them, else generated ones), the bitmaps of pictures and billboards, and picture boxes in a layout (10.8a) | `plan-library` (`image`), `plan-materials` (`textures`) |
-| CSV (schedules, materials list) | Write | Yes: Export CSV... buttons | `plan-docs` |
+| CSV (schedules, materials list, layout tables) | Write | Yes: Export CSV... buttons | `plan-docs` |
+| XLSX (Excel workbook: schedules, materials list, layout tables) | Write | Yes: Export Excel... buttons and Layout > Export Table to Excel... (chapter 11.2, 11.3); the program writes the workbook itself | `plan-docs` (`xlsx`) |
+| Fonts: TrueType and TrueType collections (`.ttf`, `.ttc`; `.otf` and `.otc` are listed but not embedded) | Read | Yes: installed fonts draw plan and layout text and are embedded (subset) in PDFs you make (12.6; chapter 5.9) | `plan-app` (`fonts`), `plan-docs` (`pdf::truetype`) |
 | Layout JSON | Read and write | Yes: File > Export > Layout (JSON)... and File > Import > Layout (JSON)... | `plan-layout` |
 | Markdown and PDF (Plan Check report) | Write | Yes: Save Report... and Report PDF... (chapter 18.4) | `plan-check` |
 | DXF (ASCII, R12) | Write | Yes: File > Export > DXF..., Elevation DXF..., and Export DXF from a section or elevation's vector view and its Camera Specification (chapter 10.7) | `plan-core::export::dxf`, `plan-elevation` |
-| DXF import, CAD to Walls | Read | Yes: File > Import > Import Drawing (DXF)..., CAD > CAD to Walls... | `plan-import` |
-| DWG | Neither | (planned) | |
+| DXF import (ASCII and binary, R12 to 2018), CAD to Walls | Read | Yes: File > Import > Import Drawing (DWG/DXF)... (Import Drawing Assistant), CAD > CAD to Walls... DWG: guidance only | `plan-import`, `dialogs/import_drawing.rs` |
+| DWG | Neither (import: DXF-save guidance only) | The Import Drawing window recognises a DWG and says how to save a DXF | |
 | Chief catalogs `.calib`, `.calibz` | Read in place | Yes: the Library Browser's Chief nodes (chapter 6.6); no import command | `plan-calib` |
 | Chief templates `.plan`, `.tpl`, `.layout` | Read names and some values | Yes: File > Templates > Import Chief Template... | `plan-chiefplan` |
-| Chief project `.plan` (the building itself) | Read | Yes: File > Import > Chief Plan... (12.8a): floors, walls, doors, windows, named rooms, dimensions and text | `plan-chiefplan` (`import`) |
+| Chief project `.plan` (the building itself) | Read | Yes: File > Import > Chief Plan... (12.8a): floors, walls, doors, windows, named rooms, dimensions, text, cabinets, placed library objects, electrical devices, stairs and roof planes | `plan-chiefplan` (`import`) |
 | Chief hotkeys, toolbars, preferences | Read | Hotkeys: Customize Hotkeys > Import (chapter 13.7); toolbars: Customize Toolbars > Import Chief Toolbar File (chapter 1.4a); the default plan and layout template names from the preferences INI (chapter 1.7.1) | `plan-config` |
 | OBJ (`.obj` + `.mtl`) and glTF 2.0 (`.gltf`, `.glb`) 3D models into the user library | Read | Yes: Library > Import 3D Model (OBJ, glTF)... (chapter 6.4a, 12.7a) | `plan-import` (`obj`, `gltf`), `plan-library` (`model`) |
 | Plan Studio library zip (`.calibz` extension, stored zip of JSON and `.psm` models) | Read and write | Yes: Library > Export Library (Plan Studio only)... and Import Library... (12.7a); Chief cannot open it | `plan-library` (`archive`) |
@@ -54,10 +56,10 @@ Library menu's catalog import is still dimmed. Chief catalogs are read in place 
 | File > Export > Construction Set PDF... | | The same as Create Construction Set. | Works. |
 | File > Export > glTF... | | The same as 3D > Export > glTF.... | Works. |
 | File > Export > (image, DWG) | | Not in the menu. | (planned) |
-| File > Import > Import Drawing (DXF)... | | Adds a DXF drawing to the active floor as CAD objects (12.4). | Works. |
+| File > Import > Import Drawing (DWG/DXF)... | | The Import Drawing window and assistant: adds a DXF drawing to the active floor as CAD objects, dimensions and CAD blocks (12.4). | Works (DWG refused with guidance). |
 | File > Import > Underlay Picture (PNG, JPEG, PDF)... (also Tools > Underlays...) | | Places a picture under the plan for tracing (12.4a). | Works. |
-| File > Import > (DWG) | | Not in the menu. | (planned) |
-| File > Import > Chief Plan... | | Reads a Chief project `.plan` into a new plan in the window (12.8a). | Works. |
+| File > Import > (DWG) | | Part of Import Drawing (DWG/DXF): a DWG shows how to save a DXF (DECISIONS DX1). | Guidance only. |
+| File > Import > Chief Plan... | | Reads a Chief project `.plan` into a new plan in the window (12.8a); it asks about unsaved changes first. | Works. |
 | File > Templates > Import Chief Template... | | Seeds your defaults from a Chief `.plan`, `.tpl` or `.layout` (12.8). | Works. |
 | File > New Layout | | Makes the plan's layout and shows the layout view (11.3). | Works. |
 | File > Open Layout... | | Shows the layout view. | Works. |
@@ -98,7 +100,7 @@ layout and the wall types stored in the plan. Lengths are inches.
   | Slot | Holds |
   |---|---|
   | `Floor.cabinets`, `Floor.stairs` | Cabinets, and stairs, ramps and landings with their plan-only settings (chapter 7) |
-  | `Floor.roofs` | Roof planes, the Build Roof settings, ceiling planes and dormers (chapter 8) |
+  | `Floor.roofs` | Roof planes, the Build Roof settings, ceiling planes, dormers and the Dutch gable faces Build Roof makes (chapter 8) |
   | `Floor.electrical` | The floor's electrical devices and connections (chapter 9) |
   | `Floor.framing` | Built framing members, manual members and the framing layout lines (chapter 11.11) |
   | `Floor.foundation` | Slabs, slab holes, pads, piers and platform holes (chapter 16) |
@@ -109,7 +111,8 @@ layout and the wall types stored in the plan. Lengths are inches.
   | `Project.terrain` | The terrain, its contour interval, whether it is built, and the terrain walls, breaks and landscape objects (chapter 9) |
   | `Floor.underlays` | Underlay pictures placed under the plan: file path, pixel size, placement, opacity, show and lock (12.4a). Typed list |
   | `Project.object_materials` | Per-object material overrides from the Material Painter and Adjust Materials (chapter 10.8). Typed values |
-  | `Project.layout` | The plan's one layout: pages, boxes, title block and page setup (chapter 11.3) |
+  | `Project.layout`, `Project.layout_files` | The plan's open layout (pages, boxes, title block and page setup) and the other layout files the plan holds (chapter 11.3) |
+  | `Project.opening_display` | The 3D display of openings: casing, jambs and sills on or off, doors shown open and the open angle (chapter 3.9) |
   | `Project.info` | Project Information: client, designer, job number, date, revisions, custom fields (chapter 11.4) |
   | `Project.lights`, `Project.light_options` | The lights Add Lights places, and whether electrical light fixtures emit light (chapter 10.13) |
   | `Project.info.custom` (reserved keys) | `plancheck.settings` and `plancheck.ignored`: the Plan Check settings and the findings you ignored, as JSON text (chapter 18.2) |
@@ -171,7 +174,7 @@ The settings are the `files` key of `~/.plan-studio/settings.json` (`autosave`, 
 
 ### Unsaved-changes prompts
 
-New Plan, Open (including Open Recent, a dropped file, a Finder open and an archive copy), Close Plan and Quit all stop with **Unsaved Changes** when the plan has unsaved changes: "Do you want to save the changes you made to “name” before you start a new plan / open another plan / close it / quit?" The window's close button asks too. The buttons and keys:
+New Plan, Open (including Open Recent, a dropped file, a Finder open and an archive copy), Close Plan, File > Import > Chief Plan... and Quit all stop with **Unsaved Changes** when the plan has unsaved changes: "Do you want to save the changes you made to “name” before you start a new plan / open another plan / close it / import a Chief plan / quit?" The window's close button asks too. The buttons and keys:
 
 | Button | Key | Does |
 |---|---|---|
@@ -230,26 +233,58 @@ std::fs::write("first-floor.dxf", dxf)?;
 
 `plan-import` is the counterpart of Chief's Import Drawing and CAD to Walls.
 
-### File > Import > Import Drawing (DXF)...
+### File > Import > Import Drawing (DWG/DXF)...
 
-Pick a `.dxf` file; the **Import Drawing (DXF)** window opens before anything is added.
+Pick one or more `.dxf` files (a `.dwg` is accepted so the window can tell you what to do, see below) or drop
+them on the Plan Studio window. The **Import Drawing** window opens before anything is added; it works like
+Chief's Import Drawing dialog and Import Drawing Assistant (reference manual pp. 1289-1297).
 
-- It shows the file name, "<n> entities on <m> layers; the file's units: <units>" and, when the reader
-  skipped entity kinds it does not support, "Not imported: <count> <kind>, ...". A file that cannot be read
-  ends with "Import failed: <reason>" in the status bar.
-- **Units**: As the file says (default), Inches, Feet, Millimeters, Centimeters or Meters. A file with no
-  units reads as inches. **Layer name prefix** is put in front of every imported layer name (blank by default).
-  "Size in the plan" shows the drawing's declared extents in the current units, updating as you change Units.
-- **Scale** (on top of the units), **Rotation** (degrees, about the insertion point), **Base point** (the drawing's
-  origin or the lower-left corner of its extents) and **Insert it at** (x and y, feet-inches) place the drawing in the plan.
-- **Layer mapping**: every DXF layer is listed with its object count and a choice of where it goes: Keep (under the prefix),
-  Do not import, one of the plan's layers (a layer named like a plan layer is preselected), or a new layer of a name you type.
-  Blocks (INSERTs) are always exploded.
-- **Convert to walls** (with the layer to read, "A-WALL" preselected when there is a wall layer) also runs the CAD to Walls matcher
-  with its default options on that layer's lines and adds the walls in the same undo step.
-- **Import** adds the drawing to the active floor as CAD objects, as one undo step ("Import Drawing"). Layers the
-  plan does not have are created, hidden when the DXF layer was off. The status bar says "Imported n objects (k
-  new layers)", or "The drawing had nothing to import", and the number of walls when it made some.
+- **Import Drawing** (first window): "Files Selected for Import" lists the files with their object and layer
+  counts. **Show Import Assistant** (on) takes each file through the pages below; off, the files are imported at
+  once with the defaults (the layers the original program showed, layers of the same names with their attributes,
+  the file's units, the drawing moved to the origin). **Show For Each File** gives every file its own assistant
+  (otherwise the settings are shared). **Create CAD Blocks** makes each drawing one CAD block. **Auto Position
+  Blocks** puts several drawings side by side (48" apart) instead of on top of each other. Place In Current View
+  and Add to Library are not built (DECISIONS DX12).
+- **Select File**: the file name, release (`$ACADVER`), format (ASCII or binary DXF), counts and units; a warning
+  listing external references (they are not imported). **Polylines** joins lines that share end points into
+  polylines, **Boxes** turns lines that close a rectangle into a box; polylines already in the file are not
+  touched. **Import Hatch entities** (on) and **Include the first page of paper space** (off; imported as one CAD
+  block named Paper Space; later pages are not read).
+- **Select Layers**: one row per DXF layer with a check box, its colour, Visible / Off / Frozen, line type, weight
+  and object count. Layers that were visible are checked, frozen ones are not (Select All, Clear All). **To walls**
+  marks a layer whose lines (and polyline segments) are run through CAD to Walls with its default options in the
+  same undo step; the **wall type** picker gives the walls that type's thickness, kind and name ("Default for its
+  kind" keeps the measured thickness). The lines stay as CAD.
+- **Layer Mapping**: **A single layer in Plan Studio** (a plan layer or a new name; each object keeps its colour,
+  line style and weight), **Layers of the same names** (made when missing; "Import the attributes of each layer"
+  gives them the DXF layer's colour, weight and line style, otherwise each object carries them), or **Advanced
+  layer mapping**: a table of DXF layer, Plan Studio layer (same name, an existing layer, or a new name typed) and
+  "New" for layers that will be made.
+- **Duplicate CAD Blocks** (only when this floor already has a CAD block of a name the file brings): give each
+  duplicate a unique name (`name_Copy_1`), replace the floor's blocks of that name, keep the floor's and discard the
+  imported ones, or manage each duplicate individually (Auto Name, Replace, Use Existing per name).
+- **Drawing Unit**: the unit ("As the file says" shows what that is; a file with no `$INSUNITS` is inches, or
+  millimetres when `$MEASUREMENT` says metric), **Scale** on top of it, **Rotation**, **Dimensions** ("Import as
+  dimensions where possible" or "Import as CAD blocks"), **Move drawing to the origin** (the lower-left of the
+  drawing goes to the place below; unchecked, the drawing lands where it was drawn) and **Place it at** (x and y in
+  feet-inches).
+- **Import Complete**: the counts (objects by kind, hatches, dimensions, CAD blocks, layers), the size in the plan,
+  how many walls will be made, and notes: blocks used but not defined, external references, paper space left out,
+  entity kinds not imported, block definitions nothing inserts. **Import** adds everything to the active floor as
+  one undo step ("Import Drawing") and selects it so it can be moved. A multi-file import is one step, too.
+- **What is read**: lines, polylines and lightweight polylines (bulges become arcs, and are remembered as polyline
+  arc edges), circles, arcs, ellipses and splines (NURBS, as polylines), hatches (a solid fill, or the CAD Hatch
+  tool's pattern lines by the AutoCAD pattern name), solids, 3D faces and polyface meshes (outlines), points (a
+  small circle), text and multi-line text (justification, rich runs, first font, wrap width, text styles that
+  match a plan style), attributes (as text), leaders and multileaders (a polyline with an arrow, plus the text),
+  linear and aligned dimensions (as dimensions; other kinds are drawn from the file's own dimension block or from
+  their definition points), and block inserts and arrays (as CAD blocks, nested blocks expanded, BYBLOCK and layer 0
+  following the insert). Layer colours (ACI and true colour), line weights and line types are kept; a line type
+  becomes the nearest of solid, dashed, dotted and dash-dot.
+- **DWG** is not read. The window says: "This is an AutoCAD DWG file (release 2013). Plan Studio reads DXF: in
+  AutoCAD, BricsCAD or LibreCAD choose Save As and pick DXF (any release from R12 to 2018), then import that file."
+  (DECISIONS DX1.)
 
 ### CAD > CAD to Walls...
 
@@ -267,19 +302,21 @@ lines on the floor the status bar says "CAD to Walls: there are no CAD lines on 
 
 ### The engine
 
-- `parse_dxf(text)` reads **ASCII DXF** tolerantly (CRLF or LF, padded or bare group codes) into a
-  `DxfDrawing` with layers, units, extents, blocks and entities. Supported entities: LINE,
-  LWPOLYLINE, POLYLINE/VERTEX, CIRCLE, ARC, TEXT, MTEXT and INSERT. Anything else is counted in
-  `skipped`.
-- `DxfDrawing::explode_inserts` expands block references with scale, rotation, base point and nesting.
-- `to_inches_factor(units, override)` and `to_cad_objects(drawing, factor, layer_prefix)` turn
-  entities into plan CAD objects in inches; bulged polyline segments become sampled arcs.
+- `parse_dxf(text)` and `parse_dxf_bytes(bytes)` read **ASCII and binary DXF** tolerantly, R12 through 2018 (CRLF or
+  LF, padded or bare group codes, Windows-1252 text, comments), into a `DxfDrawing`: header values, the LAYER, LTYPE,
+  STYLE and DIMSTYLE tables, block definitions (anonymous dimension blocks, external references), model-space
+  entities and the first paper-space page. `dxf::tokens::ascii_to_binary` writes the binary form of an ASCII file
+  (used by the tests).
+- `convert(drawing, &ImportOptions)` expands blocks, maps layers, places the drawing and returns a `Converted`
+  (objects with their `CadAttrs`, dimensions, CAD blocks, hatch requests, the plan layers needed, notes);
+  `add_objects` then `make_blocks` (or `apply_converted`) add it to a `Project`. `to_inches_factor(units, override)`
+  and `default_units` give the unit; `to_cad_objects(drawing, factor, layer_prefix)` is the plain objects-only form.
 - `cad_to_walls(lines, options)` pairs **parallel lines** into wall proposals, measures the
   thickness, and closes corners and T-junctions; `apply_walls` and `apply_cad` add the results to a
   `Project` with fresh ids.
-- **DWG and binary DXF are not supported.** Convert to ASCII DXF first. A file that is not ASCII DXF
-  fails with "not an ASCII DXF file" or "binary DXF files are not supported".
-- The reader round-trips what `write_dxf` writes.
+- A DWG fails with `ImportError::Dwg` carrying the release code; the message tells how to save a DXF.
+- The reader round-trips what `write_dxf` and the DXF export options write (counts and geometry within 1e-3 inch,
+  `s57_dxf_import`).
 
 
 ## 12.4a Underlays (PNG, JPEG, scanned PDF)
@@ -318,8 +355,9 @@ empty" if the plan has no geometry. Open the file in Blender, a glTF viewer or a
   File > Print > Print... opens the Print dialog (paper, scale, tiling, color, page range) and sends the PDF to a file, the system printer (CUPS `lp`) or the viewer.
   The PDF writer is the same dependency-free PDF 1.4 one for all of them. A layout PDF carries one bookmark per printed sheet.
 - **PNG**: the Ray Trace window's Save PNG... (chapter 10.6), uncompressed 8-bit RGBA.
+- **Fonts in PDFs** (Round 13): a text style's font is looked up among the fonts installed on the machine (`/System/Library/Fonts`, `/Library/Fonts` and `~/Library/Fonts` on a Mac; the usual folders on Linux and Windows) and a subset of the face (only the glyphs the document uses, 8 to 15 KB per face) is embedded as a TrueType font. Limits: a font with PostScript outlines (most `.otf` files) is not embedded and prints as Helvetica with a note; a font whose licence forbids embedding (the `fsType` restricted-licence or bitmap-only bit) is never embedded, and the note says so; only Latin-1 and the usual punctuation print, other characters print as `?`; layout page CAD text, leaders and title blocks stay Helvetica. Fonts are embedded only into the PDFs you make on your own machine; nothing is copied into plans, templates or the program. Preferences > Fonts turns the whole thing off (chapter 1.9a).
 - **CSV**: every schedule window and the Materials List window have Export CSV.... Fields are
-  quoted as needed; open them in any spreadsheet. The Materials List CSV has the columns Category, ID, Description, Size, Count, Unit, Unit Price and Price, and a Total row when any row is priced; the Materials List window also has Export PDF....
+  quoted as needed; open them in any spreadsheet. **XLSX**: the same windows (and the Schedule Specification) have Export Excel..., and the layout's table boxes export with Layout > Export Table to Excel...; the workbook has one sheet per table. The Materials List CSV has the columns Category, ID, Description, Size, Count, Unit, Unit Price and Price, and a Total row when any row is priced; the Materials List window also has Export PDF....
 - **Markdown**: the Plan Check window's Save Report... writes findings grouped by severity.
 
 ## 12.7 Chief catalogs (`.calib`, `.calibz`)
@@ -426,29 +464,36 @@ defaults when no saved `defaults.json` exists. **Edit > Default Settings > Prefe
 
 ## 12.8a File > Import > Chief Plan...
 
-**File > Import > Chief Plan...** picks a Chief Architect project `.plan` and builds a new Plan Studio plan from it (`plan_chiefplan::import::import_plan`; the file formats are in `docs/chief-plan-format.md`). Nothing is copied from the file into the repository, and your Chief file is only read.
-The new plan replaces the one in the window, named after the file, with no file path yet (use Save As); **the command does not ask about unsaved changes, so save the plan you have open first**. The status bar reports the result, for example
-`Imported House.plan: House.plan: 4 floors, 228 walls, 46 doors, 34 windows, 19 named rooms, 174 dimensions, 137 texts`, followed by notes. A `.layout` file holds sheets, not a building, and is refused ("a .layout file holds sheets, not plan geometry").
+**File > Import > Chief Plan...** picks a Chief Architect project `.plan` and builds a new Plan Studio plan from it (`plan_chiefplan::import::import_plan`; the file formats are in `docs/chief-plan-format.md`, sections 4.1 to 4.14). Nothing is copied from the file into the repository, and your Chief file is only read.
 
-What is imported:
+1. If the open plan has unsaved changes, the command asks first (Save, Don't Save, Cancel), as New and Open do.
+2. Pick the `.plan` file. A `.layout` file holds sheets, not a building, and is refused ("a .layout file holds sheets, not plan geometry").
+3. The new plan replaces the one in the window, named after the file, with no file path yet (use Save As).
+4. The **status bar** gets the one-line **headline**, for example `Imported House.plan: 4 floors, 228 walls, 46 doors, 34 windows, 19 named rooms, 174 dimensions, 137 texts, 65 cabinets, 62 symbols, 401 electrical devices, 10 stairs, 31 roof planes`.
+5. A **Chief Plan Import** window opens with the same headline and the full **summary**: one line per note in plain language ("floor names are positional", "dimension offsets are assumed", the roof planes it could not read). **Copy** puts the text on the clipboard; **Close** dismisses it.
+
+What is imported (Round 13 added the object rows from Cabinets down):
 
 | Plan Studio | From the Chief file | How well it is understood |
 |---|---|---|
 | Floors | Count, order, floor elevation and ceiling height | High. **Names are positional** (Foundation for a floor below grade, 1st Floor, 2nd Floor ..., Attic for a top floor that holds roof planes): the file stores no names. |
 | Walls | The wall line, the wall type (its layer stack replaces a same-named default so the registry and the thickness agree), the height, which side is exterior, and curved walls (the minor arc) | Line and type high; height, side and arcs medium. The line is the centerline of the main layer, shifted for asymmetric exterior walls from one measured type, so some types may sit a fraction of an inch off. Joined ends are healed. |
 | Doors and windows | The openings that belong to a wall: center, width, height | High for position and size. **The style is guessed from the width** (door vs doorway, window kind), swing is not read. |
-| Rooms | The names of rooms (`kitchen`, `F. Porch`) | Medium. Plan Studio detects the room shapes itself from the walls and anchors the names in them; a room whose label the file stores separately comes in without a name (one house: 19 of 68 rooms named). |
-| Dimensions | Linear dimension strings: their points | Medium for points. **The dimension line's position is not stored where it could be found**, so every string is placed 36" outside the floor's walls, one dimension per consecutive pair of points. Text overrides and arrows are not read. |
+| Rooms | The names of rooms (`kitchen`, `F. Porch`), from the room records and, since Round 13, from typed text labels | Medium. Plan Studio detects the room shapes itself from the walls and anchors the names in them (a label's centre is the anchor). |
+| Dimensions | Linear dimension strings: their points (X18 and, since Round 13, X17) | Medium for points. **The dimension line's position is not stored where it could be found**, so every string is placed 36" outside the floor's walls, one dimension per consecutive pair of points. Text overrides and arrows are not read. |
 | Text | Free text notes: position and string | Medium. The size is assumed (4.5" regular, 8" for bold text), angle 0. Automatic wall labels are skipped. |
+| Cabinets | Base, wall, tall, shelf and soffit boxes with their position, size and rotation, and free-form (island) countertops | High for the box; the catalog name, the door and drawer layout and per-part materials are not read. A cabinet is a box with its own style guess. |
+| Library objects | Placed furniture, fixtures and appliances: position, size, rotation | High for position and size. A plan holds its own copy of each library object and no link to a catalog, so each object comes in as a placed symbol named `chief-plan.<name>` (for example `chief-plan.elongated-toilet`); the plan and the 3D view draw it as a **labelled stand-in box** with the Chief name. Objects that belong to a cabinet are left to the cabinet. |
+| Electrical devices | Switches, outlets, lights and the rest: position and kind | High for position and kind; the height comes from the kind, wall devices are attached to the nearest wall, and the label is the Chief name. |
+| Stairs | Stair flights and landings | Medium. A U-shaped stair comes in as two straight flights and a landing; each flight's rise is its risers times the riser height and a second flight starts at floor level, not at the landing's height, so the 3D view shows the parts side by side. |
+| Roof planes | The roof planes of every floor that holds them (porch roofs on the first and second floors, the main roof on the attic floor) | Medium. Planes only: pitch, outline and baseline. They are manual planes on the `Roof Planes` layer, so Build Roof leaves them alone (Delete Roof Planes clears them). The plan draws a roof while its floor is active, the 3D view draws every floor's. |
 | Layers, layer sets, text styles, wall types | Read by the same scan as templates (12.8) | X18 files only. |
 
-An X17 file imports walls, wall types, openings and floors only (no layers, rooms or dimensions: the decoding of those is X18's).
+**What does not import:** circuits and the switch-to-load connections of the electrical devices; the heights at which stair flights and landings stack; the rail and wall sides, stringer and tread styles of stairs, winders and curved stairs; per-edge hip and gable flags, overhang and fascia sizes, holes, skylights, materials and dormers of a roof; framing; moldings and trim; room polygons; floor names; door styles and swings; dimension line offsets; wall bottoms and sloped tops; wall connection records; major arcs and bay or bow walls; the catalog link of a library object; and the materials, door and drawer layouts and corner or blind shapes of cabinets. A few roof objects with an outline but no baseline record (probably ceiling or deck surfaces) are left out and counted in the report. You will redraw the roof edge details, stair railings and fixtures' catalog links on the imported shell, or place them from the library.
 
-What is **not** decoded, and so not imported: **cabinets, placed library symbols, roof planes, stairs, railings, electrical devices, framing, moldings and trim** (the classes are recognized by name and counted, not read), room polygons, floor names, door styles, dimension line offsets, wall bottoms and sloped tops,
-wall connection records, major arcs and bay or bow walls. You will redraw the roof, cabinets, stairs and fixtures, or place them from the library, on the imported shell.
+An X17 file imports walls, wall types, openings, floors, rooms, dimensions and roof planes, but not the layers and layer sets (those come from the X18 header).
 
-The importer also builds a report (`ImportReport`): counts, per-floor counts, the skipped classes (class number, label, confidence, how many) and notes in plain language ("floor names are positional", "dimension offsets are assumed"). The status bar shows the counts and the notes; the full report is available to code
-and to the `import` example (`cargo run --release -p plan-chiefplan --example import -- "House.plan" --json`). A window listing the report is not built. Importing a 75 MB file takes about 0.3 s. All 191 archived Chief projects of the test set (3 to 170 MB) imported without an error.
+The importer also builds a report (`ImportReport`): counts, per-floor counts, the skipped classes (class number, label, confidence, how many) and notes in plain language. The report window shows the counts line and the notes; the whole report with the skipped classes is available to code and to the `import` example (`cargo run --release -p plan-chiefplan --example import -- "House.plan" --json`). Importing a 75 MB file takes about 0.3 s once the file is in the operating system's cache. All archived Chief projects of the test set (3 to 170 MB) import without an error.
 
 ## 12.9 Chief hotkeys, toolbars and preferences
 

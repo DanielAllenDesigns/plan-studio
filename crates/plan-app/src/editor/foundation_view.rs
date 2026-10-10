@@ -21,7 +21,16 @@
 //! # Drawing
 //!
 //! [`draw_foundation`] is called from `render::draw_plan` (under the walls);
-//! the foundation tools do not draw the objects themselves.
+//! the foundation tools do not draw the objects themselves. On a foundation
+//! floor it also draws the "S" markers where the stem walls step
+//! ([`draw_step_markers`]).
+//!
+//! # Auto Rebuild and the Attic warning
+//!
+//! [`frame`] runs once a frame (the shell calls it): it rebuilds the
+//! foundation when Auto Rebuild Foundation is on and Floor 1 changed
+//! ([`auto_rebuild`]) and reports the Attic floor warning ([`attic_warning`]).
+//! [`locked`] says Floor 0 is closed to hand editing while Auto Rebuild is on.
 
 use super::{Camera, EditorContext};
 use eframe::egui::{self, Color32, Pos2, Shape, Stroke};
@@ -37,18 +46,21 @@ pub use foundation::{Footing, Pier};
 
 /// Plan-view layer of the slab objects.
 pub const LAYER_SLABS: &str = SLAB_LAYER;
+/// Plan-view layer of the "S" markers where a foundation steps.
+pub const LAYER_STEP_MARKERS: &str = "Footings, Step Markers";
 /// Smallest outline area a drawn shape needs, square inches.
 pub const MIN_AREA: f64 = 1.0;
 /// Hatch line spacing in the plan, inches.
 const HATCH_SPACING: f64 = 12.0;
 
 /// The layers the foundation objects use, with Chief-like colors and weights.
-fn layer_defaults() -> [Layer; 4] {
+fn layer_defaults() -> [Layer; 5] {
     [
         Layer::new(SLAB_LAYER, [120, 120, 120], 25),
         Layer::new(PIER_LAYER, [100, 100, 100], 25),
         Layer::new(FLOOR_HOLES_LAYER, [160, 80, 80], 18),
         Layer::new(CEILING_HOLES_LAYER, [80, 80, 160], 18),
+        Layer::new(LAYER_STEP_MARKERS, [120, 60, 60], 18),
     ]
 }
 
@@ -88,59 +100,68 @@ pub fn edit(cx: &mut EditorContext, label: &str, edit: impl FnOnce(&mut Foundati
     cx.mark_dirty();
 }
 
+/// Like [`edit`] for an edit that adds an object: the new id is taken after
+/// the undo step is recorded, so undo gives it back (QA-27).
+fn edit_new(
+    cx: &mut EditorContext,
+    label: &str,
+    edit: impl FnOnce(Id, &mut FoundationLayer),
+) -> Id {
+    cx.begin_change(label);
+    let id = cx.project.alloc_id();
+    let mut layer = load(cx);
+    edit(id, &mut layer);
+    let fl = cx.floor;
+    save(&mut cx.project, fl, &layer);
+    cx.mark_dirty();
+    id
+}
+
 /// Adds a slab (with the default footing when `footing`); returns its id.
 pub fn add_slab(cx: &mut EditorContext, outline: Vec<Point>, footing: bool) -> Id {
-    let id = cx.project.alloc_id();
     let label = if footing { "Slab with Footing" } else { "Slab" };
-    edit(cx, label, |l| {
+    edit_new(cx, label, |id, l| {
         let mut s = Slab::new(id, outline);
         if footing {
             s.footing = Some(Footing::default());
         }
         l.slabs.push(s);
-    });
-    id
+    })
 }
 
 /// Adds a hole in the slab floor; returns its id.
 pub fn add_slab_hole(cx: &mut EditorContext, outline: Vec<Point>, footing: bool) -> Id {
-    let id = cx.project.alloc_id();
     let label = if footing {
         "Slab Hole with Footing"
     } else {
         "Slab Hole"
     };
-    edit(cx, label, |l| {
+    edit_new(cx, label, |id, l| {
         l.holes.push(SlabHole::new(id, outline, footing));
-    });
-    id
+    })
 }
 
 /// Adds a square pad centered on `center`; returns its id.
 pub fn add_pad(cx: &mut EditorContext, center: Point) -> Id {
-    let id = cx.project.alloc_id();
-    edit(cx, "Square Pad", |l| l.pads.push(Pad::new(id, center)));
-    id
+    edit_new(cx, "Square Pad", |id, l| l.pads.push(Pad::new(id, center)))
 }
 
 /// Adds a round pier centered on `center`; returns its id.
 pub fn add_pier(cx: &mut EditorContext, center: Point) -> Id {
-    let id = cx.project.alloc_id();
-    edit(cx, "Round Pier", |l| l.piers.push(Pier::new(id, center)));
-    id
+    edit_new(cx, "Round Pier", |id, l| {
+        l.piers.push(Pier::new(id, center))
+    })
 }
 
 /// Adds a hole in the floor or ceiling platform; returns its id.
 pub fn add_platform_hole(cx: &mut EditorContext, outline: Vec<Point>, kind: PlatformKind) -> Id {
-    let id = cx.project.alloc_id();
     let label = match kind {
         PlatformKind::Floor => "Hole in Floor Platform",
         PlatformKind::Ceiling => "Hole in Ceiling Platform",
     };
-    edit(cx, label, |l| {
+    edit_new(cx, label, |id, l| {
         l.platform_holes.push(PlatformHole::new(id, outline, kind));
-    });
-    id
+    })
 }
 
 /// Deletes the object as one undo step; returns whether it existed.
@@ -760,9 +781,40 @@ fn draw_selected(
     }
 }
 
+/// Draws an "S" where the stem walls or slab edges of the active foundation
+/// floor step (manual pp. 740, 743), when the foundation was built with Show
+/// "S" Markers on Step Foundation and the "Footings, Step Markers" layer is
+/// on.
+pub fn draw_step_markers(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
+    let floor = cx.floor();
+    if floor.kind != plan_core::FloorKind::Foundation
+        || !cx.layers().is_visible(LAYER_STEP_MARKERS)
+        || !floor
+            .settings
+            .foundation_options
+            .is_none_or(|o| o.settings.s_markers)
+    {
+        return;
+    }
+    let color = layer_color(cx, LAYER_STEP_MARKERS, [120, 60, 60]);
+    for m in foundation::step_markers(floor) {
+        let at = foundation::step_marker_label_at(floor, &m, 6.0);
+        let p = cam.world_to_screen(at);
+        painter.circle_stroke(p, 8.0, Stroke::new(1.0_f32, color));
+        painter.text(
+            p,
+            egui::Align2::CENTER_CENTER,
+            "S",
+            egui::FontId::proportional(11.0),
+            color,
+        );
+    }
+}
+
 /// Draws the active floor's slabs, holes, pads and piers, and the selection.
 /// Called from `render::draw_plan`.
 pub fn draw_foundation(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
+    draw_step_markers(cx, painter, cam);
     let layer = load(cx);
     if layer.is_empty() {
         return;
@@ -800,6 +852,71 @@ pub fn draw_foundation(cx: &EditorContext, painter: &egui::Painter, cam: &Camera
         }
     }
     draw_selection(painter, cam, cx, &layer);
+}
+
+// ===================================================================
+// Auto Rebuild Foundation and the Attic warning
+// ===================================================================
+
+/// Is the active floor the foundation floor while Auto Rebuild Foundation is
+/// on? Its walls, rooms and objects cannot then be edited by hand: a rebuild
+/// would delete the changes (manual p. 745).
+pub fn locked(cx: &EditorContext) -> bool {
+    cx.floor().kind == plan_core::FloorKind::Foundation && cx.project.foundation_auto_rebuild()
+}
+
+/// [`locked`], saying why in the status line when it is.
+pub fn warn_locked(cx: &mut EditorContext) -> bool {
+    if !locked(cx) {
+        return false;
+    }
+    cx.status = "Auto Rebuild Foundation is on: turn it off in the Foundation Defaults to \
+                 edit Floor 0 by hand"
+        .into();
+    true
+}
+
+/// Auto Rebuild Foundation: when the foundation was built with it on and
+/// Floor 1 has changed in a way the foundation follows, builds it again with
+/// the same choices. It follows the edit that caused it (no undo step of its
+/// own, as Auto Rebuild Roofs). Returns whether it rebuilt.
+pub fn auto_rebuild(cx: &mut EditorContext) -> bool {
+    if !super::rooms_edit::auto_rebuild_foundation(cx) {
+        return false;
+    }
+    cx.refresh();
+    true
+}
+
+thread_local! {
+    static ATTIC_WARNED: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
+/// The Attic floor warning (manual p. 773): the first time the active floor
+/// is an Attic holding walls or objects other than the attic walls, says so
+/// in the status line. Returns the warning when it was just shown.
+pub fn attic_warning(cx: &mut EditorContext) -> Option<&'static str> {
+    let w = cx.project.attic_floor_warning(cx.floor);
+    match w {
+        Some(text) => {
+            let key = cx.floor;
+            if ATTIC_WARNED.with(|c| c.replace(Some(key))) == Some(key) {
+                return None;
+            }
+            cx.status = text.into();
+            Some(text)
+        }
+        None => {
+            ATTIC_WARNED.with(|c| c.set(None));
+            None
+        }
+    }
+}
+
+/// Once a frame: Auto Rebuild Foundation and the Attic warning.
+pub fn frame(cx: &mut EditorContext) -> bool {
+    attic_warning(cx);
+    auto_rebuild(cx)
 }
 
 #[cfg(test)]

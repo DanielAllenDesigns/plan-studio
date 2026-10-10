@@ -451,11 +451,24 @@ fn absorb(n: &mut Notes) {
 /// The font notes since the last call: families that are not installed (the
 /// bundled font is drawn) and fonts the PDF writer could not embed
 /// (Helvetica is printed). Each is reported once.
-#[cfg_attr(not(test), allow(dead_code))] // for a status line that wants each note once
 pub fn take_notes() -> Vec<String> {
     let mut n = notes().lock().unwrap_or_else(|e| e.into_inner());
     absorb(&mut n);
     std::mem::take(&mut n.pending)
+}
+
+/// Puts the new font notes (if any) on the status line, once each: the shell
+/// calls this every frame. Returns whether the status changed.
+pub fn post_notes(status: &mut String) -> bool {
+    status_from_notes(status, take_notes())
+}
+
+fn status_from_notes(status: &mut String, notes: Vec<String>) -> bool {
+    if notes.is_empty() {
+        return false;
+    }
+    *status = notes.join(" ");
+    true
 }
 
 /// Every font note of this run (including those already taken).
@@ -916,6 +929,28 @@ mod tests {
         );
         assert_eq!(seen.last().unwrap().size, 14.0);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn font_notes_reach_the_status_line_once_each() {
+        let mut status = "Ready".to_string();
+        assert!(!status_from_notes(&mut status, Vec::new()));
+        assert_eq!(status, "Ready");
+        let notes = vec![
+            "Font \"A\" is not installed; the bundled font is used.".to_string(),
+            "Font \"B\" does not allow embedding.".to_string(),
+        ];
+        assert!(status_from_notes(&mut status, notes));
+        assert!(
+            status.contains("\"A\"") && status.contains("\"B\""),
+            "{status}"
+        );
+        // The real queue is drained by taking: a second post has nothing.
+        let mut other = "Ready".to_string();
+        let _ = post_notes(&mut other);
+        assert!(take_notes()
+            .iter()
+            .all(|n| !n.contains("Font \"A\" is not")));
     }
 
     #[test]

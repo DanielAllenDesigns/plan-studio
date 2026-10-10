@@ -28,6 +28,7 @@ pub(crate) fn run(ctx: &Ctx, out: &mut Vec<Finding>) {
         let obstacles = obstacles(ctx, &fixtures, &cabs);
         water_closets(ctx, &fixtures, &obstacles, out);
         shower_and_tub_size(ctx, &fixtures, out);
+        shower_entrance(ctx, &fixtures, &obstacles, out);
         door_swing_into_fixture(ctx, &fixtures, out);
     }
     kitchen(ctx, &cabs, out);
@@ -247,6 +248,45 @@ fn shower_and_tub_size(ctx: &Ctx, fixtures: &[Fixture], out: &mut Vec<Finding>) 
                     "Enlarge the compartment to at least 30\" x 30\" (900 sq in for a shower).",
                 )
                 .at(s.position + f.v * (s.depth * 0.5))
+                .on(Target::Symbol(s.id)),
+            );
+        }
+    }
+}
+
+/// IRC R307.1 (Figure P2705.1): a shower or tub needs 24" clear in front of
+/// its entrance. The front is the side the fixture faces.
+fn shower_entrance(
+    ctx: &Ctx,
+    fixtures: &[Fixture],
+    obstacles: &[(usize, Vec<Point>)],
+    out: &mut Vec<Finding>,
+) {
+    let need = ctx.opts.shower_front_clear;
+    for (i, f) in fixtures.iter().enumerate() {
+        if f.kind == FixKind::WaterCloset {
+            continue;
+        }
+        let s = f.sym;
+        let front = [-0.35, 0.0, 0.35]
+            .into_iter()
+            .filter_map(|k| {
+                let from = s.position + f.v * s.depth + f.u * (s.width * k);
+                ray_hit(from, f.v, need, obstacles, i)
+            })
+            .min_by(|a, b| a.total_cmp(b));
+        if let Some(d) = front.filter(|d| *d < need - EPS) {
+            out.push(
+                finding(
+                    "IRC R307.1 shower entrance clearance",
+                    Severity::Warning,
+                    format!(
+                        "{} has {d:.0}\" clear in front of its entrance; {need:.0}\" is needed.",
+                        f.label()
+                    ),
+                    "Move the fixture or the obstruction so 24\" is clear in front of the shower or tub entrance.",
+                )
+                .at(s.position + f.v * (s.depth + need * 0.5))
                 .on(Target::Symbol(s.id)),
             );
         }

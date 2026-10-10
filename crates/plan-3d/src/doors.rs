@@ -74,7 +74,10 @@ fn panel(
 fn hinge_leaf(ctx: &Ctx, angle_deg: f64) -> Leaf {
     let (hs, dsign) = ctx.hinge();
     let a = angle_deg.to_radians();
-    Leaf::new((hs, 0.0), (dsign * a.cos(), ctx.swing_sign() * a.sin()))
+    Leaf::new(
+        (hs, ctx.recess_t()),
+        (dsign * a.cos(), ctx.swing_sign() * a.sin()),
+    )
 }
 
 /// Door slab lite: upper two thirds, `STILE` wide borders.
@@ -223,14 +226,39 @@ fn bifold(ctx: &Ctx, set: &mut MeshSet) {
     }
 }
 
+/// The two leaves of a double door standing open by `angle` (radians): hinged
+/// at the jambs, or both in the middle for "Swings from Center"; a leaf the
+/// Door Swing choice keeps shut stays closed.
+fn double_leaves(ctx: &Ctx, angle: f64) -> [Leaf; 2] {
+    let h = ctx.hole;
+    let spec = &ctx.opening.extras.spec;
+    let mid = (h.s0 + h.s1) * 0.5;
+    let hinges = if spec.swings_from_center {
+        [(mid, -1.0), (mid, 1.0)]
+    } else {
+        [(h.s0, 1.0), (h.s1, -1.0)]
+    };
+    let mut k = 0;
+    hinges.map(|(hs, dsign)| {
+        let a = if spec.door_swing.swings(k == 1) {
+            angle
+        } else {
+            0.0
+        };
+        k += 1;
+        Leaf::new(
+            (hs, ctx.recess_t()),
+            (dsign * a.cos(), ctx.swing_sign() * a.sin()),
+        )
+    })
+}
+
 /// Two hinged leaves, each half the opening, meeting in the middle.
 fn double(ctx: &Ctx, set: &mut MeshSet, angle: f64) {
     let h = ctx.hole;
     let half_w = (h.s1 - h.s0) * 0.5;
-    let a = angle.to_radians();
     let t = DOOR_THICKNESS * 0.5;
-    for (hs, dsign) in [(h.s0, 1.0), (h.s1, -1.0)] {
-        let leaf = Leaf::new((hs, 0.0), (dsign * a.cos(), ctx.swing_sign() * a.sin()));
+    for leaf in double_leaves(ctx, angle.to_radians()) {
         let lite = door_lite(ctx, half_w);
         panel(
             &ctx.frame,
@@ -498,9 +526,7 @@ fn hardware(ctx: &Ctx, set: &mut MeshSet, style: OpeningStyle) {
             hardware_on_leaf(ctx, set, &hinge_leaf(ctx, angle), w, true);
         }
         OpeningStyle::DoubleDoor => {
-            let a = open_angle(ctx).to_radians();
-            for (hs, dsign) in [(h.s0, 1.0), (h.s1, -1.0)] {
-                let leaf = Leaf::new((hs, 0.0), (dsign * a.cos(), ctx.swing_sign() * a.sin()));
+            for leaf in double_leaves(ctx, open_angle(ctx).to_radians()) {
                 hardware_on_leaf(ctx, set, &leaf, w * 0.5, true);
             }
         }
@@ -575,6 +601,7 @@ pub fn build(ctx: &Ctx, set: &mut MeshSet) {
             interior: ctx.interior,
             opts: ctx.opts,
             unit: ctx.unit,
+            sash: Default::default(),
         };
         build_style(&low, set, style);
         arch_cap(ctx, set, &arch, style != OpeningStyle::Doorway);

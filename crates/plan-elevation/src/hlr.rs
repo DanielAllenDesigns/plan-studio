@@ -741,9 +741,10 @@ pub(crate) fn render(
         }
     }
     if opts.hatch {
-        drawing
-            .lines
-            .extend(crate::hatch::hatch_lines(&drawing.regions));
+        drawing.lines.extend(crate::hatch::hatch_lines(
+            &drawing.regions,
+            opts.hatch_scale,
+        ));
     }
     drawing
 }

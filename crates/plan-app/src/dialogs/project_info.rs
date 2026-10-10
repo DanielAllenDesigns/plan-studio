@@ -1,23 +1,34 @@
-//! Tools > Project Information: the client, designer, job number, date,
-//! revision table and custom fields of the plan (`plan_core::schedules::ProjectInfo`).
+//! Tools > Project Information: Owners and their Name-Value Pairs, and the
+//! revision table of the plan (`plan_core::schedules::ProjectInfo`; manual
+//! pp. 569, 570).
+//!
+//! The left side lists the **Owners**: the system owners Project, Designer
+//! and Client, which cannot be renamed or deleted, and custom owners (shown
+//! in italics) that can be added, duplicated, renamed and deleted. The right
+//! side lists the selected owner's **Name-Value Pairs**: the system names
+//! cannot be edited or deleted; custom names (italic) can be added, renamed
+//! (double-click) and deleted; Clear Values blanks every value. Every pair is
+//! a text macro in any text object, `%<owner>.<name>%` (`%client.name%`,
+//! `%builder.license_no%`), and the Client and Designer pairs go to the
+//! REScheck export.
 //!
 //! The dialog edits a clone; OK stores it with [`apply`] as one undo step
 //! ("Project Information"). The layout title blocks read the values through
 //! `ProjectInfo::macro_pairs` (`%client%`, `%project.number%`, `%revision%`...).
+//! The custom owners travel inside `ProjectInfo::custom` under a reserved key
+//! (`plan_core::macros::OWNERS_KEY`).
 
-use super::{on, pv_text, row, section, Outcome, SpecDialog, SpecPages, Tab, PV_FAINT, PV_INK};
+// The Owners buttons are also calls for the scenarios and the shell.
+#![allow(dead_code)]
+
+use super::{on, pv_text, section, Outcome, SpecDialog, SpecPages, Tab, PV_FAINT, PV_INK};
 use crate::editor::EditorContext;
 use eframe::egui::{self, Align2, Painter, Pos2, Rect, Stroke, StrokeKind, Ui};
+use plan_core::macros::{MacroOwners, OWNER_CLIENT, SYSTEM_OWNERS};
 use plan_core::schedules::ProjectInfo;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const TABS: &[Tab] = &[
-    on("Client"),
-    on("Project"),
-    on("Designer"),
-    on("Revisions"),
-    on("Custom Fields"),
-];
+const TABS: &[Tab] = &[on("Owners"), on("Revisions")];
 
 /// Stores `info` on the project as one undo step. Returns whether it changed.
 pub fn apply(cx: &mut EditorContext, info: ProjectInfo) -> bool {
@@ -63,6 +74,17 @@ struct Form {
     info: ProjectInfo,
     /// The client address as typed (one line per address line).
     address: String,
+    /// The custom owners and extra pairs being edited.
+    owners: MacroOwners,
+    selected: String,
+    selected_field: Option<String>,
+    /// Text typed for Add (owner), Rename (owner) and Add Field.
+    new_owner: String,
+    rename_owner: String,
+    new_field: String,
+    /// A custom name being renamed (double-click): `(old name, new text)`.
+    renaming: Option<(String, String)>,
+    error: Option<String>,
 }
 
 impl ProjectInfoDialog {
@@ -71,7 +93,15 @@ impl ProjectInfoDialog {
             frame: SpecDialog::new("Project Information", "project_info"),
             form: Form {
                 address: info.client_address.join("\n"),
+                owners: MacroOwners::from_info(info),
                 info: info.clone(),
+                selected: SYSTEM_OWNERS[0].to_string(),
+                selected_field: None,
+                new_owner: String::new(),
+                rename_owner: String::new(),
+                new_field: String::new(),
+                renaming: None,
+                error: None,
             },
         }
     }
@@ -80,7 +110,8 @@ impl ProjectInfoDialog {
         self.frame.show(ctx, &mut self.form)
     }
 
-    /// The edited information (address lines and empty rows cleaned up).
+    /// The edited information (address lines and empty rows cleaned up, the
+    /// custom owners stored in it).
     pub fn draft(&self) -> ProjectInfo {
         self.form.cleaned()
     }
@@ -89,17 +120,65 @@ impl ProjectInfoDialog {
     pub fn info_mut(&mut self) -> &mut ProjectInfo {
         &mut self.form.info
     }
-}
 
-fn text_row(ui: &mut Ui, label: &str, value: &mut String) {
-    row(ui, label, |ui| {
-        ui.add(egui::TextEdit::singleline(value).desired_width(260.0))
-    });
+    /// The Owners side, for tests and scenarios.
+    pub fn owners_mut(&mut self) -> (&mut MacroOwners, &mut ProjectInfo) {
+        (&mut self.form.owners, &mut self.form.info)
+    }
+
+    /// Selects an owner in the list.
+    pub fn select_owner(&mut self, name: &str) {
+        self.form.selected = name.to_string();
+        self.form.selected_field = None;
+    }
+
+    /// The Add / Duplicate / Rename / Delete buttons of the Owners list and
+    /// the Add Field / Delete Field / Clear Values buttons of the pairs, as
+    /// calls. Each returns the error to show, if any.
+    pub fn add_owner(&mut self, name: &str) -> Result<(), String> {
+        self.form.add_owner(name)
+    }
+
+    pub fn duplicate_owner(&mut self) -> Result<(), String> {
+        self.form.duplicate_owner()
+    }
+
+    pub fn rename_owner(&mut self, to: &str) -> Result<(), String> {
+        self.form.rename_selected_owner(to)
+    }
+
+    pub fn delete_owner(&mut self) -> bool {
+        self.form.delete_selected_owner()
+    }
+
+    pub fn add_field(&mut self, name: &str) -> Result<(), String> {
+        self.form.add_field(name)
+    }
+
+    pub fn set_value(&mut self, name: &str, value: &str) -> bool {
+        let owner = self.form.selected.clone();
+        self.form.set_value(&owner, name, value)
+    }
+
+    pub fn delete_field(&mut self, name: &str) -> bool {
+        let owner = self.form.selected.clone();
+        self.form
+            .owners
+            .delete_field(&mut self.form.info, &owner, name)
+    }
+
+    pub fn clear_values(&mut self) {
+        let owner = self.form.selected.clone();
+        self.form.owners.clear_values(&mut self.form.info, &owner);
+        if owner == OWNER_CLIENT {
+            self.form.address.clear();
+        }
+    }
 }
 
 impl Form {
-    /// The info with the address text split into lines and blank revision
-    /// and custom rows dropped.
+    /// The info with the address text split into lines, blank revision and
+    /// custom rows dropped, and the custom owners stored.
     fn cleaned(&self) -> ProjectInfo {
         let mut info = self.info.clone();
         info.client_address = self
@@ -111,44 +190,239 @@ impl Form {
         info.revisions
             .retain(|(n, d, t)| ![n, d, t].iter().all(|s| s.trim().is_empty()));
         info.custom.retain(|(k, _)| !k.trim().is_empty());
+        self.owners.store(&mut info);
         info
     }
 
-    fn client(&mut self, ui: &mut Ui) {
-        section(ui, "Client");
-        text_row(ui, "Name", &mut self.info.client_name);
-        row(ui, "Address", |ui| {
-            ui.add(
-                egui::TextEdit::multiline(&mut self.address)
-                    .desired_rows(3)
-                    .desired_width(260.0),
-            )
-        });
-        text_row(ui, "Phone", &mut self.info.client_phone);
-        text_row(ui, "Email", &mut self.info.client_email);
+    fn set_value(&mut self, owner: &str, name: &str, value: &str) -> bool {
+        if owner == OWNER_CLIENT && name == "Address" {
+            self.address = value.to_string();
+            return true;
+        }
+        self.owners.set_value(&mut self.info, owner, name, value)
     }
 
-    fn project(&mut self, ui: &mut Ui) {
-        section(ui, "Project");
-        text_row(ui, "Project number", &mut self.info.project_number);
-        text_row(ui, "Project address", &mut self.info.project_address);
-        row(ui, "Date", |ui| {
-            ui.add(egui::TextEdit::singleline(&mut self.info.date).desired_width(120.0));
-            if ui.button("Today").clicked() {
-                self.info.date = today();
+    fn add_owner(&mut self, name: &str) -> Result<(), String> {
+        let n = self.owners.add_owner(name)?;
+        self.selected = n;
+        self.selected_field = None;
+        Ok(())
+    }
+
+    fn duplicate_owner(&mut self) -> Result<(), String> {
+        // The address buffer is the Client address while editing.
+        self.info.client_address = self
+            .address
+            .lines()
+            .map(|l| l.trim_end().to_string())
+            .filter(|l| !l.trim().is_empty())
+            .collect();
+        let n = self.owners.duplicate_owner(&self.info, &self.selected)?;
+        self.selected = n;
+        self.selected_field = None;
+        Ok(())
+    }
+
+    fn rename_selected_owner(&mut self, to: &str) -> Result<(), String> {
+        self.owners.rename_owner(&self.selected, to)?;
+        self.selected = to.trim().to_string();
+        Ok(())
+    }
+
+    fn delete_selected_owner(&mut self) -> bool {
+        let gone = self.owners.delete_owner(&self.selected);
+        if gone {
+            self.selected = SYSTEM_OWNERS[0].to_string();
+            self.selected_field = None;
+        }
+        gone
+    }
+
+    fn add_field(&mut self, name: &str) -> Result<(), String> {
+        let n = self
+            .owners
+            .add_field(&mut self.info, &self.selected.clone(), name)?;
+        self.selected_field = Some(n);
+        Ok(())
+    }
+
+    /// The Owners panel: the list and its four buttons.
+    fn owners_list(&mut self, ui: &mut Ui) {
+        section(ui, "Owners");
+        let views = self.owners.views(&self.info);
+        for v in &views {
+            let mut text = egui::RichText::new(&v.name);
+            if !v.system {
+                text = text.italics();
+            }
+            if ui.selectable_label(self.selected == v.name, text).clicked() {
+                self.selected = v.name.clone();
+                self.selected_field = None;
+                self.rename_owner = v.name.clone();
+            }
+        }
+        if !views.iter().any(|v| v.name == self.selected) {
+            self.selected = SYSTEM_OWNERS[0].to_string();
+        }
+        ui.add_space(4.0);
+        let custom = !SYSTEM_OWNERS.contains(&self.selected.as_str());
+        ui.horizontal(|ui| {
+            ui.add(egui::TextEdit::singleline(&mut self.new_owner).desired_width(110.0));
+            if ui.button("Add").clicked() {
+                let n = std::mem::take(&mut self.new_owner);
+                self.error = self.add_owner(&n).err();
             }
         });
-        text_row(ui, "Current revision", &mut self.info.revision);
+        ui.horizontal(|ui| {
+            if ui.button("Duplicate").clicked() {
+                self.error = self.duplicate_owner().err();
+            }
+            if ui
+                .add_enabled(custom, egui::Button::new("Delete"))
+                .clicked()
+            {
+                self.delete_selected_owner();
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.add_enabled(
+                custom,
+                egui::TextEdit::singleline(&mut self.rename_owner).desired_width(110.0),
+            );
+            if ui
+                .add_enabled(custom, egui::Button::new("Rename"))
+                .clicked()
+            {
+                let to = self.rename_owner.clone();
+                self.error = self.rename_selected_owner(&to).err();
+            }
+        });
     }
 
-    fn designer(&mut self, ui: &mut Ui) {
-        section(ui, "Designer");
-        text_row(ui, "Designer", &mut self.info.designer);
-        text_row(ui, "Company", &mut self.info.company);
-        text_row(ui, "Drawn by", &mut self.info.drawn_by);
-        text_row(ui, "Checked by", &mut self.info.checked_by);
-        ui.add_space(6.0);
-        ui.weak("Drawn by fills the title block's %designer% (DRAWN BY) box when set.");
+    /// The Name-Value Pairs of the selected owner.
+    fn pairs_panel(&mut self, ui: &mut Ui) {
+        let owner = self.selected.clone();
+        section(ui, &format!("Name-Value Pairs: {owner}"));
+        let Some(view) = self
+            .owners
+            .views(&self.info)
+            .into_iter()
+            .find(|v| v.name == owner)
+        else {
+            return;
+        };
+        let mut changes: Vec<(String, String)> = Vec::new();
+        let mut finish_rename: Option<(String, String)> = None;
+        egui::Grid::new("project_info_pairs")
+            .num_columns(2)
+            .striped(true)
+            .show(ui, |ui| {
+                ui.strong("Name");
+                ui.strong("Value");
+                ui.end_row();
+                for p in &view.pairs {
+                    let is_sel = self.selected_field.as_deref() == Some(p.name.as_str());
+                    // The name: system names are plain, custom names are
+                    // italic and rename on a double-click.
+                    let renaming_here = !p.system
+                        && self
+                            .renaming
+                            .as_ref()
+                            .is_some_and(|(old, _)| *old == p.name);
+                    if renaming_here {
+                        if let Some((old, buf)) = self.renaming.as_mut() {
+                            let r = ui.add(egui::TextEdit::singleline(buf).desired_width(110.0));
+                            if r.lost_focus() {
+                                finish_rename = Some((old.clone(), buf.clone()));
+                            }
+                        }
+                    } else {
+                        let mut t = egui::RichText::new(&p.name);
+                        if !p.system {
+                            t = t.italics();
+                        }
+                        let r = ui.selectable_label(is_sel, t);
+                        if r.clicked() {
+                            self.selected_field = Some(p.name.clone());
+                        }
+                        if r.double_clicked() && !p.system {
+                            self.renaming = Some((p.name.clone(), p.name.clone()));
+                        }
+                    }
+                    let mut v = if owner == OWNER_CLIENT && p.name == "Address" {
+                        self.address.clone()
+                    } else {
+                        p.value.clone()
+                    };
+                    let changed = if owner == OWNER_CLIENT && p.name == "Address" {
+                        ui.add(
+                            egui::TextEdit::multiline(&mut v)
+                                .desired_rows(3)
+                                .desired_width(240.0),
+                        )
+                        .changed()
+                    } else {
+                        ui.add(egui::TextEdit::singleline(&mut v).desired_width(240.0))
+                            .changed()
+                    };
+                    if changed {
+                        changes.push((p.name.clone(), v));
+                    }
+                    ui.end_row();
+                }
+            });
+        for (name, v) in changes {
+            self.set_value(&owner, &name, &v);
+        }
+        if let Some((old, new)) = finish_rename {
+            self.renaming = None;
+            if old != new.trim() {
+                self.error = self
+                    .owners
+                    .rename_field(&mut self.info, &owner, &old, &new)
+                    .err();
+            }
+        }
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.add(egui::TextEdit::singleline(&mut self.new_field).desired_width(110.0));
+            if ui.button("Add Field").clicked() {
+                let n = std::mem::take(&mut self.new_field);
+                self.error = self.add_field(&n).err();
+            }
+            let deletable = self
+                .selected_field
+                .as_deref()
+                .is_some_and(|f| view.pairs.iter().any(|p| p.name == f && !p.system));
+            if ui
+                .add_enabled(deletable, egui::Button::new("Delete Field"))
+                .clicked()
+            {
+                if let Some(f) = self.selected_field.take() {
+                    self.owners.delete_field(&mut self.info, &owner, &f);
+                }
+            }
+            if ui.button("Clear Values").clicked() {
+                self.owners.clear_values(&mut self.info, &owner);
+                if owner == OWNER_CLIENT {
+                    self.address.clear();
+                }
+            }
+        });
+        ui.weak(format!(
+            "Use a name in any text as %{}.<name>%; the Client and Designer pairs go to REScheck.",
+            plan_core::macros::slug(&owner)
+        ));
+    }
+
+    fn owners_page(&mut self, ui: &mut Ui) {
+        ui.columns(2, |cols| {
+            self.owners_list(&mut cols[0]);
+            self.pairs_panel(&mut cols[1]);
+        });
+        if let Some(e) = &self.error {
+            ui.colored_label(egui::Color32::from_rgb(0xE0, 0x4B, 0x4B), e);
+        }
     }
 
     fn revisions(&mut self, ui: &mut Ui) {
@@ -188,40 +462,14 @@ impl Form {
                 .push((next.to_string(), today(), String::new()));
             self.info.revision = next.to_string();
         }
-    }
-
-    fn custom(&mut self, ui: &mut Ui) {
-        section(ui, "Custom Fields");
-        ui.weak("Each field is available in layout text as %custom.name%.");
-        let mut remove = None;
-        egui::Grid::new("project_info_custom")
-            .num_columns(3)
-            .striped(true)
-            .show(ui, |ui| {
-                ui.strong("Name");
-                ui.strong("Value");
-                ui.label("");
-                ui.end_row();
-                for (i, (k, v)) in self.info.custom.iter_mut().enumerate() {
-                    ui.add(egui::TextEdit::singleline(k).desired_width(110.0));
-                    ui.add(egui::TextEdit::singleline(v).desired_width(190.0));
-                    if ui
-                        .small_button("\u{2715}")
-                        .on_hover_text("Remove")
-                        .clicked()
-                    {
-                        remove = Some(i);
-                    }
-                    ui.end_row();
-                }
-            });
-        if let Some(i) = remove {
-            self.info.custom.remove(i);
-        }
-        ui.add_space(4.0);
-        if ui.button("Add Field").clicked() {
-            self.info.custom.push((String::new(), String::new()));
-        }
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            ui.label("Date");
+            ui.add(egui::TextEdit::singleline(&mut self.info.date).desired_width(120.0));
+            if ui.button("Today").clicked() {
+                self.info.date = today();
+            }
+        });
     }
 }
 
@@ -236,11 +484,8 @@ impl SpecPages for Form {
 
     fn page(&mut self, ui: &mut Ui, tab: usize) {
         match tab {
-            0 => self.client(ui),
-            1 => self.project(ui),
-            2 => self.designer(ui),
-            3 => self.revisions(ui),
-            _ => self.custom(ui),
+            0 => self.owners_page(ui),
+            _ => self.revisions(ui),
         }
     }
 
@@ -350,5 +595,52 @@ mod tests {
                 });
             });
         }
+    }
+
+    #[test]
+    fn owners_and_pairs_follow_the_buttons() {
+        use plan_core::macros::MacroOwners;
+        let mut d = ProjectInfoDialog::new(&ProjectInfo::default());
+        // The system owners cannot be renamed or deleted.
+        d.select_owner("Client");
+        assert!(d.rename_owner("Buyer").is_err());
+        assert!(!d.delete_owner());
+        // A custom owner with a field, duplicated and deleted.
+        d.add_owner("Builder").unwrap();
+        assert!(d.add_owner("builder").is_err());
+        d.add_field("License No").unwrap();
+        assert!(d.add_field("license no").is_err());
+        assert!(d.set_value("License No", "GA-5521"));
+        d.duplicate_owner().unwrap();
+        assert!(d.rename_owner("Framer").is_ok());
+        assert!(d.delete_owner());
+        // The Client's address is typed in lines; Clear Values blanks it.
+        d.select_owner("Client");
+        assert!(d.set_value("Name", "Pat Smith"));
+        assert!(d.set_value("Address", "12 Oak St\nAtlanta, GA"));
+        let out = d.draft();
+        assert_eq!(out.client_name, "Pat Smith");
+        assert_eq!(out.client_address, ["12 Oak St", "Atlanta, GA"]);
+        // The owners ride in the information and survive the store.
+        let owners = MacroOwners::from_info(&out);
+        assert_eq!(owners.value(&out, "Builder", "License No"), "GA-5521");
+        assert!(owners.views(&out).iter().all(|v| v.name != "Framer"));
+        let mut cx = EditorContext::new(plan_defaults::embedded());
+        assert!(apply(&mut cx, out.clone()));
+        let back = plan_core::Project::from_json(&cx.project.to_json().unwrap()).unwrap();
+        assert_eq!(
+            MacroOwners::from_info(&back.info).value(&back.info, "Builder", "License No"),
+            "GA-5521"
+        );
+        d.clear_values();
+        let cleared = d.draft();
+        assert_eq!(cleared.client_name, "");
+        assert!(cleared.client_address.is_empty());
+        // Both sides of the window draw with a custom owner selected.
+        d.select_owner("Builder");
+        let ctx = egui::Context::default();
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| d.form.page(ui, 0));
+        });
     }
 }

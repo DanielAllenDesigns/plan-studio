@@ -138,7 +138,7 @@ Two details worth knowing:
 Status: **Works** (the command runs today), **(planned)** (the command is on a dimmed button; the key is kept and reports
 "Not yet implemented"), **No matching command yet** (Chief has the command; Plan Studio has no equivalent
 and shows the key under "Chief bindings with no action in Plan Studio yet" in the dialog), or a flag toggle.
-Of the 143 named bindings, 121 work or toggle a flag, 3 are planned (Display Options, Object Eyedropper, Zoom), 18 have no matching command and 1 (Straight Railing) works from the toolbar but not from its key (counted from the table below at the Round 10 working tree; the unit test in `shell/hotkeys.rs` pins the 143 and the Customize Hotkeys dialog shows the live tally). Round 10 made the door and window flyout keys, Floor Defaults, Preferences, Print and Revision Cloud live, along with the clipboard keys; off macOS Down One Floor loses its key, 13.6).
+Of the 143 named bindings, 122 work or toggle a flag, 3 are planned (Display Options, Object Eyedropper, Zoom), 17 have no matching command and 1 (Straight Railing) works from the toolbar but not from its key (counted from the table below at the Round 10 working tree, with Refresh Display, which became live in a later round, moved from the third group to the first; the unit test in `shell/hotkeys.rs` pins the 143 and may count 121 and 18; the unit test in `shell/hotkeys.rs` pins the 143 and the Customize Hotkeys dialog shows the live tally). Round 10 made the door and window flyout keys, Floor Defaults, Preferences, Print and Revision Cloud live, along with the clipboard keys; off macOS Down One Floor loses its key, 13.6).
 
 | Command | Daniel's key | Status |
 |---|---|---|
@@ -249,7 +249,7 @@ Of the 143 named bindings, 121 work or toggle a flag, 3 are planned (Display Opt
 | Redo | `Cmd+Y` | Works |
 | Reference Display | `F9` | Toggles a flag: draws the floor below in gray |
 | Reference Grid | `Shift+F9` | Works |
-| Refresh Display | `F5` | No matching command yet |
+| Refresh Display | `F5` | Works (View > Refresh Display; the key is read directly) |
 | Revision Cloud | `Ctrl+Alt+Shift+Cmd+!` | Works |
 | Rich Text | `Ctrl+Alt+Cmd+J` | Works |
 | Roof Hole | `Ctrl+Alt+Shift+Cmd+T` | Works |
@@ -330,16 +330,18 @@ Key (Chief command id): `Shift+F4` (106); `W` (202); `2` (231); `Cmd+D` (237); `
 | **Show Commands/Hotkeys Containing** | A search. It matches the command name, its group and its hotkey text; the list is sorted by group, then name. |
 | **Show:** All, Assigned, Unassigned, In conflict | A filter on the table: every command, only the commands that have a key, only those without one, or only the commands whose keys clash with another's. |
 | **Command Name / Hotkey / Group table** | Every command, its current keys (several sequences are shown separated by semicolons) and its group (File, Edit, Walls ...). Dimmed names are commands not built yet; hover for "Not built yet; the key is kept for later". A clashing row ends with "(conflict)" in amber. Click a row to select the command. |
-| **Conflicts (n)** | An amber list under the table of every sequence that two or more commands share, as `sequence: command, command`. It is open while there are conflicts. Reassign (below) or Remove a key to clear one; a conflict is not a refusal, so a map that already has them (an old `hotkeys.json`, or an import) still loads. |
+| **Group by menu** | Lists the commands under the Chief menu that holds them (File, Edit, Build ...) instead of one long table. |
+| **Conflicts (n)** | An amber list under the table of every sequence that two or more commands share, as `sequence: command, command`. Each command has a **Keep for <command>** button that takes the key from the others in one click; **Resolve All Conflicts** keeps each clashing key for the first command by name. A conflict is not a refusal, so a map that already has them (an old `hotkeys.json`, or an import) still loads. |
+| **Collide on Windows and Linux (n)** | Keys that differ on a Mac (Control against Command) but are one key on Windows and Linux, listed with the same one-click buttons. |
 | **Chief bindings with no action in Plan Studio yet** | A collapsed list of Daniel's named bindings that have no command here. A line above the table counts Daniel's bindings: how many are named, how many have a Plan Studio command and how many work today. |
 | **Assign a sequence of up to 4 hotkeys to <command>** | Click the field (it says "Click here, then press keys"; it shows "Press keys..."), then press the keys one after another, up to four chords. `Esc` stops recording. |
 | **Clear** | Empties the recorded sequence. |
 | **Assign** | Adds the recorded sequence to the selected command. |
 | **Already used by: ...** and **Reassign** | **While you record**, the dialog warns as soon as the sequence is the same as, a prefix of, or begins with another command's sequence, and names the commands. Assign then changes nothing; **Reassign** takes the sequence from them. |
 | **Current hotkeys** and **Remove** | The selected command's sequences; pick one and press Remove. |
-| **Reset Hotkeys** | Returns to the base table plus Daniel's keys, dropping all your edits. |
+| **Reset Hotkeys** and **Reset to Chief Defaults** | Reset Hotkeys returns to the base table plus Daniel's keys, dropping all your edits. Reset to Chief Defaults returns to Chief's own default keys, without Daniel's file. |
 | **Import Chief Hotkeys...** | Reads a Chief `UserHotkeys.xml` over the keys above: every command the file binds that Plan Studio has gets the file's keys (its current keys are replaced, and any other command holding a key loses it); commands the file does not bind keep what they have. Plan Studio's own extra keys on an imported command, such as the number keys, are replaced too; Reset Hotkeys brings them back. The names are recovered from Chief's command catalog because the file stores ids only. A line reports how many bindings, commands and unmapped keys the file had. |
-| **Export...** | Saves the keys. **JSON** (`hotkeys.json`) is the file of differences described below; **CSV** is the whole list as `Group,Command,Hotkeys` for a spreadsheet. The extension you type picks the format. |
+| **Export...** | Saves the keys. **UserHotkeys.xml** is Chief's own format (it can be read back with Import Chief Hotkeys); **JSON** (`hotkeys.json`) is the file of differences described below; **CSV** is the whole list as `Group,Command,Hotkeys` for a spreadsheet. The extension you type picks the format. |
 | **Print List** | Makes a two-column PDF (US Letter, "Plan Studio hotkeys" with the number of commands with keys, in groups) of every assigned key in a temporary file and opens it in your system viewer, where you print it. |
 | **Help**, **Cancel**, **OK** | Help opens this chapter in the Help viewer (1.6a). Cancel discards the edits. OK applies them and writes `~/.plan-studio/hotkeys.json`. |
 
@@ -408,6 +410,14 @@ These go to the active tool, not the hotkey map.
 | `Enter` | **Recover Unsaved Work** prompt (after a crash, or when an autosave is newer than the plan) | `Enter` Recover. Discard has no key, so a stray `Enter` cannot delete the copy. |
 | `Shift` | Select, hotkey modifiers | Adds to the selection; `Shift`+drag pans in 3D. |
 | Arrow keys | 3D Full Camera; Electrical free device | Walk; turn the device (`Shift` = 90 degrees). |
+| Arrow keys, `Shift`+arrow keys | 3D view, Select Objects, an object selected (not the Full Camera) | Nudge the selection one snap unit (ten with `Shift`) along the plan axis nearest the arrow's direction on screen. One undo step, "Move Objects". |
+| Alt-click | 3D overview and doll house views | Makes the clicked surface point the orbit centre (Round 13). |
+| Double-click | 3D view | On an object, opens its specification; on empty space, frames the whole building again, keeping the viewing angle. |
+| Drag a selected object | 3D view, Select Objects (cabinet, placed symbol, device, detail, stair) | Slides it along the floor with the plan's snapping; `Alt` suspends the snap, `Shift` holds the move to the object's own axis (or the one across it), `Esc` puts it back. One undo step, "Move Objects". |
+| `Alt` + press | Select Objects | Starts a marquee even on top of an object (chapter 2.5). |
+| `Ctrl` (`Cmd` on a Mac) held at the start of a drag | Select Objects; Edit Area | Copies the selection instead of moving it (chapter 2.5). |
+| Digits, `Tab`, `Enter`, `Esc` | Select Objects while dragging a move or a rotate | Type the distance (and, after `Tab`, the angle) of a move, or the degrees of a turn (chapter 2.5). |
+| `Shift` | Draw Line | Holds the line to 15-degree steps (chapter 5.4). |
 | `W` `A` `S` `D`, `Page Up`, `Page Down` | 3D Full Camera | Walk; raise or lower the eye. |
 | `Backspace` | Polyline, spline | Drops the last vertex. |
 | `Enter`, double-click | Slab tools, platform holes, Truss Base | Closes the polygon and makes the object. |

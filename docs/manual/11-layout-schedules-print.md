@@ -3,7 +3,7 @@
 This chapter covers turning the model into documents: schedules (as windows and as tables placed in the plan),
 the layout view where plan views, elevations and sections are arranged on sheets, Project Information and the
 title block, the Framing Takeoff, the materials list, the Create Construction Set PDF, and the printing path. It
-is honest about what is still missing: a plan has one layout, a layout cannot be saved as a template, there is no CAD-detail box in the Send to Layout dialog, and the schedule tables are not in the DXF (11.9).
+is honest about what is still missing: there is no CAD-detail box in the Send to Layout dialog, and the schedule tables are not in the DXF (11.9).
 
 ## 11.1 The documentation pipeline
 
@@ -40,7 +40,7 @@ Chief's Tools > Schedules submenu lists 12 schedule types. The four windows buil
 | Stair, Room Finish, Note | | Placed in the plan only (the Schedule flyout below), not as windows. |
 
 Each opens a window with a scrollable table and an **Export CSV...** button that asks for a file name (default
-`Door_Schedule.csv` and so on). The tables are live: reopen the window after editing the plan. Schedule numbers follow
+`Door_Schedule.csv` and so on) and, since Round 13, an **Export Excel...** button beside it that writes the same table as an `.xlsx` workbook (`Door_Schedule.xlsx`; the program writes the file itself, no Excel is needed to make it). The Schedule Specification (below) and the Materials List have the same two buttons. The tables are live: reopen the window after editing the plan. Schedule numbers follow
 creation order in these windows.
 
 Since Round 8 (QA-03, `docs/qa-findings.md`) the Room Schedule's "Area sq ft" is the **Interior Area**, the same number as the room label on the plan and the Room Specification, and its
@@ -130,9 +130,10 @@ view is `shell/layout_window.rs` with the dialogs in `dialogs/layout.rs`.
 ### Making and showing the layout
 
 - **File > New Layout** makes the plan's layout and shows it: a **Page Template** (not printed; its boxes and CAD repeat on every page, and the border and Daniel's 18 x 24
-  title block are drawn on every page) and an empty **Page 1**. The sheet comes from your layout template (1.7.1), else ARCH C (18 x 24). "New layout: page template and page 1" appears in the
-  status bar. **A plan has one layout**: if it already has one, File > New Layout opens it ("This plan already has a layout; opened it").
+  title block are drawn on every page) and an empty **Page 1**. The sheet comes from your layout template (1.7.1), else ARCH C (18 x 24), or a layout you saved as the default for that sheet size (**Layout > Save As Template**, below). "New layout: page template and page 1" appears in the
+  status bar. If the plan already has a layout, File > New Layout opens it ("This plan already has a layout; opened it"); **Layout > New Layout File...** makes another.
 - **File > Open Layout...**, **Window > Layout** and the Project Browser's **Open Layout** button show the layout (making it from the template if the plan has none). **Window > Floor Plan View** returns to the plan.
+- **More than one layout file (Round 14).** **Layout > New Layout File...** asks for a name and makes a second layout in the same plan and opens it; the other layout files are kept in the plan. The **Layout file** list on the window's third toolbar row (below) switches between them. File > New Layout still opens the plan's first layout when it has one.
 - The layout is stored in the plan file (`layout`, chapter 12.2), so it is saved and opened with the `.psplan`. Plan and layout share **one undo stack** (Round 8): Edit > Undo, `Cmd+Z` and the layout toolbar's Undo step back through plan and layout edits in the order you made them,
   whichever view is showing. Each step keeps its name ("Move Layout Box", "Send to Layout", "Insert Page", "New Layout" ...). A single stack was chosen over Chief's one per view so that undoing in the plan can never silently roll back
   a layout edit, or the other way round. The history holds 100 steps.
@@ -144,11 +145,13 @@ The layout view has a toolbar across the top, the sheet in the middle and **page
 | Part | What it does |
 |---|---|
 | Toolbar | Plan (back to the floor plan), Send to Layout, Box Specification, Delete Box, Page Before, Page After, Duplicate, Delete Page, the two Exchange arrows, Page Table, Update Views, Page Setup, Project Info, Undo, Redo, Fit, Print, and the zoom as a percentage. Hover for the tooltip. |
+| Third row (Round 14) | **Layout file** (a list of the plan's layout files) and **New Layout File...**, **Page Specification...**, **Sheet Sizes...**, **Align** (Left, Center, Right, Top, Middle, Bottom), **Spread H** and **Spread V**, **Copy to Page...**, **Open Source View**, **Duplicate Box**, and **Export CSV...** / **Export Excel...** for the table boxes (below). The row scrolls sideways. |
+| View row (Round 16) | **Rescale...**, **Recenter**, **Scale to Fit**, **Update View**, **Layers...**, **Unlink Saved View**, **Center Object**, the **Point to Point Move**, **Pan/Scale** and **Edit Layout Lines** tools, **Update Live Views**, **Update Plot Line Views** and **Send All Views...** (below, Editing a layout view). |
 | Tool row | A second row: the drawing **Tool** (Select, Line, Box, Polyline, Circle, Arc, Text, Text Box, Leader, Revision Cloud), then **Add Text Box**, **Add Materials List**, **Add Picture**, **Add Sheet Index**, **Layers...**, **Construction Set**, **Rotate**, and the **Print...**, **Print Image...** and **Print Model...** buttons (11.3, Other boxes and page drawings). The row scrolls sideways when the window is narrow. |
 | Page tabs | One tab per page, written `A-1  Page 1`. The template page reads `Page Template (template)` in italics. Click to open a page; double-click to rename it; the `+` tab adds a page after the last. Right-click a tab for Insert Page Before / After, Duplicate Page, Exchange With Previous / Next Page and Delete Page. |
 | Sheet | The page drawn on a dark surround. Scroll or pinch zooms at the pointer; dragging empty space pans. |
 
-Pages are numbered `A-1`, `A-2` ... in order, and renumber when you insert, delete or exchange pages. A layout keeps at least one printed page ("A layout keeps at least one page").
+Pages are numbered `A-1`, `A-2` ... in order, and renumber when you insert, delete or exchange pages; the numbering starts from the lowest sheet number, so moving a cover page that is sheet 0 keeps it sheet 0, and the sheet index follows. A layout keeps at least one printed page ("A layout keeps at least one page").
 Duplicate Page copies the page and its boxes ("<title> copy").
 
 ### Boxes
@@ -166,31 +169,84 @@ You make view boxes with Send to Layout (below) and the other kinds with the too
 | Double-click a box | Opens the Layout Box Specification. |
 | `Delete`, `Backspace` | Delete the selected box. `Esc` clears the selection or a placement in progress. |
 
+**Arranging boxes and pages (Round 14).** The Layout menu and the third toolbar row hold:
+
+- **Align Layout Boxes** (Left, Center, Right, Top, Middle, Bottom): lines the selected boxes up on that edge or center; a single box lines up with the drawing area. **Spread Horizontally** and **Spread Vertically** (the Layout menu's Align Layout Boxes list, and **Spread H** and **Spread V** on the toolbar) give three or more boxes equal gaps. Shift-click selects several boxes; dragging one of a group moves the others with it.
+- **Copy Layout Box to Page...** asks for the page and copies the selected boxes there; **Duplicate Layout Box** copies them on the same page.
+- **Open Source View** (one plan box selected): returns to the floor plan that box shows. A camera box tells you to open the camera from the Project Browser's cameras list.
+- **Page Specification...** edits the current page's **Title**, **Sheet number** (`A-n`; two pages cannot share one), the **Page Template** flag, **No border or title block on this page**, and its own **Sheet size** and Landscape or Portrait. A page with its own sheet size prints at that size and its boxes pack into it.
+- **Customize Sheet Sizes...** (the toolbar's **Sheet Sizes...**): **Daniel's sizes (ARCH)** shows the ARCH sizes only with 18 x 24 first, **Show all** restores the list, each standard size has a check box, and **Add size** makes a named custom size (width and height in inches). The layout's own sheet always stays in the list. The lists in Page Setup and Page Specification follow.
+- **Save As Template...** asks for a name and stores the layout (pages, template page, boxes and page drawings; boxes of cameras, perspective views and placed schedules are left out) in `~/.plan-studio/templates/<name>.layout.json`. Tick **Start new layouts of this sheet size from it** to make it the default for that sheet size. **Apply Template...** lists the saved templates (name, sheet, page count, "default") and replaces the layout with the one you pick.
+- **Export Table as CSV...** and **Export Table to Excel...** (also the toolbar's Export CSV... and Export Excel...) save the selected table box, or every table on the page when none is selected (the sheet index, a Materials List, a placed schedule), as CSV or as an `.xlsx` workbook with a sheet each.
+
 ### Send to Layout
 
-**Send to Layout** (File menu and Layout menu, row 1 button, or `S, L`) opens a dialog:
+**Send to Layout** (File menu and Layout menu, row 1 button, or `S, L`) opens a dialog (Round 16 added the scaling, the send options and the warning):
 
-| Field | Choices |
+| Part | Choices |
 |---|---|
-| View | A plan view: **Floor plan** (any floor) and **Layer set**. Or, when a 3D view of an elevation or section camera is open, that **Camera view**. Or, when a perspective camera (Full Camera, 10.2) is the open view, that **Perspective view** (ray traced, below). |
-| Page | An existing page, or **New page** (after the last). Starts on the page you are looking at. |
-| Scale | **Largest that fits** (the largest scale that fits the drawing area, up to 1/4" = 1'-0"; a 40' x 30' plan is 1/4" on Arch D and 1/8" on Letter), or any scale in the list. |
-| Position | **First free area** of the drawing area, **Centered**, or **Click on page**: a ghost box follows the pointer and the next click on the page places it. |
+| Choose layout | Which of the plan's layout files receives the view: the open one, another, or a new layout file with a name. |
+| Source view | The view type and name: a plan view (**Floor plan** and **Layer set**; "Saved plan view" or "Floor level"), an elevation or section **Camera view**, or a **Perspective view** (ray traced). With a 3D view open, a check box sends **a picture of the 3D view as it is now**. |
+| Send position | **Send to layout page #** (an existing page, or **New page** after the last; starts on the page you are looking at), **Position** (**First free area**, **Centered**, or **Click on page**: a ghost box follows the pointer and the next click places it), **Snap to Active CAD Point** (the new box's lower left takes the nearest corner or end already on the page) and **Show Layout Page** (go to the page afterwards). |
+| Send options | **Entire Plan/View** (everything the view shows, Fill Window), **Current Screen** (only what is on screen; the application tells the layout window which part, until it does the whole view goes) and **Current Screen As Image** (an embedded 150 dpi picture, a static box that is replaced, never updated). **Link Saved Plan View (name)** makes the box follow the saved plan view in use (checked while the plan has one). |
+| Camera view options | For elevations and sections, unless sent as an image: **Live View: Always Update** (dynamic), **Live View: Update on Demand** (semi-dynamic) or **Plot Lines** (with **Color Fill**, **Use Edge Line Defaults**, **Use Pattern Line Defaults**). |
+| Scaling | **Fit to Sheet (No Scale)** (about half the drawing area; the box can be resized afterwards), **Largest scale that fits** (up to 1/4" = 1'-0"), **Scale** (the architectural scales, **1" = 30', 40', 50', 60' and 100'** for site plans, and the metric ratios) or **Other**: a typed scale such as `1:240`, `1/8" = 1'` or `1 in = 80 ft`. 1" = 100' is exactly 1:1200 on paper. **Use Layout Line Scaling** keeps pen weights as drawn on the sheet. |
+| Send all remaining | When several views were chosen (Layout > **Send All Views to Layout...** sends every floor plan and elevation camera) a check box sends the rest with the same settings; unchecked, each view gets its own dialog, starting from the last answers. |
+
+A **warning** appears at the top of the dialog (and in the status line after sending) when the box the scale makes is larger than the page's drawing area: "The view is too big for the sheet at this scale". The view is sent anyway.
+The dialog starts from the settings used last in the session, and from the plan's Drawing Sheet Setup scale when the plan has set one.
 
 **Send All Floors to Layout** (Layout menu) makes one page per floor, each titled like its plan (`FIRST FLOOR PLAN`), at the largest scale that fits. The plan view it sends honors the layer set; "All" ignores layer visibility.
 In a vector elevation or section 3D view (10.7) the panel's **Send to Layout** button sends that camera, and its **Layout PDF...** button saves the layout as a PDF.
 
+### Keeping layout views current (Round 16)
+
+A box is one of four kinds, shown on the General panel of its specification:
+
+| Kind | What it is | How it stays current |
+|---|---|---|
+| Dynamic | A plan view, or an elevation or section sent with Live View, Always Update | Redraws from the plan; nothing to update. |
+| Semi-dynamic | Live View, Update on Demand (and perspective boxes) | Keeps its picture until you update it; **updates when its page prints** (the layout itself is not changed by printing). |
+| Plot Line | An elevation or section sent as Plot Lines | Keeps its lines; only you update it. Printing does not. |
+| Static | A picture (Current Screen As Image) | Never; delete and resend. |
+
+**Layout > Update Layout Views** holds **Update All Views** (semi-dynamic and Plot Line views, then renders the perspective views), **Update All Live Views**, **Update All Plot Line Views** and **Update Selected View**; the view row of the window has the same buttons. Each is one undo step. A box whose floor, saved plan view, layer set or camera is gone shows a **caution triangle** with the reason at its top left corner (page, print and screen); **Ignore Invalid Links** on the Linked View panel hides it.
+
+### Editing a layout view (Round 16)
+
+The window's **View** row (and Layout > **Edit Layout View**) holds the edit tools of a selected view:
+
+- **Rescale Layout View...** opens **Change Scale**: No Scale, a scale of the lists (site scales too), or a typed scale, and **Use Layout Line Scaling**. With **Scale Layout Box Contents Only** on (the default) the box resizes about its center with the scale; off, the box keeps its size and the view is cropped or surrounded by space.
+- **Pan/Scale** (tool): drag on a view to pan its contents; a small window takes a typed scale (`1:48`, `1/4" = 1'`). One undo step per drag or scale.
+- **Recenter** puts the middle of the view at the middle of the box; **Scale to Fit** chooses the exact scale that fills the box (a scale on no list is fine).
+- **Update View**, **Layers...** (Layout Box Layers: the layer set of a plan view, on the Layer Set panel), **Unlink Saved View** (the box keeps the floor and layer set the saved view gave it).
+- A box with no scale reads out its factor beside the top right handle; dragging a corner handle with `Cmd` held (the Alternate edit behavior) resizes the view with the border, any other handle crops.
+- **Edit Layout Lines** (tool): on a Plot Lines view, click an edge or pattern line to select it (`Shift` adds), `Shift`-drag a marquee, drag a selected line to move it, drag on empty space inside the view to draw a new line (it keeps its place against the view), `Delete` removes the selected lines, and double-click (or Layout Box Specification) opens the **Layout Line Specification**: Line Type (Edge or Pattern), Line Weight, Line Style and Line Color, each with **Use Default** (the defaults on the view's Linked View panel). Updating the view deletes your edits and the lines you drew and generates the lines again.
+- **Center Object** moves the selected boxes and page drawings to the middle of the drawing area; **Point to Point Move** (tool) moves them by the distance between two clicks. Drawing tools snap to the corners and ends of page CAD and boxes (`Alt` turns snapping off).
+
 ### Dialog: Layout Box Specification
 
-Opened by double-click or Layout > Layout Box Specification....
+Opened by double-click or Layout > Layout Box Specification.... A box that shows a view of the plan (plan, elevation, section, camera view, CAD detail) opens the panels of Chief's dialog; other boxes (text, pictures, tables, perspective views) open the plain dialog below.
+
+| Panel | Fields |
+|---|---|
+| General | The update kind, **Left / Bottom**, **Width / Height** in paper inches, **Rotation**, **Clip content to the box**, **Recenter contents**. |
+| Linked View | The plan file, **View name**, **View type**, **Ignore Invalid Links**. Plan views: **Saved Plan View** (None or one of the plan's), or for an unsaved view the **Current floor**, **Current default set** and **Show Color**; **Poché**; **Entire plan** (Fill Window extent). Camera views: **Live View, Always Update** / **Update on Demand** / **Plot Lines**, **Color Fill**, **Edge Line Defaults** and **Pattern Line Defaults** (use, line weight, line color). |
+| Box Scale | **No Scale**, **Scale** (list), **Other** (typed), **Use Layout Line Scaling**, **Scale Layout Box Contents Only**. |
+| Layer Set | The active layer set of an unsaved plan view. |
+| Line Style | **Draw border**, the border's own color, weight and style (else the Layout Box Borders layer), **Line weight scaling**, **Material hatches (elevations)**, **Page** (moves the box to another page). |
+| Fill Style | No fill, Solid, Lines, Cross hatch or Dots, with color, transparency, spacing and angle; shown while the Layout Box Borders layer is on. |
+| Label | The label **Text** with macros (`%scale%`, `%view_name%`, `%view_type%`, `%layout_page_label%`, and with a link `%linked_view_name%`, `%linked_view_layout_page_label%`, `%referenced_view_callout_label%`), **Show the scale note**, **Position** (bottom or top, left, center, right), **Shape** (none, or one of the ten callout shapes) with its **Callout text**, and a **Link** to a camera view, a CAD detail or a layout page whose label the macros report. The label is on the **Layout Box Labels** layer. |
+
+The plain dialog (non-view boxes):
 
 | Tab | Fields |
 |---|---|
 | General | **Label** (the caption; empty for none), **Scale**, **Page** (moves the box to another page), **Left / Bottom** and **Width / Height** in paper inches, **Rotation** (0, 90, 180 or 270 degrees), **Draw border**, **Clip content to the box**. |
-| Source | A plan view: **Floor plan** and **Layer set** ("All" ignores layer visibility). A text box: the text, its **Text height** in points, **Alignment** (Left, Center, Right), **Text fit** (Wrap, Shrink to fit, As typed) and **Bold**. A camera box: the camera. A perspective box: the camera, a **Resolution** in dots per paper inch (20 to 600; 80 is the default) and a **Quality** in samples per pixel (1 to 512; 8 is the default), with a line saying how many pixels it renders and that Update Views renders it again. A Materials List box: the **Floors** (All floors or one) and **Category** (All categories or one of the eleven). Other sources show their name. |
+| Source | A text box: the text, its **Text height** in points, **Alignment** (Left, Center, Right), **Text fit** (Wrap, Shrink to fit, As typed) and **Bold**. A perspective box: the camera, a **Resolution** in dots per paper inch (20 to 600; 80 is the default) and a **Quality** in samples per pixel (1 to 512; 8 is the default), with a line saying how many pixels it renders and that Update Views renders it again. A Materials List box: the **Floors** (All floors or one) and **Category** (All categories or one of the eleven). Other sources show their name. |
 | Line Style | **Line weight scaling** (0.1 to 5 times), **Material hatches (elevations)**. Pen colors, weights and dashes come from each layer. |
 
-OK is refused with a reason for a box with no size.
+OK is refused with a reason for a box with no size or a scale that reads as nothing.
 
 ### Dialog: Page Setup
 
@@ -210,7 +266,7 @@ The tool row of the layout view makes the boxes and drawings that are not views 
   **Text Box** dialog: the text (several lines), the **Text height** in points (2 to 200), **Alignment** (Left, Center, Right), **Text fit** and **Bold**. Text fit is **Wrap** (the default: the text wraps at the box width and what does not fit the
   box height is clipped), **Shrink to fit** (wraps, then makes the type smaller, down to 4 pt, until all of it fits) or **As typed** (one line per line break, no wrapping, so a long line can run past the box and a clipping box cuts it off). Text boxes start without a border.
 - **Perspective boxes.** Send to Layout with a perspective camera open puts a ray-traced picture of that camera on the page. It is rendered at the box's size at 80 dots per paper inch by default
-  (a 6" x 4.5" box is 480 x 360 pixels) with 8 samples per pixel, or at the **Resolution** and **Quality** you set in the Layout Box Specification (above), using the default clear-day sun and sky and no point lights, then embedded. The picture is cached while the plan and the camera are unchanged;
+  (a 6" x 4.5" box is 480 x 360 pixels) with 8 samples per pixel, or at the **Resolution** and **Quality** you set in the Layout Box Specification (above), using the default clear-day sun and sky and the plan's point lights (Round 13; Print Model is lit the same way), then embedded. The picture is cached while the plan and the camera are unchanged;
   **Update Layout Views** renders it again, and printing renders any that are out of date. The box shows a placeholder frame until a render exists. **Update Views runs on a background thread** with a progress bar in the toolbar ("Views 2/5"), so the window stays usable while perspective boxes render.
   Right-click a camera in the Project Browser and choose **Send to Layout...** to open the Send to Layout dialog already pointed at that camera.
 - **Picture boxes.** **Add Picture** asks for a picture file and puts it on the page, fitted in the box and centered. PNG and JPEG (baseline and progressive) files are decoded by the shared image decoder (10.8a), shrunk to a size that prints well and cached until the file changes; a file that cannot be read or decoded prints a frame with its name. The picture is read from its path, so it must still be there when you print.
@@ -218,8 +274,8 @@ The tool row of the layout view makes the boxes and drawings that are not views 
   The materials window's **Send to Layout** button makes the same box. The sheet index of the first page is a table box too, kept up to date as pages change.
 - **Page drawings (layout CAD).** The **Line**, **Box** (rectangle) and **Polyline** tools draw on the page in paper inches (drag, drag, and click the corners then double-click); the **Circle** tool drags a circle out from its center; the **Arc** tool takes three clicks, the center, the start and the end (counter-clockwise from the start); the **Text** tool asks for a line of text and its height and places it. Page drawings are
   picked, moved with the Select tool and deleted with `Delete`; the lines, circles and arcs are drawn on the `Layout CAD` layer and the text on the `Text` layer. Double-click page text to edit it; page text may use the macros of 11.4 (`%sheet.number%` ...).
-- **Leaders.** The **Leader** tool drags from what the leader points at to where its text goes, then asks for the text (several lines), the **Text height** (0.04" to 2"; 1/8" by default) and whether it has an **Arrowhead**. A leader is one straight line to an elbow, then a landing line under the text, with a filled arrowhead at the tip. Double-click a leader to edit it. Its text is on the `Text` layer.
-- **Revision clouds.** The **Revision Cloud** tool drags the rectangle to go around and asks for the **Revision** mark (`1`, `A` ...) drawn in a triangle at the cloud's corner (empty: no tag). The cloud is a run of scalloped bumps (0.3" wide) with a smallest side of 0.3". Double-click a cloud to change its mark. Clouds are on the `Revision Clouds` layer.
+- **Leaders.** The **Leader** tool drags from what the leader points at to where its text goes (a straight leader), or, since Round 13, you **click the tip, click each bend, and double-click where the text goes** (`Enter` also ends it) for a leader with bends. Either way it then asks for the text (several lines), the **Text height** (0.04" to 2"; 1/8" by default) and whether it has an **Arrowhead**. A leader is a line through its bends to an elbow, then a landing line under the text, with a filled arrowhead at the tip. Double-click a leader to edit it. Its text is on the `Text` layer.
+- **Revision clouds.** The **Revision Cloud** tool drags the rectangle to go around and asks for the **Revision** mark (`1`, `A` ...) drawn in a triangle at the cloud's corner (empty: no tag). The cloud is a run of scalloped bumps (0.3" wide) with a smallest side of 0.3". Double-click a cloud to change its mark. Clouds are on the `Revision Clouds` layer. A cloud's mark that has no row in Project Information's Revisions table gets one when the title block is filled (Round 13): a description such as "Revision cloud on A-2, A-5" lists the pages that carry the mark, so the REVISIONS table of the title block shows every cloud.
 - **Selecting and editing page drawings.** Every page drawing, leader and cloud is picked by clicking its line, moves when you drag it, nudges with the arrow keys (`Shift` for the larger step) and resizes by the eight handles of its bounding rectangle (a circle's radius, an arc's, a text's height and a cloud's rectangle follow); each is one undo step ("Move Layout Drawing", "Resize Layout Drawing").
 - **Plan Check report page.** The Plan Check window's **Add to Layout** button (chapter 18.4) adds a page named **Plan Check** after the last page, holding the findings as one text box: a numbered paragraph per finding with its severity, code reference, place, message and fix. It is an ordinary text box once added; edit or restyle it like any other.
 - **Sheet index.** **Add Sheet Index** puts the index of the layout's printed sheets on the page as a table box that stays current as pages are added, renamed and exchanged.
@@ -230,21 +286,60 @@ The tool row of the layout view makes the boxes and drawings that are not views 
 File > **Print...** (also the row 1 Print button, `Cmd+P`, Layout > Print Layout..., the layout toolbar's Print and the Project Browser's Print...) opens the **Print** dialog for the layout when its view is open, else for the active floor of the plan.
 The Print Layout and Export Layout PDF commands in the File > Print and Layout menus are shortcuts to the same PDF writer (Export asks for the file at once and writes every printed page).
 
+The dialog follows Chief's Print View dialog (manual pp. 1440-1443), in Chief's order:
+
 | Section | Choices |
 |---|---|
-| Destination | **PDF file** (a file dialog asks where; default `<layout name>.pdf`), **System printer** (CUPS `lp` on macOS and Linux, with Copies and a **Printer** list read from `lpstat -p`: the default printer, then every printer found, or "No printers found"; Windows saves the PDF instead) or **Open in viewer** (a temporary PDF in Preview, the system viewer or `start`). |
-| Paper | Size (the Arch, ANSI and ISO list, or Custom size in inches), Orientation (landscape or portrait) and Margin (the unprintable border; default 1/4"). |
-| Scale | A layout: Fit to page, 100% (actual size) or Percentage. A plan view: Fit to page, 1:1, any drawing scale from the Scale list, or a Custom ratio `1 : n`. **Tile onto several pages** cuts a sheet bigger than the paper into tiles with an Overlap (default 1/2"); the summary line says how many tiles per sheet and how many paper pages. |
-| Appearance | Color, Grayscale or Black and white, and **Print line weights** (off: every line is a 0.5 pt hairline). |
-| Print range | A layout: All pages or Pages `from` to `to` among the printed pages (the template page never prints). |
+| Destination | **PDF file** (a file dialog asks where; default `<layout name>.pdf`), **System printer** (CUPS `lp` on macOS and Linux, with a **Printer** list read from `lpstat -p`: the default printer, then every printer found, or "No printers found"; Windows saves the PDF instead) or **Open in viewer** (a temporary PDF in Preview, the system viewer or `start`). **DPI** (72 to 1200; vector prints do not depend on it, it sizes Print Image pictures and appears in the messages). |
+| Paper | **Size**: Match Print Source (the view's Drawing Sheet size and orientation), the Arch, ANSI and ISO list less the sizes Customize Sheet Sizes hides, the custom sizes (program-wide) or Custom size in inches. **Orientation**, **Source** (Automatic, Tray 1, Tray 2, Manual feed: sent to CUPS as `InputSlot`). A plan view's margins are the **Drawing Margins** of its sheet (top, bottom, left, right); a layout has one **Margin** (the unprintable border; default 1/4"). |
+| Print Range | A layout: **All** pages, **Current Sheet** (the page that is open, when the layout window tells the dialog) or **Sheets** `from` to `to` among the printed pages (the template page never prints). |
+| Print Source | A plan view: **Drawing Sheet** (the whole sheet, even when zoomed in; the default while View > Drawing Sheet is on) or **Current View** (only what is on screen; the default while the sheet is off). |
+| Drawing Scale | **Fit to Paper** at a percentage of the paper (default **95%**, global to every view in every file, kept between sessions), **To Scale** (the Drawing Sheet Setup's scale; a layout sheet prints at its own size) or **Check Plot at** a fraction (3/4, 2/3, 1/2, 1/3, 1/4, 1/8): the sheet, its drawing scale and its line weights print at that fraction and the paper changes to the smallest that holds it. **Other** keeps the older choices: Fit to the whole paper, 100%, Percentage, any drawing scale, Custom ratio `1 : n`. **Print across several pages** cuts a sheet bigger than the paper into tiles with an Overlap (default 1/2") and crop marks. |
+| Options | **Copies** with **Collate** (from two copies; sent as `-o collate=true`), **Include Watermark** with **Define...** (opens the Watermark Defaults, 11.3), **Print in Color** (Color, Grayscale, Black and white) and **Print line weights** (off: every line is a 0.5 pt hairline; the view's "Use 1 for all line weights" prints every line 1/300 inch). |
 | Perspective views | A layout: render perspective boxes at the dialog's **DPI** and **samples** instead of each box's own (0 keeps each box's setting). |
+| Advanced Options | **Open System Print Dialog** opens the PDF in the viewer, whose Print command is the system dialog. |
+| Preview and Information | **Print Preview** and the summary line (sheets, scale, pages). Under it, **messages** about the print: the sheet and paper sizes, "prints at 46% of its size, so the drawing is not to scale", "Check plot at 1/2: the drawing and its line weights print at 50%", "larger than the printable area and will be cut off", "takes 6 pages (3 x 2); cut along the crop marks", pictures below 150 dpi. |
 
-**Print Preview** in the dialog sets the plan's Drawing Sheet to the chosen paper size (and, for a plan view, the print scale) and turns on View > Drawing Sheet and Print Preview, so the plan shows what the sheet will cover (11.7). **File > Print > Print Image...** saves the active floor's plan lines as a PNG (256 to 8000 pixels wide, fitted or at a drawing scale; for a rendering use Ray Trace > Save PNG).
+**Settings are remembered per kind of view** (plan, cross section / elevation, CAD Detail, layout, Materials List) in `~/.plan-studio/printsettings.json`, for every plan, unless the view's Drawing Sheet Setup has *Remember Print Settings after Printing* off (then the setup's printer is used and nothing is kept). Copies, the page range and Print Source are never kept. The first print of a kind starts from its Drawing Sheet Setup: paper Match Print Source, To Scale while the sheet is shown.
+
+**Print Preview** in the dialog sets the plan's Drawing Sheet to the chosen paper size (and, for a plan view, the print scale) and turns on View > Drawing Sheet and Print Preview, so the plan shows what the sheet will cover (11.7). Since Round 13 the preview also shows the dialog's **Appearance**: with Grayscale or Black and white chosen, the plan on screen is drawn in grays or in black on white, and the sheet's caption names the mode. **File > Print > Print Image...** saves the active floor's plan lines as a PNG (256 to 8000 pixels wide, fitted or at a drawing scale; for a rendering use Ray Trace > Save PNG).
 Every printed sheet of a layout PDF gets a **bookmark** (`A-1 Page 1`), so a PDF viewer lists the sheets. The settings are remembered while the program runs. The status bar reports "Saved <path>" or "Print cancelled".
 
 **Print Model...** (the layout toolbar's tool row; `LayoutCommand::PrintModel`) prints one perspective camera big: a dialog asks for the **Camera** (the plan's perspective cameras, the one in the 3D view first), a **Resolution** (20 to 600 dpi; 150 by default) and a **Quality** (1 to 512 samples per pixel; 16 by default), the paper, orientation and margin, and the destination (PDF, printer, viewer), and says how many pixels it renders. The camera is ray traced onto one sheet. "Print Model needs a perspective camera: add one with the Camera tools" if there is none.
 
 **Print Image of the 3D view.** With a 3D view open, **File > Print > Print Image...** opens a size dialog (64 to 4096 pixels each way, 24 samples, starting at the view's aspect ratio) and ray traces the picture from the viewport's camera with the default sun and sky, because the live view has no offscreen target to read back (`print_image_3d`, `Image3dDialog`); you then save the PNG. With the floor plan showing, the command saves the plan view as a PNG as before. **Print Model...** is also in the File > Print menu, and **Layer Display Options...** and **Add Sheet Index** are rows of the Layout menu (as well as buttons of the layout window's toolbar).
+
+**Print Image** (File > Print > Print Image...) is the pixel variant: **DPI**, an optional **Size the picture to the paper** (a paper size and orientation: the width becomes the paper's printable width at the DPI, 10.5 in at 300 dpi is 3150 pixels on Letter), or a typed width, and the **Scale** (fit the plan or a drawing scale). The Information lines give the picture's size in pixels, megapixels and inches at the DPI and warn below 150 dpi.
+
+### Drawing Sheet Setup, Scale to Fit and Center Sheet (round 16)
+
+File > Print holds Chief's print setup tools: **Drawing Sheet Setup...**, **Scale to Fit**, **Center Sheet**, **Print Preview**, **Print...**, **Print Image...**, **Print Model...**, **Customize Sheet Sizes...** and **Clear Printer Info**.
+
+**Drawing Sheet Setup** is per kind of view and saved in the plan: the plan views, the cross section / elevation views, CAD Details, the layout and the Materials List each have their own; a kind with none of its own starts from the plan's, and a layout is always 1 in = 1 in. The **View** list at the top picks which one you edit. While the layout shows, the command opens the layout's Page Setup instead (a layout's sheet is its Page Setup).
+
+| Section | Choices |
+|---|---|
+| Drawing Sheet | **Orientation**, **Size** (the standard sizes less the hidden ones, and the program-wide custom sizes) with **Customize...**, and **Show Drawing Sheet in View** (the View > Drawing Sheet switch). |
+| Drawing Scale | Two parts, `[1/4] in = [1] ft` or `[1] mm = [50] mm`, each side with its own unit (in, ft, mm, m); **Common scales** fills it in. It is what the plan is drawn at, what printed-size text styles follow, and the scale **Print** (To Scale) and **Send to Layout** start from. |
+| Printer for View | **Remember Print Settings after Printing**; when it is off, the **Printer** you choose here is the one Print uses. |
+| Drawing Margins | **Top, Bottom, Left, Right**: the printable area of the sheet (a blue border on the plan) and the printing margins of a plan print. **Populate from Printer** puts 1/4 in all round for a printer, none for PDF. |
+| Advanced Line Weights | **Use 1 for all line weights** (every line prints 1/300 in at any scale), the **Line Weight Scale** `1 = 1/100 mm` by default (a different scale multiplies every pen), and a **Preview** of weights 5, 10, 25 and 50 at that scale. Exact weights (a sheet printed smaller keeps its pen thickness) are available to the print options. |
+
+**The Drawing Sheet is an object** while View > Drawing Sheet is on: drag its border to move it, drag a corner handle to resize it (a custom size); a blue border marks the printable area. **Center Sheet** puts the sheet on the middle of the floor's walls and dimensions and **Scale to Fit** picks the largest scale at which they fit inside the sheet's margins (and centers the sheet). The sheet's place is stored per floor and never moves a coordinate. Each is one undo step.
+
+**Customize Sheet Sizes** is program-wide, as in Chief: the sizes live in `~/.plan-studio/sheetsizes.json` and are shared by every plan and layout. The same dialog opens from File > Print, from the Layout menu and from the layout toolbar. Sizes an older layout kept for itself are taken over by name.
+
+### Watermark (round 16)
+
+**View > Watermark** puts a text or picture mark over the view, switched on per saved plan view (and for the CAD Detail views; one switch covers every page of the layout). **Edit > Default Settings > Watermark** (or **Define...** in the Print dialog) opens the **Watermark Defaults**; the view behind the dialog shows the mark and updates as you change it (or when you press Update).
+
+| Section | Choices |
+|---|---|
+| Type | **Text**: the words, a **Color**, the **Print Size** (the height of a capital A, in inches) and a **Font**. **Image**: a picture file (Browse..., or type the path), **Delete From Plan**, and **Ratio to Sheet** (how far across the sheet it reaches; unused by Fit to Sheet). |
+| General | **Layout**: **Tile** (Marks per Row by Marks per Column cells, one mark centred in each), **Border** (marks along the four edges) or **Fit to Sheet** (one mark grown to fill the sheet). **Angle** (counter-clockwise from horizontal), **Transparency** (0 to 100%). |
+| Margins | **Use Drawing Sheet Margin**, or your own Top, Bottom, Left, Right. |
+
+The watermark is saved with the plan (it is file-specific). It shows on the plan behind the Drawing Sheet, in the Print Preview window and in the PDF when **Include Watermark** is ticked in the Print dialog (it starts ticked when View > Watermark is on); the PDF draws it with true see-through transparency, a picture with its own transparent parts.
 
 ## 11.4 Project Information and the title block
 
@@ -269,7 +364,7 @@ only the macros in the first list). Unknown `%...%` text stays as written.
 
 Opens the **Materials List** window with two tabs. The **Materials List** tab lists the active floor or all floors (radio buttons), narrowed to one category or all, in Chief's columns:
 **ID** (for example `FRM-003`), **Size** (`2x6 x 16'`, `3'-0" x 6'-8"`), **Description**, **Count**, **Unit**, **Unit Price** and **Price**, with the total. Its buttons are **Export CSV...**
-(Category, ID, Description, Size, Count, Unit, Unit Price, Price), **Export PDF...** and **Send to Layout** (a table box on the current layout page, 11.3).
+(Category, ID, Description, Size, Count, Unit, Unit Price, Price), **Export Excel...** (`materials_list.xlsx`, the same columns), **Export PDF...** and **Send to Layout** (a table box on the current layout page, 11.3).
 
 The take-off reads the plan model and is grouped in eleven **categories**, in this order:
 
@@ -291,6 +386,30 @@ the **stock lengths** of lumber, and a **unit price** and **supplier** for each 
 The Materials List boxes in the layout and the construction set are priced and wasted from the same file.
 
 Not built: Chief's Components-based list (it reads the plan model directly), markup and labor, and a price import.
+
+Since round 15 the window described above is Chief's Materials List in full; the subsection that follows supersedes the paragraph above about its two tabs, its fixed columns and the missing markup and labor.
+
+### Materials Lists: scopes, columns, saved lists (round 15)
+
+**Starting a list.** Tools > Materials List is now a submenu. **Calculate Materials for All Floors** lists the whole plan. **Calculate Materials From Selection** (also a button on the Edit toolbar whenever something is selected) lists only the selected objects and what they are made of; a selected room counts its floor and ceiling finishes and the wall surface that faces it, but not its doors, windows or framing. **Calculate Materials in Room** (also on the room's Edit toolbar) lists what is inside the room by object center, its floor and ceiling finishes, the wall surface facing it, and the doors and windows set in its walls. **Materials List Polyline** draws an area (drag, or click two corners); selecting the polyline offers **Calculate Materials List**, and a double-click opens its specification. In the window, **All Floors**, **This Floor**, **From Selection**, **In Room** and **From Area** do the same.
+
+**The Materials List Polyline** is a closed CAD polyline on the "Materials List Polylines" layer, so it moves, stretches and takes polyline holes like any other; the plan also keeps its **Included Floors / Categories** grid (categories down, floors across, with Toggle Selected, Toggle Category(s), Toggle Floor(s), Toggle All and Revert All Changes) and its **Included Objects** choice: objects whose bounding box the area touches (Intersected), objects wholly inside (Contained), or objects whose center is inside (by Center, the default). A room that the area takes in brings its whole floor and ceiling finish. **Tools > Materials List > Materials List Polyline Defaults** sets the grid and the choice for polylines drawn from then on.
+
+**The 21 columns.** ID, Use, Sub Category, Floor, Label, Supplier, Manufacturer, Code, Size, Description, Quantity, Count, Extra, Price, % Markup, Labor, Equipment, Total Cost, Default, Comment and Accounting Code. A list shows ID, Size, Description, Count, Price and Total Cost at first; **Edit Active View** (Tools > Materials List > Edit Active View, or the button) opens the **Materials List Specification** where each column is shown or hidden and moved up or down; drag the right edge of a column heading to change its width. Use, Quantity and Default belong to the Master List only. **Total Cost** is `(Count + Extra) x Price x (1 + Markup / 100) + (Count + Extra) x Labor + (Count + Extra) x Equipment`; a row with no price, labor or equipment has no total. **Count** includes the Master List's waste and rounds up; hover it for the exact value.
+
+**The Specification.** *General*: the list's name, its scope (all floors, one floor, an area, a room, a selection), Restrict to Supplier (all, none, or one) and Structural Member Reporting (Buy List: stock lengths; Cut List: one row per cut length; Linear Feet: feet per lumber size). *Categories*: check the categories to show; an unchecked one is hidden in the window and the printout but stays in the list and in exported files. *Columns*: show, hide, order. *Report*: group by category, floor or supplier (or not), the sort (ID, Description, Size, Count, Total Cost, either way), subtotals and the total. *Text Style*: horizontal and vertical grid lines, solid or dashed, custom colors, font, size and styles. *Layer*: the layer a placed list draws on.
+
+**Editing a list.** Double-click a cell to type in it (Enter commits, Escape cancels, an empty cell goes back to the automatic value). In a live list the text goes to the objects behind the row, so the next calculation shows it and every list of those objects agrees: Supplier, Manufacturer, Code, Comment, Sub Category, Label, Size, Description, Accounting Code, Price, % Markup, Labor, Equipment and Extra. Objects that differ get rows of their own. Count is set in the object's Components panel. The row-number cell selects (Ctrl or Shift for several); its arrow **expands** a line into the objects behind it, **Collapse** closes them; **Details** shows every column and the Source Objects of the selected lines; double-click a row number (or **Find Object in Plan**) goes to the object's floor, selects it and centers the view on it. Right-click a row for **Move to Category** and the Master List commands.
+
+**Saving.** **Save Active View** keeps the list in the plan (one undo step) and **Save Active View As** keeps a copy; closing the window asks to save a list that is new or changed. Saved lists are rows of the Project Browser under **Materials Lists** (click to open, right-click for Copy, Delete, Rename) and in **Materials List Management** (Edit, Copy, Rename, Delete). A live list is calculated again each time it is opened. **Generate a Report** freezes the lines of a live list into a static Report: it keeps its own rows, no longer follows the plan, can be edited freely (including Count), and **Update From Master List** fills its blank cells.
+
+**The Master List.** A third of the window (the Master List tab, or Tools > Materials List > Master List) edits `~/.plan-studio/master-list.json`: the entries with a Category drop-down, a Columns choice, a Find field, Use, Quantity and Default columns, Delete and Add Item, plus the waste factors and stock lengths. An entry matches a row by Category, Size, Description and Label (or by Code, or, for entries from older files, by the item key); the entry marked Default wins, else the last one entered, and an entry with a Quantity applies only from that count up. An entry whose Use box is clear keeps its rows out of the lists. **Update To Master List** saves the selected rows (all rows when none is selected) into the file; **Update From Master List** applies it to a Report. Whatever an object carries (its own supplier, price...) wins over the Master List.
+
+**Components and Object Information.** The specification dialog of walls, doors and windows, cabinets, rooms, symbols, electrical devices, stairs, roof planes, framing and foundation objects gets two more tabs. **Components** lists the object's own line items (Add Line Item, Remove Line Item, Restore, Revert) with Count, Extra, Price, % Markup, Labor, Equipment and Total Cost for the selected one; blank fields are the automatic values. **Object Information** holds Code, Comment, Description, Manufacturer and Supplier (each with an Insert Macro menu: `%plan.name%`, `%floor%` and your own macros are expanded in the lists), plus Sub Category, Accounting Code and a Price for the object's lines. OK applies them with the dialog as one undo step. A dialog that already has a tab of that name (a wall's Components, a cabinet's Object Information) gets the new one as "Components (Materials List)" or "Object Information (Materials List)".
+
+**Exporting and printing.** **Export** (Tools > Materials List > Export Materials List, or the button) writes **Tab Delimited (TXT)**, **Comma Delimited (CSV)**, **Spreadsheet (XML)** that Excel opens, **Web Page (HTML)** or an Excel workbook, with Include Column Headers (HTML always has them), Include Hidden Columns, Export with Colors (XML and HTML), Open in Default Spreadsheet Editor, and the units written with the amounts, in a new column, or not at all. **BuilderTREND** writes its CSV (cost code from the Accounting Code, title, description, quantity, unit cost, unit, markup). **Print** makes the list a paged PDF table (landscape when the columns are wide, with group headings, subtotals, the total and page numbers) and sends it to the printer, the viewer or a PDF file (Tools > Materials List > Print Materials List, or the button).
+
+Not built: Ruby formulas in cells and macros that read other cells (Ruby is out of scope), Materials List by Layer Set, per-cell count units and the Number Formatting dialog, a clipboard copy of cells, a prompt to turn off Auto Rebuild when an automatically generated member is edited, more than one Master List file, and Calculate Structural Materials for Deck.
 
 ### Tools > Schedules > Create Construction Set...
 
@@ -320,8 +439,8 @@ no bigger than 1/4" = 1'-0": the candidates are 1/4", 3/16", 1/8", 1" = 10' and 
 and 0.18 pt for Heavy, Medium and Light, cut lines 1.0 pt, and hidden lines dashed. Cut regions of a section are filled with a
 gray poche, and shadow regions (when a drawing has them) with a lighter gray, under the lines.
 
-Limits of the PDF writer: the only font is Helvetica; an image box that points at a file prints a placeholder frame unless the program supplies a picture loader (printing from the editor does, for PNG and JPEG; the standalone generator does not), and raster pixel data embeds flattened on white with no transparency; the REVISIONS table
-draws only in the right-strip title block; clip rectangles cut anything in a box, rotated text included.
+Limits of the PDF writer: an image box that points at a file prints a placeholder frame unless the program supplies a picture loader (printing from the editor does, for PNG and JPEG; the standalone generator does not), and raster pixel data embeds flattened on white with no transparency; the REVISIONS table
+draws only in the right-strip title block; text-style text is embedded in the installed TrueType font when the font's licence allows it (12.6), but a font with PostScript outlines (most `.otf` files), a font that forbids embedding and any character outside Latin-1 print in Helvetica or as `?`; layout page CAD text, leaders and the title block are always Helvetica; clip rectangles cut anything in a box, rotated text included.
 
 The construction set PDF is its own generator: it is built from the plan each time and does not read the plan's layout (11.3), so a PDF saved from this command shows the eight standard sheets even if you have since edited the layout's copies (print the layout for those). It prints the
 project name and the Project Information (11.4) in the title block.
@@ -361,7 +480,7 @@ architectural scale. Paper units are inches, origin bottom-left.
 - `append_construction_set`: adds Daniel's sheet set (10 sheets for a one-floor plan) to a live layout (11.5).
 - `print_layout_pdf` and `print_plan_view_pdf` (`print.rs`): the Print dialog's engine. A sheet is scaled (fit, 100%, a percentage; a plan view at a drawing scale or ratio), centered on the paper or cut into overlapping tiles, drawn in color, grayscale or black and white, with or without line weights, one PDF bookmark per printed sheet.
 
-The layout view (11.3) is the editor for this model. Plan Studio stores one layout per plan; the editor creates plan-view, camera, perspective, text, picture and Materials List boxes and page drawings (CAD-detail boxes exist in the engine but have no way to be created in the editor yet).
+The layout view (11.3) is the editor for this model. Plan Studio stores the open layout in `Project.layout` and any other layout files of the plan beside it; the editor creates plan-view, camera, perspective, text, picture and Materials List boxes and page drawings (CAD-detail boxes exist in the engine but have no way to be created in the editor yet).
 
 ### Material hatch limits
 
@@ -420,9 +539,11 @@ tab (chapter 5.4), by Wall Hatching (chapter 17) and by the elevation hatch (cha
 
 ## 11.9 Differences from Chief
 
-- **One layout per plan.** Chief keeps several layout files; here the plan holds one layout (File > New Layout opens it again). A layout is landscape or portrait as a whole (Page Setup), not page by page.
+- **Layout files.** A plan holds more than one layout file (Layout > New Layout File...), but the Project Browser lists only the open layout's pages, Plan Check checks the open layout only and Export / Import Layout JSON handle the open layout only. A layout is landscape or portrait as a whole (Page Setup); a page can take its own sheet size in Page Specification.
 - **Box rotation is in quarter turns** (the knob, the Rotate button, the Rotation list), not free angles.
-- **Boxes.** The editor makes plan-view, camera, perspective, text, picture, Materials List and sheet index boxes, and page lines, rectangles, polylines, circles, arcs, text, leaders and revision clouds. There is no way yet to add a CAD-detail box from the Send to Layout dialog, a layout cannot be saved as a template, and a leader is one straight segment.
+- **Boxes.** The editor makes plan-view, camera, perspective, text, picture, Materials List and sheet index boxes, and page lines, rectangles, polylines, circles, arcs, text, leaders and revision clouds. There is no way yet to add a CAD-detail box from the Send to Layout dialog. The layout's page templates are the saved layout templates (11.3) plus the Page Template flag of a page; there is no separate per-sheet-type editor.
+- **Plan boxes** draw walls, openings (with their labels), rooms, dimensions and CAD. Cabinet fill styles, the dashed treads under a stairwell and placed symbols and electrical devices show on screen and not yet in plan boxes, Print Preview or the PDF. Dragging a group moves its boxes but not the page drawings (CAD, leaders, clouds) selected with them; perspective boxes in Print Preview show only after Update Views. Layout elevations include the terrain and the site objects of the 3D view.
+- The Materials List counts wall components (layer by layer); floor, ceiling and roof components and a concrete main layer in cubic yards are not quantities yet.
 - **Printing** goes to a PDF file, the system printer (CUPS `lp`, macOS and Linux only) or the viewer; there is no native print dialog, and copies are the printer's business (a PDF holds one set).
 - **Schedules.** Thirteen kinds can be placed in the plan; Wall stays a window; they have grouping and a totals line, but are not in the DXF or the construction set's plan sheets.
 - **Title block.** Project Information fills the title block and every Project Information macro is expanded in layout text.
@@ -566,3 +687,64 @@ Opens the **Framing Takeoff** window, a lumber list of the framing built so far 
 The Framing schedule that can be placed in the plan (11.2) lists pieces by member type, size and cut length, with Linear ft and Board ft columns available.
 
 Not built yet: combined headers for adjacent openings, framing of the stairwell in a floor framed from a Joist Direction or Bearing Line (directed floors do not frame stairwell holes), a per-group Build Framing dialog or automatic re-framing, dimensions on the wall detail, wall-top slopes, connectors and notches, rim joists in directed floor framing, truss-to-truss girder placement, and beam sizing.
+
+### Excel round trip
+
+Not in Chief; modelled on ArchiCAD's "Exchange Property Data with Excel". Export a schedule to Excel, edit names, marks, manufacturers and your own properties there, and import the workbook back: the plan updates in one undo step.
+
+#### Custom properties
+
+**Tools > Property Manager...** lists the plan's own properties by kind of object: door, window, cabinet, room, wall, fixture / symbol, electrical, stair, roof plane and framing. Pick **New**, choose the kind, give the property a **Name** and a **Type** (Text, Number, Length, Yes / No, or List with one choice per line), an optional **Default**, and **Show in schedules of this kind**, then **Add Property**. Selecting a property in the list lets you **Update** (rename, retype) or **Delete** it; renaming keeps the stored values, and a retype that no longer fits a value clears that value. Each of these is one undo step.
+
+Once a kind has a property, its specification dialog (door, window, wall, room, cabinet, fixture, device, stair, roof plane, framing member) gets a last tab, **Properties**, with one field per property. OK applies the dialog and the Properties tab as one undo step; an entry the type refuses (a word in a Number property, a choice that is not on the list) blocks OK and is shown in red. An object that has no value shows the property's default.
+
+A property is a schedule column. Flag it **Show in schedules** and it is the last column of every schedule of that kind; otherwise open **Schedule Specification** and show its column (it is listed with the other columns as `prop:<name>`). Property columns sort, filter, group and appear in layout schedule boxes like any other.
+
+#### Export for Editing
+
+**Tools > Export Property Data (XLSX)...** writes every schedule placed in the plan (or the standard eight when none is placed: door, window, room, wall, cabinet, electrical, fixture, stair) as one workbook. **Schedule Specification > Export for Editing (XLSX)...** and **Export for Editing** in the right-click menu of a selected schedule export just that schedule. Give the file a `.csv` name to get one schedule as CSV instead.
+
+| Part of the workbook | What it holds |
+|---|---|
+| One sheet per schedule | A hidden first column **PlanStudio ID** (`door:12`, `room:0:120,84`), a bold frozen header row, the schedule's columns, then the custom properties of the kind the schedule does not show |
+| Yellow cells | Editable: door and window Mark, Manufacturer, Model, Supplier, Comment, Description, ID, U-Factor, SHGC; room Name, Floor Finish, Ceiling Finish, Ceiling height; cabinet Label; electrical Label, Circuit, Mount Height; fixture, furniture and plant Name; every custom property |
+| Gray cells | Computed (sizes, areas, counts, wall numbers): locked by sheet protection (Review > Unprotect Sheet, no password, if you need to) |
+| Drop-downs | List and Yes / No properties |
+| `_meta` (hidden sheet) | The plan path, the export time, each sheet's schedule kind and column to field map, and the text of every exported cell |
+
+#### Import Property Data
+
+**Tools > Import Property Data (XLSX)...** (also a button in Schedule Specification and a right-click entry on a schedule) reads a `.xlsx` or `.csv` and opens the **Import Property Data** review:
+
+- Each row of the list is one change: object, field, the value in the plan, the value from the file, with a checkbox. Uncheck what you do not want.
+- A value the field's type refuses is shown in red and cannot be checked. A change whose value was also changed in the plan since the export is marked **Conflict** (the file's value wins if you leave it checked).
+- **Left out** lists what could not be used: an object deleted since the export, a computed column that was edited (ignored), a row with no id, a column or property that no longer exists.
+- Rows are matched by the **PlanStudio ID** column; a row with no id is matched by its mark when exactly one object has it. A CSV (or a workbook without `_meta`) is read by column heading.
+- **Import n Changes** applies the checked changes as one undo step named "Import Property Data" and the status bar reports the count. Only cells you changed in Excel count as edits: a mark that renumbered after you deleted a door is not read as an edit.
+
+After an export, the plan checks the workbook every two seconds; when it is saved again in Excel a small bar over the status bar offers **Workbook changed - import?** (Import... or Dismiss). The offer ends when another plan is opened.
+
+Not built yet: copy, paste and duplicate do not carry property values; values of deleted objects stay in the file until a purge; walls, stairs and framing have no built-in editable columns, only custom properties; the framing schedule's grouped lines cannot take properties; an `.xlsx` saved by Excel has been read here only through Excel-style XML tests (verify with a real Excel file).
+
+## 11.12 Page Information, labels and page tables
+
+**Layout > Page Information...** (also **Edit Page Information...** in a page's right-click menu in the Project Browser) replaces the old Page Specification. Pick the **Selected Page** at the top; each page keeps its own entries until you press OK, and OK is one undo step named "Page Information".
+
+| Field | What it does |
+|---|---|
+| Label | The page's sheet number. Type a fixed label (`Cover`) or a pattern with `#`: `A-#`, `A0.#`, `E1.#`. A `#` becomes the next free number among the pages with the same pattern, in page order, so three `A1.#` pages read A1.1, A1.2, A1.3. Two pages may share a fixed label. Empty keeps `A-n`. |
+| Title, Description, Comments | Shown in the Layout Page Table and available to macros. |
+| Include in Layout Table | Lists the page in a Layout Page Table. It is cleared for page templates. |
+| Use as Page Template | The page becomes a template: its border, title block and drawings show on the pages assigned to it. |
+| Assign Page Template | The template this page uses; **Page Zero** is the default. A template that pages use cannot be deleted or switched off. |
+| Page Revisions | A table of the page's revisions: Label, Date, Revised By, Description, Include in Revision Table (New, Edit, Delete, Move Up, Move Down). |
+
+Dragging a page in the Project Browser, or Move Page in the Layout menu, renumbers every `#` label. **Copy Drawings to Page** copies a page's border and drawings (CAD, leaders, revision clouds) onto another page, which is how a cover template is built from the standard one.
+
+**Page macros** work in any layout text and in title-block fields: `%layout.label%`, `%layout.title%`, `%layout.description%`, `%layout.comments%`, `%page%` (the page number), `%page.print%` (the printed number: pages with nothing on them and templates are not counted), `%numpages%` and `%lastpage%`. Put them once on the template page; each page shows its own values on screen, in print preview and in the PDF, also when only a range is printed.
+
+**Layout > Add Layout Revision...** adds one revision (Label, Date, Revised By, Description) to the pages you tick. **Layout Revision Table** and **Layout Page Table** are placed by a click on the page: the revision table lists the revisions of the page it sits on (on a template, those of each page that uses it); the page table lists Label, Title and Description of every page that is included. Both update when pages move, rename or gain revisions. The title block's REVISIONS table uses the page's own revisions; a page with none keeps the old behaviour (Project Information rows plus revision clouds).
+
+**General Layout Defaults...** sets Use Snap Grid and the **Grid Snap Unit** (default 1/16 in); the arrow keys nudge a selected layout object by the same unit. Both are kept with the layout file.
+
+Not built yet: program-wide sheet sizes (Print round), Chief's per-page border text fields.

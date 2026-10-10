@@ -1,7 +1,9 @@
 //! The on-disk catalog format: items grouped into a named [`Catalog`].
 
 use crate::symbol::{Stroke, Symbol2d};
+use plan_core::SymbolSchedule;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 /// How an item attaches to the building, which also fixes its symbol origin.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -78,6 +80,29 @@ impl ItemKind {
     }
 }
 
+/// What a placed copy of an item starts with besides its size: the choices of
+/// the Library Object Specification (Open Object) that a User Catalog item
+/// remembers.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ObjectDefaults {
+    /// Placed copies are mirrored left to right.
+    pub flip: bool,
+    /// Label text of placed copies.
+    pub label: String,
+    /// Schedule settings of placed copies.
+    pub schedule: Option<SymbolSchedule>,
+    /// Library-specific choices (`door_style`, `cabinet_door`, `hardware`).
+    pub options: BTreeMap<String, String>,
+}
+
+impl ObjectDefaults {
+    /// True when nothing differs from a plain placed copy.
+    pub fn is_default(&self) -> bool {
+        *self == ObjectDefaults::default()
+    }
+}
+
 fn is_zero(v: &f64) -> bool {
     *v == 0.0
 }
@@ -147,6 +172,9 @@ pub struct CatalogItem {
     /// cabinet's JSON, or the CAD items of a block / text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payload: Option<serde_json::Value>,
+    /// What placed copies start with (Open Object > OK).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub defaults: Option<ObjectDefaults>,
 }
 
 impl CatalogItem {
@@ -178,6 +206,7 @@ impl CatalogItem {
             model_rotation: 0.0,
             model_origin: [0.0; 3],
             payload: None,
+            defaults: None,
         }
     }
 

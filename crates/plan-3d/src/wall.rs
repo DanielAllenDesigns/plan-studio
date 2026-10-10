@@ -8,6 +8,7 @@ use crate::frame::{Axis, Frame};
 use crate::mesh::{Material, Mesh};
 pub use arc::EndCuts;
 pub(crate) use arc::WallFrame;
+use plan_core::walls::PlatformAdjust;
 use plan_core::{Opening, OpeningStyle, Wall, WallKind};
 
 /// Geometric tolerance, inches.
@@ -46,9 +47,12 @@ impl Default for WallLook {
 /// of the opening between its bottom and its top. On a curved wall the hole's
 /// span is measured along the arc.
 pub fn hole_for(wall: &Wall, opening: &Opening) -> Option<Hole> {
+    // A size that leaves out the jamb or frame clears the wall wider than the
+    // unit by that much on each side (the plan cuts it the same).
+    let reach = plan_core::opening_symbol::cleared_reach(opening);
     let hole = Hole {
-        s0: opening.start_offset().max(0.0),
-        s1: opening.end_offset().min(wall.path_length()),
+        s0: (opening.start_offset() - reach).max(0.0),
+        s1: (opening.end_offset() + reach).min(wall.path_length()),
         h0: opening.sill_height.max(wall.bottom_offset).max(0.0),
         h1: (opening.sill_height + opening.height).min(wall.bottom_offset + wall.height),
         niche_depth: (opening.style == OpeningStyle::WallNiche)
@@ -589,6 +593,229 @@ pub fn build_panel(wall: &Wall, poly: &[P2], material: Material) -> Vec<Mesh> {
     set.finish(None)
 }
 
+/// The wall as the platform options (Structure tab, W-62, R-69) shape it:
+/// the bottom lowered to the platform below it and the top raised through the
+/// platforms above it. Walls the options do not move come back unchanged.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn with_platforms(wall: &Wall, adj: PlatformAdjust) -> Wall {
+    let mut w = wall.clone();
+    w.bottom_offset -= adj.lower;
+    w.height += adj.lower + adj.raise;
+    w
+}
+
+/// The footing under a foundation wall, its sill plate and its cap
+/// (Foundation and Wall Cap tabs, W-52). `wall` is the wall as drawn
+/// (standing from `wall.bottom_offset` for `wall.height` above `elevation`);
+/// `main_center` is the lateral offset of the main layer's center from the
+/// centerline. Curved walls get none.
+pub fn spec_meshes(wall: &Wall, elevation: f64, main_center: f64) -> Vec<Mesh> {
+    if wall.is_curved() || wall.length() <= EPS {
+        return Vec::new();
+    }
+    // A foundation wall stands below the floor and a half wall is lower than
+    // its height: the extent the class builds.
+    let mut drawn = wall.clone();
+    match &wall.class {
+        plan_core::WallClass::Foundation => {
+            drawn.bottom_offset = wall.bottom_offset - wall.foundation_height;
+            drawn.height = wall.foundation_height;
+        }
+        plan_core::WallClass::HalfWall { height } => {
+            drawn.height = height.min(wall.height).max(0.0);
+        }
+        _ => {}
+    }
+    let wall = &drawn;
+    let spec = &wall.spec;
+    let frame = Frame::new(wall, elevation + wall.bottom_offset);
+    let length = wall.length();
+    let mut set = MeshSet::default();
+    let mut put = |material: Material, b: plan_core::walls::WallBox, up: f64| {
+        frame.cuboid(
+            set.material(material),
+            (0.0, length),
+            b.across,
+            (b.up.0 + up, b.up.1 + up),
+        );
+    };
+    if let Some(b) = spec.foundation.footing_box(wall, main_center) {
+        put(Material::Concrete, b, 0.0);
+    }
+    // The cap rests on the sill plate when the wall has one.
+    let mut rise = wall.height;
+    if wall.class == plan_core::WallClass::Foundation {
+        if let Some(b) = spec.foundation.sill_box(wall, wall.height) {
+            put(Material::Framing, b, 0.0);
+            rise = b.up.1;
+        }
+    }
+    if let Some(b) = spec.cap.cap_box(wall) {
+        put(Material::Trim, b, rise);
+    }
+    set.finish(Some(wall.id))
+}
+
+/// The stretches of a wall `length` long that no hole blocks between the
+/// heights `lo..hi` above the wall bottom (a through hole whose height range
+/// overlaps the band interrupts it; a niche does not).
+fn free_spans(length: f64, holes: &[Hole], bottom: f64, lo: f64, hi: f64) -> Vec<(f64, f64)> {
+    let mut blocks: Vec<(f64, f64)> = holes
+        .iter()
+        .filter(|h| h.niche_depth.is_none() && h.h0 - bottom < hi && h.h1 - bottom > lo)
+        .map(|h| (h.s0, h.s1))
+        .collect();
+    blocks.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut out = Vec::new();
+    let mut at = 0.0;
+    for (s0, s1) in blocks {
+        if s0 - at > 0.5 {
+            out.push((at, s0.min(length)));
+        }
+        at = at.max(s1);
+    }
+    if length - at > 0.5 {
+        out.push((at, length));
+    }
+    out
+}
+
+/// Sweeps a molding `section` (`(projection, height)` points, counter-
+/// clockwise) along the wall from `s0` to `s1`, standing on the face at
+/// lateral `t_face` and projecting toward `sign`, its bottom `h0` above the
+/// wall bottom.
+fn extrude_profile(
+    frame: &Frame,
+    mesh: &mut MeshBuilder,
+    section: &[(f64, f64)],
+    (sign, t_face, h0): (f64, f64, f64),
+    (s0, s1): (f64, f64),
+) {
+    let n = section.len();
+    if n < 3 || s1 - s0 < 1e-6 {
+        return;
+    }
+    let origin = frame.point(0.0, 0.0, 0.0);
+    let t_axis = sub(frame.point(0.0, 1.0, 0.0), origin);
+    let s_axis = sub(frame.point(1.0, 0.0, 0.0), origin);
+    let at = |s: f64, p: (f64, f64)| frame.point(s, t_face + sign * p.0, h0 + p.1);
+    let len_ft = ((s1 - s0) / 12.0) as f32;
+    for i in 0..n {
+        let (a, b) = (section[i], section[(i + 1) % n]);
+        let (dp, dh) = (b.0 - a.0, b.1 - a.1);
+        let l = dp.hypot(dh);
+        if l < 1e-9 {
+            continue;
+        }
+        // Outward normal of a counter-clockwise edge: its direction turned
+        // a quarter clockwise.
+        let (np, nh) = (dh / l, -dp / l);
+        let normal = [
+            t_axis[0] * (sign * np) as f32,
+            t_axis[1] * (sign * np) as f32 + nh as f32,
+            t_axis[2] * (sign * np) as f32,
+        ];
+        mesh.quad(
+            [at(s0, a), at(s1, a), at(s1, b), at(s0, b)],
+            [
+                [0.0, 0.0],
+                [len_ft, 0.0],
+                [len_ft, (l / 12.0) as f32],
+                [0.0, (l / 12.0) as f32],
+            ],
+            normal,
+        );
+    }
+    let pts: Vec<plan_core::Point> = section
+        .iter()
+        .map(|p| plan_core::Point::new(p.0, p.1))
+        .collect();
+    for tri in crate::triangulate::ear_clip(&pts) {
+        for (s, dir) in [(s0, -1.0_f32), (s1, 1.0)] {
+            let p = tri.map(|k| at(s, section[k]));
+            let uv = tri.map(|k| [(section[k].0 / 12.0) as f32, (section[k].1 / 12.0) as f32]);
+            mesh.tri(p, uv, s_axis.map(|c| c * dir));
+        }
+    }
+}
+
+/// The wall coverings of the Wall Covering tab (W-115): a wainscot or a
+/// full-height covering as a slab on the face, base, chair rail and crown
+/// molding swept along it from the library profile. Each band stops at doors
+/// and windows that reach into its height and runs between the joined
+/// corners of the wall's outline. `wall` is the wall as drawn (its height is
+/// the top the crown hangs from); `holes` are its openings. A wall with no
+/// covering, and a curved wall, give nothing.
+pub fn covering_meshes(
+    floor: &plan_core::Floor,
+    wall: &Wall,
+    elevation: f64,
+    holes: &[Hole],
+) -> Vec<Mesh> {
+    let spec = &wall.spec.covering;
+    if spec.is_empty() || wall.is_curved() || wall.length() <= EPS {
+        return Vec::new();
+    }
+    let length = wall.length();
+    let height = wall.covering_height();
+    let bands = spec.bands(height);
+    if bands.is_empty() {
+        return Vec::new();
+    }
+    // The joined corners give each face its stretch (left face first).
+    let dir = wall.direction();
+    let mut faces = [(0.0, length), (0.0, length)];
+    if let Some(o) = plan_core::joins::wall_outlines(&floor.walls, 0.5)
+        .into_iter()
+        .find(|o| o.wall_id == wall.id && o.polygon.len() == 4)
+    {
+        let s = |p: plan_core::Point| (p - wall.start).dot(dir).clamp(0.0, length);
+        let q = &o.polygon;
+        faces[0] = (s(q[0]).min(s(q[1])), s(q[0]).max(s(q[1])));
+        faces[1] = (s(q[3]).min(s(q[2])), s(q[3]).max(s(q[2])));
+    }
+    let frame = Frame::new(wall, elevation + wall.bottom_offset);
+    let mut set = MeshSet::default();
+    for band in &bands {
+        let sign = wall.covering_face_sign(band.side);
+        let (f0, f1) = faces[usize::from(sign < 0.0)];
+        let t_face = sign * wall.thickness * 0.5;
+        let plain = match (band.kind, band.side) {
+            (
+                plan_core::walls::BandKind::Covering | plan_core::walls::BandKind::Wainscot,
+                plan_core::walls::CoveringSide::Interior,
+            ) => Material::WallInterior,
+            (plan_core::walls::BandKind::Covering | plan_core::walls::BandKind::Wainscot, _) => {
+                Material::WallExterior
+            }
+            _ => Material::Trim,
+        };
+        let material = crate::details::material_of(band.material, plain);
+        for (a, b) in free_spans(length, holes, wall.bottom_offset, band.lo, band.hi) {
+            let (a, b) = (a.max(f0), b.min(f1));
+            if b - a < 0.5 {
+                continue;
+            }
+            let mesh = set.material(material);
+            match band.profile {
+                Some(def) => {
+                    extrude_profile(&frame, mesh, def.section, (sign, t_face, band.lo), (a, b))
+                }
+                None => {
+                    let t = (t_face, t_face + sign * band.depth);
+                    frame.cuboid(
+                        mesh,
+                        (a, b),
+                        (t.0.min(t.1), t.0.max(t.1)),
+                        (band.lo, band.hi),
+                    );
+                }
+            }
+        }
+    }
+    set.finish(Some(wall.id))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -693,5 +920,168 @@ mod tests {
         let w = wall();
         let door = Opening::default_door(1, w.id, 500.0);
         assert!(hole_for(&w, &door).is_none());
+    }
+
+    #[test]
+    fn platforms_lower_the_bottom_and_raise_the_top() {
+        let w = wall();
+        let adj = PlatformAdjust {
+            lower: 10.0,
+            raise: 12.0,
+        };
+        let moved = with_platforms(&w, adj);
+        assert_eq!((moved.bottom_offset, moved.height), (-10.0, 122.0));
+        let m = build_wall(&moved, 0.0, &[], 1.0, WallLook::default());
+        assert_eq!(y_range(&m), (-10.0, 112.0));
+        assert_eq!(
+            with_platforms(&w, PlatformAdjust::default()).height,
+            w.height
+        );
+    }
+
+    #[test]
+    fn a_footing_cap_and_sill_are_built_from_the_wall_spec() {
+        let mut w = wall();
+        w.class = plan_core::WallClass::Foundation;
+        w.height = 48.0;
+        w.spec.foundation.footing = true;
+        w.spec.foundation.sill_plate = true;
+        w.spec.cap.enabled = true;
+        let m = spec_meshes(&w, 0.0, 0.0);
+        let (lo, hi) = y_range(&m);
+        // The 48" stem wall reaches below the floor, the 12" footing under it;
+        // the sill plate (1.5") and the cap (1.5") stand on its top.
+        assert_eq!(lo, -60.0);
+        assert!((hi - 3.0).abs() < 1e-3, "{hi}");
+        let concrete = m
+            .iter()
+            .filter(|x| x.material == Material::Concrete)
+            .count();
+        let trim = m.iter().filter(|x| x.material == Material::Trim).count();
+        let framing = m.iter().filter(|x| x.material == Material::Framing).count();
+        assert_eq!((concrete, trim, framing), (1, 1, 1));
+        // Nothing is added to a plain wall.
+        assert!(spec_meshes(&wall(), 0.0, 0.0).is_empty());
+    }
+
+    /// Two stacked floors with a wall on the lower one; returns the project
+    /// and the wall's id.
+    fn two_floors() -> (Project, u64) {
+        let mut p = Project::new("t");
+        let id = p.add_wall(
+            0,
+            Point::new(0.0, 0.0),
+            Point::new(120.0, 0.0),
+            6.0,
+            p.floors[0].ceiling_height,
+            WallKind::Exterior,
+        );
+        p.build_new_floor(false);
+        (p, id)
+    }
+
+    fn wall_y_range(p: &Project, id: u64) -> (f32, f32) {
+        let scene = crate::build_scene(p);
+        let own: Vec<Mesh> = scene
+            .meshes
+            .into_iter()
+            .filter(|m| m.object_id == Some(id) && m.material != Material::Concrete)
+            .collect();
+        assert!(!own.is_empty());
+        y_range(&own)
+    }
+
+    #[test]
+    fn a_balloon_wall_runs_up_through_the_platforms_and_a_stopped_one_does_not() {
+        use plan_core::walls::CeilingPlatform;
+        let (mut p, id) = two_floors();
+        let ceiling = p.floors[0].ceiling_height as f32;
+        let (_, top) = wall_y_range(&p, id);
+        assert!((top - ceiling).abs() < 1e-3, "{top} vs {ceiling}");
+        let through = (p.floors[0].settings.ceiling_structure_thickness
+            + p.floors[1].settings.floor_structure_thickness) as f32;
+        assert!(through > 0.0);
+        p.floors[0]
+            .wall_mut(id)
+            .unwrap()
+            .spec
+            .structure
+            .ceiling_platform = CeilingPlatform::BalloonThroughCeilingAbove;
+        let (_, top) = wall_y_range(&p, id);
+        assert!((top - (ceiling + through)).abs() < 1e-3, "{top}");
+        // The top of the floor platform above is the wall top.
+        let upper = (p.floors[1].elevation) as f32;
+        assert!((top - upper).abs() < 1e-3, "{top} vs {upper}");
+        p.floors[0]
+            .wall_mut(id)
+            .unwrap()
+            .spec
+            .structure
+            .ceiling_platform = CeilingPlatform::StopAtCeilingAbove;
+        let (_, top) = wall_y_range(&p, id);
+        assert!((top - ceiling).abs() < 1e-3);
+    }
+
+    #[test]
+    fn stop_at_floor_below_drops_the_upper_wall_through_its_floor_platform() {
+        use plan_core::walls::FloorPlatform;
+        let (mut p, _) = two_floors();
+        let up = p.add_wall(
+            1,
+            Point::new(0.0, 0.0),
+            Point::new(120.0, 0.0),
+            6.0,
+            p.floors[1].ceiling_height,
+            WallKind::Exterior,
+        );
+        let elevation = p.floors[1].elevation as f32;
+        let scene = |p: &Project| {
+            let s = crate::build_scene(p);
+            let m: Vec<Mesh> = s
+                .meshes
+                .into_iter()
+                .filter(|m| m.object_id == Some(up))
+                .collect();
+            y_range(&m)
+        };
+        assert!((scene(&p).0 - elevation).abs() < 1e-3);
+        p.floors[1]
+            .wall_mut(up)
+            .unwrap()
+            .spec
+            .structure
+            .floor_platform = FloorPlatform::StopAtFloorBelow;
+        let drop = p.floors[1].settings.floor_structure_thickness as f32;
+        assert!((scene(&p).0 - (elevation - drop)).abs() < 1e-3);
+        // The ground floor has no floor below: nothing moves.
+        if let Some(w) = p.floors[0].wall_mut(1) {
+            w.spec.structure.floor_platform = FloorPlatform::BalloonThroughFloorBelow;
+        }
+        assert_eq!(wall_y_range(&p, 1).0, p.floors[0].elevation as f32);
+    }
+
+    #[test]
+    fn a_foundation_footing_and_a_half_wall_cap_show_in_the_scene() {
+        let (mut p, id) = two_floors();
+        {
+            let w = p.floors[0].wall_mut(id).unwrap();
+            w.set_class(plan_core::WallClass::HalfWall { height: 36.0 });
+            w.spec.cap.enabled = true;
+            w.spec.foundation.footing = true;
+        }
+        let scene = crate::build_scene(&p);
+        let own: Vec<&Mesh> = scene
+            .meshes
+            .iter()
+            .filter(|m| m.object_id == Some(id))
+            .collect();
+        let top = own
+            .iter()
+            .flat_map(|m| m.vertices.iter().map(|v| v.position[1]))
+            .fold(f32::MIN, f32::max);
+        // The half wall is 36" with a 1.5" flat cap on top.
+        assert!((top - 37.5).abs() < 1e-3, "{top}");
+        assert!(own.iter().any(|m| m.material == Material::Concrete));
+        assert!(own.iter().any(|m| m.material == Material::Trim));
     }
 }

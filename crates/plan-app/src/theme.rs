@@ -320,6 +320,8 @@ impl DockWidths {
             Dock::Library => self.library,
             Dock::Project => self.project,
             Dock::LayerDisplay => self.layers,
+            // The Plan Agent dock keeps its width in egui's own memory.
+            Dock::Agent => 340.0,
         }
     }
 
@@ -337,6 +339,8 @@ impl DockWidths {
             Dock::Library => &mut self.library,
             Dock::Project => &mut self.project,
             Dock::LayerDisplay => &mut self.layers,
+            // Not saved: the agent dock's width lives in egui's memory.
+            Dock::Agent => return false,
         };
         let changed = (*slot - width).abs() > 0.5;
         if changed {

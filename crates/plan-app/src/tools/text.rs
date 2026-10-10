@@ -5,8 +5,9 @@
 //! `CadItem::Text`, leaders and callout shapes are polylines and circles
 //! grouped with their text so they select together.
 //!
-//! * Text (TXT-1): click places the anchor (the text's bottom-left), typing
-//!   fills it, Enter commits, a click elsewhere commits and starts the next
+//! * Text (TXT-1): click places the text's upper-left corner (Chief clicks the
+//!   upper left of the block; the stored position stays the lower-left, so the
+//!   block hangs down from the click), typing fills it, Enter commits, a click elsewhere commits and starts the next
 //!   text, Esc cancels. Clicking existing text edits it in place. The height
 //!   is `defaults.text.height` in plan inches; when the Text layer's style
 //!   holds a printed size, the text is stored at the style's character height
@@ -16,37 +17,46 @@
 //!   ([`TextTool::style_of`]) because the model has no style fields.
 //! * Leader Line (TXT-5): click the arrow tip and the bends, double-click or
 //!   Enter ends. Text Line with Arrow (TXT-6) then asks for the text.
-//! * Callout (TXT-7): click the target, click the callout position, type;
-//!   a circle or hexagon is drawn around the text.
-//! * Marker (TXT-8): a numbered circle. Note (TXT-9): text "Note n: ..." with
-//!   the next free note number, which a Note schedule can read back with
-//!   [`note_number`].
+//! * Callout (TXT-7, TXT-49..51), Marker (TXT-8, TXT-52, TXT-53) and Note
+//!   (TXT-9, TXT-54, TXT-55): a click opens the Callout, Marker or Note
+//!   Specification (`dialogs::text::annot`) filled from the Saved Defaults;
+//!   OK places the object (`plan_core::callout`: a record plus the grouped
+//!   CAD objects it draws as). Placed ones have edit handles
+//!   ([`annot_handles`]) and the Edit toolbar buttons of [`edit_actions`].
 //!
 //! * Rich Text keeps its runs: inline `<b> <i> <u> <size=1.5> <color=#RRGGBB>`
 //!   markup typed in the text (and the B / I / U buttons) become
 //!   `RichRun`s stored with the text (`CadAttrs::runs`); the text item keeps
 //!   the plain words.
-//! * Text macros: `%room.name%`, `%plan.date%`, `%floor%` and the user's own
-//!   macros expand when text is placed or edited (Text Macro Management).
-//! * Notes take their label from the active note type (Note Type
-//!   Management): `Note 3:`, `E 1:`, ...
+//! * Text macros (`plan_core::macros`): `%room.name%`, `%date.short%`,
+//!   `%client.name%`, `%floor%` and the user's own macros. A Text or Rich
+//!   Text that holds macros stays live: what was typed is kept
+//!   (`Project::macro_texts`) and the object follows the plan (the room's
+//!   name, Project Information, the door its arrow points at). Callouts,
+//!   markers and notes expand their macros when their dialog is OK'd.
+//! * Notes take their number from the order they were placed in, per note
+//!   type (Note Type Management); the Note Schedule reads them back.
 //!
 //! The shell sends typed characters to a tool only while `cx.temp.editing`
 //! is set, so the tool raises that flag while text is being typed
 //! ([`set_typing`]).
 
-use super::cad::{add_cad_items, arrowhead, regular_polygon, set_typing, OptionStrip, StripButton};
+use super::cad::{add_cad_items, arrowhead, set_typing, OptionStrip, StripButton};
 use super::{KeyEvent, PointerEvent, Tool, ToolId, ToolResult};
-use crate::dialogs::text::manage::{MacroDialog, NoteTypeDialog};
+use crate::dialogs::text::annot::{self, AnnotKind};
+use crate::dialogs::text::macro_manager::MacroManager;
+use crate::dialogs::text::manage::{NoteTypeDialog, StyleOp, TextStyleDialog};
 use crate::dialogs::Outcome;
 use crate::editor::selection::{cad_by_id, cad_distance, hit_test};
+use crate::editor::snap::SnapResult;
 use crate::editor::{render, Camera, EditorContext, EditorRequest, ObjectRef};
 use eframe::egui::{self, Rect, Stroke};
 use plan_core::cad::{CadItem, TEXT_WIDTH_FACTOR};
-use plan_core::geometry::{point_in_polygon, Point};
-use plan_core::text_styles::{
-    expand_macros, runs_from_markup, runs_plain, runs_to_markup, MacroContext, RichRun,
-};
+use plan_core::callout::{CalloutShape, MarkerKind};
+use plan_core::geometry::Point;
+use plan_core::macros::Env;
+use plan_core::text_box::{layout, TextBox};
+use plan_core::text_styles::{runs_from_markup, runs_plain, runs_to_markup, RichRun};
 use plan_core::Id;
 use std::collections::HashMap;
 
@@ -76,10 +86,12 @@ pub enum TextMode {
     NoteTypes,
     /// Opens Text Macro Management.
     Macros,
+    /// Opens Text Style Management (rename and remove styles).
+    TextStyles,
 }
 
 impl TextMode {
-    pub const ALL: [TextMode; 9] = [
+    pub const ALL: [TextMode; 10] = [
         TextMode::Text,
         TextMode::RichText,
         TextMode::LeaderLine,
@@ -89,6 +101,7 @@ impl TextMode {
         TextMode::Note,
         TextMode::NoteTypes,
         TextMode::Macros,
+        TextMode::TextStyles,
     ];
 
     /// Chief's name from the Text Tools flyout.
@@ -103,12 +116,16 @@ impl TextMode {
             TextMode::Note => "Note",
             TextMode::NoteTypes => "Note Type Management",
             TextMode::Macros => "Text Macro Management",
+            TextMode::TextStyles => "Text Style Management",
         }
     }
 
     /// Opens a dialog when picked instead of drawing.
     fn is_command(self) -> bool {
-        matches!(self, TextMode::NoteTypes | TextMode::Macros)
+        matches!(
+            self,
+            TextMode::NoteTypes | TextMode::Macros | TextMode::TextStyles
+        )
     }
 
     pub fn from_name(name: &str) -> Option<TextMode> {
@@ -122,6 +139,7 @@ impl TextMode {
             TextMode::ArrowLine => "Line + Text",
             TextMode::NoteTypes => "Note Types",
             TextMode::Macros => "Macros",
+            TextMode::TextStyles => "Styles",
             m => m.name(),
         }
     }
@@ -132,23 +150,18 @@ impl TextMode {
             TextMode::RichText => "Rich Text: click, type (Enter adds a line), Tab to finish",
             TextMode::LeaderLine => "Leader Line: click the arrow tip and the bends; Enter or double-click ends",
             TextMode::ArrowLine => "Text Line with Arrow: click the arrow tip and the bends; Enter ends, then type the text",
-            TextMode::Callout => "Callout: click the target, click the callout position, type the text",
-            TextMode::Marker => "Marker: click to place the next numbered marker",
-            TextMode::Note => "Note: click to place a numbered note, type, Enter to finish",
+            TextMode::Callout => "Callout: click to place a callout; the Callout Specification opens",
+            TextMode::Marker => "Marker: click to place a marker; the Marker Specification opens",
+            TextMode::Note => "Note: click to place a note; the Note Specification opens",
             TextMode::NoteTypes => "Note Type Management: add note types and their label prefixes",
             TextMode::Macros => {
                 "Text Macro Management: define %macros% that expand when text is placed"
             }
+            TextMode::TextStyles => {
+                "Text Style Management: rename or remove text styles; users follow the change"
+            }
         }
     }
-}
-
-/// The outline drawn around callout text.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum CalloutShape {
-    Circle,
-    Hexagon,
-    Square,
 }
 
 /// The style of a Rich Text box. Only the size scale reaches the model (as
@@ -159,6 +172,16 @@ pub struct RichStyle {
     pub italic: bool,
     pub underline: bool,
     pub size_scale: f64,
+    /// The rest of the Rich Text Edit Bar (TXT-29): strikethrough,
+    /// uppercase, a font family and colour from the strip's short lists,
+    /// the box alignment and a bullet or number list. They reach the runs
+    /// and the text box when the text is placed.
+    pub strike: bool,
+    pub upper: bool,
+    pub font: Option<&'static str>,
+    pub color: Option<[u8; 3]>,
+    pub halign: plan_core::text_box::HAlign,
+    pub list: crate::dialogs::text::editbar::ListKind,
 }
 
 impl Default for RichStyle {
@@ -168,9 +191,26 @@ impl Default for RichStyle {
             italic: false,
             underline: false,
             size_scale: 1.0,
+            strike: false,
+            upper: false,
+            font: None,
+            color: None,
+            halign: plan_core::text_box::HAlign::Left,
+            list: crate::dialogs::text::editbar::ListKind::None,
         }
     }
 }
+
+/// The font families the Rich Text strip cycles through.
+pub const STRIP_FONTS: [&str; 5] = ["Avenir", "Arial", "Helvetica", "Times New Roman", "Georgia"];
+/// The colours the Rich Text strip cycles through.
+pub const STRIP_COLORS: [[u8; 3]; 5] = [
+    [0, 0, 0],
+    [190, 30, 30],
+    [20, 80, 170],
+    [30, 120, 50],
+    [150, 90, 20],
+];
 
 // ----- pure builders -----
 
@@ -182,13 +222,6 @@ pub fn text_width(text: &str, height: f64) -> f64 {
 /// The text of note number `n`.
 pub fn note_text(n: u32, body: &str) -> String {
     format!("{NOTE_PREFIX}{n}: {body}")
-}
-
-/// Seconds since the Unix epoch (0 when the clock is unavailable).
-fn unix_now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs() as i64)
 }
 
 /// The note number of a note text (for a Note schedule).
@@ -216,77 +249,6 @@ pub fn leader_items(pts: &[Point], arrow: f64) -> Vec<CadItem> {
     ]
 }
 
-/// `items` with every text set to the stored `height` (the shapes around it
-/// were sized for the text as drawn).
-fn keep_text_height(mut items: Vec<CadItem>, height: f64) -> Vec<CadItem> {
-    for it in &mut items {
-        if let CadItem::Text { height: h, .. } = it {
-            *h = height;
-        }
-    }
-    items
-}
-
-/// A callout around `text` centered on `center` with a leader to `target`
-/// (TXT-7): shape first, then the leader and arrowhead, then the text.
-pub fn callout_items(
-    target: Point,
-    center: Point,
-    text: &str,
-    height: f64,
-    shape: CalloutShape,
-) -> Vec<CadItem> {
-    let w = text_width(text, height);
-    let lines = text.lines().count().max(1) as f64;
-    let h = height * lines;
-    let r = (w.max(h) * 0.5 + height * 0.7).max(height);
-    let mut items = Vec::new();
-    // Half the box of a square callout.
-    let (hx, hy) = (
-        (w * 0.5 + height * 0.7).max(height),
-        (h * 0.5 + height * 0.7).max(height),
-    );
-    let reach = match shape {
-        CalloutShape::Square => hx.max(hy),
-        _ => r,
-    };
-    match shape {
-        CalloutShape::Circle => items.push(CadItem::Circle { center, radius: r }),
-        CalloutShape::Hexagon => items.push(CadItem::Polyline {
-            points: regular_polygon(center, center.add(Point::new(r * 1.1, 0.0)), 6),
-            closed: true,
-        }),
-        CalloutShape::Square => items.push(CadItem::Polyline {
-            points: vec![
-                Point::new(center.x - hx, center.y - hy),
-                Point::new(center.x + hx, center.y - hy),
-                Point::new(center.x + hx, center.y + hy),
-                Point::new(center.x - hx, center.y + hy),
-            ],
-            closed: true,
-        }),
-    }
-    if target.dist(center) > reach * 1.2 {
-        let dir = target.sub(center).normalized();
-        // Where the leader meets the outline.
-        let edge = match shape {
-            CalloutShape::Square => {
-                let k = (dir.x.abs() / hx).max(dir.y.abs() / hy);
-                center.add(dir.scale(1.0 / k.max(1e-9)))
-            }
-            _ => center.add(dir.scale(r)),
-        };
-        items.extend(leader_items(&[target, edge], (height * 1.2).max(3.0)));
-    }
-    items.push(CadItem::Text {
-        pos: Point::new(center.x - w * 0.5, center.y - h * 0.5),
-        text: text.to_string(),
-        height,
-        angle: 0.0,
-    });
-    items
-}
-
 /// A numbered marker: a circle with the number centered in it (TXT-8).
 pub fn marker_items(center: Point, number: u32, height: f64) -> Vec<CadItem> {
     let text = number.to_string();
@@ -305,11 +267,61 @@ pub fn marker_items(center: Point, number: u32, height: f64) -> Vec<CadItem> {
     ]
 }
 
+/// The lower-left corner of a text block that hangs down from the clicked
+/// upper-left corner `anchor`.
+fn hang(anchor: Point, text: &str, runs: &[RichRun], drawn_height: f64) -> Point {
+    let block = layout(text, runs, drawn_height, &TextBox::default()).height;
+    Point::new(anchor.x, anchor.y - block)
+}
+
+/// Facts about the object the arrow of text `id` points at, for the kinds
+/// plan-core cannot look up itself (cabinets, fixtures, devices...): kept
+/// with a live text so its reference macros keep an answer.
+pub fn app_reference_facts(cx: &EditorContext, id: Id) -> Vec<(String, String)> {
+    let f = cx.floor();
+    let Some(CadItem::Text {
+        pos, text, height, ..
+    }) = cad_by_id(f, id).map(|c| c.item.clone())
+    else {
+        return Vec::new();
+    };
+    let width = text.chars().count() as f64 * height * TEXT_WIDTH_FACTOR;
+    let Some(tip) = plan_core::macros::arrow_tip_of(f, pos, height, width) else {
+        return Vec::new();
+    };
+    let tol = cx.pick_tol().max(6.0);
+    for o in crate::editor::selection::hit_test_cx(cx, tip, tol) {
+        if matches!(
+            o,
+            ObjectRef::Cad(_)
+                | ObjectRef::Text(_)
+                | ObjectRef::Wall(_)
+                | ObjectRef::Opening(_)
+                | ObjectRef::Room(_)
+        ) {
+            continue;
+        }
+        let Some(key) = crate::dialogs::object_info::object_key(cx, o) else {
+            continue;
+        };
+        let Some(mut d) = crate::dialogs::common_pages::describe(&cx.project, &key) else {
+            continue;
+        };
+        crate::dialogs::common_pages::with_info(&cx.project, &key, &mut d.facts);
+        let kind = key.split(':').next().unwrap_or("");
+        let mut label = kind.to_string();
+        if let Some(c) = label.get_mut(0..1) {
+            c.make_ascii_uppercase();
+        }
+        return plan_core::macros::facts_from_label(&label, &d.facts);
+    }
+    Vec::new()
+}
+
 // ----- the tool -----
 
 pub struct TextTool {
     mode: TextMode,
-    shape: CalloutShape,
     rich: RichStyle,
     /// Where the text being typed is anchored (bottom-left, or the center of
     /// a callout); `Some` while typing.
@@ -330,19 +342,30 @@ pub struct TextTool {
     dialog: Option<TextUi>,
     /// Open the mode's dialog on the next frame.
     pending: bool,
+    /// A new text's press: where it landed on screen and in the plan. A drag
+    /// from it defines the text box (TXT-1).
+    press: Option<(egui::Pos2, Point)>,
+    /// The opposite corner of the box being dragged.
+    box_drag: Option<Point>,
+    /// The box a finished drag made, and the plan y of its top edge: the box
+    /// keeps its top where it was dragged as the text grows (TXT-13).
+    text_box: Option<(TextBox, f64)>,
+    /// The vertical guide of a left-edge alignment (TXT-10): from the text
+    /// aligned to, to the anchor.
+    align_guide: Option<(Point, Point)>,
 }
 
 /// The dialogs of the two management commands.
 enum TextUi {
     NoteTypes(Box<NoteTypeDialog>),
-    Macros(Box<MacroDialog>),
+    Macros(Box<MacroManager>),
+    Styles(Box<TextStyleDialog>),
 }
 
 impl Default for TextTool {
     fn default() -> Self {
         Self {
             mode: TextMode::Text,
-            shape: CalloutShape::Circle,
             rich: RichStyle::default(),
             anchor: None,
             buf: String::new(),
@@ -355,11 +378,23 @@ impl Default for TextTool {
             note_type: GENERAL_NOTE.to_string(),
             dialog: None,
             pending: false,
+            press: None,
+            box_drag: None,
+            text_box: None,
+            align_guide: None,
         }
     }
 }
 
 const BTN_NOTE_TYPE: u16 = 120;
+const BTN_MARKER_KIND: u16 = 121;
+const BTN_STRIKE: u16 = 115;
+const BTN_UPPER: u16 = 116;
+const BTN_FONT: u16 = 117;
+const BTN_COLOR: u16 = 118;
+const BTN_ALIGN: u16 = 119;
+const BTN_LIST: u16 = 122;
+const BTN_LINK: u16 = 123;
 const BTN_SHAPE: u16 = 100;
 const BTN_BOLD: u16 = 110;
 const BTN_ITALIC: u16 = 111;
@@ -389,10 +424,6 @@ impl TextTool {
         }
     }
 
-    pub fn set_callout_shape(&mut self, s: CalloutShape) {
-        self.shape = s;
-    }
-
     pub fn rich_style(&self) -> RichStyle {
         self.rich
     }
@@ -417,6 +448,10 @@ impl TextTool {
         self.editing = None;
         self.pts.clear();
         self.leader.clear();
+        self.press = None;
+        self.box_drag = None;
+        self.text_box = None;
+        self.align_guide = None;
     }
 
     fn cancel(&mut self, cx: &mut EditorContext) {
@@ -432,7 +467,17 @@ impl TextTool {
     /// style's own character height, which draws at that size on paper at any
     /// scale ([`Self::drawn_height`]).
     fn height(&self, cx: &EditorContext) -> f64 {
-        let h = cx.defaults.text.height;
+        // Text Defaults / Rich Text Defaults (Default Settings > Text).
+        let own = if self.mode == TextMode::RichText {
+            cx.project.annot_defaults.rich.height
+        } else {
+            cx.project.annot_defaults.text.height
+        };
+        let h = if own > 0.0 {
+            own
+        } else {
+            cx.defaults.text.height
+        };
         let h = if h > 0.0 { h } else { 6.0 };
         let h = cx
             .project
@@ -458,56 +503,30 @@ impl TextTool {
         )
     }
 
+    fn drawn_height_of(&self, cx: &EditorContext, height: f64) -> f64 {
+        Self::drawn_height(cx, height)
+    }
+
     fn arrow_size(&self, cx: &EditorContext) -> f64 {
         (self.height(cx) * 1.2).max(3.0)
     }
 
-    /// The next free number of the active note type (TXT-9).
-    fn next_note(&self, cx: &EditorContext) -> u32 {
-        let types = cx.project.note_types();
-        let texts: Vec<&str> = cx
-            .floor()
-            .cad
-            .iter()
-            .filter_map(|c| match &c.item {
-                CadItem::Text { text, .. } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect();
-        types.next_number(&self.note_type, texts)
-    }
-
-    /// The text of the next note of the active type.
-    fn note_label(&self, cx: &EditorContext, body: &str) -> String {
-        cx.project
-            .note_types()
-            .format(&self.note_type, self.next_note(cx), body)
-    }
-
-    /// `text` with its `%macros%` expanded for a text placed at `at`.
+    /// `text` with its `%macros%` expanded for a text placed at `at`: the
+    /// global macros (the file, the room under `at`, the date, Project
+    /// Information, special characters) and the user's own. The macros of a
+    /// pointed-at object stay as typed.
     pub fn expand(cx: &EditorContext, text: &str, at: Point) -> String {
         if !text.contains('%') {
             return text.to_string();
         }
-        let room = cx
-            .rooms
-            .iter()
-            .find(|r| point_in_polygon(at, &r.inner_polygon) || point_in_polygon(at, &r.polygon));
-        let floor = cx.floor();
-        let ctx = MacroContext {
-            room_name: room.map(|r| cx.room_name(r)).unwrap_or_default(),
-            room_number: String::new(),
-            room_area: room
-                .map(|r| format!("{} sq ft", r.interior_area_sq_ft().round()))
-                .unwrap_or_default(),
-            plan_name: cx.project.name.clone(),
-            plan_date: plan_core::text_styles::date_string(unix_now()),
-            floor_name: floor.name.clone(),
-            floor_number: cx.floor + 1,
-            floor_count: cx.project.floors.len(),
-            ceiling_height: cx.fmt_dim(floor.ceiling_height),
-        };
-        expand_macros(text, &ctx, &cx.project.text_macros())
+        Env::new(
+            &cx.project,
+            cx.floor,
+            Some(at),
+            &cx.rooms,
+            plan_core::macros::unix_now(),
+        )
+        .expand(text)
     }
 
     /// The runs of Rich Text typed with inline markup and the B / I / U
@@ -518,33 +537,27 @@ impl TextTool {
             r.bold |= self.rich.bold;
             r.italic |= self.rich.italic;
             r.underline |= self.rich.underline;
+            r.strike |= self.rich.strike;
+            r.upper |= self.rich.upper;
+            if r.font.is_none() {
+                r.font = self.rich.font.map(str::to_string);
+            }
+            if r.color.is_none() {
+                r.color = self.rich.color.filter(|c| *c != [0, 0, 0]);
+            }
         }
         let plain = runs_plain(&runs);
         (runs, plain)
     }
 
-    /// The next marker number: one more than the largest number text on the
-    /// Text layer that sits inside a marker circle.
-    fn next_marker(cx: &EditorContext) -> u32 {
-        let layer = text_layer(cx);
-        cx.floor()
-            .cad
-            .iter()
-            .filter(|c| c.layer == layer)
-            .filter_map(|c| match &c.item {
-                CadItem::Text { text, pos, .. } => {
-                    let n: u32 = text.parse().ok()?;
-                    let inside = cx.floor().cad.iter().any(|o| {
-                        matches!(o.item, CadItem::Circle { center, radius }
-                            if center.dist(*pos) <= radius * 1.2)
-                    });
-                    inside.then_some(n)
-                }
-                _ => None,
-            })
-            .max()
-            .unwrap_or(0)
-            + 1
+    /// Where the text being typed sits (its lower left corner): hanging
+    /// down from the clicked upper-left corner, or for a text box the corner
+    /// that keeps the dragged top edge (TXT-13).
+    fn text_pos(&self, anchor: Point, text: &str, runs: &[RichRun], height: f64) -> Point {
+        match self.text_box {
+            Some((tb, top)) => Point::new(anchor.x, top - layout(text, runs, height, &tb).height),
+            None => hang(anchor, text, runs, height),
+        }
     }
 
     fn begin_typing(&mut self, cx: &mut EditorContext, anchor: Point) {
@@ -558,19 +571,22 @@ impl TextTool {
     fn pending_items(&self, cx: &EditorContext, extra: Option<Point>) -> Vec<CadItem> {
         let height = self.height(cx);
         match self.mode {
-            TextMode::Text | TextMode::RichText | TextMode::Note => {
+            TextMode::Text | TextMode::RichText => {
                 let Some(a) = self.anchor else {
                     return Vec::new();
                 };
-                let text = if self.mode == TextMode::Note && self.editing.is_none() {
-                    self.note_label(cx, &self.buf)
-                } else if self.mode == TextMode::RichText {
+                let text = if self.mode == TextMode::RichText {
                     runs_plain(&runs_from_markup(&self.buf))
                 } else {
                     self.buf.clone()
                 };
+                let runs = if self.mode == TextMode::RichText {
+                    runs_from_markup(&self.buf)
+                } else {
+                    Vec::new()
+                };
                 vec![CadItem::Text {
-                    pos: a,
+                    pos: self.text_pos(a, &text, &runs, self.drawn_height_of(cx, height)),
                     text,
                     height,
                     angle: 0.0,
@@ -596,26 +612,10 @@ impl TextTool {
                 }
                 items
             }
-            TextMode::Callout => {
-                // The shape is sized for the text as drawn; the text keeps
-                // its stored (style) height.
-                let dh = Self::drawn_height(cx, height);
-                let items = match (self.pts.first(), self.anchor) {
-                    (Some(t), Some(c)) => callout_items(*t, c, &self.buf, dh, self.shape),
-                    (Some(t), None) => extra
-                        .map(|c| callout_items(*t, c, "  ", dh, self.shape))
-                        .unwrap_or_default(),
-                    _ => Vec::new(),
-                };
-                keep_text_height(items, height)
-            }
-            TextMode::Marker => extra
-                .map(|c| {
-                    let dh = Self::drawn_height(cx, height);
-                    keep_text_height(marker_items(c, Self::next_marker(cx), dh), height)
-                })
+            TextMode::Callout | TextMode::Marker | TextMode::Note => extra
+                .map(|c| annot_ghost(cx, mode_kind(self.mode), c))
                 .unwrap_or_default(),
-            TextMode::NoteTypes | TextMode::Macros => Vec::new(),
+            TextMode::NoteTypes | TextMode::Macros | TextMode::TextStyles => Vec::new(),
         }
     }
 
@@ -625,9 +625,14 @@ impl TextTool {
             return ToolResult::ignored();
         };
         let height = self.height(cx);
-        let raw = self.buf.trim_end().to_string();
+        let mut raw = self.buf.trim_end().to_string();
         let editing = self.editing;
         let mode = self.mode;
+        // The strip's bullets and numbering (Paragraph Options).
+        if mode == TextMode::RichText && editing.is_none() && self.rich.list != Default::default() {
+            let n = raw.chars().count();
+            raw = crate::dialogs::text::editbar::set_list(&raw, (0, n), self.rich.list).0;
+        }
         // Rich Text keeps its runs; every text expands its %macros%.
         let rich_edit =
             editing.is_some_and(|id| cx.floor().cad_attrs(id).is_some_and(|a| !a.runs.is_empty()));
@@ -636,6 +641,14 @@ impl TextTool {
         } else {
             (Vec::new(), raw.clone())
         };
+        // What was typed, macros and all: a text that holds macros stays
+        // live (`plan_core::macros`).
+        let source_runs: Vec<RichRun> = if runs.is_empty() {
+            vec![RichRun::plain(plain.clone())]
+        } else {
+            runs.clone()
+        };
+        let source_rich = !Self::normalized_runs(source_runs.clone()).is_empty();
         let text = Self::expand(cx, &plain, anchor);
         let runs: Vec<RichRun> = if runs.iter().any(|r| r.text.contains('%')) {
             // Expanding changed the words; keep the formats by run.
@@ -649,7 +662,10 @@ impl TextTool {
             runs
         };
         let leader = std::mem::take(&mut self.leader);
-        let target = self.pts.first().copied();
+        let boxed = self.text_box.take();
+        self.press = None;
+        self.box_drag = None;
+        self.align_guide = None;
         self.anchor = None;
         self.buf.clear();
         self.editing = None;
@@ -658,35 +674,29 @@ impl TextTool {
         cx.status.clear();
 
         if let Some(id) = editing {
-            return self.finish_edit(cx, id, text, runs);
+            return self.finish_edit(cx, id, text, runs, source_runs, source_rich);
         }
         let (items, label) = match mode {
             TextMode::Text | TextMode::RichText => {
                 if text.trim().is_empty() {
                     return ToolResult::consumed();
                 }
+                // A dragged text box keeps its top edge where it was dragged.
+                let pos = match boxed {
+                    Some((tb, top)) => Point::new(
+                        anchor.x,
+                        top - layout(&text, &runs, Self::drawn_height(cx, height), &tb).height,
+                    ),
+                    None => hang(anchor, &text, &runs, Self::drawn_height(cx, height)),
+                };
                 (
                     vec![CadItem::Text {
-                        pos: anchor,
+                        pos,
                         text,
                         height,
                         angle: 0.0,
                     }],
                     "Place Text",
-                )
-            }
-            TextMode::Note => {
-                if text.trim().is_empty() {
-                    return ToolResult::consumed();
-                }
-                (
-                    vec![CadItem::Text {
-                        pos: anchor,
-                        text: self.note_label(cx, &text),
-                        height,
-                        angle: 0.0,
-                    }],
-                    "Place Note",
                 )
             }
             TextMode::ArrowLine => {
@@ -701,19 +711,6 @@ impl TextTool {
                 }
                 (items, "Text Line with Arrow")
             }
-            TextMode::Callout => {
-                let Some(t) = target else {
-                    return ToolResult::consumed();
-                };
-                if text.trim().is_empty() {
-                    return ToolResult::consumed();
-                }
-                let dh = Self::drawn_height(cx, height);
-                (
-                    keep_text_height(callout_items(t, anchor, &text, dh, self.shape), height),
-                    "Place Callout",
-                )
-            }
             _ => return ToolResult::consumed(),
         };
         let rich = mode == TextMode::RichText;
@@ -723,6 +720,51 @@ impl TextTool {
                 if rich {
                     self.styles.insert(ids[0], self.rich);
                     Self::store_runs(cx, ids[0], runs);
+                }
+                if let (Some((tb, _)), TextMode::Text | TextMode::RichText) = (boxed, mode) {
+                    let fl = cx.floor;
+                    cx.project.edit_cad_attrs(fl, ids[0], |a| a.text_box = tb);
+                }
+                if matches!(mode, TextMode::Text | TextMode::RichText) {
+                    let spec = if rich {
+                        cx.project.annot_defaults.rich.clone()
+                    } else {
+                        cx.project.annot_defaults.text.clone()
+                    };
+                    if spec.style.is_some() || (boxed.is_none() && !spec.text_box.is_plain()) {
+                        let fl = cx.floor;
+                        let own_box = boxed.is_none();
+                        cx.project.edit_cad_attrs(fl, ids[0], |a| {
+                            if a.text_style.is_none() {
+                                a.text_style = spec.style.clone();
+                            }
+                            if own_box {
+                                a.text_box = spec.text_box;
+                            }
+                        });
+                    }
+                }
+                if rich && self.rich.halign != plan_core::text_box::HAlign::Left {
+                    let (fl, h) = (cx.floor, self.rich.halign);
+                    cx.project
+                        .edit_cad_attrs(fl, ids[0], |a| a.text_box.halign = h);
+                }
+                // The text's own id: the last object of a Text Line with
+                // Arrow, the only one of a plain text.
+                let text_id = if mode == TextMode::ArrowLine {
+                    ids.last().copied()
+                } else {
+                    ids.first().copied()
+                };
+                if let Some(tid) = text_id {
+                    let is_text = cad_by_id(cx.floor(), tid)
+                        .is_some_and(|c| matches!(c.item, CadItem::Text { .. }));
+                    if is_text {
+                        let facts = app_reference_facts(cx, tid);
+                        let fl = cx.floor;
+                        cx.project
+                            .set_live_text(fl, tid, source_runs, source_rich, facts);
+                    }
                 }
                 ToolResult::committed(label)
             }
@@ -734,7 +776,15 @@ impl TextTool {
     /// plain run is just the text).
     fn normalized_runs(runs: Vec<RichRun>) -> Vec<RichRun> {
         let formatted = runs.iter().any(|r| {
-            r.bold || r.italic || r.underline || (r.scale - 1.0).abs() > 1e-9 || r.color.is_some()
+            r.bold
+                || r.italic
+                || r.underline
+                || r.strike
+                || r.upper
+                || (r.scale - 1.0).abs() > 1e-9
+                || r.color.is_some()
+                || r.font.is_some()
+                || r.link.is_some()
         });
         if formatted {
             runs
@@ -750,37 +800,77 @@ impl TextTool {
         cx.project.edit_cad_attrs(fl, id, |a| a.runs = runs);
     }
 
-    /// Writes the edited text back; empty text deletes the object.
+    /// Writes the edited text back; empty text deletes the object. `source`
+    /// is what was typed (macros not yet evaluated): a text that holds a
+    /// macro stays live.
     fn finish_edit(
         &mut self,
         cx: &mut EditorContext,
         id: Id,
         text: String,
         runs: Vec<RichRun>,
+        source: Vec<RichRun>,
+        source_rich: bool,
     ) -> ToolResult {
         if !cx.check_unlocked(ObjectRef::Cad(id)) {
             return ToolResult::consumed();
         }
         let old_runs = cx.floor().cad_attrs(id).map(|a| a.runs).unwrap_or_default();
         let runs = Self::normalized_runs(runs);
+        // A live text is the same when its source is; a plain one is the
+        // same unless it now holds a macro.
+        let live_same = match cx.project.live_text(id) {
+            Some(l) => l.runs == source,
+            None => !Env::new(&cx.project, cx.floor, None, &[], 0).has_macros(&runs_plain(&source)),
+        };
         let same = matches!(cad_by_id(cx.floor(), id).map(|c| &c.item),
             Some(CadItem::Text { text: t, .. }) if *t == text)
-            && runs == old_runs;
+            && runs == old_runs
+            && live_same;
         if same {
             return ToolResult::consumed();
         }
         cx.begin_change("Edit Text");
         let fl = cx.floor;
-        if text.trim().is_empty() {
+        // The block keeps its top edge as lines come and go (TXT-13).
+        let tb = cx
+            .floor()
+            .cad_attrs(id)
+            .map(|a| a.text_box)
+            .unwrap_or_default();
+        let item_height = match cad_by_id(cx.floor(), id).map(|c| &c.item) {
+            Some(CadItem::Text { height, .. }) => *height,
+            _ => 0.0,
+        };
+        let drawn = Self::drawn_height(cx, item_height);
+        let deleted = text.trim().is_empty();
+        if deleted {
             Self::remove_text(cx, id);
             cx.selection.clear();
         } else if let Some(c) = cx.project.floors[fl].cad.iter_mut().find(|c| c.id == id) {
-            if let CadItem::Text { text: t, .. } = &mut c.item {
+            if let CadItem::Text {
+                text: t,
+                pos,
+                angle,
+                ..
+            } = &mut c.item
+            {
+                if angle.abs() < 1e-9 {
+                    let old = layout(t, &old_runs, drawn, &tb).height;
+                    let new = layout(&text, &runs, drawn, &tb).height;
+                    pos.y += old - new;
+                }
                 *t = text;
             }
             if runs != old_runs {
                 Self::store_runs(cx, id, runs);
             }
+        }
+        if !deleted {
+            let facts = app_reference_facts(cx, id);
+            cx.project.set_live_text(fl, id, source, source_rich, facts);
+        } else {
+            cx.project.macro_texts.texts.retain(|t| t.id != id);
         }
         cx.mark_dirty();
         ToolResult::committed("Edit Text")
@@ -831,31 +921,37 @@ impl TextTool {
             }
             let drawn = render::printed_text_object(cx, c, attrs.get(&c.id));
             let item = drawn.as_ref().map_or(&c.item, |o| &o.item);
-            (cad_distance(item, p) <= tol).then_some(c.id)
+            // A text with a box is picked by its box and frame.
+            let dist = match attrs
+                .get(&c.id)
+                .and_then(|a| plan_core::text_box::placed(item, a))
+            {
+                Some(pb) => pb.distance(p),
+                None => cad_distance(item, p),
+            };
+            (dist <= tol).then_some(c.id)
         })
     }
 
-    fn strip_items(&self) -> Vec<StripButton> {
+    fn strip_items(&self, cx: &EditorContext) -> Vec<StripButton> {
         let mut v: Vec<StripButton> = TextMode::ALL
             .iter()
             .enumerate()
             .map(|(i, m)| StripButton::new(m.short(), i as u16, *m == self.mode))
             .collect();
+        let d = &cx.project.annot_defaults;
         if self.mode == TextMode::Callout {
             v.push(StripButton::new(
-                "Circle",
+                format!("Shape: {}", d.callout.shape.label()),
                 BTN_SHAPE,
-                self.shape == CalloutShape::Circle,
+                true,
             ));
+        }
+        if self.mode == TextMode::Marker {
             v.push(StripButton::new(
-                "Hexagon",
-                BTN_SHAPE + 1,
-                self.shape == CalloutShape::Hexagon,
-            ));
-            v.push(StripButton::new(
-                "Square",
-                BTN_SHAPE + 2,
-                self.shape == CalloutShape::Square,
+                format!("Type: {}", d.marker.kind.label()),
+                BTN_MARKER_KIND,
+                true,
             ));
         }
         if self.mode == TextMode::Note {
@@ -869,6 +965,29 @@ impl TextTool {
             v.push(StripButton::new("B", BTN_BOLD, self.rich.bold));
             v.push(StripButton::new("I", BTN_ITALIC, self.rich.italic));
             v.push(StripButton::new("U", BTN_UNDERLINE, self.rich.underline));
+            v.push(StripButton::new("S", BTN_STRIKE, self.rich.strike));
+            v.push(StripButton::new("AA", BTN_UPPER, self.rich.upper));
+            v.push(StripButton::new(
+                format!("Font: {}", self.rich.font.unwrap_or("Style's")),
+                BTN_FONT,
+                self.rich.font.is_some(),
+            ));
+            v.push(StripButton::new(
+                "Color",
+                BTN_COLOR,
+                self.rich.color.is_some(),
+            ));
+            v.push(StripButton::new(
+                format!("Align: {}", self.rich.halign.label()),
+                BTN_ALIGN,
+                true,
+            ));
+            v.push(StripButton::new(
+                format!("List: {}", self.rich.list.label()),
+                BTN_LIST,
+                self.rich.list != Default::default(),
+            ));
+            v.push(StripButton::new("Link", BTN_LINK, false));
             v.push(StripButton::new("A\u{2212}", BTN_SMALLER, false));
             v.push(StripButton::new(
                 format!("{:.0}%", self.rich.size_scale * 100.0),
@@ -899,6 +1018,7 @@ impl TextTool {
         let out = match &mut ui {
             TextUi::NoteTypes(d) => d.show(ctx),
             TextUi::Macros(d) => d.show(ctx),
+            TextUi::Styles(d) => d.show(ctx),
         };
         self.dialog_outcome(cx, ui, out);
     }
@@ -929,6 +1049,16 @@ impl TextTool {
                         cx.mark_dirty();
                     }
                 }
+                TextUi::Styles(d) => {
+                    if !d.ops().is_empty() {
+                        cx.begin_change("Change Text Styles");
+                        if StyleOp::apply_all(d.ops(), &mut cx.project) > 0 {
+                            cx.mark_dirty();
+                        } else {
+                            cx.cancel_change();
+                        }
+                    }
+                }
             },
         }
         cx.requests.push(EditorRequest::SetTool(ToolId::Select));
@@ -950,8 +1080,22 @@ impl TextTool {
                     styles,
                 ))))
             }
-            TextMode::Macros => Some(TextUi::Macros(Box::new(MacroDialog::new(
-                cx.project.text_macros(),
+            TextMode::Macros => Some(TextUi::Macros(Box::new(
+                MacroManager::new(cx.project.text_macros()).with_env(Env::new(
+                    &cx.project,
+                    cx.floor,
+                    None,
+                    &[],
+                    plan_core::macros::unix_now(),
+                )),
+            ))),
+            TextMode::TextStyles => Some(TextUi::Styles(Box::new(TextStyleDialog::new(
+                cx.project
+                    .text_styles
+                    .names()
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect(),
             )))),
             _ => None,
         };
@@ -965,13 +1109,62 @@ impl TextTool {
             return ToolResult::consumed();
         }
         match id {
-            BTN_SHAPE => self.shape = CalloutShape::Circle,
-            i if i == BTN_SHAPE + 1 => self.shape = CalloutShape::Hexagon,
-            i if i == BTN_SHAPE + 2 => self.shape = CalloutShape::Square,
+            BTN_SHAPE => {
+                // Cycles the shape new callouts start with (Saved Defaults).
+                let d = &mut cx.project.annot_defaults.callout;
+                let all = CalloutShape::TEN;
+                let at = all.iter().position(|s| *s == d.shape).map_or(0, |i| i + 1);
+                d.shape = all[at % all.len()];
+            }
+            BTN_MARKER_KIND => {
+                let d = &mut cx.project.annot_defaults.marker;
+                let all = MarkerKind::ALL;
+                let at = all.iter().position(|k| *k == d.kind).map_or(0, |i| i + 1);
+                d.kind = all[at % all.len()];
+            }
             BTN_NOTE_TYPE => self.next_note_type(cx),
             BTN_BOLD => self.rich.bold = !self.rich.bold,
             BTN_ITALIC => self.rich.italic = !self.rich.italic,
             BTN_UNDERLINE => self.rich.underline = !self.rich.underline,
+            BTN_STRIKE => self.rich.strike = !self.rich.strike,
+            BTN_UPPER => self.rich.upper = !self.rich.upper,
+            BTN_FONT => {
+                let at = STRIP_FONTS.iter().position(|f| Some(*f) == self.rich.font);
+                self.rich.font = match at {
+                    None => Some(STRIP_FONTS[0]),
+                    Some(i) if i + 1 < STRIP_FONTS.len() => Some(STRIP_FONTS[i + 1]),
+                    Some(_) => None,
+                };
+            }
+            BTN_COLOR => {
+                let at = STRIP_COLORS
+                    .iter()
+                    .position(|c| Some(*c) == self.rich.color);
+                self.rich.color =
+                    Some(STRIP_COLORS[at.map_or(1, |i| (i + 1) % STRIP_COLORS.len())]);
+            }
+            BTN_ALIGN => {
+                use plan_core::text_box::HAlign;
+                self.rich.halign = match self.rich.halign {
+                    HAlign::Left => HAlign::Center,
+                    HAlign::Center => HAlign::Right,
+                    HAlign::Right => HAlign::Left,
+                };
+            }
+            BTN_LIST => {
+                use crate::dialogs::text::editbar::ListKind;
+                let all = ListKind::ALL;
+                let at = all.iter().position(|k| *k == self.rich.list).unwrap_or(0);
+                self.rich.list = all[(at + 1) % all.len()];
+            }
+            BTN_LINK => {
+                // Inserts a hyperlink to fill in at the end of the typed text.
+                if self.typing() {
+                    self.buf.push_str(
+                        "<link=https://example.com><u><color=#0000EE>link</color></u></link>",
+                    );
+                }
+            }
             BTN_SMALLER => self.rich.size_scale = (self.rich.size_scale - 0.25).max(0.5),
             BTN_LARGER => self.rich.size_scale = (self.rich.size_scale + 0.25).min(4.0),
             _ => {}
@@ -1031,7 +1224,30 @@ impl Tool for TextTool {
     }
 
     fn pointer_move(&mut self, cx: &mut EditorContext, p: PointerEvent) -> ToolResult {
-        let s = cx.snap_at(p.world, self.pts.last().copied(), p.modifiers.alt, &[]);
+        let mut s = cx.snap_at(p.world, self.pts.last().copied(), p.modifiers.alt, &[]);
+        // Dragging from a new text's anchor sizes its box (TXT-1).
+        if let Some((scr, _)) = self.press {
+            if p.down
+                && self.typing()
+                && self.buf.is_empty()
+                && self.editing.is_none()
+                && (p.screen - scr).length() >= BOX_DRAG_PX
+            {
+                self.box_drag = Some(s.point);
+            }
+        }
+        // The anchor of the next text lines up with the left edge of nearby
+        // text (TXT-10).
+        self.align_guide = None;
+        if !self.typing()
+            && !p.modifiers.alt
+            && matches!(self.mode, TextMode::Text | TextMode::RichText)
+        {
+            if let Some((at, other)) = align_left_edge(cx, &s) {
+                s.point = at;
+                self.align_guide = Some((other, at));
+            }
+        }
         self.hover = Some(s.point);
         cx.last_snap = Some(s);
         ToolResult {
@@ -1051,10 +1267,7 @@ impl Tool for TextTool {
         // text tools it also starts the next text.
         if self.typing() {
             let res = self.commit_typing(cx);
-            if !matches!(
-                self.mode,
-                TextMode::Text | TextMode::RichText | TextMode::Note
-            ) {
+            if !matches!(self.mode, TextMode::Text | TextMode::RichText) {
                 return res;
             }
             let started = self.start_text(cx, &p);
@@ -1064,7 +1277,7 @@ impl Tool for TextTool {
             };
         }
         match self.mode {
-            TextMode::Text | TextMode::RichText | TextMode::Note => self.start_text(cx, &p),
+            TextMode::Text | TextMode::RichText => self.start_text(cx, &p),
             TextMode::LeaderLine | TextMode::ArrowLine => {
                 let s = cx.snap_at(p.world, self.pts.last().copied(), p.modifiers.alt, &[]);
                 if self.pts.last().is_none_or(|l| l.dist(s.point) >= 0.5) {
@@ -1072,33 +1285,58 @@ impl Tool for TextTool {
                 }
                 ToolResult::consumed()
             }
-            TextMode::Callout => {
-                let s = cx.snap_at(p.world, self.pts.last().copied(), p.modifiers.alt, &[]);
-                if self.pts.is_empty() {
-                    self.pts.push(s.point);
-                } else {
-                    self.begin_typing(cx, s.point);
+            TextMode::Callout | TextMode::Marker | TextMode::Note => {
+                // The specification opens; OK places the object.
+                let layer = text_layer(cx);
+                if cx.layers().is_locked(&layer) {
+                    cx.status = format!("The layer \"{layer}\" is locked");
+                    return ToolResult::consumed();
                 }
+                let at = if p.modifiers.alt { p.world } else { p.snapped };
+                annot::post_new(annot::new_at(cx, mode_kind(self.mode), at));
                 ToolResult::consumed()
             }
-            TextMode::NoteTypes | TextMode::Macros => ToolResult::consumed(),
-            TextMode::Marker => {
-                let height = self.height(cx);
-                let n = Self::next_marker(cx);
-                let at = p.snapped;
-                let dh = Self::drawn_height(cx, height);
-                let items = keep_text_height(marker_items(at, n, dh), height);
-                let layer = text_layer(cx);
-                match add_cad_items(cx, &layer, items, "Place Marker") {
-                    Some(_) => ToolResult::committed("Place Marker"),
-                    None => ToolResult::consumed(),
-                }
-            }
+            TextMode::NoteTypes | TextMode::Macros | TextMode::TextStyles => ToolResult::consumed(),
         }
     }
 
-    fn pointer_up(&mut self, _cx: &mut EditorContext, _p: PointerEvent) -> ToolResult {
-        ToolResult::ignored()
+    fn pointer_up(&mut self, cx: &mut EditorContext, p: PointerEvent) -> ToolResult {
+        let press = self.press.take();
+        let Some(drag_end) = self.box_drag.take() else {
+            return ToolResult::ignored();
+        };
+        let Some((_, a)) = press else {
+            return ToolResult::ignored();
+        };
+        if !self.typing() || self.editing.is_some() {
+            return ToolResult::ignored();
+        }
+        let b = if p.modifiers.alt {
+            p.world
+        } else {
+            cx.snap_at(p.world, None, false, &[]).point
+        };
+        let b = if b.dist(drag_end) < 1e-9 { drag_end } else { b };
+        let h = Self::drawn_height(cx, self.height(cx));
+        let pitch = h * plan_core::text_box::LINE_SPACING;
+        let (lo_x, lo_y) = (a.x.min(b.x), a.y.min(b.y));
+        let (w, dy) = ((a.x - b.x).abs(), (a.y - b.y).abs());
+        if w < h * TEXT_WIDTH_FACTOR * 3.0 {
+            // Too narrow for a box: an ordinary click.
+            return ToolResult::consumed();
+        }
+        let tb = TextBox {
+            width: w,
+            height: if dy > pitch { dy } else { 0.0 },
+            ..TextBox::default()
+        };
+        self.anchor = Some(Point::new(lo_x, lo_y));
+        self.text_box = Some((tb, lo_y + dy.max(pitch)));
+        cx.status = format!(
+            "Text box {} wide: type the text; Enter finishes, Esc cancels",
+            cx.fmt_dim(w)
+        );
+        ToolResult::consumed()
     }
 
     fn double_click(&mut self, cx: &mut EditorContext, p: PointerEvent) -> ToolResult {
@@ -1161,10 +1399,22 @@ impl Tool for TextTool {
 
     fn draw_overlay(&self, cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
         let pal = &cx.palette;
-        self.strip.draw(painter, cam, pal, &self.strip_items());
+        self.strip.draw(painter, cam, pal, &self.strip_items(cx));
         let ghost = Stroke::new(1.0_f32, pal.ghost_stroke);
         let hover = self.hover;
         let items = self.pending_items(cx, hover);
+        // The left-edge alignment guide (TXT-10).
+        if let Some((from, to)) = self.align_guide {
+            painter.line_segment(
+                [cam.world_to_screen(from), cam.world_to_screen(to)],
+                Stroke::new(1.0_f32, pal.selection),
+            );
+        }
+        // The rectangle being dragged for a new text box (TXT-1).
+        if let (Some((_, a)), Some(b)) = (self.press, self.box_drag) {
+            let r = Rect::from_two_pos(cam.world_to_screen(a), cam.world_to_screen(b));
+            painter.rect_stroke(r, 0.0, ghost, egui::StrokeKind::Middle);
+        }
         for it in &items {
             // The ghost is drawn at the size the text will print.
             let shown = match it {
@@ -1182,6 +1432,30 @@ impl Tool for TextTool {
                 other => other.clone(),
             };
             let it = &shown;
+            if let (CadItem::Text { .. }, Some((tb, _))) = (it, self.text_box) {
+                // A text box: wrapped lines inside the dragged width.
+                let obj = plan_core::CadObject {
+                    id: 0,
+                    layer: TEXT_LAYER.to_string(),
+                    item: it.clone(),
+                };
+                let mut attrs = plan_core::cad::CadAttrs::new(0);
+                attrs.text_box = tb;
+                if self.mode == TextMode::RichText {
+                    attrs.runs = runs_from_markup(&self.buf);
+                }
+                if let Some(pb) = plan_core::text_box::placed(it, &attrs) {
+                    render::draw_text_box(cx, painter, cam, &obj, &attrs);
+                    let pts: Vec<egui::Pos2> = pb
+                        .layout
+                        .corners(pb.pos, pb.angle, 0.0)
+                        .iter()
+                        .map(|q| cam.world_to_screen(*q))
+                        .collect();
+                    painter.add(egui::Shape::closed_line(pts, ghost));
+                }
+                continue;
+            }
             render::draw_cad(painter, cam, it, ghost, pal);
             if let CadItem::Text { text, .. } = it {
                 if self.typing() {
@@ -1226,20 +1500,747 @@ impl TextTool {
                     return ToolResult::consumed();
                 }
                 self.editing = Some(id);
-                self.begin_typing(cx, pos);
-                // A rich text comes back as markup so its formats can be edited.
-                self.buf = match cx.floor().cad_attrs(id) {
-                    Some(a) if !a.runs.is_empty() => runs_to_markup(&a.runs),
-                    _ => text,
+                // The block hangs from its upper-left corner (the click
+                // corner of a new text).
+                let attrs = cx.floor().cad_attrs(id);
+                let shown_runs = attrs.as_ref().map(|a| a.runs.clone()).unwrap_or_default();
+                let tb = attrs.map(|a| a.text_box).unwrap_or_default();
+                let item_h = match cad_by_id(cx.floor(), id).map(|c| &c.item) {
+                    Some(CadItem::Text { height, .. }) => *height,
+                    _ => 6.0,
+                };
+                let block = layout(&text, &shown_runs, Self::drawn_height(cx, item_h), &tb).height;
+                self.begin_typing(cx, Point::new(pos.x, pos.y + block));
+                // A rich text comes back as markup so its formats can be
+                // edited; a live text comes back as it was typed.
+                self.buf = match cx.project.live_text(id) {
+                    Some(l) if l.rich => runs_to_markup(&l.runs),
+                    Some(l) => l.source(),
+                    None => match cx.floor().cad_attrs(id) {
+                        Some(a) if !a.runs.is_empty() => runs_to_markup(&a.runs),
+                        _ => text,
+                    },
                 };
                 cx.selection.set(ObjectRef::Cad(id));
                 return ToolResult::consumed();
             }
         }
         cx.selection.clear();
-        self.begin_typing(cx, p.snapped);
+        let at = if p.modifiers.alt {
+            p.snapped
+        } else {
+            align_left_edge(cx, &p.snap).map_or(p.snapped, |(a, _)| a)
+        };
+        self.begin_typing(cx, at);
+        self.press = Some((p.screen, at));
+        self.text_box = None;
         ToolResult::consumed()
     }
+}
+
+/// Pixels the pointer travels from a new text's anchor before the drag sizes
+/// a text box.
+const BOX_DRAG_PX: f32 = 5.0;
+/// How close (screen pixels) an anchor must be to the left edge of another
+/// text to line up with it (TXT-10).
+const ALIGN_PX: f64 = 6.0;
+
+/// TXT-10: when `snap` is a plain grid or free point, the point moved onto the
+/// left edge of the nearest text whose left edge is within [`ALIGN_PX`]
+/// screen pixels, with that text's anchor (the guide runs between the two).
+/// Object snaps win, as they do for every other point.
+pub fn align_left_edge(cx: &EditorContext, snap: &SnapResult) -> Option<(Point, Point)> {
+    use crate::editor::snap::SnapKind;
+    if !matches!(snap.kind, SnapKind::Grid | SnapKind::Free | SnapKind::Angle) {
+        return None;
+    }
+    let tol = ALIGN_PX / cx.px_per_in.max(1e-6);
+    let at = snap.point;
+    cx.floor()
+        .cad
+        .iter()
+        .filter(|c| cx.layers().is_visible(&c.layer))
+        .filter_map(|c| match &c.item {
+            CadItem::Text { pos, angle, .. } if angle.abs() < 1e-9 => Some(*pos),
+            _ => None,
+        })
+        .filter(|pos| (pos.x - at.x).abs() <= tol && pos.dist(at) > 1e-9)
+        .min_by(|a, b| {
+            let da = (a.x - at.x).abs() * 1e3 + (a.y - at.y).abs() * 1e-3;
+            let db = (b.x - at.x).abs() * 1e3 + (b.y - at.y).abs() * 1e-3;
+            da.total_cmp(&db)
+        })
+        .map(|other| (Point::new(other.x, at.y), other))
+}
+
+// ----- callouts, markers and notes (TXT-49..56) -----
+
+/// The kind of annotation a Text tool mode places.
+fn mode_kind(m: TextMode) -> AnnotKind {
+    match m {
+        TextMode::Marker => AnnotKind::Marker,
+        TextMode::Note => AnnotKind::Note,
+        _ => AnnotKind::Callout,
+    }
+}
+
+/// The items a callout, marker or note placed at `at` would draw (the ghost
+/// that follows the pointer).
+fn annot_ghost(cx: &EditorContext, kind: AnnotKind, at: Point) -> Vec<CadItem> {
+    use plan_core::callout::{
+        callout_items, marker_items, note_items, Callout, Marker, Note, Vars,
+    };
+    let d = &cx.project.annot_defaults;
+    let v = Vars {
+        number: Some(1),
+        ..Vars::default()
+    };
+    let g = match kind {
+        AnnotKind::Callout => callout_items(
+            &Callout {
+                center: at,
+                ..d.callout.clone()
+            },
+            &v,
+        ),
+        AnnotKind::Marker => marker_items(
+            &Marker {
+                center: at,
+                ..d.marker.clone()
+            },
+            &v,
+        ),
+        AnnotKind::Note => note_items(
+            &Note {
+                center: at,
+                ..d.note.clone()
+            },
+            &v,
+            false,
+        ),
+    };
+    g.items.into_iter().map(|(i, _)| i).collect()
+}
+
+/// The callout, marker or note whose objects are exactly the selection (a
+/// click on one selects its whole group): its record and first CAD object.
+pub fn selected_annot(cx: &EditorContext) -> Option<(plan_core::callout::AnnotRef, Id)> {
+    let f = cx.floor();
+    let ids: Vec<Id> = cx
+        .selection
+        .items
+        .iter()
+        .map(|o| match o {
+            ObjectRef::Cad(id) | ObjectRef::Text(id) => Some(*id),
+            _ => None,
+        })
+        .collect::<Option<_>>()?;
+    let r = f.annot_of(*ids.first()?)?;
+    let items = f.annot_items(r);
+    (ids.len() == items.len() && items.iter().all(|i| ids.contains(i))).then(|| (r, items[0]))
+}
+
+/// The edit handles of the selected callout, marker or note (Concentric
+/// Resize, Rotate, Extend, Add Text Line with Arrow, Add Callout Arrow and
+/// the arrows' own Rotate handles); empty for anything else.
+pub fn annot_handles(cx: &EditorContext, scale: f64) -> Vec<crate::editor::handles::Handle> {
+    use crate::editor::handles::{Handle, HandleKind};
+    use eframe::egui::CursorIcon;
+    use plan_core::callout::{
+        callout_handles, handle, marker_handles, note_handles, AnnotRef, Vars,
+    };
+    let Some((r, head)) = selected_annot(cx) else {
+        return Vec::new();
+    };
+    let f = cx.floor();
+    let up = 24.0 / scale.max(1e-6);
+    let hs = match r {
+        AnnotRef::Callout(i) => {
+            let c = &f.annots.callouts[i];
+            let v = Vars {
+                link: c.link.as_ref().map(|l| cx.project.resolve_view_link(l)),
+                ..Vars::default()
+            };
+            callout_handles(c, &v, up)
+        }
+        AnnotRef::Marker(i) => marker_handles(&f.annots.markers[i], up),
+        AnnotRef::Note(i) => note_handles(&f.annots.notes[i], &Vars::default(), up),
+    };
+    hs.into_iter()
+        .map(|h| Handle {
+            kind: HandleKind::Annot(h.id),
+            pos: h.pos,
+            cursor: match h.id {
+                handle::RESIZE => CursorIcon::ResizeNeSw,
+                handle::EXTEND => CursorIcon::Crosshair,
+                _ => CursorIcon::Grab,
+            },
+            target: ObjectRef::Cad(head),
+        })
+        .collect()
+}
+
+/// The annotation handle under `at`, for the Select tool: the first CAD
+/// object of the annotation and the handle.
+pub fn annot_handle_at(
+    cx: &EditorContext,
+    at: Point,
+    tol: f64,
+) -> Option<(Id, crate::editor::handles::HandleKind)> {
+    let hs = annot_handles(cx, cx.px_per_in);
+    crate::editor::handles::hit_handle(&hs, at, tol).map(|h| (h.target.id(), h.kind))
+}
+
+// ----- Edit toolbar buttons of callouts, notes and text (TXT-42, TXT-50, TXT-54) -----
+
+const CMD_LINK: &str = "annot.link_view";
+const CMD_UNLINK: &str = "annot.unlink_view";
+const CMD_FIND: &str = "annot.find_in_layout";
+const CMD_IGNORE_LINKS: &str = "annot.ignore_invalid_links";
+const CMD_NOTE_SCHEDULE: &str = "annot.note_schedule";
+const CMD_IGNORE_NOTE: &str = "annot.ignore_note";
+const CMD_IGNORE_NOTES: &str = "annot.ignore_all_notes";
+const CMD_TEXT_TO_NOTE: &str = "annot.text_to_note";
+const CMD_FOLLOW_LINK: &str = "annot.follow_hyperlink";
+const CMD_TO_TEXT: &str = "annot.convert_to_text";
+const CMD_TO_RICH: &str = "annot.convert_to_rich";
+const CMD_RESET_COLUMNS: &str = "annot.reset_column_widths";
+
+fn custom_action(id: &'static str, label: &'static str) -> crate::editor::EditAction {
+    use crate::editor::actions::{EditAction, EditActionKind};
+    EditAction {
+        kind: EditActionKind::Custom {
+            id,
+            label,
+            icon: "",
+        },
+        label,
+        icon: None,
+        enabled: true,
+    }
+}
+
+/// The notes (indices into `floor.annots.notes`) some selected object
+/// belongs to.
+fn selected_notes(cx: &EditorContext) -> Vec<usize> {
+    let f = cx.floor();
+    let mut v: Vec<usize> = Vec::new();
+    for o in &cx.selection.items {
+        if let ObjectRef::Cad(id) | ObjectRef::Text(id) = o {
+            if let Some(plan_core::callout::AnnotRef::Note(i)) = f.annot_of(*id) {
+                if !v.contains(&i) {
+                    v.push(i);
+                }
+            }
+        }
+    }
+    v
+}
+
+/// The text objects among the selection that are not part of a callout,
+/// marker or note.
+fn selected_plain_texts(cx: &EditorContext) -> Vec<Id> {
+    let f = cx.floor();
+    cx.selection
+        .items
+        .iter()
+        .filter_map(|o| match o {
+            ObjectRef::Cad(id) | ObjectRef::Text(id) => Some(*id),
+            _ => None,
+        })
+        .filter(|id| {
+            f.annot_of(*id).is_none()
+                && cad_by_id(f, *id).is_some_and(|c| matches!(c.item, CadItem::Text { .. }))
+        })
+        .collect()
+}
+
+/// The hyperlink of the first selected text that has one.
+fn selected_hyperlink(cx: &EditorContext) -> Option<String> {
+    let f = cx.floor();
+    selected_plain_texts(cx).into_iter().find_map(|id| {
+        f.cad_attrs(id)
+            .and_then(|a| a.runs.iter().find_map(|r| r.link.clone()))
+    })
+}
+
+/// The buttons the Edit toolbar adds for a selected callout (Link View,
+/// Unlink View, Find in Layout, Ignore Invalid Links), note (Create Note
+/// Schedule from Note, Ignore Note With No Schedule) or text (Convert Text
+/// to Note, Follow Hyperlink).
+pub fn edit_actions(cx: &EditorContext) -> Vec<crate::editor::EditAction> {
+    let mut v = Vec::new();
+    if let Some((plan_core::callout::AnnotRef::Callout(i), _)) = selected_annot(cx) {
+        let c = &cx.floor().annots.callouts[i];
+        v.push(custom_action(CMD_LINK, "Link View"));
+        if let Some(l) = &c.link {
+            v.push(custom_action(CMD_UNLINK, "Unlink View"));
+            let info = cx.project.resolve_view_link(l);
+            if info.valid {
+                v.push(custom_action(CMD_FIND, "Find in Layout"));
+            } else {
+                v.push(custom_action(CMD_IGNORE_LINKS, "Ignore Invalid Links"));
+            }
+        }
+    }
+    let notes = selected_notes(cx);
+    if !notes.is_empty() {
+        v.push(custom_action(
+            CMD_NOTE_SCHEDULE,
+            "Create Note Schedule from Note(s)",
+        ));
+        let lone = notes.iter().any(|i| {
+            let n = &cx.floor().annots.notes[*i];
+            !n.ignore_no_schedule && !cx.project.note_schedule_exists(&n.note_type)
+        });
+        if lone {
+            v.push(custom_action(
+                CMD_IGNORE_NOTE,
+                "Ignore Note With No Schedule",
+            ));
+            v.push(custom_action(
+                CMD_IGNORE_NOTES,
+                "Ignore All Notes With No Schedule",
+            ));
+        }
+    }
+    if !selected_plain_texts(cx).is_empty() {
+        v.push(custom_action(CMD_TEXT_TO_NOTE, "Convert Text to Note"));
+    }
+    if selected_hyperlink(cx).is_some() {
+        v.push(custom_action(CMD_FOLLOW_LINK, "Follow Hyperlink"));
+    }
+    // Convert to Rich Text and Convert to Text (TXT-41), Reset Column Widths
+    // for text with tab columns (TXT-37).
+    let texts = selected_plain_texts(cx);
+    if texts.iter().any(|id| is_rich(cx, *id)) {
+        v.push(custom_action(CMD_TO_TEXT, "Convert to Text"));
+    }
+    if texts.iter().any(|id| !is_rich(cx, *id)) {
+        v.push(custom_action(CMD_TO_RICH, "Convert to Rich Text"));
+    }
+    if texts.iter().any(|id| has_tabs(cx, *id)) {
+        v.push(custom_action(CMD_RESET_COLUMNS, "Reset Column Widths"));
+    }
+    v
+}
+
+/// Is text `id` Rich Text (it has runs)?
+fn is_rich(cx: &EditorContext, id: Id) -> bool {
+    cx.project.live_text(id).is_some_and(|l| l.rich)
+        || cx.floor().cad_attrs(id).is_some_and(|a| !a.runs.is_empty())
+}
+
+/// Does text `id` have tab characters (columns)?
+fn has_tabs(cx: &EditorContext, id: Id) -> bool {
+    matches!(cad_by_id(cx.floor(), id).map(|c| &c.item),
+        Some(CadItem::Text { text, .. }) if text.contains('\t'))
+}
+
+/// Edit > Paste of text from another program onto the plan (TXT-44): a new
+/// Rich Text hanging from `at`, one undo step. Tabs between cells stay, so a
+/// pasted spreadsheet row set comes out in columns. Returns the new text.
+pub fn paste_text(cx: &mut EditorContext, text: &str, at: Point) -> Option<Id> {
+    let text = text.replace("\r\n", "\n").replace('\r', "\n");
+    let text = text.trim_end_matches('\n').to_string();
+    if text.trim().is_empty() {
+        return None;
+    }
+    let layer = text_layer(cx);
+    if cx.layers().is_locked(&layer) {
+        cx.status = format!("The layer \"{layer}\" is locked");
+        return None;
+    }
+    let own = cx.project.annot_defaults.rich.height;
+    let height = if own > 0.0 {
+        own
+    } else {
+        cx.defaults.text.height
+    };
+    let height = if height > 0.0 { height } else { 6.0 };
+    let runs = vec![RichRun::plain(text.clone())];
+    let pos = hang(at, &text, &runs, TextTool::drawn_height(cx, height));
+    let ids = add_cad_items(
+        cx,
+        &layer,
+        vec![CadItem::Text {
+            pos,
+            text,
+            height,
+            angle: 0.0,
+        }],
+        "Paste Text",
+    )?;
+    let fl = cx.floor;
+    cx.project
+        .edit_cad_attrs(fl, ids[0], |a| a.runs = runs.clone());
+    Some(ids[0])
+}
+
+/// Runs one of the [`edit_actions`]; false for any other command.
+pub fn run_command(cx: &mut EditorContext, id: &str) -> bool {
+    let fl = cx.floor;
+    match id {
+        CMD_LINK => {
+            if let Some((_, head)) = selected_annot(cx) {
+                cx.requests
+                    .push(EditorRequest::OpenSpec(ObjectRef::Cad(head)));
+            }
+        }
+        CMD_UNLINK => {
+            if let Some((plan_core::callout::AnnotRef::Callout(i), head)) = selected_annot(cx) {
+                if cx.check_unlocked(ObjectRef::Cad(head))
+                    && cx.floor().annots.callouts[i].link.is_some()
+                {
+                    cx.begin_change("Unlink View");
+                    cx.project.floors[fl].annots.callouts[i].link = None;
+                    cx.project.sync_annotations();
+                    cx.mark_dirty();
+                }
+            }
+        }
+        CMD_FIND => {
+            if let Some((plan_core::callout::AnnotRef::Callout(i), _)) = selected_annot(cx) {
+                let link = cx.floor().annots.callouts[i].link.clone();
+                let info = link.map(|l| cx.project.resolve_view_link(&l));
+                cx.status = match info {
+                    Some(i) if i.valid && !i.page_label.is_empty() => {
+                        format!(
+                            "{} is on layout page {} ({})",
+                            i.view_name, i.page_label, i.file_name
+                        )
+                    }
+                    Some(i) if i.valid => format!("{} has not been sent to layout", i.view_name),
+                    _ => "The link is broken".into(),
+                };
+            }
+        }
+        CMD_IGNORE_LINKS => {
+            cx.begin_change("Ignore Invalid Links");
+            for c in &mut cx.project.floors[fl].annots.callouts {
+                c.ignore_link = true;
+            }
+            cx.project.sync_annotations();
+            cx.mark_dirty();
+        }
+        CMD_NOTE_SCHEDULE => {
+            let notes = selected_notes(cx);
+            if notes.is_empty() {
+                return true;
+            }
+            let mut types: Vec<String> = notes
+                .iter()
+                .map(|i| cx.floor().annots.notes[*i].note_type.clone())
+                .collect();
+            types.dedup();
+            let first = cx.floor().annots.notes[notes[0]].center;
+            cx.begin_change("Create Note Schedule from Note");
+            let at = Point::new(first.x + 60.0, first.y);
+            if let Some(sid) = cx.project.create_note_schedule(fl, &types, at) {
+                cx.project.sync_annotations();
+                cx.selection.set(ObjectRef::Schedule(sid));
+            }
+            cx.mark_dirty();
+        }
+        CMD_IGNORE_NOTE | CMD_IGNORE_NOTES => {
+            let only = if id == CMD_IGNORE_NOTE {
+                selected_notes(cx)
+            } else {
+                Vec::new()
+            };
+            cx.begin_change(if only.is_empty() {
+                "Ignore All Notes With No Schedule"
+            } else {
+                "Ignore Note With No Schedule"
+            });
+            let n = cx.project.ignore_notes_without_schedule(fl, &only);
+            if n == 0 {
+                cx.cancel_change();
+            } else {
+                cx.project.sync_annotations();
+                cx.mark_dirty();
+            }
+        }
+        CMD_TEXT_TO_NOTE => {
+            let texts = selected_plain_texts(cx);
+            if texts.is_empty() {
+                return true;
+            }
+            let base = cx.project.annot_defaults.note.clone();
+            let ty = base.note_type.clone();
+            cx.begin_change("Convert Text to Note");
+            let mut made: Vec<ObjectRef> = Vec::new();
+            for t in texts {
+                if let Some(head) = cx.project.convert_text_to_note(fl, t, &ty, &base) {
+                    made.extend(crate::editor::selection::expand_groups(
+                        cx,
+                        &[ObjectRef::Cad(head)],
+                    ));
+                }
+            }
+            cx.selection.items = made;
+            cx.mark_dirty();
+        }
+        CMD_TO_TEXT | CMD_TO_RICH | CMD_RESET_COLUMNS => {
+            let texts = selected_plain_texts(cx);
+            if texts.is_empty() {
+                return true;
+            }
+            cx.begin_change(match id {
+                CMD_TO_TEXT => "Convert to Text",
+                CMD_TO_RICH => "Convert to Rich Text",
+                _ => "Reset Column Widths",
+            });
+            let mut n = 0;
+            for t in texts {
+                if !cx.check_unlocked(ObjectRef::Cad(t)) {
+                    continue;
+                }
+                n += usize::from(convert_text(cx, t, id));
+            }
+            if n == 0 {
+                cx.cancel_change();
+            } else {
+                cx.mark_dirty();
+            }
+        }
+        CMD_FOLLOW_LINK => {
+            if let Some(url) = selected_hyperlink(cx) {
+                cx.status = match follow_hyperlink(&url) {
+                    Ok(()) => format!("Opened {url}"),
+                    Err(e) => format!("Cannot open {url}: {e}"),
+                };
+            }
+        }
+        _ if crate::dialogs::text::rescheck::is_command(id) => {
+            return crate::dialogs::text::rescheck::run_command(cx, id);
+        }
+        crate::dialogs::find_replace::REPLACE_FONTS_PROMPT => {
+            crate::dialogs::find_replace::open_replace_fonts(cx);
+        }
+        crate::dialogs::find_replace::REPLACE_FONTS_APPLY => {
+            crate::dialogs::find_replace::apply_replace_fonts(cx);
+        }
+        _ => return false,
+    }
+    true
+}
+
+/// One of the conversions of the Edit toolbar on text `id`: Convert to
+/// Text (the formats and column tabs are lost), Convert to Rich Text (the
+/// words become a run) or Reset Column Widths. Returns whether it changed
+/// anything.
+fn convert_text(cx: &mut EditorContext, id: Id, cmd: &str) -> bool {
+    let fl = cx.floor;
+    let Some(CadItem::Text { text, .. }) = cad_by_id(cx.floor(), id).map(|c| c.item.clone()) else {
+        return false;
+    };
+    let live = cx.project.live_text(id).cloned();
+    match cmd {
+        CMD_TO_TEXT => {
+            if !is_rich(cx, id) && !has_tabs(cx, id) {
+                return false;
+            }
+            let plain = text.replace('\t', " ");
+            let source = live
+                .as_ref()
+                .map_or_else(|| plain.clone(), |l| l.source().replace('\t', " "));
+            if let Some(o) = cx.project.floors[fl].cad.iter_mut().find(|o| o.id == id) {
+                if let CadItem::Text { text: t, .. } = &mut o.item {
+                    *t = plain;
+                }
+            }
+            cx.project.edit_cad_attrs(fl, id, |a| {
+                a.runs.clear();
+                a.text_box.tab_width = 0.0;
+            });
+            if live.is_some() {
+                let facts = live.map(|l| l.facts).unwrap_or_default();
+                cx.project
+                    .set_live_text(fl, id, vec![RichRun::plain(source)], false, facts);
+            }
+            true
+        }
+        CMD_TO_RICH => {
+            if is_rich(cx, id) {
+                return false;
+            }
+            if let Some(l) = live {
+                // The source becomes one run; the macros stay live.
+                let runs = vec![RichRun::plain(l.source())];
+                cx.project.set_live_text(fl, id, runs, true, l.facts);
+                cx.project.edit_cad_attrs(fl, id, |a| {
+                    if a.runs.is_empty() {
+                        a.runs = vec![RichRun::plain(text.clone())];
+                    }
+                });
+                return true;
+            }
+            cx.project
+                .edit_cad_attrs(fl, id, |a| a.runs = vec![RichRun::plain(text.clone())]);
+            true
+        }
+        _ => {
+            let has = cx
+                .floor()
+                .cad_attrs(id)
+                .is_some_and(|a| a.text_box.tab_width > 0.0);
+            if has {
+                cx.project
+                    .edit_cad_attrs(fl, id, |a| a.text_box.tab_width = 0.0);
+            }
+            has
+        }
+    }
+}
+
+/// Opens a hyperlink of a text in the default browser (a web address) or
+/// application (a file). Does nothing under test.
+pub fn follow_hyperlink(url: &str) -> Result<(), String> {
+    let url = url.trim();
+    if url.is_empty() {
+        return Err("the link is empty".into());
+    }
+    if cfg!(test) {
+        return Ok(());
+    }
+    let opener = if cfg!(target_os = "macos") {
+        "open"
+    } else if cfg!(target_os = "windows") {
+        "explorer"
+    } else {
+        "xdg-open"
+    };
+    std::process::Command::new(opener)
+        .arg(url)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// Dragging an annotation's handle under Select: applies the pointer
+/// position `world` to the record whose first CAD object is `head` and
+/// regenerates its objects. Angles snap to 15 degrees unless `free`.
+fn drag_annot_handle(
+    cx: &mut EditorContext,
+    head: Id,
+    handle_id: u8,
+    world: Point,
+    free: bool,
+) -> bool {
+    use plan_core::callout::{
+        drag_callout_handle, drag_marker_handle, drag_note_handle, AnnotRef, Vars,
+    };
+    let fl = cx.floor;
+    let step = (!free).then_some(15.0);
+    let Some(r) = cx.floor().annot_of(head) else {
+        return false;
+    };
+    let layer = match r {
+        AnnotRef::Callout(i) => cx.floor().annots.callouts[i].layer.clone(),
+        AnnotRef::Marker(i) => cx.floor().annots.markers[i].layer.clone(),
+        AnnotRef::Note(i) => cx.floor().annots.notes[i].layer.clone(),
+    };
+    if cx.layers().is_locked(&layer) {
+        return false;
+    }
+    let ok = match r {
+        AnnotRef::Callout(i) => {
+            let mut c = cx.project.floors[fl].annots.callouts[i].clone();
+            let v = Vars {
+                link: c.link.as_ref().map(|l| cx.project.resolve_view_link(l)),
+                ..Vars::default()
+            };
+            let ok = drag_callout_handle(&mut c, &v, handle_id, world, step);
+            cx.project.floors[fl].annots.callouts[i] = c;
+            ok
+        }
+        AnnotRef::Marker(i) => {
+            let mut m = cx.project.floors[fl].annots.markers[i].clone();
+            let ok = drag_marker_handle(&mut m, handle_id, world, step);
+            cx.project.floors[fl].annots.markers[i] = m;
+            ok
+        }
+        AnnotRef::Note(i) => {
+            let mut n = cx.project.floors[fl].annots.notes[i].clone();
+            let ok = drag_note_handle(&mut n, &Vars::default(), handle_id, world, step);
+            cx.project.floors[fl].annots.notes[i] = n;
+            ok
+        }
+    };
+    if ok {
+        cx.project.sync_annotations();
+        // The group keeps selecting as one; its objects may have changed.
+        if let Some(r) = cx.floor().annot_of(head) {
+            let members: Vec<ObjectRef> = cx
+                .floor()
+                .annot_items(r)
+                .iter()
+                .map(|i| ObjectRef::Cad(*i))
+                .collect();
+            cx.selection.items = members;
+        }
+    }
+    ok
+}
+
+/// Dragging a text's box handle under Select (S-25, TXT-3, TXT-13). The
+/// Select tool calls this for the `ResizeEnd` (wrap width), `Reshape(0)`
+/// (minimum height) and `Reshape(1)` (both) handles of a text and applies the
+/// pointer position `world` to the box; returns false for anything else.
+/// Width and height are measured in the text's own frame, so a turned text
+/// resizes along its own edges. Alt turns the grid off.
+pub fn drag_box_handle(
+    cx: &mut EditorContext,
+    id: Id,
+    kind: crate::editor::handles::HandleKind,
+    world: Point,
+    free: bool,
+) -> bool {
+    use crate::editor::handles::HandleKind;
+    if let HandleKind::Annot(n) = kind {
+        return drag_annot_handle(cx, id, n, world, free);
+    }
+    let (width, height) = match kind {
+        HandleKind::ResizeEnd => (true, false),
+        HandleKind::Reshape(0) => (false, true),
+        HandleKind::Reshape(1) => (true, true),
+        _ => return false,
+    };
+    let fl = cx.floor;
+    let unit = cx.snap_unit();
+    let Some((pos, angle, h)) = cx.project.floors[fl]
+        .cad
+        .iter()
+        .find_map(|c| match &c.item {
+            CadItem::Text {
+                pos, angle, height, ..
+            } if c.id == id => Some((*pos, *angle, *height)),
+            _ => None,
+        })
+    else {
+        return false;
+    };
+    let local = plan_core::text_box::to_local(pos, angle, world);
+    let round = |v: f64| {
+        if free || unit <= 0.0 {
+            v
+        } else {
+            (v / unit).round() * unit
+        }
+    };
+    let min_w = h * TEXT_WIDTH_FACTOR * 2.0;
+    let new_w = round(local.x).max(min_w);
+    let new_h = round(local.y).max(0.0);
+    cx.project.edit_cad_attrs(fl, id, |a| {
+        if width {
+            a.text_box.width = new_w;
+        }
+        if height {
+            a.text_box.height = new_h;
+        }
+    });
+    true
 }
 
 #[cfg(test)]
@@ -1287,9 +2288,10 @@ mod tests {
         type_text(&mut t, &mut cx, "Note");
         enter(&mut t, &mut cx);
         assert_eq!(cx.floor().cad[0].layer, "Text, Notes");
-        // Marker numbers count the markers on that layer.
+        // A marker goes on that layer too.
         let mut m = tool(TextMode::Marker);
         click(&mut m, &mut cx, 50.0, 50.0);
+        place(&mut m, &mut cx);
         assert!(cx
             .floor()
             .cad
@@ -1324,12 +2326,15 @@ mod tests {
         assert_eq!(r.commit.as_deref(), Some("Place Text"));
         let c = &cx.floor().cad[0];
         assert_eq!(c.layer, TEXT_LAYER);
+        // The click is the upper-left corner (DECISIONS 79): the block hangs
+        // down from it, one line high.
+        let h = cx.defaults.text.height;
         assert_eq!(
             c.item,
             CadItem::Text {
-                pos: Point::new(10.0, 10.0),
+                pos: Point::new(10.0, 10.0 - h * plan_core::text_box::LINE_SPACING),
                 text: "Hello".into(),
-                height: cx.defaults.text.height,
+                height: h,
                 angle: 0.0
             }
         );
@@ -1357,7 +2362,10 @@ mod tests {
         cx.project.text_styles.styles[i].set_printed_in(0.125);
         cx.project.text_styles.styles[i].use_printed_size(true);
         let mut t = tool(TextMode::Text);
-        click(&mut t, &mut cx, 10.0, 10.0);
+        // At 1/4" the text is drawn 6" high, one line is 7.2": the click is
+        // its upper-left corner, so the text stands at (10, 10).
+        cx.sheet.scale = Scale::QuarterInch;
+        click(&mut t, &mut cx, 10.0, 17.2);
         type_text(&mut t, &mut cx, "KITCHEN");
         enter(&mut t, &mut cx);
         // Stored at the style's height, not the tool's 6".
@@ -1539,76 +2547,6 @@ mod tests {
     }
 
     #[test]
-    fn callout_draws_a_shape_a_leader_and_centered_text() {
-        let mut cx = new_cx();
-        let mut t = tool(TextMode::Callout);
-        click(&mut t, &mut cx, 0.0, 0.0);
-        click(&mut t, &mut cx, 120.0, 0.0);
-        type_text(&mut t, &mut cx, "A1");
-        let r = enter(&mut t, &mut cx);
-        assert_eq!(r.commit.as_deref(), Some("Place Callout"));
-        let items: Vec<&CadItem> = cx.floor().cad.iter().map(|c| &c.item).collect();
-        assert!(
-            matches!(items[0], CadItem::Circle { center, .. } if *center == Point::new(120.0, 0.0))
-        );
-        assert!(items
-            .iter()
-            .any(|i| matches!(i, CadItem::Text { text, .. } if text == "A1")));
-        assert_eq!(items.len(), 4, "circle, leader, arrowhead, text");
-
-        let mut t = tool(TextMode::Callout);
-        t.set_callout_shape(CalloutShape::Hexagon);
-        click(&mut t, &mut cx, 0.0, 100.0);
-        click(&mut t, &mut cx, 120.0, 100.0);
-        type_text(&mut t, &mut cx, "B");
-        enter(&mut t, &mut cx);
-        assert!(cx.floor().cad.iter().any(
-            |c| matches!(&c.item, CadItem::Polyline { points, closed: true } if points.len() == 6)
-        ));
-    }
-
-    #[test]
-    fn markers_count_up() {
-        let mut cx = new_cx();
-        let mut t = tool(TextMode::Marker);
-        click(&mut t, &mut cx, 0.0, 0.0);
-        click(&mut t, &mut cx, 60.0, 0.0);
-        let numbers: Vec<String> = cx
-            .floor()
-            .cad
-            .iter()
-            .filter_map(|c| match &c.item {
-                CadItem::Text { text, .. } => Some(text.clone()),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(numbers, vec!["1", "2"]);
-    }
-
-    #[test]
-    fn notes_are_numbered_and_readable_by_a_schedule() {
-        let mut cx = new_cx();
-        let mut t = tool(TextMode::Note);
-        for (x, body) in [(0.0, "Verify"), (60.0, "Match existing")] {
-            click(&mut t, &mut cx, x, 0.0);
-            type_text(&mut t, &mut cx, body);
-            enter(&mut t, &mut cx);
-        }
-        let texts: Vec<String> = cx
-            .floor()
-            .cad
-            .iter()
-            .filter_map(|c| match &c.item {
-                CadItem::Text { text, .. } => Some(text.clone()),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(texts, vec!["Note 1: Verify", "Note 2: Match existing"]);
-        assert_eq!(note_number(&texts[1]), Some(2));
-        assert_eq!(note_number("Just text"), None);
-    }
-
-    #[test]
     fn locked_text_layer_refuses() {
         let mut cx = new_cx();
         cx.project.layers.set_locked(TEXT_LAYER, true);
@@ -1689,6 +2627,197 @@ mod tests {
         t.key(cx, KeyEvent::key(finish));
     }
 
+    /// OK in the specification the last click opened.
+    fn place(_t: &mut TextTool, cx: &mut EditorContext) -> Option<Id> {
+        annot::take_posted().and_then(|d| d.apply(cx))
+    }
+
+    /// Edits the label of the dialog the last click posted, putting it back.
+    fn edit_label(_t: &mut TextTool, f: impl FnOnce(&mut String)) {
+        if let Some(mut d) = annot::take_posted() {
+            d.edit_label(f);
+            annot::post_new(d);
+        }
+    }
+
+    /// The posted dialog's title and tabs (it stays posted).
+    fn posted(_t: &TextTool) -> (String, Vec<&'static str>) {
+        let d = annot::take_posted().expect("a dialog was posted");
+        let r = (d.title(), d.tab_names());
+        annot::post_new(d);
+        r
+    }
+
+    #[test]
+    fn a_click_opens_the_callout_specification_and_ok_places_a_grouped_callout() {
+        let mut cx = new_cx();
+        let mut t = tool(TextMode::Callout);
+        click(&mut t, &mut cx, 100.0, 50.0);
+        assert!(cx.floor().cad.is_empty(), "nothing is placed before OK");
+        let (title, tabs) = posted(&t);
+        assert_eq!(title, "Callout Specification");
+        assert_eq!(
+            tabs,
+            vec![
+                "Callout",
+                "Attributes",
+                "Line Style",
+                "Section Arrow",
+                "Main Text Style",
+                "Link"
+            ]
+        );
+        let steps = cx.action_history().0.len();
+        edit_label(&mut t, |l| *l = "A1".into());
+        let id = place(&mut t, &mut cx).expect("placed");
+        assert_eq!(cx.action_history().0.len(), steps + 1, "one undo step");
+        assert_eq!(cx.undo_label(), Some("Place Callout"));
+        // A record, its circle and its label, selected as one group.
+        assert_eq!(cx.floor().annots.callouts.len(), 1);
+        assert_eq!(
+            cx.floor().annots.callouts[0].center,
+            Point::new(100.0, 50.0)
+        );
+        assert!(cx.floor().cad.iter().any(|c| matches!(&c.item,
+            CadItem::Text { text, .. } if text == "A1")));
+        assert!(cx.selection.items.contains(&ObjectRef::Cad(id)));
+        assert_eq!(cx.selection.len(), cx.floor().cad.len());
+        // The tool stays active for the next one; undo takes it all away.
+        click(&mut t, &mut cx, 200.0, 50.0);
+        assert!(annot::take_posted().is_some());
+        cx.undo();
+        assert!(cx.floor().cad.is_empty() && cx.floor().annots.is_empty());
+        cx.redo();
+        assert_eq!(cx.floor().annots.callouts.len(), 1);
+    }
+
+    #[test]
+    fn markers_and_notes_open_their_own_specifications_and_notes_number_in_order() {
+        let mut cx = new_cx();
+        let mut m = tool(TextMode::Marker);
+        click(&mut m, &mut cx, 0.0, 0.0);
+        let (title, tabs) = posted(&m);
+        assert_eq!(title, "Marker Specification");
+        assert_eq!(tabs, vec!["Marker", "Line Style", "Text Style"]);
+        place(&mut m, &mut cx);
+        assert_eq!(cx.floor().annots.markers.len(), 1);
+        assert_eq!(cx.undo_label(), Some("Place Marker"));
+
+        let mut n = tool(TextMode::Note);
+        for (x, body) in [(0.0, "Verify"), (60.0, "Match existing")] {
+            click(&mut n, &mut cx, x, 100.0);
+            let (title, tabs) = posted(&n);
+            assert_eq!(title, "Note Specification");
+            assert_eq!(
+                tabs,
+                vec![
+                    "Note",
+                    "Line Style",
+                    "Text Style",
+                    "Object Information",
+                    "Schedule"
+                ]
+            );
+            edit_label(&mut n, |t| *t = body.into());
+            place(&mut n, &mut cx);
+        }
+        let rows = cx.project.note_rows();
+        assert_eq!(
+            rows.iter()
+                .map(|r| (r.mark.as_str(), r.text.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("Note 1", "Verify"), ("Note 2", "Match existing")]
+        );
+        assert_eq!(cx.undo_label(), Some("Place Note"));
+    }
+
+    #[test]
+    fn the_strip_cycles_the_default_shape_and_marker_type() {
+        let mut cx = new_cx();
+        let mut t = tool(TextMode::Callout);
+        let first = cx.project.annot_defaults.callout.shape;
+        t.strip_click(&mut cx, BTN_SHAPE);
+        assert_ne!(cx.project.annot_defaults.callout.shape, first);
+        assert!(t
+            .strip_items(&cx)
+            .iter()
+            .any(|b| b.label.starts_with("Shape: Oval")));
+        // The next callout starts with that shape.
+        click(&mut t, &mut cx, 0.0, 0.0);
+        place(&mut t, &mut cx);
+        assert_eq!(cx.floor().annots.callouts[0].shape, CalloutShape::Oval);
+        let mut m = tool(TextMode::Marker);
+        m.strip_click(&mut cx, BTN_MARKER_KIND);
+        assert_eq!(
+            cx.project.annot_defaults.marker.kind,
+            MarkerKind::TestBoring
+        );
+        let mut n = tool(TextMode::Note);
+        n.strip_click(&mut cx, BTN_NOTE_TYPE);
+        assert_eq!(n.note_type, "Construction Note");
+        assert!(n
+            .strip_items(&cx)
+            .iter()
+            .any(|b| b.label == "Type: Construction Note"));
+    }
+
+    #[test]
+    fn the_selected_callout_has_edit_handles_and_dragging_them_edits_the_record() {
+        use crate::editor::handles::HandleKind;
+        let mut cx = new_cx();
+        let mut t = tool(TextMode::Callout);
+        click(&mut t, &mut cx, 100.0, 100.0);
+        place(&mut t, &mut cx);
+        let hs = annot_handles(&cx, cx.px_per_in);
+        let ids: Vec<HandleKind> = hs.iter().map(|h| h.kind).collect();
+        assert!(ids.contains(&HandleKind::Annot(plan_core::callout::handle::RESIZE)));
+        assert!(ids.contains(&HandleKind::Annot(plan_core::callout::handle::ROTATE)));
+        assert!(ids.contains(&HandleKind::Annot(plan_core::callout::handle::ADD_LINE)));
+        assert!(ids.contains(&HandleKind::Annot(plan_core::callout::handle::ADD_ARROW)));
+        let head = cx.floor().annots.callouts[0].items[0];
+        let at = annot_handle_at(&cx, hs[0].pos, 1.0).expect("a handle");
+        assert_eq!(at.0, head);
+        // Concentric resize.
+        assert!(drag_box_handle(
+            &mut cx,
+            head,
+            HandleKind::Annot(plan_core::callout::handle::RESIZE),
+            Point::new(130.0, 100.0),
+            true
+        ));
+        let c = &cx.floor().annots.callouts[0];
+        assert!(!c.auto_size && (c.size - 30.0).abs() < 1e-6);
+        // Add Text Line with Arrow drags out an arrow attached to the callout.
+        assert!(drag_box_handle(
+            &mut cx,
+            head,
+            HandleKind::Annot(plan_core::callout::handle::ADD_LINE),
+            Point::new(100.0, 10.0),
+            true
+        ));
+        assert_eq!(cx.floor().annots.callouts[0].leaders.len(), 1);
+        // Add Callout Arrow drags a hat out; dragging to the center removes it.
+        assert!(drag_box_handle(
+            &mut cx,
+            head,
+            HandleKind::Annot(plan_core::callout::handle::ADD_ARROW),
+            Point::new(180.0, 100.0),
+            true
+        ));
+        assert_eq!(cx.floor().annots.callouts[0].arrows.angles.len(), 1);
+        assert!(drag_box_handle(
+            &mut cx,
+            head,
+            HandleKind::Annot(plan_core::callout::handle::ADD_ARROW),
+            Point::new(101.0, 100.0),
+            true
+        ));
+        assert!(cx.floor().annots.callouts[0].arrows.angles.is_empty());
+        // Another kind of object has no annotation handles.
+        cx.selection.clear();
+        assert!(annot_handles(&cx, 1.0).is_empty());
+    }
+
     #[test]
     fn rich_text_runs_keep_their_formats_and_round_trip_through_editing() {
         let mut cx = new_cx();
@@ -1718,12 +2847,13 @@ mod tests {
         // Clicking the text again edits it as markup; Enter with no change
         // adds no undo step.
         let steps = cx.undo_label().map(str::to_string);
-        click(&mut t, &mut cx, 61.0, 61.0);
+        // (The text hangs down from the click corner at (60, 60).)
+        click(&mut t, &mut cx, 61.0, 55.0);
         assert_eq!(t.typed(), Some(markup));
         t.key(&mut cx, KeyEvent::key(egui::Key::Enter));
         assert_eq!(cx.undo_label().map(str::to_string), steps);
         // Edit a word: runs follow.
-        click(&mut t, &mut cx, 61.0, 61.0);
+        click(&mut t, &mut cx, 61.0, 55.0);
         for _ in 0..10 {
             t.key(&mut cx, KeyEvent::key(egui::Key::Backspace));
         }
@@ -1797,98 +2927,14 @@ mod tests {
         let date = text.strip_prefix("Printed ").unwrap();
         assert_eq!(date.len(), 10);
         assert_eq!(date.matches('-').count(), 2);
-        // Notes and callouts expand too.
-        let mut n = tool(TextMode::Note);
-        type_and(&mut n, &mut cx, (0.0, 240.0), "By %firm%", egui::Key::Enter);
+        // Notes and callouts expand too, when their dialog is OK'd.
+        let mut n = tool(TextMode::Callout);
+        click(&mut n, &mut cx, 0.0, 240.0);
+        edit_label(&mut n, |l| *l = "By %firm%".into());
+        place(&mut n, &mut cx);
         assert!(text_objects(&cx)
             .iter()
-            .any(|(_, t)| t == "Note 1: By Daniel Allen Designs"));
-    }
-
-    #[test]
-    fn notes_take_the_label_and_number_of_their_type() {
-        let mut cx = new_cx();
-        let mut types = cx.project.note_types();
-        types.add("Plumbing Note", "P");
-        cx.project.set_note_types(&types);
-        let mut t = tool(TextMode::Note);
-        type_and(&mut t, &mut cx, (0.0, 0.0), "General one", egui::Key::Enter);
-        t.note_type = "Plumbing Note".into();
-        type_and(&mut t, &mut cx, (0.0, 60.0), "Vent", egui::Key::Enter);
-        type_and(&mut t, &mut cx, (0.0, 120.0), "Trap", egui::Key::Enter);
-        t.note_type = GENERAL_NOTE.into();
-        type_and(
-            &mut t,
-            &mut cx,
-            (0.0, 180.0),
-            "General two",
-            egui::Key::Enter,
-        );
-        let texts: Vec<String> = text_objects(&cx).into_iter().map(|(_, t)| t).collect();
-        assert_eq!(
-            texts,
-            vec![
-                "Note 1: General one",
-                "P 1: Vent",
-                "P 2: Trap",
-                "Note 2: General two"
-            ]
-        );
-        // The strip cycles through the types.
-        t.strip_click(&mut cx, BTN_NOTE_TYPE);
-        assert_eq!(t.note_type, "Construction Note");
-        assert!(t
-            .strip_items()
-            .iter()
-            .any(|b| b.label == "Type: Construction Note"));
-    }
-
-    #[test]
-    fn square_callouts_have_a_box_a_leader_and_centered_text() {
-        let items = callout_items(
-            Point::new(300.0, 0.0),
-            Point::new(0.0, 0.0),
-            "Verify",
-            6.0,
-            CalloutShape::Square,
-        );
-        // Box, leader line, arrowhead, text.
-        assert_eq!(items.len(), 4);
-        let CadItem::Polyline { points, closed } = &items[0] else {
-            panic!("a box")
-        };
-        assert!(*closed && points.len() == 4);
-        let CadItem::Polyline { points: leader, .. } = &items[1] else {
-            panic!("the leader")
-        };
-        assert_eq!(leader[0], Point::new(300.0, 0.0));
-        let hx = points[1].x;
-        assert!(
-            (leader[1].x - hx).abs() < 1e-6 && leader[1].y.abs() < 1e-6,
-            "{leader:?}"
-        );
-        assert!(matches!(&items[3], CadItem::Text { text, .. } if text == "Verify"));
-        // A target inside the box needs no leader.
-        let inside = callout_items(
-            Point::new(1.0, 0.0),
-            Point::ZERO,
-            "x",
-            6.0,
-            CalloutShape::Square,
-        );
-        assert_eq!(inside.len(), 2);
-        // The strip offers the shape.
-        let mut t = tool(TextMode::Callout);
-        let mut cx = new_cx();
-        t.strip_click(&mut cx, BTN_SHAPE + 2);
-        assert!(t.strip_items().iter().any(|b| b.label == "Square" && b.on));
-        click(&mut t, &mut cx, 300.0, 0.0);
-        click(&mut t, &mut cx, 0.0, 0.0);
-        type_text(&mut t, &mut cx, "Hi");
-        t.key(&mut cx, KeyEvent::key(egui::Key::Enter));
-        assert!(cx.floor().cad.iter().any(
-            |c| matches!(&c.item, CadItem::Polyline { points, closed: true } if points.len() == 4)
-        ));
+            .any(|(_, t)| t == "By Daniel Allen Designs"));
     }
 
     #[test]
@@ -1902,7 +2948,7 @@ mod tests {
         };
         let mut next = plan_core::text_styles::TextMacros::default();
         next.add("firm", "DAD");
-        let mut dialog = MacroDialog::new(next.clone());
+        let mut dialog = MacroManager::new(next.clone());
         std::mem::swap(&mut *d, &mut dialog);
         t.dialog_outcome(&mut cx, TextUi::Macros(d), Outcome::Ok);
         assert_eq!(cx.project.text_macros(), next);
@@ -1939,5 +2985,470 @@ mod tests {
         assert!(t.dialog.is_some());
         let _ = ctx.run(egui::RawInput::default(), |ctx| t.frame(&mut cx, ctx));
         assert!(t.dialog.is_some());
+    }
+    fn drag(t: &mut TextTool, cx: &mut EditorContext, a: (f64, f64), b: (f64, f64)) {
+        let pa = PointerEvent::at(cx, Point::new(a.0, a.1));
+        let pb = PointerEvent::at(cx, Point::new(b.0, b.1));
+        t.pointer_move(cx, pa);
+        t.pointer_down(cx, pa.with_down(true));
+        t.pointer_move(cx, pb.with_down(true));
+        t.pointer_up(cx, pb);
+    }
+
+    fn the_text(cx: &EditorContext) -> (Id, Point, f64, plan_core::text_box::TextBox) {
+        let c = cx.floor().cad.last().expect("a text");
+        let CadItem::Text { pos, height, .. } = &c.item else {
+            panic!("not a text")
+        };
+        let tb = cx
+            .floor()
+            .cad_attrs(c.id)
+            .map(|a| a.text_box)
+            .unwrap_or_default();
+        (c.id, *pos, *height, tb)
+    }
+
+    #[test]
+    fn dragging_defines_a_text_box_with_a_wrap_width() {
+        let mut cx = new_cx();
+        cx.px_per_in = 2.0;
+        let mut t = tool(TextMode::Text);
+        drag(&mut t, &mut cx, (0.0, 100.0), (60.0, 40.0));
+        assert!(t.typing(), "the box waits for the text");
+        type_text(&mut t, &mut cx, "aa bb cc dd ee ff gg hh");
+        let r = enter(&mut t, &mut cx);
+        assert_eq!(r.commit.as_deref(), Some("Place Text"));
+        let (id, pos, h, tb) = the_text(&cx);
+        assert_eq!(tb.width, 60.0);
+        assert_eq!(tb.height, 60.0);
+        // Two lines fit in the dragged height: the box is where it was dragged.
+        assert_eq!(pos, Point::new(0.0, 40.0));
+        let lay = layout("aa bb cc dd ee ff gg hh", &[], h, &tb);
+        assert_eq!(lay.lines.len(), 2, "the text wraps at the box width");
+        // One undo step takes text and box away.
+        assert_eq!(cx.undo().as_deref(), Some("Place Text"));
+        assert!(cx.floor().cad.is_empty());
+        assert!(cx.floor().cad_attrs(id).is_none());
+    }
+
+    #[test]
+    fn a_box_keeps_its_top_edge_as_the_text_grows() {
+        let mut cx = new_cx();
+        cx.px_per_in = 2.0;
+        let mut t = tool(TextMode::Text);
+        drag(&mut t, &mut cx, (0.0, 100.0), (60.0, 90.0));
+        type_text(&mut t, &mut cx, &"word ".repeat(30));
+        enter(&mut t, &mut cx);
+        let (id, pos, h, tb) = the_text(&cx);
+        let CadItem::Text { text, .. } = &cad_by_id(cx.floor(), id).unwrap().item else {
+            panic!()
+        };
+        let lay = layout(text, &[], h, &tb);
+        assert!(lay.lines.len() > 3);
+        assert!(
+            (pos.y + lay.height - 100.0).abs() < 1e-6,
+            "the top stays at 100"
+        );
+        // Editing in place shortens the box from the top, too.
+        click(&mut t, &mut cx, 5.0, 100.0 - 2.0);
+        assert_eq!(t.editing, Some(id), "a click in the box edits the text");
+        t.buf = "short".into();
+        enter(&mut t, &mut cx);
+        let (_, pos2, _, tb2) = the_text(&cx);
+        let lay2 = layout("short", &[], h, &tb2);
+        assert!((pos2.y + lay2.height - 100.0).abs() < 1e-6);
+        assert_eq!(tb2.width, 60.0, "the width is kept");
+    }
+
+    #[test]
+    fn a_short_drag_is_an_ordinary_click_and_a_narrow_one_is_too() {
+        let mut cx = new_cx();
+        cx.px_per_in = 2.0;
+        let mut t = tool(TextMode::Text);
+        drag(&mut t, &mut cx, (0.0, 0.0), (4.0, 0.0));
+        type_text(&mut t, &mut cx, "plain");
+        enter(&mut t, &mut cx);
+        let (id, pos, h, tb) = the_text(&cx);
+        assert!(tb.is_plain(), "{tb:?}");
+        assert!(cx.floor().cad_attrs(id).is_none());
+        // The press is the upper-left corner of the text.
+        assert_eq!(pos, Point::new(0.0, -h * plan_core::text_box::LINE_SPACING));
+    }
+
+    #[test]
+    fn rich_text_can_be_dragged_into_a_box_too() {
+        let mut cx = new_cx();
+        cx.px_per_in = 2.0;
+        let mut t = tool(TextMode::RichText);
+        drag(&mut t, &mut cx, (0.0, 0.0), (80.0, 30.0));
+        type_text(&mut t, &mut cx, "<b>bold</b> and plain words");
+        t.key(&mut cx, KeyEvent::key(egui::Key::Tab));
+        let (id, _, _, tb) = the_text(&cx);
+        assert_eq!(tb.width, 80.0);
+        assert!(cx
+            .floor()
+            .cad_attrs(id)
+            .unwrap()
+            .runs
+            .iter()
+            .any(|r| r.bold));
+    }
+
+    #[test]
+    fn a_new_text_lines_up_with_the_left_edge_of_nearby_text() {
+        let mut cx = new_cx();
+        cx.px_per_in = 2.0;
+        cx.project.add_cad(
+            0,
+            TEXT_LAYER,
+            CadItem::Text {
+                pos: Point::new(100.5, 200.0),
+                text: "Notes".into(),
+                height: 6.0,
+                angle: 0.0,
+            },
+        );
+        let mut t = tool(TextMode::Text);
+        // One screen pixel off the other text's left edge (half an inch at
+        // 2 px/in): the anchor takes the edge, and the guide is drawn.
+        let p = PointerEvent::at(&cx, Point::new(101.0, 160.0));
+        t.pointer_move(&mut cx, p);
+        assert!(t.align_guide.is_some());
+        t.pointer_down(&mut cx, p.with_down(true));
+        type_text(&mut t, &mut cx, "Below");
+        enter(&mut t, &mut cx);
+        let (_, pos, _, _) = the_text(&cx);
+        assert_eq!(pos.x, 100.5, "x lines up with the text above");
+        // Far away: no alignment. Alt: none either.
+        let far = PointerEvent::at(&cx, Point::new(140.0, 120.0));
+        t.pointer_move(&mut cx, far);
+        assert!(t.align_guide.is_none());
+        let alt = PointerEvent::at(&cx, Point::new(101.0, 100.0)).with_modifiers(egui::Modifiers {
+            alt: true,
+            ..egui::Modifiers::NONE
+        });
+        t.pointer_move(&mut cx, alt);
+        assert!(t.align_guide.is_none());
+    }
+
+    #[test]
+    fn dragging_the_box_handles_sizes_the_box_in_the_texts_own_frame() {
+        use crate::editor::handles::HandleKind;
+        let mut cx = new_cx();
+        let id = cx.project.add_cad(
+            0,
+            TEXT_LAYER,
+            CadItem::Text {
+                pos: Point::new(10.0, 10.0),
+                text: "one two three four five six".into(),
+                height: 6.0,
+                angle: 0.0,
+            },
+        );
+        // Width: the pointer's x in the text's frame.
+        assert!(drag_box_handle(
+            &mut cx,
+            id,
+            HandleKind::ResizeEnd,
+            Point::new(70.0, 30.0),
+            true
+        ));
+        let a = cx.floor().cad_attrs(id).unwrap();
+        assert_eq!(a.text_box.width, 60.0);
+        assert_eq!(a.text_box.height, 0.0, "the height is untouched");
+        // Height, then both.
+        assert!(drag_box_handle(
+            &mut cx,
+            id,
+            HandleKind::Reshape(0),
+            Point::new(30.0, 50.0),
+            true
+        ));
+        assert_eq!(cx.floor().cad_attrs(id).unwrap().text_box.height, 40.0);
+        assert!(drag_box_handle(
+            &mut cx,
+            id,
+            HandleKind::Reshape(1),
+            Point::new(90.0, 80.0),
+            true
+        ));
+        let tb = cx.floor().cad_attrs(id).unwrap().text_box;
+        assert_eq!((tb.width, tb.height), (80.0, 70.0));
+        // Not smaller than a couple of characters.
+        assert!(drag_box_handle(
+            &mut cx,
+            id,
+            HandleKind::ResizeEnd,
+            Point::new(5.0, 30.0),
+            true
+        ));
+        assert!(cx.floor().cad_attrs(id).unwrap().text_box.width >= 6.0 * 0.6 * 2.0 - 1e-9);
+        // Other handles and other objects are not ours.
+        assert!(!drag_box_handle(
+            &mut cx,
+            id,
+            HandleKind::Rotate,
+            Point::ZERO,
+            true
+        ));
+        let line = cx.project.add_cad(
+            0,
+            "CAD, Default",
+            CadItem::Line {
+                a: Point::ZERO,
+                b: Point::new(10.0, 0.0),
+            },
+        );
+        assert!(!drag_box_handle(
+            &mut cx,
+            line,
+            HandleKind::ResizeEnd,
+            Point::ZERO,
+            true
+        ));
+        // A turned text measures along its own edges.
+        let turned = cx.project.add_cad(
+            0,
+            TEXT_LAYER,
+            CadItem::Text {
+                pos: Point::new(0.0, 0.0),
+                text: "turned".into(),
+                height: 6.0,
+                angle: std::f64::consts::FRAC_PI_2,
+            },
+        );
+        assert!(drag_box_handle(
+            &mut cx,
+            turned,
+            HandleKind::ResizeEnd,
+            Point::new(-5.0, 50.0),
+            true
+        ));
+        let w = cx.floor().cad_attrs(turned).unwrap().text_box.width;
+        assert!((w - 50.0).abs() < 1e-9, "{w}");
+    }
+
+    #[test]
+    fn text_style_management_renames_and_removes_in_one_undo_step() {
+        let mut cx = new_cx();
+        cx.project.layers.layers[0].text_style = "Room Label Style".into();
+        let mut t = tool(TextMode::TextStyles);
+        let ctx = egui::Context::default();
+        let _ = ctx.run(egui::RawInput::default(), |ctx| t.frame(&mut cx, ctx));
+        let Some(TextUi::Styles(mut d)) = t.dialog.take() else {
+            panic!("the text style dialog is open")
+        };
+        assert!(d.rename("Room Label Style", "Labels"));
+        assert!(d.remove("Schedule Style"));
+        t.dialog_outcome(&mut cx, TextUi::Styles(d), Outcome::Ok);
+        assert!(cx.project.text_styles.get("Labels").is_some());
+        assert!(cx.project.text_styles.get("Schedule Style").is_none());
+        assert_eq!(cx.project.layers.layers[0].text_style, "Labels");
+        assert_eq!(cx.undo().as_deref(), Some("Change Text Styles"));
+        assert!(cx.project.text_styles.get("Room Label Style").is_some());
+        assert_eq!(cx.project.layers.layers[0].text_style, "Room Label Style");
+        // Cancel stores nothing.
+        let mut d = TextStyleDialog::new(vec!["Default Text Style".into(), "Labels".into()]);
+        d.remove("Labels");
+        t.dialog_outcome(&mut cx, TextUi::Styles(Box::new(d)), Outcome::Cancel);
+        assert!(cx.project.text_styles.get("Room Label Style").is_some());
+    }
+
+    fn shown_text(cx: &EditorContext, id: Id) -> String {
+        match &cad_by_id(cx.floor(), id).unwrap().item {
+            CadItem::Text { text, .. } => text.clone(),
+            _ => panic!("text"),
+        }
+    }
+
+    #[test]
+    fn text_with_macros_stays_live_and_edits_as_typed() {
+        let mut cx = new_cx();
+        cx.project.name = "Smith".into();
+        let mut t = tool(TextMode::Text);
+        type_and(
+            &mut t,
+            &mut cx,
+            (0.0, 0.0),
+            "Plan %plan.name%",
+            egui::Key::Enter,
+        );
+        let (id, pos, h, _) = the_text(&cx);
+        assert_eq!(shown_text(&cx, id), "Plan Smith");
+        assert_eq!(
+            cx.project.live_text(id).unwrap().source(),
+            "Plan %plan.name%"
+        );
+        // The click was the upper-left corner.
+        assert_eq!(pos, Point::new(0.0, -h * plan_core::text_box::LINE_SPACING));
+        // The plan changes and the text follows.
+        cx.project.name = "Jones".into();
+        cx.mark_dirty();
+        cx.refresh();
+        assert_eq!(shown_text(&cx, id), "Plan Jones");
+        // Editing in place shows what was typed, and keeps the top edge.
+        click(&mut t, &mut cx, 3.0, -3.0);
+        assert_eq!(t.typed(), Some("Plan %plan.name%"));
+        type_text(&mut t, &mut cx, "!");
+        let r = enter(&mut t, &mut cx);
+        assert_eq!(r.commit.as_deref(), Some("Edit Text"));
+        assert_eq!(shown_text(&cx, id), "Plan Jones!");
+        assert_eq!(
+            cx.project.live_text(id).unwrap().source(),
+            "Plan %plan.name%!"
+        );
+        let CadItem::Text { pos: after, .. } = cad_by_id(cx.floor(), id).unwrap().item else {
+            panic!()
+        };
+        assert_eq!(after, pos);
+        // Editing out the macro makes the text plain again.
+        click(&mut t, &mut cx, 3.0, -3.0);
+        t.buf = "Just words".into();
+        enter(&mut t, &mut cx);
+        assert!(cx.project.live_text(id).is_none());
+        assert_eq!(shown_text(&cx, id), "Just words");
+        // Undo takes one edit back at a time.
+        assert_eq!(cx.undo().as_deref(), Some("Edit Text"));
+        assert_eq!(shown_text(&cx, id), "Plan Jones!");
+        assert!(cx.project.live_text(id).is_some());
+    }
+
+    #[test]
+    fn rich_text_with_macros_keeps_its_formats_live() {
+        let mut cx = new_cx();
+        cx.project.info.client_name = "Pat".into();
+        let mut t = tool(TextMode::RichText);
+        click(&mut t, &mut cx, 0.0, 0.0);
+        type_text(&mut t, &mut cx, "<b>For</b> %client.name%");
+        t.key(&mut cx, KeyEvent::key(egui::Key::Tab));
+        let (id, _, _, _) = the_text(&cx);
+        assert_eq!(shown_text(&cx, id), "For Pat");
+        let runs = cx.floor().cad_attrs(id).unwrap().runs;
+        assert!(runs[0].bold && runs[0].text == "For");
+        cx.project.info.client_name = "Sam".into();
+        cx.mark_dirty();
+        cx.refresh();
+        assert_eq!(shown_text(&cx, id), "For Sam");
+        assert!(cx.floor().cad_attrs(id).unwrap().runs[0].bold);
+        assert!(cx.project.live_text(id).unwrap().rich);
+    }
+
+    #[test]
+    fn a_text_line_with_arrow_reads_the_door_it_points_at() {
+        use plan_core::model::{OpeningKind, WallKind};
+        let mut cx = new_cx();
+        let w = cx.project.add_wall(
+            0,
+            Point::new(0.0, 0.0),
+            Point::new(240.0, 0.0),
+            6.0,
+            96.0,
+            WallKind::Exterior,
+        );
+        let door = cx
+            .project
+            .add_opening(0, w, 120.0, OpeningKind::Door)
+            .unwrap();
+        cx.project
+            .materials
+            .info_mut(&format!("door:{door}"))
+            .comment = "Solid core".into();
+        cx.refresh();
+        let mut t = tool(TextMode::ArrowLine);
+        click(&mut t, &mut cx, 120.0, 0.0);
+        click(&mut t, &mut cx, 120.0, -50.0);
+        enter(&mut t, &mut cx);
+        type_text(&mut t, &mut cx, "%object_type%: %comment%");
+        enter(&mut t, &mut cx);
+        let id = cx
+            .floor()
+            .cad
+            .iter()
+            .rev()
+            .find(|c| matches!(c.item, CadItem::Text { .. }))
+            .unwrap()
+            .id;
+        assert_eq!(shown_text(&cx, id), "Door: Solid core");
+        assert!(cx.project.live_text(id).is_some());
+    }
+
+    #[test]
+    fn convert_buttons_toggle_rich_text_and_drop_column_tabs() {
+        let mut cx = new_cx();
+        let mut t = tool(TextMode::Text);
+        type_and(&mut t, &mut cx, (0.0, 0.0), "Item", egui::Key::Enter);
+        let (id, _, _, _) = the_text(&cx);
+        cx.selection.set(ObjectRef::Cad(id));
+        let labels =
+            |cx: &EditorContext| edit_actions(cx).iter().map(|a| a.label).collect::<Vec<_>>();
+        assert!(labels(&cx).contains(&"Convert to Rich Text"));
+        assert!(!labels(&cx).contains(&"Convert to Text"));
+        assert!(run_command(&mut cx, CMD_TO_RICH));
+        assert_eq!(cx.undo_label(), Some("Convert to Rich Text"));
+        assert!(!cx.floor().cad_attrs(id).unwrap().runs.is_empty());
+        assert!(labels(&cx).contains(&"Convert to Text"));
+        // Tabs make columns and Reset Column Widths puts them back to auto.
+        if let Some(o) = cx.project.floors[0].cad.iter_mut().find(|o| o.id == id) {
+            if let CadItem::Text { text, .. } = &mut o.item {
+                *text = "a\tb".into();
+            }
+        }
+        cx.project
+            .edit_cad_attrs(0, id, |a| a.text_box.tab_width = 80.0);
+        assert!(labels(&cx).contains(&"Reset Column Widths"));
+        assert!(run_command(&mut cx, CMD_RESET_COLUMNS));
+        assert_eq!(cx.floor().cad_attrs(id).unwrap().text_box.tab_width, 0.0);
+        // Converting to Text loses the formats and the tabs.
+        assert!(run_command(&mut cx, CMD_TO_TEXT));
+        let a = cx.floor().cad_attrs(id);
+        assert!(a.is_none_or(|a| a.runs.is_empty()));
+        assert_eq!(shown_text(&cx, id), "a b");
+        assert_eq!(cx.undo().as_deref(), Some("Convert to Text"));
+        assert_eq!(shown_text(&cx, id), "a\tb");
+    }
+
+    #[test]
+    fn pasted_text_becomes_rich_text_with_its_tab_columns() {
+        let mut cx = new_cx();
+        let id = paste_text(
+            &mut cx,
+            "Item\tQty\r\nWindow\t4\r\n",
+            Point::new(100.0, 200.0),
+        )
+        .unwrap();
+        assert_eq!(cx.undo_label(), Some("Paste Text"));
+        assert_eq!(shown_text(&cx, id), "Item\tQty\nWindow\t4");
+        let a = cx.floor().cad_attrs(id).unwrap();
+        assert_eq!(a.runs.len(), 1);
+        let CadItem::Text { pos, height, .. } = cad_by_id(cx.floor(), id).unwrap().item else {
+            panic!()
+        };
+        // Two rows hang from the upper-left corner.
+        assert_eq!(pos.x, 100.0);
+        assert!((pos.y - (200.0 - 2.0 * height * plan_core::text_box::LINE_SPACING)).abs() < 1e-9);
+        // Columns: the cells of a row stand on one baseline, apart.
+        let lay = layout("Item\tQty\nWindow\t4", &a.runs, height, &a.text_box);
+        assert_eq!(lay.lines.len(), 4);
+        assert!(lay.lines[1].x > lay.lines[0].x);
+        assert!(paste_text(&mut cx, "  \n", Point::ZERO).is_none());
+        cx.project.layers.set_locked(TEXT_LAYER, true);
+        assert!(paste_text(&mut cx, "x", Point::ZERO).is_none());
+    }
+
+    #[test]
+    fn replace_fonts_and_the_exports_are_commands_of_the_text_tools() {
+        let mut cx = new_cx();
+        assert!(run_command(
+            &mut cx,
+            crate::dialogs::find_replace::REPLACE_FONTS_PROMPT
+        ));
+        assert!(run_command(
+            &mut cx,
+            crate::dialogs::text::rescheck::EXPORT_RESCHECK
+        ));
+        assert!(crate::dialogs::text::rescheck::dialog_open());
+        crate::dialogs::text::rescheck::close_dialog();
+        assert!(!run_command(&mut cx, "text.no_such_command"));
+        crate::dialogs::find_replace::close_replace_fonts();
     }
 }

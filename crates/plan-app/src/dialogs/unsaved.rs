@@ -67,6 +67,10 @@ impl Prompt {
     }
 }
 
+/// The "don't ask again" key of the revert confirmation (Preferences >
+/// Reset Options shows it again).
+pub const REVERT_KEY: &str = "revert_to_saved";
+
 /// Shows `prompt`; the answer when the user gives one. For
 /// [`Kind::Revert`] the proceed button answers [`Outcome::DontSave`] (carry on
 /// without saving) and there is no Save.
@@ -83,6 +87,14 @@ pub fn show(ctx: &egui::Context, prompt: &Prompt) -> Option<Outcome> {
         ui.add_space(6.0);
         ui.label(prompt.message());
         ui.add_space(10.0);
+        let dont_ask = egui::Id::new("revert_dont_ask_again");
+        if revert {
+            let mut on = ui.data(|d| d.get_temp::<bool>(dont_ask)).unwrap_or(false);
+            if ui.checkbox(&mut on, "Don\u{2019}t ask again").changed() {
+                ui.data_mut(|d| d.insert_temp(dont_ask, on));
+            }
+            ui.add_space(6.0);
+        }
         ui.horizontal(|ui| {
             if revert {
                 if ui.button("Revert").clicked() {
@@ -117,6 +129,13 @@ pub fn show(ctx: &egui::Context, prompt: &Prompt) -> Option<Outcome> {
                 None
             }
         });
+    }
+    // Reverting with "Don't ask again" ticked hides the question from now on.
+    if revert && answer == Some(Outcome::DontSave) {
+        let ticked = ctx.data(|d| d.get_temp::<bool>(egui::Id::new("revert_dont_ask_again")));
+        if ticked == Some(true) {
+            crate::dialogs::preferences::pages::set_dont_ask(REVERT_KEY);
+        }
     }
     answer
 }

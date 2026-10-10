@@ -1,0 +1,28 @@
+# Allow list for scripts/brand-sweep.py, one Python regex per line (case-insensitive).
+# A hit whose line matches any pattern here is counted as "allowed" and shown only
+# with --show-allowed. These are phrases that name the file format or the source of
+# imported data, which is nominative use and stays in the UI. Marketing-style
+# comparisons ("Chief-style", "like Chief", "Chief clone") are deliberately NOT
+# allowed: they must show up in the sweep so they can be reworded.
+Import.*Chief Plan
+Chief (Plan|Library|template|templates|catalog|catalogs|defaults|hotkeys|projects)
+Reset to Chief
+needs Daniel's Chief
+# The data folder name used to locate the installed catalogs.
+Chief Architect Premier X18 Data
+# File extensions of the formats that are read.
+\.calib
+\.plan\b
+# Install locations and vendor folder names that locate the user's own licensed data.
+Chief Architect Premier
+Chief Architect Inc
+# The About-window trademark and non-affiliation statement.
+trademark|affiliated with or endorsed
+# Imported artifacts named by their source: toolbar files, hotkey files, fonts, textures,
+# door/drawer styles, backdrops, catalog objects and the id prefixes they are stored under.
+Chief Toolbar File|Chief toolbar|Chief \.toolbar
+Chief Architect (catalog|Core Catalog|licensed content|object|plan|cannot)
+Chief (bindings|Blueprint|textures?|styles|door|object|buttons|set\b|X18)
+Chief's (format|install folder|texture|data folders|Backdrops|standard location|catalog|file|own default|defaults)
+"chief\.|chief-plan\.|chief-thumb-
+UserHotkeys\.xml

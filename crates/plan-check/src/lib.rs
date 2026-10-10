@@ -13,16 +13,24 @@
 mod ctx;
 mod footprint;
 mod geom;
+mod minimums;
 mod report;
 mod rules;
 mod rules_code;
 mod rules_fixtures;
+mod rules_irc;
 mod rules_mep;
+mod rules_nkba;
 mod settings;
+pub mod tables;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod tests_code;
+#[cfg(test)]
+mod tests_irc;
+#[cfg(test)]
+mod tests_nkba;
 
 use plan_core::{detect_rooms, Id, Point, Project, Room};
 use plan_stairs::Stair;
@@ -30,10 +38,12 @@ use serde::{Deserialize, Serialize};
 
 use ctx::Ctx;
 pub use footprint::{plan_footprint, Footprint};
+pub use minimums::CodeMinimums;
 pub use report::{report_table, ReportTable};
+pub use rules_nkba::{nkba_report, NkbaReport, NkbaRow, NkbaStatus};
 pub use settings::{
     filter_findings, finding_key, ignored_keys, rule_catalog, run_plan_check, set_ignored_keys,
-    summary_line, CheckRun, CheckSettings, RuleInfo, JURISDICTIONS,
+    summary_line, CheckRun, CheckSettings, PlanCheckSettings, RuleInfo, JURISDICTIONS,
 };
 
 /// How serious a finding is. Ordered most severe first.
@@ -86,6 +96,9 @@ pub enum Target {
     Roof(Id),
     /// A detail object (a deck), by id.
     Detail(Id),
+    /// A slab, square pad or round pier of the foundation layer, by id
+    /// (`plan_core::foundation::FoundationRef`).
+    Foundation(Id),
 }
 
 /// One result of a check.
@@ -183,6 +196,21 @@ pub struct CheckOptions {
     pub roof_pitch_underlay: f64,
     /// Roof pitch (rise per 12) over which a steep-slope advisory is shown.
     pub roof_pitch_steep: f64,
+    /// Frost line depth below finished grade (R403.1.4.1); 12" in Georgia.
+    pub frost_depth: f64,
+    /// How far the first floor's finished floor sits above finished grade,
+    /// inches (the plan has no grade of its own, so the footing rules assume it).
+    pub grade_below_floor: f64,
+    /// Thinnest footing (R403.1.1).
+    pub footing_min_thickness: f64,
+    /// Highest handrail (R311.7.8.1).
+    pub handrail_max: f64,
+    /// Sphere that must not pass through a guard (R312.1.3).
+    pub guard_sphere: f64,
+    /// Clear space in front of a shower or tub entrance (R307.1).
+    pub shower_front_clear: f64,
+    /// Thinnest gypsum board on the garage side of the house wall (R302.6).
+    pub garage_gypsum_min: f64,
 }
 
 impl Default for CheckOptions {
@@ -225,6 +253,13 @@ impl Default for CheckOptions {
             roof_pitch_min: 2.0,
             roof_pitch_underlay: 4.0,
             roof_pitch_steep: 12.0,
+            frost_depth: 12.0,
+            grade_below_floor: 6.0,
+            footing_min_thickness: 6.0,
+            handrail_max: 38.0,
+            guard_sphere: 4.0,
+            shower_front_clear: 24.0,
+            garage_gypsum_min: 0.5,
         }
     }
 }
@@ -247,7 +282,8 @@ pub fn plan_check(
     stairs: &[Stair],
     opts: &CheckOptions,
 ) -> Vec<Finding> {
-    let ctx = Ctx::new(&project.floors[floor], rooms, room_types, stairs, opts);
+    let ctx =
+        Ctx::new(&project.floors[floor], rooms, room_types, stairs, opts).with_project(project);
     let mut out = Vec::new();
     rules::habitable_room_size(&ctx, &mut out);
     rules::bedroom_egress(&ctx, &mut out);
@@ -265,6 +301,8 @@ pub fn plan_check(
     rules_mep::framing(&ctx, &mut out);
     rules_code::run(&ctx, &mut out);
     rules_fixtures::run(&ctx, &mut out);
+    rules_irc::run(&ctx, &mut out);
+    rules_nkba::run(&ctx, &mut out);
     out.sort_by_key(|f| f.severity);
     out
 }

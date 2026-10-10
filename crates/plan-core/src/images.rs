@@ -98,9 +98,9 @@ pub fn image_size(bytes: &[u8]) -> Option<(u32, u32, ImageFormat)> {
     None
 }
 
-/// Shown for JPEG pictures: no decoder is built in, so the plan draws a
-/// placeholder frame.
-pub const JPEG_NOTE: &str = "JPEG preview is not available yet; drawn as a frame";
+/// Shown for a JPEG picture that cannot be decoded (damaged, or a kind the
+/// decoder does not read): the plan draws a placeholder frame.
+pub const JPEG_NOTE: &str = "This JPEG could not be decoded; drawn as a frame";
 
 fn default_gray() -> [u8; 3] {
     [180, 180, 180]
@@ -265,6 +265,11 @@ pub struct Distribution {
     /// Position of the record when the copies were last made; a record that
     /// was moved since is translated into place by the next rebuild.
     pub anchor: Point,
+    /// The Distribution Region/Path Specification options (spacing styles,
+    /// angle modes, offsets, scaling, side-to-side positioning); when set
+    /// they make the copies (see [`crate::distribution`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub options: Option<crate::distribution::DistOptions>,
 }
 
 /// One copy a distribution makes (centre, angle and size factor).
@@ -303,6 +308,7 @@ impl Distribution {
             pattern: RegionPattern::Grid,
             seed: 1,
             anchor: Point::ZERO,
+            options: None,
         }
     }
 
@@ -350,6 +356,9 @@ impl Distribution {
 
     /// The copies this distribution makes.
     pub fn copies(&self) -> Vec<DistCopy> {
+        if let Some(o) = &self.options {
+            return crate::distribution::copies_with(self, o);
+        }
         let mut rng = Rng(self.seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0xD1B5_4A32);
         let spacing = self.spacing.max(MIN_SPACING);
         let mut base: Vec<(Point, f64)> = Vec::new();

@@ -8,7 +8,6 @@ use crate::rng::Rng;
 use crate::settings::{RenderSettings, Technique};
 use crate::shading::{reflect, sample_cone, sample_cosine, sheet_reflectance, Kind, Surface};
 use crate::vec3::V3;
-use plan_3d::Material;
 use plan_materials::textures::TextureStore;
 
 /// Ray-origin offset along the surface normal, inches.
@@ -55,6 +54,8 @@ pub(crate) struct Frame<'a> {
     /// One entry per material, then one per recoloured `(material, colour)`.
     surfaces: Vec<Surface>,
     textures: Vec<Option<TexBinding>>,
+    /// Material-package maps of the mesh looks past `MATERIAL_COUNT`.
+    pbr: Vec<Option<crate::pbrmap::PbrBinding>>,
     sky: Sky,
     sun: Option<SunData>,
     lights: Vec<LightData>,
@@ -76,7 +77,7 @@ impl<'a> Frame<'a> {
         env: &Environment,
         (lights, areas): (&[PointLight], &[AreaLight]),
         settings: &RenderSettings,
-        (store, custom): (&TextureStore, &[(Material, [u8; 3])]),
+        (store, custom): (&TextureStore, &[crate::shading::Custom]),
     ) -> Frame<'a> {
         let (width, height) = (settings.width.max(1), settings.height.max(1));
         let surfaces = Surface::table_with(settings.technique, custom);
@@ -90,6 +91,12 @@ impl<'a> Frame<'a> {
         Frame {
             bvh,
             textures: albedo::table(store, settings.textures, settings.technique, &surfaces),
+            pbr: crate::pbrmap::table(
+                custom,
+                settings.textures,
+                settings.technique,
+                crate::shading::MATERIAL_COUNT,
+            ),
             surfaces,
             sky: Sky::new(env),
             sun: env.sun.as_ref().map(SunData::new),
@@ -99,7 +106,7 @@ impl<'a> Frame<'a> {
             technique: settings.technique,
             max_bounces: settings.max_bounces,
             ao_radius: (scene_diagonal * 0.1).max(12.0),
-            lens: Lens::new(cam, width, height),
+            lens: Lens::with_projection(cam, width, height, settings.projection),
             width,
             seed: settings.seed,
         }
@@ -202,7 +209,14 @@ impl<'a> Frame<'a> {
             let p = o + d * hit.t;
             let ng = tri.normal();
             let n = if ng.dot(d) > 0.0 { -ng } else { ng };
-            match surface.kind {
+            // Material-package maps: an opacity cut-out lets the ray through.
+            let pbr = self.pbr.get(tri.material as usize).and_then(Option::as_ref);
+            let kind = if surface.kind == Kind::Opaque && pbr.is_some_and(|b| b.cut_out(p, ng)) {
+                Kind::Clear
+            } else {
+                surface.kind
+            };
+            match kind {
                 Kind::Clear => {
                     crossings += 1;
                     o = p + d * RAY_EPS;
@@ -221,18 +235,27 @@ impl<'a> Frame<'a> {
                 Kind::Opaque => {
                     let wo = -d;
                     let textured;
-                    let surface = match &self.textures[tri.material as usize] {
-                        Some(binding) => {
+                    let packaged;
+                    // The shading normal: bent by a package's normal map.
+                    let mut ns = n;
+                    let surface = match (&self.textures[tri.material as usize], pbr) {
+                        (_, Some(b)) => {
+                            let (s, bent) = b.shade(p, ng, n, wo, surface);
+                            packaged = s;
+                            ns = bent;
+                            &packaged
+                        }
+                        (Some(binding), None) => {
                             textured = Surface {
                                 albedo: binding.albedo(p, ng),
                                 ..*surface
                             };
                             &textured
                         }
-                        None => surface,
+                        (None, None) => surface,
                     };
-                    let direct = self.direct(p, n, wo, surface, rng);
-                    sum += self.contribution(throughput * direct, bounce);
+                    let direct = self.direct(p, ns, wo, surface, rng);
+                    sum += self.contribution(throughput * (direct + surface.emission), bounce);
                     if bounce >= self.max_bounces {
                         break;
                     }
@@ -243,7 +266,7 @@ impl<'a> Frame<'a> {
                         }
                         throughput = throughput / q;
                     }
-                    let Some((wi, weight)) = surface.sample(n, wo, rng) else {
+                    let Some((wi, weight)) = surface.sample(ns, wo, rng) else {
                         break;
                     };
                     throughput *= weight;

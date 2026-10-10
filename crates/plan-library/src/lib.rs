@@ -24,7 +24,10 @@
 //!   by [`CatalogItem::model3d`]); [`manage`] holds folders, favorites and
 //!   recents, [`browse`] the filters and sorting, [`archive`] the export and
 //!   import of a whole user library, [`rules`] the placement rules and
-//!   default layers, and [`preview`] a software-shaded thumbnail of a model.
+//!   default layers, and [`preview`] a software-shaded thumbnail of a model;
+//!   [`types`] is the browser's type filter, [`trash`] the User Catalog's
+//!   Trash, [`thumbs`] the thumbnail cache and [`resolve`] the lookup from a
+//!   catalog GUID or name to an item.
 //!
 //! ```
 //! use plan_library::{core_catalog, Library};
@@ -47,17 +50,23 @@ mod library;
 pub mod manage;
 pub mod model;
 pub mod preview;
+pub mod resolve;
 pub mod rules;
 mod shapes;
+pub mod standin;
 mod starter;
 mod symbol;
+pub mod thumbs;
+pub mod trash;
+pub mod types;
 pub mod user;
 
-pub use catalog::{Catalog, CatalogItem, ItemKind, Placement};
+pub use catalog::{Catalog, CatalogItem, ItemKind, ObjectDefaults, Placement};
 pub use library::{CategoryNode, Library};
 pub use model::{Model3d, ModelPart};
 pub use starter::core_catalog;
 pub use symbol::{Bounds, Stroke, Symbol2d};
+pub use types::LibType;
 
 /// Every built-in catalog: the starter [`core_catalog`] followed by Plants,
 /// Bath & Kitchen, Lighting & Electrical and Furniture & Exterior.

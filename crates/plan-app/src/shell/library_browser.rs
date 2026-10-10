@@ -14,19 +14,31 @@
 
 mod chief_ui;
 pub mod png;
+mod search;
 mod user_ui;
 
+use super::library_panel;
 use crate::editor::EditorContext;
 use crate::tools::library::chief::{self, ChiefSettings};
 use crate::tools::ToolId;
 use chief_ui::{ChiefAction, ChiefBrowser};
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Shape, Stroke, Vec2};
+use plan_library::browse::SortKey;
 use plan_library::{CatalogItem, CategoryNode, Library, Stroke as SymStroke, Symbol2d};
 use std::sync::Arc;
-use user_ui::{DragItem, UserAction, UserUi, View};
+#[cfg(test)]
+pub use user_ui::preview_model;
+use user_ui::{DragItem, UserUi};
+pub use user_ui::{PanelRequest, UserAction, View};
 
-/// Edge of the square each result's preview is drawn in.
+/// Edge of the square each result's preview is drawn in when Preferences >
+/// Library Browser has not changed it (Medium).
 pub const PREVIEW_PX: f32 = 48.0;
+
+/// The preview edge in force (Preferences > Library Browser > Preview size).
+pub fn preview_px() -> f32 {
+    crate::dialogs::preferences::pages::library_preview_px()
+}
 /// Space kept around the drawing inside the preview square.
 const PREVIEW_MARGIN: f32 = 2.0;
 /// Most rows listed at once; the rest is summarized.
@@ -165,11 +177,25 @@ fn results_for<'a>(
     query: &str,
     category: &[String],
 ) -> Vec<&'a CatalogItem> {
-    let filter = user.full_filter(query, category);
+    let mut filter = user.full_filter(query, category);
     if filter.is_empty() && user.view != View::Recent {
         return Vec::new();
     }
+    // The text is matched here, under the Preferences > Library Browser
+    // options; the filter only narrows by category, type, size and so on.
+    let text = std::mem::take(&mut filter.query);
     let mut items = plan_library::browse::apply(library, &filter, &user.meta);
+    if !text.trim().is_empty() {
+        let mut catalogs: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+        for c in library.catalogs() {
+            for i in &c.items {
+                catalogs.entry(i.id.as_str()).or_insert(c.name.as_str());
+            }
+        }
+        let opts = crate::dialogs::preferences::pages::current().library_browser;
+        let ranked = filter.sort == SortKey::Relevance;
+        items = search::narrow(items, &catalogs, &text, &opts, ranked);
+    }
     if user.view == View::Recent {
         items.retain(|i| user.meta.recent.contains(&i.id));
     }
@@ -301,7 +327,7 @@ pub fn show(ui: &mut egui::Ui, st: &mut LibraryBrowserState) -> Option<LibraryEv
 
     ui.horizontal(|ui| {
         let edit = egui::TextEdit::singleline(&mut st.query)
-            .hint_text("Search the library")
+            .hint_text("Search names and keywords")
             .desired_width(ui.available_width() - 28.0);
         ui.add(edit);
         if ui
@@ -312,6 +338,8 @@ pub fn show(ui: &mut egui::Ui, st: &mut LibraryBrowserState) -> Option<LibraryEv
             st.query.clear();
         }
     });
+    library_panel::type_filter(ui, &mut st.user.filter.types);
+    st.chief.types = st.user.filter.types.clone();
     let catalogs: Vec<String> = st
         .library
         .catalogs()
@@ -369,10 +397,21 @@ pub fn show(ui: &mut egui::Ui, st: &mut LibraryBrowserState) -> Option<LibraryEv
                 st.category.clear();
                 st.user.view = View::Category;
             }
+            if library_panel::trash_node(ui, st.user.view == View::Trash) {
+                st.category.clear();
+                st.chief.selected = None;
+                st.user.view = View::Trash;
+            }
         });
     ui.separator();
 
     let active = st.active_item.clone();
+
+    // The Trash node: the deleted items, with Restore and Empty Trash.
+    if st.user.view == View::Trash {
+        actions.extend(library_panel::trash_list(ui));
+        return finish(st, event, actions);
+    }
 
     // A Chief category is selected: list its objects.
     if st.chief.selected.is_some() {
@@ -387,6 +426,7 @@ pub fn show(ui: &mut egui::Ui, st: &mut LibraryBrowserState) -> Option<LibraryEv
     let path = match st.user.view {
         View::Favorites => "Favorites".to_string(),
         View::Recent => "Recently Used".to_string(),
+        View::Trash => "Trash".to_string(),
         View::Category if st.category.is_empty() => "All categories".to_string(),
         View::Category => st.category.join(" \u{25B8} "),
     };
@@ -441,7 +481,9 @@ pub fn show(ui: &mut egui::Ui, st: &mut LibraryBrowserState) -> Option<LibraryEv
             }
             let mut each = |ui: &mut egui::Ui, item: &CatalogItem| {
                 let is_active = active.as_deref() == Some(item.id.as_str());
-                let out = if st.user.grid {
+                let out = if st.user.names {
+                    name_row(ui, item, is_active, &st.user)
+                } else if st.user.grid {
                     result_cell(ui, item, is_active, &st.user)
                 } else {
                     result_row(ui, item, is_active, &st.user)
@@ -510,7 +552,12 @@ fn category_node(
     let here_selected = selected == path.as_slice();
     let label = format!("{} ({})", node.name, node.count);
     if node.children.is_empty() {
-        let r = ui.selectable_label(here_selected, label);
+        let r = ui
+            .horizontal(|ui| {
+                library_panel::folder_icon(ui, here_selected);
+                ui.selectable_label(here_selected, label)
+            })
+            .inner;
         if r.clicked() {
             *picked = Some(path.clone());
         }
@@ -522,6 +569,7 @@ fn category_node(
         egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, is_root);
     state
         .show_header(ui, |ui| {
+            library_panel::folder_icon(ui, here_selected);
             let r = ui.selectable_label(here_selected, label);
             if r.clicked() {
                 *picked = Some(path.clone());
@@ -547,7 +595,8 @@ fn result_row(
     is_active: bool,
     user: &UserUi,
 ) -> (Option<LibraryEvent>, Option<UserAction>) {
-    let size = Vec2::new(ui.available_width(), PREVIEW_PX + 6.0);
+    let px = preview_px();
+    let size = Vec2::new(ui.available_width(), px + 6.0);
     let (rect, resp) = ui.allocate_exact_size(size, Sense::click_and_drag());
     let visuals = ui.visuals();
     if is_active {
@@ -557,7 +606,7 @@ fn result_row(
         ui.painter()
             .rect_filled(rect, 3.0, visuals.widgets.hovered.weak_bg_fill);
     }
-    let preview = Rect::from_min_size(rect.min + Vec2::splat(3.0), Vec2::splat(PREVIEW_PX));
+    let preview = Rect::from_min_size(rect.min + Vec2::splat(3.0), Vec2::splat(px));
     ui.painter()
         .rect_filled(preview, 2.0, Color32::from_gray(0xEC));
     let ink = Stroke::new(1.0_f32, Color32::from_gray(0x2B));
@@ -595,11 +644,14 @@ fn result_row(
             Color32::from_rgb(0xD0, 0x9A, 0x10),
         );
     }
-    if item.id.starts_with("user.") && resp.drag_started() {
-        resp.dnd_set_drag_payload(DragItem(item.id.clone()));
-    }
     let mut event = None;
     let mut action = None;
+    // A drag moves a user item onto a folder or places the item on the plan;
+    // either way it becomes the active item.
+    if resp.drag_started() {
+        resp.dnd_set_drag_payload(DragItem(item.id.clone()));
+        event = Some(LibraryEvent::Activate(item.id.clone()));
+    }
     if resp.clicked() {
         event = Some(LibraryEvent::Activate(item.id.clone()));
         action = Some(UserAction::Select(item.id.clone()));
@@ -621,7 +673,7 @@ fn result_cell(
     user: &UserUi,
 ) -> (Option<LibraryEvent>, Option<UserAction>) {
     let (rect, resp) =
-        ui.allocate_exact_size(Vec2::splat(PREVIEW_PX + 8.0), Sense::click_and_drag());
+        ui.allocate_exact_size(Vec2::splat(preview_px() + 8.0), Sense::click_and_drag());
     let visuals = ui.visuals();
     if is_active {
         ui.painter()
@@ -646,11 +698,77 @@ fn result_cell(
             Color32::from_rgb(0xD0, 0x9A, 0x10),
         );
     }
-    if item.id.starts_with("user.") && resp.drag_started() {
+    let mut event = None;
+    let mut action = None;
+    if resp.drag_started() {
         resp.dnd_set_drag_payload(DragItem(item.id.clone()));
+        event = Some(LibraryEvent::Activate(item.id.clone()));
+    }
+    if resp.clicked() {
+        event = Some(LibraryEvent::Activate(item.id.clone()));
+        action = Some(UserAction::Select(item.id.clone()));
+    }
+    let resp = resp.on_hover_text(format!(
+        "{}\n{} \u{00D7} {} in",
+        item.name,
+        trim_num(item.width),
+        trim_num(item.depth)
+    ));
+    resp.context_menu(|ui| {
+        if let Some(a) = user.row_menu(ui, item) {
+            action = Some(a);
+        }
+    });
+    (event, action)
+}
+
+/// One result in the Names view: a file icon and the name, nothing else. Same
+/// click, drag and menu as a row.
+fn name_row(
+    ui: &mut egui::Ui,
+    item: &CatalogItem,
+    is_active: bool,
+    user: &UserUi,
+) -> (Option<LibraryEvent>, Option<UserAction>) {
+    let (rect, resp) = ui.allocate_exact_size(
+        Vec2::new(ui.available_width(), 20.0),
+        Sense::click_and_drag(),
+    );
+    let visuals = ui.visuals();
+    if is_active {
+        ui.painter()
+            .rect_filled(rect, 3.0, visuals.selection.bg_fill);
+    } else if resp.hovered() {
+        ui.painter()
+            .rect_filled(rect, 3.0, visuals.widgets.hovered.weak_bg_fill);
+    }
+    library_panel::paint_file_icon(
+        ui.painter(),
+        Rect::from_min_size(rect.min + Vec2::new(4.0, 3.0), Vec2::new(11.0, 14.0)),
+    );
+    let name_color = visuals.strong_text_color();
+    ui.painter().text(
+        Pos2::new(rect.left() + 22.0, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        &item.name,
+        egui::FontId::proportional(12.5),
+        name_color,
+    );
+    if user.meta.is_favorite(&item.id) {
+        ui.painter().text(
+            Pos2::new(rect.right() - 10.0, rect.center().y),
+            egui::Align2::CENTER_CENTER,
+            "\u{2605}",
+            egui::FontId::proportional(12.0),
+            Color32::from_rgb(0xD0, 0x9A, 0x10),
+        );
     }
     let mut event = None;
     let mut action = None;
+    if resp.drag_started() {
+        resp.dnd_set_drag_payload(DragItem(item.id.clone()));
+        event = Some(LibraryEvent::Activate(item.id.clone()));
+    }
     if resp.clicked() {
         event = Some(LibraryEvent::Activate(item.id.clone()));
         action = Some(UserAction::Select(item.id.clone()));
@@ -717,6 +835,28 @@ mod tests {
             .results()
             .iter()
             .all(|i| i.category.first() == Some(&top.name)));
+    }
+
+    #[test]
+    fn the_preferences_decide_what_a_search_looks_at_and_the_preview_size() {
+        use crate::dialogs::preferences::pages::{self, PreviewSize};
+        let mut st = state();
+        st.query = "toilet".into();
+        let normal = st.results().len();
+        assert!(normal > 0);
+        pages::update(|p| {
+            p.library_browser.search_names = false;
+            p.library_browser.search_keywords = false;
+            p.library_browser.search_descriptions = false;
+            p.library_browser.search_catalog_names = false;
+        });
+        assert!(st.results().is_empty());
+        pages::update(|p| p.library_browser.search_names = true);
+        assert!(!st.results().is_empty());
+        pages::update(|p| p.library_browser.preview_size = PreviewSize::Large);
+        assert_eq!(preview_px(), PreviewSize::Large.px());
+        pages::set(pages::PagePrefs::default());
+        assert_eq!(preview_px(), PREVIEW_PX);
     }
 
     #[test]

@@ -1,5 +1,6 @@
 [Desktop Entry]
-# Install: copy plan-studio to ~/.local/bin and this file to ~/.local/share/applications.
+# Install: run install.sh from the tarball, or copy plan-studio to ~/.local/bin, this file to
+# ~/.local/share/applications and plan-studio.png to ~/.local/share/icons/hicolor/256x256/apps.
 # To open .psplan files by double-click also copy plan-studio-psplan.xml to
 # ~/.local/share/mime/packages and run: update-mime-database ~/.local/share/mime
 Type=Application
@@ -8,6 +9,7 @@ Name=Plan Studio
 GenericName=Floor Plan Editor
 Comment=2D floor-plan editor with automatic rooms and areas
 Exec=plan-studio %f
+Icon=plan-studio
 Terminal=false
 Categories=Graphics;2DGraphics;Engineering;
 Keywords=floor plan;architecture;home design;CAD;

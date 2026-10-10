@@ -35,7 +35,7 @@ You give the stair a position, a direction and a shape. The program does the ari
   stringer depth 11 1/4", slab thickness (landings, winders, ramps) 3 1/2".
 - Shapes: **Straight**, **L-shaped** (a 90 degree turn on a landing), **U-shaped** (a 180
   degree turn on a landing), **Winder** (pie-shaped treads in the turn), **Curved** (every
-  tread fanned around a centre) and **Ramp**, each turning left or right. A ramp is limited to
+  tread fanned around a centre), **Spiral** (wedge treads round a centre pole, Round 13) and **Ramp**, each turning left or right. A ramp is limited to
   30" of rise between landings, with a 1:12 slope and 60" flat landings between its runs.
 - A **landing** is a flat platform: a rectangle (the width of the stair by a depth, 36" by
   default) or a polygon of any outline. Its height is not typed in the first place: it takes
@@ -62,11 +62,12 @@ You give the stair a position, a direction and a shape. The program does the ari
 | Curve to Left | `Ctrl+Alt+Shift+Cmd+E` | A winder stair (three pie treads in the turn) turning left. |
 | Curve to Right | `Ctrl+Alt+Shift+Cmd+F` | The same, turning right. |
 | Curved Stairs | | Press at the centre, drag to the walking radius. |
+| Spiral Stairs | | Press at the centre, drag to the outside radius (below). |
 | Landing | `Ctrl+Alt+Shift+Cmd+G` | Drag a rectangle, or click the corners of a polygon. |
 | Draw Ramp | `Ctrl+Alt+Shift+Cmd+H` | Drag the run; a click places a 1:12 ramp. |
 
-Each flyout entry (or its hotkey) starts the stair tool in that variant. Click Stairs and
-Curved Stairs have no Chief hotkey. Off macOS the four-modifier chords are typed as
+Each flyout entry (or its hotkey) starts the stair tool in that variant. Click Stairs,
+Curved Stairs and Spiral Stairs have no Chief hotkey. Off macOS the four-modifier chords are typed as
 `Ctrl+Alt+Shift+...` (chapter 13.2).
 
 ### Drawing a stair
@@ -77,6 +78,7 @@ Curved Stairs have no Chief hotkey. Off macOS the four-modifier chords are typed
 | Plain click | Places a default stair pointing up the screen (Draw, Straight and the turning shapes). |
 | Click Stairs | One click places a straight stair whose length is the solved number of 10" treads, pointing the way the pointer was heading when it arrived (up the screen if it had not moved). |
 | Curved Stairs | Press at the centre of the curve and drag to the walking line: the stair starts at the drag end and turns left. A plain click puts the walking line 60" below the click. |
+| Spiral Stairs (Round 13) | Press at the centre of the pole and drag to the **outside radius**. The wedge treads wind round a centre pole 2" in radius, the first tread at the drag end, turning left (`Tab` flips it to the right). A plain click draws a 6' spiral. A drag that is too short is raised to the narrowest legal spiral (26" clear width). One undo step, "Spiral Stairs". |
 | Landing | Drag a rectangle; or click the corners of a polygon and double-click the last one (`Enter` also finishes, `Backspace` drops the last corner, `Esc` cancels). A double-click on its own places a 3' square. |
 | `Tab` | Flips the turn (left or right) of an L, U, winder or curved stair, before you draw it. |
 | `Esc` | Cancels the stair, handle drag or landing polygon in progress. |
@@ -127,8 +129,11 @@ The Edit toolbar adds four stair commands:
 ## 7.3 What the plan shows
 
 - On the stair's own floor: the outline, one line per riser, landings, the UP arrow
-  with the riser count (`14R`), and a zigzag **break line** where the floor above would cut the
-  stair. Chief's default break is at the two-thirds point of the flight. A side set to Railing
+  with a label that gives the riser count and height, Chief's way (`UP 15R @ 7 3/4"`; with Show number of
+  risers off the arrow reads a plain `UP`), and a zigzag **break line** where the floor above would cut the
+  stair. The break defaults to the two-thirds point of the flight and is set per stair (Line Style tab,
+  Break Line At, 10 to 95 % of the run). The rail of a side set to Railing runs across the landings and
+  the turns of an L, U or winder stair, not just along the flights. A side set to Railing
   is drawn as a double line with newel squares along the flight; a Wall or Half Wall as a solid band.
 - On the floor above: the part of the stair beyond the break line, its outline, and a
   **DN** arrow pointing back down.
@@ -171,12 +176,14 @@ because a stair that breaks the code can still be a valid sketch.
 | Tab | What it holds |
 |---|---|
 | General | Width, tread depth, riser height, number of risers and treads, bottom and top height, floor-to-floor, lock settings, headroom, shape and the solved result |
-| Style | Open risers, nosing, tread and riser thickness, stringer style and depth, slab thickness, handrail on both sides |
-| Newels/Balusters | Newel size, height, maximum spacing and cap; the infill style and its sizes |
-| Rails | What stands on the left and right side; guard height and the top and bottom rail sizes |
-| Line Style | Line weight, dashed lines, break line, show number of risers |
+| Style | Open risers, nosing, tread and riser thickness, flared and bullnose bottom tread, stringer style and depth, slab thickness, handrail on both sides |
+| Newels/Balusters | Newel size, height, maximum spacing and cap; the infill style and its sizes, for both sides or one side alone |
+| Rails | What stands on the left and right side; guard height and the top and bottom rail sizes, for both sides or one side alone |
+| Line Style | Line weight, dashed lines, break line and Break Line At (percent of the run), show number of risers, guard railing around the stairwell opening |
 | Fill Style | Fill the stair in plan, and the fill tone |
 | Materials | Component and material pairs (treads, risers, stringers, handrail, balusters), kept with the stair |
+| Components | The parts the stair is made of, with counts, sizes and materials |
+| Schedule | The stair's row of the Stair Schedule: type, treads, risers, riser height, tread depth, total rise, total run, width, headroom |
 | Label | Label text and whether to show it in the plan |
 
 A ramp uses the same tabs without the riser and tread fields.
@@ -196,7 +203,9 @@ A ramp uses the same tabs without the riser and tread fields.
   height follows; with the riser height locked the count follows. A Run handle drag leaves a
   locked tread depth alone.
 - **Headroom**: the clear height the check compares with 80".
-- **Shape**: Stair Shape (Straight, L-Shaped, U-Shaped, L-Shaped with winders, Curved, Ramp),
+- **Shape**: Stair Shape (Straight, L-Shaped, U-Shaped, L-Shaped with winders, Curved, Ramp; a Curved stair has a
+  **Spiral stair** check box that makes it a spiral, with Pole Radius in place of Inside Radius and the Outside
+  Radius shown beside it),
   Treads Before Landing (L and U), Winder Treads (winder), Inside Radius (curved), Slope (1 in)
   (ramp), a check box to use winders instead of a landing in an L-shaped stair, Turn Left or Right,
   and Landing Depth (L and U).
@@ -210,12 +219,16 @@ A ramp uses the same tabs without the riser and tread fields.
   Riser Thickness.
 - **Stringers**: **Stringer Style** Closed (a full board whose top follows the nosing line), Open
   (a notched stringer) or None (the treads span between walls), Stringer Depth, Slab Thickness.
-- **Handrail**: Handrail on both sides (a plain rail in 3D; the Rails tab gives a full railing).
+- **Bottom tread**: **Flared Bottom Tread** (the tread reaches that far past each side in a half-ellipse) and **Bullnose Bottom Tread** (None, Left End, Right End or Both Ends: the chosen end is a half-round of the tread's depth; it wins over the flare on that end). Straight, L, U and winder stairs.
+- **Handrail**: Handrail on both sides (a plain rail in 3D; the Rails tab gives a full railing or a handrail on one side).
 
 ### Newels/Balusters and Rails
 
-The **Rails** tab sets the **Left Side** and **Right Side** (None, Wall, Railing, Half Wall) and, for
-the railings, the Guard Height (36" by default), and the Top Rail and Bottom Rail width and height.
+The **Rails** tab sets the **Left Side** and **Right Side** (None, Wall, Railing, Half Wall, Handrail) and, for
+the railings, the Guard Height (36" by default), and the Top Rail and Bottom Rail width and height. A **Railing** is a guard with newels and
+balusters; a **Handrail** is a rail on the wall (34" above the nosing line) with no guard, newels or balusters.
+Both tabs start with an **Applies To** row: *Both sides* edits the shared settings; *Left side* or *Right side* gives that side settings of its own
+(different newels, infill or rails on each side); *Same as both sides* takes them back, and a side whose settings equal the shared ones drops its copy.
 **Newels/Balusters** sets the Newel Size, Newel Height, Maximum Spacing between newels and a Newel cap,
 and the Infill: Balusters (Clear Spacing, Baluster Size), Panels, Solid, Cables (rows) or Glass. Balusters
 stand on the treads, enough per tread to keep every opening within the clear spacing (4" by code).
@@ -223,7 +236,9 @@ A Half Wall is a solid panel with a cap rail; a Wall is full height.
 
 ### Landing Specification
 
-A landing has General, Line Style, Fill Style, Materials and Label. General holds the **Width**,
+A landing has General, Rails, Line Style, Fill Style, Materials and Label. The **Rails** tab (Round 13) puts a
+Railing or Half Wall on the open sides of the landing, with the same guard height and rail sizes as a
+stair's; the plan and the 3D view draw them. (A Handrail side is drawn along the flights only, not across a landing.) General holds the **Width**,
 the **Depth** (not shown for a polygon landing, whose outline is its corners), the **Height** of its
 top above the floor and its **Thickness**. A stair section that arrives on the landing sets its
 height; one that starts on it begins there.
@@ -232,19 +247,19 @@ height; one that starts on it begins there.
 
 Tools > Checks > Plan Check includes a stair rule: riser height, tread depth, width and
 headroom against the IRC limits above, reported with the rule's section number and a
-suggested fix. See chapter 4.8. A landing is handed to the check as a stair with no risers,
-so the 2R + T rule prints an Info line for each landing; this is a known nuisance (the rule
-should skip landings; `docs/integration-queue.md`).
+suggested fix. See chapter 18. A landing has no risers or treads and is skipped. A **spiral** stair is judged by IRC
+R311.7.10.1 instead (risers up to 9 1/2", treads at least 6 3/4" at the walking line, clear width at least 26",
+headroom at least 6'-6"). (The handrail rule does not yet count a stair side set to Handrail; it looks at the Handrail check box and at Railing and Half Wall sides.)
 
 ## 7.7 Differences from Chief
 
-- No **Stair Schedule** and no Components or Schedule tab in the Staircase Specification (planned).
-- A railing is not drawn across a landing in the plan symbol (planned). The stairwell guard is a set of ordinary railing walls on the floor above, not Chief's railing around a hole.
+- The **Stair Schedule** (Tools > Schedules > Stair) has Chief's columns (Treads, Risers, Riser height, Tread depth, Total rise, Total run, Width, Headroom); Headroom is the stair's own headroom setting, not a measurement against the floor above. A Handrail side is drawn along the flights, not across landings.
+- The stairwell guard is a set of ordinary railing walls on the floor above, not Chief's railing around a hole.
 - The stair side railings run the full flight in 3D; the floor above does not trim them.
-- The treads of a stair beyond its break line (which its own floor leaves out of the symbol) are drawn dashed, so the whole run is readable; landings, ramps and stairs without a break line have none.
+- The treads of a stair beyond its break line (which its own floor leaves out of the symbol) are drawn dashed, so the whole run is readable; landings, ramps and stairs without a break line have none. On the floor above, a stair that opens into it (its Auto Stairwell hole, or an Open Below room over it) also shows the treads below the break, dashed and lighter.
 - Auto Stairwell uses invisible room dividers, so the stairwell shows as a room. Chief
   names it by Function.
 - Flare/Curve Stairs cycles shapes. Curved Stairs are a true fan around a centre with an
-  inside radius, but a flared apron (a wider bottom step) is (planned).
+  inside radius; the flared and bullnose bottom treads are set in the Style tab.
 - Click Stairs places the stair toward the pointer's last movement direction; this is a guess to
   verify against Chief (`DECISIONS.md`, item 6).

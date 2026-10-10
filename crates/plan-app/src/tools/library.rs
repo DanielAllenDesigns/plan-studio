@@ -37,8 +37,17 @@ use std::ops::Deref;
 use std::sync::{Arc, OnceLock};
 
 pub mod chief;
+pub mod convert;
+pub mod door_styles;
 pub mod make;
+pub mod thumb;
 pub mod user;
+
+/// The drag-and-drop payload of a library row: the item's catalog id. Dropped
+/// on the plan it places the item ([`LibraryTool::drop_item`]); dropped on a
+/// User Catalog folder it moves the item there.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LibraryDrag(pub String);
 
 /// Pixels the pointer must travel before a press becomes a drag.
 const DRAG_THRESHOLD_PX: f32 = 3.0;
@@ -80,6 +89,28 @@ pub fn find_item(id: &str) -> Option<ItemRef> {
             None => chief::resolve_item(id).map(|c| ItemRef::Chief(c.item)),
         },
     }
+}
+
+/// The catalog id of the library item a placed Chief object stands for, by its
+/// catalog GUID (an item carrying the tag `guid:<uuid>`) and then by its name,
+/// among the built-in catalogs and the User Catalog. This is what the Chief
+/// `.plan` importer's `symbol_resolver` falls back on when no installed Chief
+/// catalog holds the object (`chief_link::resolve_symbol`).
+pub fn resolve_symbol_query(
+    name: &str,
+    tags: &[String],
+    guid: Option<&str>,
+    candidates: &[String],
+) -> Option<String> {
+    let user = super::images::user_items();
+    let index = plan_library::resolve::ItemIndex::build(
+        library_catalog()
+            .all_items()
+            .chain(user.iter().map(|i| &**i)),
+    );
+    index
+        .resolve(name, tags, guid, candidates)
+        .map(str::to_owned)
 }
 
 thread_local! {
@@ -170,6 +201,13 @@ pub fn placement_for(cx: &EditorContext, item: &CatalogItem, p: &PointerEvent) -
     );
     s.elevation = item.elevation;
     s.layer = user::layer_of(item);
+    // What Open Object saved in the item (Reflect, label, schedule, options).
+    if let Some(d) = &item.defaults {
+        s.flip = d.flip;
+        s.label = d.label.clone();
+        s.schedule = d.schedule.clone();
+        s.options = d.options.clone();
+    }
     // A saved picture places the picture.
     s.image = super::images::spec_from_item(item);
     // Free placement: the symbol's center sits on the snapped point, so the
@@ -300,6 +338,12 @@ pub fn apply_drag(
             s.position = orig.position + u * if end { shift } else { -shift };
         }
         HandleKind::Reshape(_) => {
+            // A fireplace built into a wall slides through it instead.
+            if let Some(slid) =
+                crate::editor::fireplace_view::slide_in_wall(cx.floor(), orig, start, p.world)
+            {
+                return slid;
+            }
             let t = p.world.sub(orig.position).dot(v);
             s.depth = snap_to(t, unit, alt).max(1.0);
         }
@@ -373,6 +417,45 @@ impl LibraryTool {
         true
     }
 
+    /// Places the active library item for the click `p` (CB-55): one undo
+    /// step, the new object selected.
+    fn place_active(&mut self, cx: &mut EditorContext, p: &PointerEvent) -> ToolResult {
+        let Some(item) = active_item().and_then(|id| find_item(&id)) else {
+            cx.status = self.hint();
+            return ToolResult::consumed();
+        };
+        let mut sym = placement_for(cx, &item, p);
+        // An appliance dropped near its bay turns and sits in the cabinet's bay.
+        placed::snap_symbol_to_bay(cx.floor(), &mut sym, placed::BAY_SNAP_REACH);
+        cx.begin_change("Place Symbol");
+        let fl = cx.floor;
+        // Cabinets, CAD blocks and text come back as real plan objects.
+        let obj = match user::place_payload(cx, &item, &sym) {
+            Some(o) => o,
+            None => {
+                user::ensure_layer(cx, &sym.layer);
+                ObjectRef::Symbol(cx.project.add_symbol(fl, sym))
+            }
+        };
+        cx.selection.set(obj);
+        user::touch_recent(&item.id);
+        cx.mark_dirty();
+        cx.status = format!("Placed {}", item.name);
+        ToolResult::committed("Place Symbol")
+    }
+
+    /// A library item dropped on the plan at `world` (a drag from the Library
+    /// Browser): it becomes the active item and is placed there, as a click
+    /// would. False for an unknown id.
+    pub fn drop_item(&mut self, cx: &mut EditorContext, id: &str, world: Point) -> bool {
+        if !set_active_item(cx, id) {
+            return false;
+        }
+        let ev = PointerEvent::at(cx, world);
+        self.place_active(cx, &ev);
+        true
+    }
+
     fn open_spec(cx: &mut EditorContext, id: Id) {
         cx.selection.set(ObjectRef::Symbol(id));
         cx.requests
@@ -409,6 +492,40 @@ impl Tool for LibraryTool {
     fn deactivate(&mut self, cx: &mut EditorContext) {
         self.cancel_drag(cx);
         self.ghost = None;
+    }
+
+    /// Finishes a drag from the Library Browser: released over the drawing
+    /// area, the dragged item is placed under the pointer (released over a
+    /// panel or a folder, nothing is placed).
+    fn frame(&mut self, cx: &mut EditorContext, ctx: &egui::Context) {
+        if !egui::DragAndDrop::has_payload_of_type::<LibraryDrag>(ctx)
+            || !ctx.input(|i| i.pointer.any_released())
+        {
+            return;
+        }
+        let Some(pos) = ctx.input(|i| i.pointer.interact_pos().or(i.pointer.latest_pos())) else {
+            return;
+        };
+        let Some(area) = ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("central_rect")))
+        else {
+            return;
+        };
+        if !area.contains(pos) {
+            return;
+        }
+        let Some(payload) = egui::DragAndDrop::take_payload::<LibraryDrag>(ctx) else {
+            return;
+        };
+        let Some((center, zoom)) = crate::editor::plan_tabs::reported_camera() else {
+            return;
+        };
+        let cam = Camera {
+            center,
+            px_per_in: zoom,
+            rect: area,
+            rotation: 0.0,
+        };
+        self.drop_item(cx, &payload.0, cam.screen_to_world(pos));
     }
 
     fn pointer_move(&mut self, cx: &mut EditorContext, p: PointerEvent) -> ToolResult {
@@ -457,28 +574,7 @@ impl Tool for LibraryTool {
             return ToolResult::consumed();
         }
         // Otherwise place the active item (CB-55).
-        let Some(item) = active_item().and_then(|id| find_item(&id)) else {
-            cx.status = self.hint();
-            return ToolResult::consumed();
-        };
-        let mut sym = placement_for(cx, &item, &p);
-        // An appliance dropped near its bay turns and sits in the cabinet's bay.
-        placed::snap_symbol_to_bay(cx.floor(), &mut sym, placed::BAY_SNAP_REACH);
-        cx.begin_change("Place Symbol");
-        let fl = cx.floor;
-        // Cabinets, CAD blocks and text come back as real plan objects.
-        let obj = match user::place_payload(cx, &item, &sym) {
-            Some(o) => o,
-            None => {
-                user::ensure_layer(cx, &sym.layer);
-                ObjectRef::Symbol(cx.project.add_symbol(fl, sym))
-            }
-        };
-        cx.selection.set(obj);
-        user::touch_recent(&item.id);
-        cx.mark_dirty();
-        cx.status = format!("Placed {}", item.name);
-        ToolResult::committed("Place Symbol")
+        self.place_active(cx, &p)
     }
 
     fn pointer_up(&mut self, _cx: &mut EditorContext, _p: PointerEvent) -> ToolResult {

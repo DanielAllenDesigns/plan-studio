@@ -198,7 +198,9 @@ fn upper_floor_is_offset_by_its_elevation() {
     p.floors[1] = upper;
     let scene = build_scene(&p);
     let (_, hi) = scene.bounds().unwrap();
-    assert!((hi[1] - (120.0 + 109.125 + 1.0)).abs() < 1e-3);
+    // The top is the ceiling platform: the 0.625" ceiling finish (R-27) and
+    // the 1" platform sit above the finished ceiling.
+    assert!((hi[1] - (120.0 + 109.125 + 0.625 + 1.0)).abs() < 1e-3);
     assert_eq!(meshes_of(&scene, Material::Floor).len(), 2);
 }
 

@@ -22,6 +22,17 @@ pub struct PartMaterial {
     pub material: String,
 }
 
+/// One entry of the Materials Defaults: the material the `part` of every
+/// object of class `class` ("Wall", "Door", "Window", "Room", "Cabinet",
+/// "Roof") is made of unless that object was painted. A `part` of `""` stands
+/// for the whole class.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClassMaterial {
+    pub class: String,
+    pub part: String,
+    pub material: String,
+}
+
 /// The overrides of one object.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ObjectMaterial {
@@ -82,6 +93,55 @@ impl Project {
         }
     }
 
+    /// The class default for `part` of `class`; a part without its own entry
+    /// falls back to the class's whole-class entry.
+    pub fn class_material(&self, class: &str, part: &str) -> Option<&str> {
+        let same = |c: &&ClassMaterial| c.class.eq_ignore_ascii_case(class);
+        self.material_defaults
+            .iter()
+            .filter(same)
+            .find(|c| c.part == part)
+            .or_else(|| {
+                self.material_defaults
+                    .iter()
+                    .filter(same)
+                    .find(|c| c.part == WHOLE_OBJECT)
+            })
+            .map(|c| c.material.as_str())
+    }
+
+    /// Sets the default of `part` of `class`; true when something changed.
+    pub fn set_class_material(&mut self, class: &str, part: &str, material: &str) -> bool {
+        match self
+            .material_defaults
+            .iter_mut()
+            .find(|c| c.class.eq_ignore_ascii_case(class) && c.part == part)
+        {
+            Some(c) if c.material == material => false,
+            Some(c) => {
+                c.material = material.to_string();
+                true
+            }
+            None => {
+                self.material_defaults.push(ClassMaterial {
+                    class: class.to_string(),
+                    part: part.to_string(),
+                    material: material.to_string(),
+                });
+                true
+            }
+        }
+    }
+
+    /// Removes the default of one part of a class (or of the whole class
+    /// with `None`); true when something was removed.
+    pub fn clear_class_material(&mut self, class: &str, part: Option<&str>) -> bool {
+        let before = self.material_defaults.len();
+        self.material_defaults
+            .retain(|c| !(c.class.eq_ignore_ascii_case(class) && part.is_none_or(|p| c.part == p)));
+        self.material_defaults.len() != before
+    }
+
     /// Removes the override of one part (or all of them with `None`); true
     /// when something was removed. An object left with no override is dropped.
     pub fn clear_object_material(&mut self, object: Id, part: Option<&str>) -> bool {
@@ -126,5 +186,28 @@ mod tests {
         assert!(p.clear_object_material(7, None));
         assert!(p.object_materials.is_empty());
         assert!(!p.clear_object_material(7, None));
+    }
+
+    #[test]
+    fn class_defaults_fall_back_to_the_whole_class_and_round_trip() {
+        let mut p = Project::new("t");
+        assert_eq!(p.class_material("Wall", "Sill Plate"), None);
+        assert!(p.set_class_material("Wall", "", "Drywall"));
+        assert!(p.set_class_material("Wall", "Sill Plate", "Fir Framing"));
+        assert!(!p.set_class_material("wall", "Sill Plate", "Fir Framing"));
+        assert_eq!(p.class_material("Wall", "Sill Plate"), Some("Fir Framing"));
+        assert_eq!(p.class_material("Wall", "Anything"), Some("Drywall"));
+        assert_eq!(p.class_material("Door", "Casing"), None);
+        let back = Project::from_json(&p.to_json().unwrap()).unwrap();
+        assert_eq!(back.material_defaults, p.material_defaults);
+        assert!(p.clear_class_material("Wall", Some("Sill Plate")));
+        assert_eq!(p.class_material("Wall", "Sill Plate"), Some("Drywall"));
+        assert!(p.clear_class_material("Wall", None));
+        assert!(p.material_defaults.is_empty() && !p.clear_class_material("Wall", None));
+        // A plan saved before the defaults existed loads with none.
+        let mut v = serde_json::to_value(&p).unwrap();
+        v.as_object_mut().unwrap().remove("material_defaults");
+        let old: Project = serde_json::from_value(v).unwrap();
+        assert!(old.material_defaults.is_empty());
     }
 }

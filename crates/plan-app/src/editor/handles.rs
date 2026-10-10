@@ -34,6 +34,44 @@ pub enum HandleKind {
     Bulge,
     /// The label of a door or window: dragging it moves the label (DW-63).
     Label,
+    /// The pitch arrow of a roof plane: dragging it up the slope steepens it
+    /// (RF-38).
+    Pitch,
+    /// The middle of edge `n` of a roof plane: moves the edge square to
+    /// itself (RF-38).
+    EdgeMove(usize),
+    /// An edit handle of a callout, marker or note (`plan_core::callout::handle`
+    /// ids): Concentric Resize, Rotate, Extend, Add Text Line with Arrow,
+    /// Add Callout Arrow and an arrow's Rotate handle.
+    Annot(u8),
+}
+
+/// The roof plane handle a [`HandleKind`] of a `RoofPlane` target stands for;
+/// `Move` has none (the plane moves as a whole). The Select tool turns these
+/// into `roof_view::apply_handle_drag` calls.
+pub fn roof_plane_handle(kind: HandleKind) -> Option<roof_view::PlaneHandle> {
+    use roof_view::PlaneHandle;
+    match kind {
+        HandleKind::Reshape(i) => Some(PlaneHandle::Vertex(i)),
+        HandleKind::EdgeMove(i) => Some(PlaneHandle::Edge(i)),
+        HandleKind::Pitch => Some(PlaneHandle::Pitch),
+        HandleKind::Rotate => Some(PlaneHandle::Rotate),
+        _ => None,
+    }
+}
+
+/// The camera wedge handle a [`HandleKind`] of a `Camera` target stands for:
+/// `Reshape(2)` and `Reshape(3)` are the far corners of the view cone (angle
+/// of view), `Reshape(4)` the tilt diamond (C-25). The Select tool turns these
+/// into `camera::apply_wedge` calls.
+pub fn camera_wedge_handle(kind: HandleKind) -> Option<camera_tool::WedgeHandle> {
+    use camera_tool::WedgeHandle;
+    match kind {
+        HandleKind::Reshape(2) => Some(WedgeHandle::FovLeft),
+        HandleKind::Reshape(3) => Some(WedgeHandle::FovRight),
+        HandleKind::Reshape(4) => Some(WedgeHandle::Tilt),
+        _ => None,
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -49,6 +87,12 @@ pub struct Handle {
 /// of pixels off the object). Stairs, cabinets, symbols, devices, roof planes
 /// and cameras delegate to the module that owns them.
 pub fn handles_for(cx: &EditorContext, scale: f64) -> Vec<Handle> {
+    // A callout, marker or note is a group of CAD objects: the whole group
+    // selected has the annotation's handles.
+    let annot = crate::tools::text::annot_handles(cx, scale);
+    if !annot.is_empty() {
+        return annot;
+    }
     let floor = cx.floor();
     let Some(target) = cx.selection.single() else {
         return Vec::new();
@@ -162,16 +206,19 @@ pub fn handles_for(cx: &EditorContext, scale: f64) -> Vec<Handle> {
                 return Vec::new();
             };
             let (a, b) = d.line_points();
-            vec![h(
-                HandleKind::PerpendicularMove,
-                Point::lerp(a, b, 0.5),
-                CursorIcon::Move,
-            )]
+            let at = d
+                .curve_geom(0.0, 0.0)
+                .map_or_else(|| Point::lerp(a, b, 0.5), |g| g.label_at);
+            vec![h(HandleKind::PerpendicularMove, at, CursorIcon::Move)]
         }
         ObjectRef::Cad(id) | ObjectRef::Text(id) => {
             let Some(c) = cad_by_id(floor, id) else {
                 return Vec::new();
             };
+            // A text has its box handles (S-25, TXT-3).
+            if matches!(c.item, CadItem::Text { .. }) {
+                return text_handles(cx, c, scale, &h);
+            }
             let (_, hi) = c.bounds();
             let center = cad_center(&c.item);
             let mut out = vec![
@@ -219,8 +266,19 @@ pub fn handles_for(cx: &EditorContext, scale: f64) -> Vec<Handle> {
                 return Vec::new();
             };
             let mut out = vec![h(HandleKind::Move, r.centroid(), CursorIcon::Move)];
-            for (i, v) in r.plan_polygon().into_iter().enumerate() {
-                out.push(h(HandleKind::Reshape(i), v, CursorIcon::Crosshair));
+            // Corners, edge middles, the pitch arrow and the rotate knob
+            // (RF-38); a dormer's roof has only the move handle.
+            for (handle, at) in r.handles() {
+                out.push(match handle {
+                    roof_view::PlaneHandle::Vertex(i) => {
+                        h(HandleKind::Reshape(i), at, CursorIcon::Crosshair)
+                    }
+                    roof_view::PlaneHandle::Edge(i) => {
+                        h(HandleKind::EdgeMove(i), at, CursorIcon::Grab)
+                    }
+                    roof_view::PlaneHandle::Pitch => h(HandleKind::Pitch, at, CursorIcon::Grab),
+                    roof_view::PlaneHandle::Rotate => h(HandleKind::Rotate, at, CursorIcon::Grab),
+                });
             }
             out
         }
@@ -240,6 +298,24 @@ pub fn handles_for(cx: &EditorContext, scale: f64) -> Vec<Handle> {
                         };
                         h(kind, pos, cursor)
                     })
+                    .chain(
+                        camera_tool::wedge_handles_of(c)
+                            .into_iter()
+                            .map(|(w, pos)| {
+                                use camera_tool::WedgeHandle;
+                                match w {
+                                    WedgeHandle::FovLeft => {
+                                        h(HandleKind::Reshape(2), pos, CursorIcon::Crosshair)
+                                    }
+                                    WedgeHandle::FovRight => {
+                                        h(HandleKind::Reshape(3), pos, CursorIcon::Crosshair)
+                                    }
+                                    WedgeHandle::Tilt => {
+                                        h(HandleKind::Reshape(4), pos, CursorIcon::Grab)
+                                    }
+                                }
+                            }),
+                    )
                     .collect()
             })
             .unwrap_or_default(),
@@ -318,8 +394,91 @@ pub fn handles_for(cx: &EditorContext, scale: f64) -> Vec<Handle> {
                 .map(|(i, p)| h(HandleKind::Reshape(i), p, CursorIcon::Crosshair))
                 .collect()
         }
-        ObjectRef::Room(_) | ObjectRef::Terrain | ObjectRef::Schedule(_) => Vec::new(),
+        // The terrain itself selected: the corners of its perimeter, which
+        // reshape the perimeter like `TerrainObject(Perimeter)`.
+        ObjectRef::Terrain => {
+            let Some(view) = site_view::terrain_view(&cx.project) else {
+                return Vec::new();
+            };
+            let hit = site_view::TerrainHit::Perimeter;
+            let pts = site_view::hit_points(&view.record.terrain, hit);
+            if pts.len() > MAX_TERRAIN_HANDLES {
+                return Vec::new();
+            }
+            pts.into_iter()
+                .enumerate()
+                .map(|(i, p)| Handle {
+                    kind: HandleKind::Reshape(i),
+                    pos: p,
+                    cursor: CursorIcon::Crosshair,
+                    target: ObjectRef::TerrainObject(hit),
+                })
+                .collect()
+        }
+        ObjectRef::Room(_) | ObjectRef::Schedule(_) | ObjectRef::Block(_) | ObjectRef::Solid(_) => {
+            Vec::new()
+        }
     }
+}
+
+/// The handles of a text object (S-25, TXT-3, TXT-13): Move at the middle of
+/// its box, Rotate above it, and the box handles. `ResizeEnd` on the right
+/// edge sets the wrap width (the text reflows), `Reshape(0)` on the top edge
+/// the minimum box height and `Reshape(1)` on the upper right corner both
+/// (see `tools::text::drag_box_handle`). The box is laid out for the size the
+/// text is drawn at.
+fn text_handles(
+    cx: &EditorContext,
+    c: &plan_core::CadObject,
+    scale: f64,
+    h: &dyn Fn(HandleKind, Point, CursorIcon) -> Handle,
+) -> Vec<Handle> {
+    use plan_core::text_box::{layout, BoxLayout};
+    let attrs = cx
+        .floor()
+        .cad_attrs(c.id)
+        .unwrap_or_else(|| plan_core::cad::CadAttrs::new(c.id));
+    let drawn = super::render::printed_text_object(cx, c, Some(&attrs));
+    let item = drawn.as_ref().map_or(&c.item, |o| &o.item);
+    let CadItem::Text {
+        pos,
+        text,
+        height,
+        angle,
+    } = item
+    else {
+        return Vec::new();
+    };
+    let lay = layout(text, &attrs.runs, *height, &attrs.text_box);
+    let to = |x: f64, y: f64| BoxLayout::to_plan(*pos, *angle, Point::new(x, y));
+    let up = 24.0 / scale.max(1e-6);
+    vec![
+        h(
+            HandleKind::Move,
+            to(lay.width * 0.5, lay.height * 0.5),
+            CursorIcon::Move,
+        ),
+        h(
+            HandleKind::Rotate,
+            to(lay.width * 0.5, lay.height + up),
+            CursorIcon::Grab,
+        ),
+        h(
+            HandleKind::ResizeEnd,
+            lay.width_handle(*pos, *angle),
+            CursorIcon::ResizeHorizontal,
+        ),
+        h(
+            HandleKind::Reshape(0),
+            lay.height_handle(*pos, *angle),
+            CursorIcon::ResizeVertical,
+        ),
+        h(
+            HandleKind::Reshape(1),
+            lay.corner_handle(*pos, *angle),
+            CursorIcon::ResizeNeSw,
+        ),
+    ]
 }
 
 /// Terrain elements with more points than this get no vertex handles.
@@ -383,6 +542,75 @@ pub fn draw(handles: &[Handle], painter: &egui::Painter, cam: &Camera, pal: &Pal
                     egui::StrokeKind::Inside,
                 ));
                 painter.circle_filled(c, 1.8, pal.selection);
+            }
+            HandleKind::Pitch => {
+                // An arrow up the slope.
+                let r = 6.0;
+                painter.add(Shape::convex_polygon(
+                    vec![
+                        c + Vec2::new(0.0, -r),
+                        c + Vec2::new(r, r * 0.8),
+                        c + Vec2::new(-r, r * 0.8),
+                    ],
+                    pal.background,
+                    stroke,
+                ));
+            }
+            HandleKind::EdgeMove(_) => {
+                let r = Rect::from_center_size(c, Vec2::new(10.0, 5.0));
+                painter.add(Shape::rect_filled(r, 1.0, pal.background));
+                painter.rect_stroke(r, 1.0, stroke, egui::StrokeKind::Inside);
+            }
+            HandleKind::Annot(id) => {
+                use plan_core::callout::handle as ah;
+                match id {
+                    ah::RESIZE => {
+                        painter.circle_filled(c, 4.0, pal.background);
+                        painter.circle_stroke(c, 4.0, stroke);
+                    }
+                    ah::EXTEND => {
+                        let r = Rect::from_center_size(c, Vec2::splat(9.0));
+                        painter.add(Shape::rect_filled(r, 0.0, pal.background));
+                        painter.rect_stroke(r, 0.0, stroke, egui::StrokeKind::Inside);
+                    }
+                    ah::ROTATE => {
+                        let r = 7.0;
+                        painter.add(Shape::convex_polygon(
+                            vec![
+                                c + Vec2::new(0.0, -r),
+                                c + Vec2::new(r, r * 0.8),
+                                c + Vec2::new(-r, r * 0.8),
+                            ],
+                            pal.background,
+                            stroke,
+                        ));
+                    }
+                    ah::ADD_LINE | ah::ADD_ARROW => {
+                        let r = 6.0;
+                        painter.add(Shape::convex_polygon(
+                            vec![
+                                c + Vec2::new(0.0, -r),
+                                c + Vec2::new(r, 0.0),
+                                c + Vec2::new(0.0, r),
+                                c + Vec2::new(-r, 0.0),
+                            ],
+                            pal.background,
+                            stroke,
+                        ));
+                    }
+                    _ => {
+                        let r = 4.5;
+                        painter.add(Shape::convex_polygon(
+                            vec![
+                                c + Vec2::new(0.0, -r),
+                                c + Vec2::new(r, r * 0.8),
+                                c + Vec2::new(-r, r * 0.8),
+                            ],
+                            pal.background,
+                            stroke,
+                        ));
+                    }
+                }
             }
             HandleKind::Move | HandleKind::PerpendicularMove => {
                 let r = 6.0;

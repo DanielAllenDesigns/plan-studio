@@ -13,7 +13,7 @@ use plan_core::cad::CadItem;
 use plan_core::details::DetailsLayer;
 use plan_core::foundation::FoundationLayer;
 use plan_core::geometry::{dist_to_segment, point_in_polygon, Point};
-use plan_core::{CadObject, DimensionKind, Floor, Id, LayerSet, OpeningKind, Project};
+use plan_core::{CadObject, DimensionKind, Floor, Id, LayerSet, Project};
 use std::f64::consts::TAU;
 
 /// Addresses one object of the plan.
@@ -56,6 +56,13 @@ pub enum ObjectRef {
     Detail(Id),
     /// A schedule table placed on the plan (`schedule_view`).
     Schedule(Id),
+    /// An architectural block (`Floor::blocks`). A click on a block member
+    /// selects the members; this addresses the block itself for its
+    /// specification and the Materials List.
+    Block(Id),
+    /// A compound 3D solid, the result of Union, Subtract or Intersect
+    /// (`Floor::solid_layer`).
+    Solid(Id),
 }
 
 impl ObjectRef {
@@ -75,6 +82,8 @@ impl ObjectRef {
             | ObjectRef::Foundation(i)
             | ObjectRef::Framing(i)
             | ObjectRef::Detail(i)
+            | ObjectRef::Block(i)
+            | ObjectRef::Solid(i)
             | ObjectRef::Schedule(i) => i,
             ObjectRef::Room(i) => i as Id,
             ObjectRef::Terrain => 0,
@@ -104,6 +113,8 @@ impl ObjectRef {
             ObjectRef::Framing(_) => "Framing Object",
             ObjectRef::Detail(_) => "Detail Object",
             ObjectRef::Schedule(_) => "Schedule",
+            ObjectRef::Block(_) => "Architectural Block",
+            ObjectRef::Solid(_) => "3D Solid",
         }
     }
 
@@ -125,6 +136,8 @@ impl ObjectRef {
             ObjectRef::Framing(i) => framing_view::find(floor, i).is_some(),
             ObjectRef::Detail(i) => DetailsLayer::load(floor).find(i).is_some(),
             ObjectRef::Schedule(i) => schedule_view::exists(floor, i),
+            ObjectRef::Block(i) => floor.blocks.get(i).is_some(),
+            ObjectRef::Solid(i) => floor.solid_layer.compound(i).is_some(),
             ObjectRef::Camera(_)
             | ObjectRef::Room(_)
             | ObjectRef::Terrain
@@ -169,6 +182,8 @@ impl ObjectRef {
             ObjectRef::Framing(i) => G::Framing(i),
             ObjectRef::Detail(i) => G::Detail(i),
             ObjectRef::Schedule(i) => G::Schedule(i),
+            ObjectRef::Block(i) => G::Block(i),
+            ObjectRef::Solid(i) => G::Solid(i),
             ObjectRef::Room(_) | ObjectRef::Terrain | ObjectRef::TerrainObject(_) => return None,
         })
     }
@@ -191,6 +206,8 @@ impl ObjectRef {
             G::Framing(i) => ObjectRef::Framing(i),
             G::Detail(i) => ObjectRef::Detail(i),
             G::Schedule(i) => ObjectRef::Schedule(i),
+            G::Block(i) => ObjectRef::Block(i),
+            G::Solid(i) => ObjectRef::Solid(i),
         }
     }
 
@@ -253,6 +270,21 @@ impl Selection {
         (self.items.len() == 1).then(|| self.items[0])
     }
 
+    /// Whether two or more objects are selected and every one is a wall.
+    pub fn all_walls(&self) -> bool {
+        self.items.len() >= 2 && self.items.iter().all(|o| matches!(o, ObjectRef::Wall(_)))
+    }
+
+    /// Whether two or more objects are selected and every one is a cabinet
+    /// (Open Object then edits them together, CB-631).
+    pub fn all_cabinets(&self) -> bool {
+        self.items.len() >= 2
+            && self
+                .items
+                .iter()
+                .all(|o| matches!(o, ObjectRef::Cabinet(_)))
+    }
+
     /// Drops objects that no longer exist on floor `fl` of `project`.
     pub fn retain_existing(&mut self, project: &Project, fl: usize) {
         self.items.retain(|o| o.exists_in(project, fl));
@@ -263,18 +295,16 @@ impl Selection {
 pub fn layer_of(floor: &Floor, o: ObjectRef) -> Option<String> {
     match o {
         ObjectRef::Wall(i) => floor.wall(i).map(|w| w.layer.clone()),
-        ObjectRef::Opening(i) => floor.openings.iter().find(|x| x.id == i).map(|x| {
-            match x.kind {
-                OpeningKind::Door => "Doors",
-                OpeningKind::Window => "Windows",
-            }
-            .to_string()
-        }),
+        ObjectRef::Opening(i) => floor
+            .openings
+            .iter()
+            .find(|x| x.id == i)
+            .map(|x| x.layer_name().to_string()),
         ObjectRef::Dimension(i) => floor.dimensions.iter().find(|d| d.id == i).map(|d| {
-            match d.kind {
+            d.layer_or(match d.kind {
                 DimensionKind::AutoExterior => "Dimensions, Automatic",
                 _ => "Dimensions, Manual",
-            }
+            })
             .to_string()
         }),
         ObjectRef::Cad(i) | ObjectRef::Text(i) => floor
@@ -300,6 +330,8 @@ pub fn layer_of(floor: &Floor, o: ObjectRef) -> Option<String> {
             layer.find(i).and_then(|r| layer.layer_of(r))
         }
         ObjectRef::Schedule(i) => schedule_view::layer_of(floor, i),
+        ObjectRef::Block(i) => floor.blocks.get(i).map(|b| b.layer.clone()),
+        ObjectRef::Solid(i) => floor.solid_layer.compound(i).map(|c| c.layer.clone()),
         ObjectRef::Device(_) => Some(site_view::ELECTRICAL_LAYER.to_string()),
         ObjectRef::Camera(_) => Some(camera_tool::CAMERA_LAYER.to_string()),
         // The terrain's own layer; an element's layer of its own is read from
@@ -516,6 +548,7 @@ pub fn hit_test_cx(cx: &EditorContext, p: Point, tol: f64) -> Vec<ObjectRef> {
             .map(|(r, _)| ObjectRef::Detail(r.id()))
             .collect::<Vec<_>>()
     };
+    out.extend(super::solids_view::pick(cx, p, tol));
     out.extend(tier(details_view::Tier::Above));
     out.extend(wall_hits(floor, p, tol, &visible));
     out.extend(tier(details_view::Tier::Wall));
@@ -647,6 +680,12 @@ pub fn extra_in_rect(cx: &EditorContext, lo: Point, hi: Point, crossing: bool) -
     }
     for r in details_view::in_rect(cx, lo, hi, crossing) {
         let o = ObjectRef::Detail(r.id());
+        if usable(o) {
+            out.push(o);
+        }
+    }
+    // Compound 3D solids (the results of Union, Subtract and Intersect).
+    for o in super::solids_view::in_rect(cx, lo, hi, crossing) {
         if usable(o) {
             out.push(o);
         }
@@ -793,7 +832,20 @@ pub fn expand_groups(cx: &EditorContext, items: &[ObjectRef]) -> Vec<ObjectRef> 
     let floor = cx.floor();
     let mut out: Vec<ObjectRef> = Vec::new();
     for o in items {
+        // A member of an architectural block selects the whole block.
+        let block = crate::tools::arch_block::block_members_of(floor, *o);
+        // A segment of a dimension string selects the whole string.
+        let strand: Vec<ObjectRef> = match o {
+            ObjectRef::Dimension(id) => floor
+                .string_members(*id)
+                .into_iter()
+                .map(ObjectRef::Dimension)
+                .collect(),
+            _ => Vec::new(),
+        };
         let members = match o.to_group_ref() {
+            _ if !block.is_empty() => block,
+            _ if strand.len() > 1 => strand,
             Some(g) => floor
                 .group_members_of(g)
                 .into_iter()
@@ -823,7 +875,7 @@ pub fn cad_by_id(floor: &Floor, id: Id) -> Option<&CadObject> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use plan_core::{Project, WallKind};
+    use plan_core::{OpeningKind, Project, WallKind};
 
     fn plan() -> (Project, Id) {
         let mut p = Project::new("t");

@@ -1320,3 +1320,10 @@ Verified: plan-core wall_intersect.rs, wall_profile.rs and wall_reset.rs are wir
 - Hook needed: a shared dialog tab accessor (`tab_names()` exists only on details/foundation dialogs); `assert_dialog_tabs` only asserts that the dialog opens and cancels cleanly.
 - Hook needed: a headless `Action::SaveCopy` (APP-93) for the Make a Copy step of every lesson.
 - Lesson 6 half-wall / railing / porch steps and the wall-type ids (layer fill, Role; the audit gives no single id) are not yet driven; the ignore tag uses the label `wall-type-layers`.
+
+## Tutorial replays B (lessons 15 to 28, round 16 brief 35)
+- Hook needed: headless access to Cabinet Shelf Specification, Make Architectural Block (CB-427) and Sticky Mode (S-137) to finish lessons 15, 16, 19 and 25.
+- Hook needed: Terrain Specification Absolute Elevation / Reference Point (CB-530) and Change Line/Arc (CAD-22) for lessons 23 and 25; curb cuts, flare and Auto Generate Sidewalks (CB-628..CB-630) for lesson 24.
+- Hook needed: layout grid-unit snap, concentric border copy, `%layout.*%` macros, revision and page tables (L-189, L-193, L-195, L-230, L-231, L-236) for lesson 27; Plot Lines / callout page link / too-large warning (L-155, L-229, L-232) for lesson 28.
+- Lesson 26's `assign_template_per_page` already holds the first half of the real replay (template assignment sticks); it stays ignored until the template's boxes can be asserted to repeat (L-190).
+- The tutorials_support.rs `tutorial_replays_ignored_by_lesson` lister covers lessons 1 to 14; `tutorials_b/mod.rs` has its own for 15 to 28.

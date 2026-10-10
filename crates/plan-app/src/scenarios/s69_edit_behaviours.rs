@@ -620,3 +620,97 @@ fn alt_on_a_click_chains_just_that_segment_on() {
     sim.click(60.0, 60.0);
     assert_eq!(sim.app.cx.floor().cad.len(), 2, "the line chained on");
 }
+
+/// All the text the Preferences window drew for `page`.
+fn prefs_page_text(sim: &mut Sim, page: crate::dialogs::preferences::Page) -> String {
+    use crate::dialogs::preferences;
+    let ctx = eframe::egui::Context::default();
+    let mut settings = crate::theme::AppSettings::default();
+    let mut actions = Vec::new();
+    preferences::open(page);
+    // The window is laid out invisibly on its first frame; read the second.
+    let mut out = Default::default();
+    for _ in 0..3 {
+        out = ctx.run(eframe::egui::RawInput::default(), |ctx| {
+            preferences::show_all(ctx, &mut sim.app.cx, &mut settings, &mut actions);
+        });
+    }
+    let mut text = String::new();
+    for s in &out.shapes {
+        if let eframe::egui::Shape::Text(t) = &s.shape {
+            text.push_str(t.galley.text());
+            text.push('\n');
+        }
+    }
+    text
+}
+
+#[test]
+fn preferences_behaviors_and_snap_pages_show_the_edit_behavior_fields() {
+    use crate::dialogs::preferences::Page;
+    let mut sim = Sim::new();
+    let b = prefs_page_text(&mut sim, Page::Behaviors);
+    for want in [
+        "Primary Movement Method",
+        "Stop When Connected",
+        "Concentric Jump",
+        "Behavior Indicators",
+    ] {
+        assert!(b.contains(want), "Behaviors page lacks {want}: {b}");
+    }
+    assert!(!b.contains("locks the move to one axis"), "retired option");
+    let s = prefs_page_text(&mut sim, Page::Snaps);
+    // The window clips below Shift Restricts To; the rows under it are not drawn.
+    assert!(
+        s.contains("Shift Restricts To"),
+        "Snap page lacks Shift Restricts To: {s}"
+    );
+}
+
+/// How many shapes `f` paints.
+fn painted(f: impl Fn(&eframe::egui::Painter)) -> usize {
+    let ctx = eframe::egui::Context::default();
+    let mut n = 0;
+    let out = ctx.run(eframe::egui::RawInput::default(), |ctx| {
+        let p = ctx.layer_painter(eframe::egui::LayerId::background());
+        f(&p);
+    });
+    for s in &out.shapes {
+        let _ = s;
+        n += 1;
+    }
+    n
+}
+
+#[test]
+fn the_angle_snap_grid_draws_hatch_marks_and_the_anchors_draw_markers() {
+    let mut sim = Sim::new();
+    let cam = crate::editor::Camera::default_view();
+    snap::clear_anchors();
+    // Off: nothing. On: rays plus hatch marks along them.
+    let none = painted(|p| snap::draw_angle_rays(p, &cam, &sim.app.cx, p_(0.0, 0.0)));
+    assert_eq!(none, 0);
+    sim.app.cx.defaults.editing.angle_snap_grid = true;
+    let rays = painted(|p| snap::draw_angle_rays(p, &cam, &sim.app.cx, p_(0.0, 0.0)));
+    assert!(rays > 0);
+    sim.app.cx.defaults.editing.snap_extension = true;
+    // No anchors, no markers; one anchor, one marker.
+    assert_eq!(
+        painted(|p| snap::draw_anchor_markers(p, &cam, &sim.app.cx)),
+        0
+    );
+    snap::note_hover(
+        &snap::SnapResult {
+            point: p_(10.0, 10.0),
+            kind: SnapKind::Endpoint,
+            source: None,
+        },
+        6,
+    );
+    assert!(painted(|p| snap::draw_anchor_markers(p, &cam, &sim.app.cx)) > 0);
+    snap::clear_anchors();
+}
+
+fn p_(x: f64, y: f64) -> Point {
+    Point::new(x, y)
+}

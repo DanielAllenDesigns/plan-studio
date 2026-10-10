@@ -122,18 +122,62 @@ pub fn layer_combo(
     current: &str,
     width: f32,
 ) -> Option<String> {
+    names_combo(
+        ui,
+        salt,
+        current,
+        cx.project.layers.layers.iter().map(|l| l.name.as_str()),
+        width,
+    )
+}
+
+/// The same drop-down over layer names a dialog already holds (the object
+/// dialogs are built without the editor context).
+pub fn names_combo<'a>(
+    ui: &mut egui::Ui,
+    salt: impl std::hash::Hash,
+    current: &str,
+    names: impl IntoIterator<Item = &'a str>,
+    width: f32,
+) -> Option<String> {
     let mut pick = None;
     egui::ComboBox::from_id_salt(salt)
         .selected_text(current.to_string())
         .width(width)
         .show_ui(ui, |ui| {
-            for l in &cx.project.layers.layers {
-                if ui.selectable_label(l.name == current, &l.name).clicked() {
-                    pick = Some(l.name.clone());
+            for name in names {
+                if ui.selectable_label(name == current, name).clicked() {
+                    pick = Some(name.to_string());
                 }
             }
         });
     pick
+}
+
+/// The Layer panel of an object dialog: the layer drop-down and the Define
+/// button that opens Layer Display Options. Writes the pick into `value`;
+/// returns true when it changed.
+pub fn layer_field<'a>(
+    ui: &mut egui::Ui,
+    salt: impl std::hash::Hash,
+    value: &mut String,
+    names: impl IntoIterator<Item = &'a str>,
+) -> bool {
+    let pick = names_combo(ui, salt, value, names, 200.0);
+    if ui
+        .small_button("Define\u{2026}")
+        .on_hover_text("Open Layer Display Options")
+        .clicked()
+    {
+        super::layer_display::open_define();
+    }
+    match pick {
+        Some(p) if p != *value => {
+            *value = p;
+            true
+        }
+        _ => false,
+    }
 }
 
 /// The system default layer of an object (Use Default Layer): the layer its
@@ -153,6 +197,8 @@ pub fn default_layer_of(cx: &EditorContext, o: ObjectRef) -> Option<String> {
         }
         ObjectRef::Cad(_) => Some(layers.tool_layer("cad")),
         ObjectRef::Text(_) => Some(layers.tool_layer("text")),
+        ObjectRef::Cabinet(id) => crate::editor::placed::cabinet_by_id(cx.floor(), id)
+            .map(|c| crate::editor::placed::cabinet_layer(c.kind).to_string()),
         _ => None,
     }
 }
@@ -205,6 +251,14 @@ pub fn send_items_to_default(cx: &mut EditorContext, items: &[ObjectRef], label:
                 if let Some(c) = f.cad.iter_mut().find(|c| c.id == id) {
                     c.layer = layer.clone();
                     n += 1;
+                }
+            }
+            ObjectRef::Cabinet(id) => {
+                if let Some(mut c) = crate::editor::placed::cabinet_by_id(f, id) {
+                    c.layer = None;
+                    if crate::editor::placed::replace_cabinet(&mut cx.project, fl, &c) {
+                        n += 1;
+                    }
                 }
             }
             _ => {}

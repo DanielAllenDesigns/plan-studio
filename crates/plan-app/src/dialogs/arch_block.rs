@@ -298,13 +298,12 @@ impl Form {
         section(ui, "Layer");
         let d = &mut self.draft;
         row(ui, "Layer", |ui| {
-            egui::ComboBox::from_id_salt("block_layer")
-                .selected_text(d.layer.clone())
-                .show_ui(ui, |ui| {
-                    for n in &self.layers {
-                        ui.selectable_value(&mut d.layer, n.clone(), n);
-                    }
-                });
+            super::select_layer::layer_field(
+                ui,
+                "block_layer",
+                &mut d.layer,
+                self.layers.iter().map(String::as_str),
+            );
         });
     }
 

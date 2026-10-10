@@ -34,6 +34,16 @@ pub struct TransformDialog {
     /// Put the mirror line through the center of the selection.
     pub reflect_center: bool,
     pub reflect_at: String,
+    /// Mirror about the line through two points instead of an X or Y line.
+    pub reflect_line: bool,
+    pub line_ax: String,
+    pub line_ay: String,
+    pub line_bx: String,
+    pub line_by: String,
+    /// Move: X, Y is where the selection's center goes, not a distance.
+    pub move_to: bool,
+    /// Move: measure X, Y along the object's own direction, not the plan's.
+    pub move_own_axes: bool,
     /// What the last Apply said.
     pub message: String,
 }
@@ -57,6 +67,13 @@ impl Default for TransformDialog {
             reflect_vertical: true,
             reflect_center: true,
             reflect_at: "0\"".into(),
+            reflect_line: false,
+            line_ax: "0\"".into(),
+            line_ay: "0\"".into(),
+            line_bx: "0\"".into(),
+            line_by: "10'".into(),
+            move_to: false,
+            move_own_axes: false,
             message: String::new(),
         }
     }
@@ -78,7 +95,12 @@ impl TransformDialog {
                     len(&self.reflect_at)
                 }
             };
-            if self.reflect_vertical {
+            if self.reflect_line {
+                ReflectAxis::Line(
+                    Point::new(len(&self.line_ax), len(&self.line_ay)),
+                    Point::new(len(&self.line_bx), len(&self.line_by)),
+                )
+            } else if self.reflect_vertical {
                 ReflectAxis::Vertical(at(center.x))
             } else {
                 ReflectAxis::Horizontal(at(center.y))
@@ -100,6 +122,8 @@ impl TransformDialog {
                 .then(|| Point::new(len(&self.about_x), len(&self.about_y))),
             resize: self.resize_pct / 100.0,
             reflect,
+            move_to: self.move_to && !self.move_polar,
+            move_frame: 0.0,
         }
     }
 
@@ -109,7 +133,10 @@ impl TransformDialog {
             self.message = "Select objects to transform".into();
             return false;
         };
-        let params = self.params(center);
+        let mut params = self.params(center);
+        if self.move_own_axes && !params.move_to {
+            params.move_frame = xf::selection_angle(cx);
+        }
         match xf::transform_replicate(cx, &params) {
             Ok(msg) => {
                 cx.status = msg.clone();
@@ -151,6 +178,17 @@ impl TransformDialog {
                         ui.horizontal(|ui| {
                             ui.radio_value(&mut self.move_polar, false, "X, Y");
                             ui.radio_value(&mut self.move_polar, true, "Distance, angle");
+                        });
+                        ui.end_row();
+                        ui.label("");
+                        ui.horizontal(|ui| {
+                            ui.add_enabled_ui(!self.move_polar, |ui| {
+                                ui.checkbox(&mut self.move_to, "Move center to");
+                                ui.add_enabled(
+                                    !self.move_to,
+                                    egui::Checkbox::new(&mut self.move_own_axes, "Along itself"),
+                                );
+                            });
                         });
                         ui.end_row();
                         ui.label("");
@@ -225,7 +263,21 @@ impl TransformDialog {
                     ui.horizontal(|ui| {
                         ui.radio_value(&mut self.reflect_vertical, true, "About X line");
                         ui.radio_value(&mut self.reflect_vertical, false, "About Y line");
+                        ui.checkbox(&mut self.reflect_line, "About a line");
                     });
+                    if self.reflect_line {
+                        ui.horizontal(|ui| {
+                            for (l, f) in [
+                                ("From X", &mut self.line_ax),
+                                ("Y", &mut self.line_ay),
+                                ("To X", &mut self.line_bx),
+                                ("Y", &mut self.line_by),
+                            ] {
+                                ui.label(l);
+                                ui.add(egui::TextEdit::singleline(f).desired_width(56.0));
+                            }
+                        });
+                    }
                     ui.horizontal(|ui| {
                         ui.checkbox(&mut self.reflect_center, "Through the center");
                         ui.add_enabled(

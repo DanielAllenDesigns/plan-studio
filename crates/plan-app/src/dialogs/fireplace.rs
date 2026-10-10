@@ -592,14 +592,12 @@ impl Form {
     fn layer(&mut self, ui: &mut Ui) {
         section(ui, "Layer");
         row(ui, "Layer", |ui| {
-            egui::ComboBox::from_id_salt("fp_layer")
-                .width(220.0)
-                .selected_text(self.sym.layer.clone())
-                .show_ui(ui, |ui| {
-                    for l in &self.layers {
-                        ui.selectable_value(&mut self.sym.layer, l.clone(), l);
-                    }
-                });
+            super::select_layer::layer_field(
+                ui,
+                "fp_layer",
+                &mut self.sym.layer,
+                self.layers.iter().map(String::as_str),
+            );
         });
     }
 }

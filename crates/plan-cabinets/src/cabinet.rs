@@ -908,6 +908,10 @@ pub struct Cabinet {
     /// and what they gave up (see [`crate::release_joined_top`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub joined: Vec<crate::top::JoinedSource>,
+    /// Layer panel: the layer this cabinet is on; `None` follows the layer
+    /// of its kind ("Cabinets, Base" or "Cabinets, Wall").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layer: Option<String>,
     /// The plan label's offset from its default place, plan inches (the
     /// label's drag handle moves it). The label is drawn on the layer
     /// "Cabinets, Labels".
@@ -1067,6 +1071,7 @@ impl Cabinet {
             indicators: false,
             sides: Vec::new(),
             joined: Vec::new(),
+            layer: None,
             label_offset: Point::ZERO,
             indicators_3d: false,
             preset: None,

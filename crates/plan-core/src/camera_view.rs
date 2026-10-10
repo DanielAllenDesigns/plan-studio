@@ -324,6 +324,9 @@ pub struct CameraView {
     pub clip: SectionClip,
     /// Text, dimensions and CAD drawn on the view, saved with it (C-129).
     pub annotations: Vec<ViewAnnotation>,
+    /// Ids of the annotations Auto Elevation Dimensions made (DIM-61); Elevation
+    /// Auto Refresh replaces them when the model changes (DIM-62).
+    pub auto_elevation: Vec<crate::Id>,
     /// Incremental Move Distance of this camera, inches: one pan, dolly or
     /// keyboard move step (C-121, DECISIONS 41).
     #[serde(default = "default_move_step")]
@@ -422,6 +425,7 @@ impl Default for CameraView {
             ortho: None,
             clip: SectionClip::legacy(),
             annotations: Vec::new(),
+            auto_elevation: Vec::new(),
             move_step: DEFAULT_MOVE_STEP,
             rotate_step: DEFAULT_ROTATE_STEP,
             depth_cue: DepthCue::default(),

@@ -839,10 +839,12 @@ pub struct MaterialsPolyline {
 }
 
 /// Chief's Materials List categories, in the order they are listed.
-pub const CATEGORIES: [&str; 11] = [
+pub const CATEGORIES: [&str; 15] = [
     "Foundation",
     "Framing",
+    "Subfloor",
     "Roofing",
+    "Decks-Walks",
     "Siding",
     "Windows",
     "Doors",
@@ -850,6 +852,8 @@ pub const CATEGORIES: [&str; 11] = [
     "Electrical",
     "Fixtures",
     "Interior Finishes",
+    "Interior Trim",
+    "Exterior Trim",
     "Landscaping",
 ];
 

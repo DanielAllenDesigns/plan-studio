@@ -726,13 +726,12 @@ impl Form {
         let layers = self.layers.clone();
         let layer = self.draft.layer_mut();
         row(ui, "Layer", |ui| {
-            egui::ComboBox::from_id_salt("details_layer")
-                .selected_text(layer.clone())
-                .show_ui(ui, |ui| {
-                    for name in &layers {
-                        ui.selectable_value(layer, name.clone(), name);
-                    }
-                });
+            super::select_layer::layer_field(
+                ui,
+                "details_layer",
+                layer,
+                layers.iter().map(String::as_str),
+            );
         });
     }
 }

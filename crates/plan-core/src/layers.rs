@@ -32,6 +32,10 @@ pub struct Layer {
     /// "Ref" column, LAY-10).
     #[serde(default = "reference_default")]
     pub reference: bool,
+    /// The name this layer had before its first rename (Reset Names puts it
+    /// back); `None` for a layer never renamed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_name: Option<String>,
 }
 
 fn reference_default() -> bool {
@@ -49,6 +53,7 @@ impl Layer {
             text_style: String::new(),
             line_style: LineStyle::Solid,
             reference: true,
+            original_name: None,
         }
     }
 }
@@ -961,6 +966,63 @@ impl crate::model::Project {
         Ok(moved)
     }
 
+    /// Rename (LAY-67): gives a user layer a new name everywhere the plan
+    /// stores it (objects, every layer set, fill and line styles, the Active
+    /// Layer defaults). System layers keep their names because the program
+    /// looks them up by name. Returns the new name.
+    pub fn rename_layer(&mut self, old: &str, new: &str) -> Result<String, String> {
+        let new = new.trim();
+        let Some(at) = self.layers.layers.iter().position(|l| l.name == old) else {
+            return Err(format!("There is no layer named {old}"));
+        };
+        if new.is_empty() {
+            return Err("Type a name for the layer".into());
+        }
+        if new == old {
+            return Ok(old.to_string());
+        }
+        if is_system_layer(old) {
+            return Err(format!("{old} is a system layer and keeps its name"));
+        }
+        if self
+            .layers
+            .layers
+            .iter()
+            .any(|l| l.name.eq_ignore_ascii_case(new) && l.name != old)
+        {
+            return Err(format!("A layer named {new} already exists"));
+        }
+        let layer = &mut self.layers.layers[at];
+        if layer.original_name.is_none() {
+            layer.original_name = Some(old.to_string());
+        }
+        layer.name = new.to_string();
+        for set in &mut self.layer_sets.sets {
+            for s in &mut set.states {
+                if s.layer == old {
+                    s.layer = new.to_string();
+                }
+            }
+            if let Some(r) = set.reference.remove(old) {
+                set.reference.insert(new.to_string(), r);
+            }
+        }
+        use crate::fill_styles::FillTarget;
+        use crate::line_styles::LineTarget;
+        for (t, _) in &mut self.styles.fill_assign {
+            if *t == FillTarget::Layer(old.to_string()) {
+                *t = FillTarget::Layer(new.to_string());
+            }
+        }
+        for (t, _) in &mut self.styles.line_assign {
+            if *t == LineTarget::Layer(old.to_string()) {
+                *t = LineTarget::Layer(new.to_string());
+            }
+        }
+        self.relabel_layers(&[old.to_string()], new);
+        Ok(new.to_string())
+    }
+
     /// Delete (LAY-67): a layer that is not a system layer and is not in use.
     pub fn delete_layer(&mut self, name: &str) -> Result<(), String> {
         if self.layers.get(name).is_none() {
@@ -1011,6 +1073,25 @@ impl crate::model::Project {
         self.layers.ensure_cabinet_label_layer();
         self.layers.ensure_electrical_connection_layer();
         let mut restored = self.layers.layers.len() - before;
+        // A renamed layer goes back to the name it was made with when that
+        // name is free.
+        let renamed: Vec<(String, String)> = self
+            .layers
+            .layers
+            .iter()
+            .filter_map(|l| l.original_name.clone().map(|o| (l.name.clone(), o)))
+            .collect();
+        for (now, original) in renamed {
+            if now != original
+                && self.layers.get(&original).is_none()
+                && self.rename_layer(&now, &original).is_ok()
+            {
+                restored += 1;
+            }
+            if let Some(l) = self.layers.layers.iter_mut().find(|l| l.name == original) {
+                l.original_name = None;
+            }
+        }
         restored += self.ensure_wall_system_layers().len();
         for l in missing.drain(..) {
             if self.layers.add(l) {
@@ -1321,6 +1402,37 @@ mod management_tests {
         b.text_style = "Fancy".into();
         assert!(common_props(&[&a, &b]).unwrap().text_style.is_mixed());
         assert!(!common_props(&[&a]).unwrap().text_style.is_mixed());
+    }
+
+    #[test]
+    fn rename_moves_objects_and_sets_and_reset_names_puts_the_name_back() {
+        let mut p = crate::model::Project::new("r");
+        let name = p.new_layer("Notes").unwrap();
+        let id = p.add_wall(
+            0,
+            crate::geometry::Point::new(0.0, 0.0),
+            crate::geometry::Point::new(96.0, 0.0),
+            4.5,
+            96.0,
+            crate::WallKind::Interior,
+        );
+        p.floors[0].wall_mut(id).unwrap().layer = name.clone();
+        assert!(p.rename_layer(&name, "Doors").is_err());
+        assert!(p.rename_layer("Doors", "Windows").is_err());
+        assert_eq!(p.rename_layer(&name, "Site Notes").unwrap(), "Site Notes");
+        assert_eq!(p.floors[0].wall(id).unwrap().layer, "Site Notes");
+        assert!(p.layers.get(&name).is_none());
+        assert!(p
+            .layer_sets
+            .sets
+            .iter()
+            .all(|s| s.states.iter().all(|st| st.layer != name)));
+        assert!(p.reset_layer_names() >= 1);
+        assert_eq!(p.floors[0].wall(id).unwrap().layer, name);
+        assert!(p
+            .layers
+            .get(&name)
+            .is_some_and(|l| l.original_name.is_none()));
     }
 
     #[test]

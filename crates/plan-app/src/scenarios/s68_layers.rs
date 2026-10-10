@@ -550,3 +550,26 @@ fn new_views_start_with_the_layer_set_chosen_in_layer_set_defaults() {
         "Detail Set"
     );
 }
+
+#[test]
+fn renaming_a_layer_is_one_undo_step_and_a_cabinet_can_leave_its_kind_layer() {
+    let mut sim = sim();
+    let id = wall(&mut sim);
+    let name = ld::new_layer_named(&mut sim.app.cx, "Notes").unwrap();
+    sim.app.cx.send_selection_to_layer(&name);
+    sim.app.cx.selection.items = vec![ObjectRef::Wall(id)];
+    sim.app.cx.send_selection_to_layer(&name);
+    assert_eq!(wall_layer(&sim, id), name);
+    assert!(ld::rename_layer_named(&mut sim.app.cx, "Doors", "Portals").is_err());
+    assert_eq!(
+        ld::rename_layer_named(&mut sim.app.cx, &name, "Site Notes").unwrap(),
+        "Site Notes"
+    );
+    assert_eq!(wall_layer(&sim, id), "Site Notes");
+    sim.app.cx.undo();
+    assert_eq!(wall_layer(&sim, id), name);
+    // The wall system layers draw only when displayed (missing means off).
+    let w = sim.app.cx.floor().wall(id).unwrap().clone();
+    let none = crate::editor::wall_system_lines::lines(&w, |_| false);
+    assert!(none.is_empty());
+}

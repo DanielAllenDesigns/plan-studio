@@ -94,10 +94,13 @@ pub enum RoofMode {
     /// plane, then a wall, line or plane edge.
     MakeParallel,
     MakePerpendicular,
+    /// Set Baseline Height (RF-114) for a plane already drawn: pick the
+    /// plane, answer Over Wall Top or Over the Existing Roof Plane.
+    SetBaseline,
 }
 
 impl RoofMode {
-    const ALL: [RoofMode; 17] = [
+    const ALL: [RoofMode; 18] = [
         RoofMode::Plane,
         RoofMode::Edit,
         RoofMode::EditAll,
@@ -115,6 +118,7 @@ impl RoofMode {
         RoofMode::IntersectionPoint,
         RoofMode::MakeParallel,
         RoofMode::MakePerpendicular,
+        RoofMode::SetBaseline,
     ];
 
     /// Chief's names.
@@ -137,6 +141,7 @@ impl RoofMode {
             RoofMode::IntersectionPoint => "Place Roof Plane Intersection Point",
             RoofMode::MakeParallel => "Make Parallel",
             RoofMode::MakePerpendicular => "Make Perpendicular",
+            RoofMode::SetBaseline => "Set Baseline Height",
         }
     }
 
@@ -185,6 +190,9 @@ impl RoofMode {
             RoofMode::MakePerpendicular => {
                 "Make Perpendicular: click the plane, then a wall, line or plane edge"
             }
+            RoofMode::SetBaseline => {
+                "Set Baseline Height: click a plane whose baseline lies on another roof plane"
+            }
         }
     }
 }
@@ -213,6 +221,9 @@ enum Cmd {
     /// Set Baseline Height OK: the pending plane (baseline, side, plane it
     /// lies on) and where its baseline sits.
     ApplyBaseline(Point, Point, Point, Id, plan_roof::BaselineOver),
+    /// The same answer for a plane already drawn: the plane, the plane
+    /// under its baseline and the choice.
+    EditBaseline(Id, Id, plan_roof::BaselineOver),
 }
 
 /// A plane drawn over an existing one, waiting for the Set Baseline Height
@@ -222,6 +233,8 @@ struct PendingBaseline {
     b: Point,
     toward: Point,
     under: Id,
+    /// The plane being edited by the Set Baseline Height edit button.
+    editing: Option<Id>,
     dialog: BaselineHeightDialog,
 }
 
@@ -395,6 +408,31 @@ impl RoofTool {
                             Some(ReturnDialog::new(self.return_settings()));
                     }
                     None
+                }
+                Cmd::EditBaseline(id, under, choice) => {
+                    let set = load(cx.floor());
+                    let plate = self.plate_elevation(cx, &set);
+                    let fi = cx.floor;
+                    cx.begin_change("Set Baseline Height");
+                    match roof_view::set_baseline_over(
+                        &mut cx.project,
+                        fi,
+                        id,
+                        under,
+                        choice,
+                        plate,
+                    ) {
+                        Ok(lift) => {
+                            cx.mark_dirty();
+                            cx.status = format!("Plane lifted {}", cx.fmt_dim(lift));
+                            Some("Set Baseline Height".to_string())
+                        }
+                        Err(e) => {
+                            cx.cancel_change();
+                            cx.status = format!("Set Baseline Height: {e}");
+                            None
+                        }
+                    }
                 }
                 Cmd::ApplyBaseline(a, b, toward, under, choice) => {
                     self.apply_baseline(cx, (a, b, toward, under), choice)
@@ -576,7 +614,10 @@ impl RoofTool {
                 id,
                 RoofPlaneDialog::new(rec, layers)
                     .with_detail(&settings.detail)
-                    .with_heights(settings.heights.clone()),
+                    .with_heights(settings.heights.clone())
+                    .with_shadow_boards(
+                        super::roof_trim::options(cx.floor()).shadow_boards.enabled,
+                    ),
             ));
         } else if let Some(d) = set.dormer(id) {
             *self.dormer_dialog.borrow_mut() =
@@ -733,6 +774,35 @@ impl RoofTool {
                 }
             };
         }
+        if mode == RoofMode::SetBaseline {
+            let Some(id) = set.plane_at(at).or_else(|| self.first_plane(cx)) else {
+                cx.status = "Set Baseline Height: click a roof plane".into();
+                return None;
+            };
+            self.selected = Some(id);
+            let Some(under) = roof_view::plane_beneath(&set, id) else {
+                cx.status =
+                    "Set Baseline Height: this plane's baseline does not lie on another plane"
+                        .into();
+                return None;
+            };
+            let (Some(rec), Some(below)) = (set.plane(id), set.plane(under)) else {
+                return None;
+            };
+            let a = rec.baseline.0;
+            let plate = self.plate_elevation(cx, &set);
+            let here = below.to_roof_plane(0).height_at(a).unwrap_or(plate);
+            *self.baseline_dialog.borrow_mut() = Some(PendingBaseline {
+                a,
+                b: rec.baseline.1,
+                toward: a,
+                under,
+                editing: Some(id),
+                dialog: BaselineHeightDialog::new(plate, here),
+            });
+            cx.status = "Set Baseline Height: choose where the baseline sits".into();
+            return None;
+        }
         let name = mode.label();
         let Some(first) = self.first_plane(cx) else {
             match set.plane_at(at) {
@@ -814,6 +884,7 @@ impl RoofTool {
                     b,
                     toward,
                     under,
+                    editing: None,
                     dialog: BaselineHeightDialog::new(plate, here),
                 });
                 cx.status = "Set Baseline Height: choose where the baseline sits".into();
@@ -1420,7 +1491,8 @@ impl Tool for RoofTool {
             RoofMode::Coplanar
             | RoofMode::IntersectionPoint
             | RoofMode::MakeParallel
-            | RoofMode::MakePerpendicular => {
+            | RoofMode::MakePerpendicular
+            | RoofMode::SetBaseline => {
                 if let Some(label) = self.pick_click(cx, p.world) {
                     res = ToolResult::committed(label);
                 }
@@ -1898,9 +1970,11 @@ impl RoofTool {
             // OK queues the plane; Cancel leaves the draft for another click.
             let pending = self.baseline_dialog.borrow_mut().take();
             if let (Some(choice), Some(p)) = (done, pending) {
-                self.cmds
-                    .borrow_mut()
-                    .push(Cmd::ApplyBaseline(p.a, p.b, p.toward, p.under, choice));
+                let cmd = match p.editing {
+                    Some(id) => Cmd::EditBaseline(id, p.under, choice),
+                    None => Cmd::ApplyBaseline(p.a, p.b, p.toward, p.under, choice),
+                };
+                self.cmds.borrow_mut().push(cmd);
             }
             ctx.request_repaint();
         }
@@ -3318,6 +3392,65 @@ mod tests {
     }
 
     #[test]
+    fn the_set_baseline_height_edit_button_moves_a_drawn_plane_in_one_undo_step() {
+        let (mut cx, mut t) = set_up_roofed_house();
+        let plate = cx.floor().elevation + 109.0;
+        t.set_mode(RoofMode::Plane);
+        drag(&mut t, &mut cx, (100.0, 100.0), (200.0, 100.0));
+        click(&mut t, &mut cx, 150.0, 160.0);
+        answer_baseline(&mut t, &mut cx, plan_roof::BaselineOver::WallTop);
+        let drawn = planes(&cx)
+            .into_iter()
+            .find(|r| !r.auto)
+            .expect("new plane");
+        assert!((drawn.baseline_height() - plate).abs() < 1e-6);
+        // The edit button hands over to the tool; a click on the plane asks.
+        cx.selection
+            .set(crate::editor::ObjectRef::RoofPlane(drawn.id));
+        assert!(roof_view::run_plane_command(
+            &mut cx,
+            "roof.baseline_height"
+        ));
+        t.set_mode(RoofMode::SetBaseline);
+        click(&mut t, &mut cx, 150.0, 130.0);
+        let asked = t.baseline_dialog.borrow_mut().take().expect("asks");
+        assert_eq!(asked.editing, Some(drawn.id));
+        t.cmds.borrow_mut().push(Cmd::EditBaseline(
+            drawn.id,
+            asked.under,
+            plan_roof::BaselineOver::ExistingPlane,
+        ));
+        let e = PointerEvent::at(&cx, Point::new(1.0, 1.0));
+        t.pointer_move(&mut cx, e);
+        let moved = load(cx.floor()).plane(drawn.id).cloned().expect("plane");
+        assert!(moved.baseline_height() > plate + 1.0, "{}", cx.status);
+        assert_eq!(cx.undo_label(), Some("Set Baseline Height"));
+        cx.undo();
+        let back = load(cx.floor()).plane(drawn.id).cloned().expect("plane");
+        assert!((back.baseline_height() - plate).abs() < 1e-6);
+    }
+
+    #[test]
+    fn an_interior_wall_offers_the_roof_directive_buttons() {
+        let (mut cx, _t) = set_up_roofed_house();
+        cx.project.add_wall(
+            0,
+            Point::new(10.0, 10.0),
+            Point::new(10.0, 90.0),
+            4.5,
+            96.0,
+            WallKind::Interior,
+        );
+        let id = cx.floor().walls.last().expect("wall").id;
+        cx.selection.set(crate::editor::ObjectRef::Wall(id));
+        let labels: Vec<String> = roof_view::wall_edit_actions(&cx)
+            .into_iter()
+            .map(|a| a.label.to_string())
+            .collect();
+        assert!(labels.iter().any(|l| l == "Full Gable Wall"), "{labels:?}");
+    }
+
+    #[test]
     fn cancelling_set_baseline_height_makes_nothing() {
         let (mut cx, mut t) = set_up_roofed_house();
         t.set_mode(RoofMode::Plane);
@@ -3527,6 +3660,7 @@ mod tests {
             "Make Perpendicular",
             "Display on Floor Above",
             "Display on Floor Below",
+            "Set Baseline Height",
         ] {
             assert!(labels.iter().any(|l| l == want), "{want} in {labels:?}");
         }

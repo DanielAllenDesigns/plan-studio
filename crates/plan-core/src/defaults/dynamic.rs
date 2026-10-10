@@ -341,6 +341,58 @@ impl Project {
         self.saved_defaults.follow.clear_object(wall_id);
         Some(kind)
     }
+
+    /// Reset to Defaults for walls (W-121, manual pp. 118-119): the walls in
+    /// `ids` on `floor` (every wall of the floor when `ids` is empty) take
+    /// the wall type, thickness and height of their kind's defaults again
+    /// and go back to Use Default. Walls without a defaults dialog (railing,
+    /// pony, glass) are left alone. Returns how many walls changed.
+    pub fn reset_walls_to_defaults(
+        &mut self,
+        d: &PlanDefaults,
+        floor: usize,
+        ids: &[u64],
+    ) -> usize {
+        let Some(f) = self.floors.get(floor) else {
+            return 0;
+        };
+        let targets: Vec<u64> = f
+            .walls
+            .iter()
+            .filter(|w| ids.is_empty() || ids.contains(&w.id))
+            .map(|w| w.id)
+            .collect();
+        let mut changed = 0;
+        for id in targets {
+            let Some(w) = self.floors[floor].wall(id).cloned() else {
+                continue;
+            };
+            let Some((_, wd, fallback)) = wall_defaults_of(d, &w.class, w.kind) else {
+                continue;
+            };
+            if let Some(def) = d.wall_type(&wd.wall_type).cloned() {
+                if self.wall_type_def(&wd.wall_type).is_none() {
+                    self.register_wall_type(def);
+                }
+            }
+            let typed = d.wall_type(&wd.wall_type).is_some();
+            let thickness = d.thickness_of(wd, fallback);
+            let Some(m) = self.floors[floor].wall_mut(id) else {
+                continue;
+            };
+            let before = (m.wall_type.clone(), m.thickness, m.height);
+            if typed {
+                m.wall_type = Some(wd.wall_type.clone());
+            }
+            m.thickness = thickness;
+            m.height = wd.height;
+            if before != (m.wall_type.clone(), m.thickness, m.height) {
+                changed += 1;
+            }
+            self.saved_defaults.follow.clear_object(id);
+        }
+        changed
+    }
 }
 
 /// The id of a door or window group in the reference tables.

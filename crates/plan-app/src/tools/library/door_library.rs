@@ -31,6 +31,61 @@ pub struct DoorEntry {
     /// The folder under "Doors and Doorways" ("Interior Doors", "Exterior
     /// Doors", "Garage", "Entryways"...), empty when there is none.
     pub folder: String,
+    /// The door type the symbol's Options panel sets, read from its name and
+    /// keywords (DOORLIB-4); `None` when the catalog says nothing, so the
+    /// dialog's Door Type stands.
+    pub door_type: Option<OpeningStyle>,
+}
+
+/// The door type a catalog door names in its name or keywords (Bi-Fold,
+/// Pocket, Barn, Sliding, Overhead or Garage, Double Door, Hinged or Swing).
+/// The catalog's own `type_code` is not decoded, so this is the only reading
+/// of the symbol's Options-panel door type that is safe.
+pub fn door_type_hint(name: &str, keywords: &[String]) -> Option<OpeningStyle> {
+    let text = format!("{name} {}", keywords.join(" ")).to_lowercase();
+    let has = |w: &str| text.contains(w);
+    if has("bi-fold") || has("bifold") || has("bi fold") {
+        Some(OpeningStyle::Bifold)
+    } else if has("pocket") {
+        Some(OpeningStyle::Pocket)
+    } else if has("barn") {
+        Some(OpeningStyle::Barn)
+    } else if has("slider") || has("sliding") {
+        Some(OpeningStyle::Sliding)
+    } else if has("overhead") || has("garage") {
+        Some(OpeningStyle::Garage)
+    } else if has("double door") {
+        Some(OpeningStyle::DoubleDoor)
+    } else if has("hinged") || has("swing") {
+        Some(OpeningStyle::Hinged)
+    } else {
+        None
+    }
+}
+
+thread_local! {
+    static LAST_FOLDER: RefCell<String> = const { RefCell::new(String::new()) };
+}
+
+/// The folder Select Library Object was last used in (empty: all folders).
+pub fn last_folder() -> String {
+    LAST_FOLDER.with(|f| f.borrow().clone())
+}
+
+/// Remembers `folder` as the picker's last folder.
+pub fn set_last_folder(folder: &str) {
+    LAST_FOLDER.with(|f| *f.borrow_mut() = folder.to_string());
+}
+
+/// The entries in `folder` (empty: every folder) whose name contains `search`
+/// (case-insensitive).
+pub fn filtered<'a>(entries: &'a [DoorEntry], folder: &str, search: &str) -> Vec<&'a DoorEntry> {
+    let s = search.trim().to_lowercase();
+    entries
+        .iter()
+        .filter(|e| folder.is_empty() || e.folder == folder)
+        .filter(|e| s.is_empty() || e.name.to_lowercase().contains(&s))
+        .collect()
 }
 
 fn has_step(path: &[String], step: &str) -> bool {
@@ -75,6 +130,7 @@ pub fn from_items<'a>(
             name: i.name.clone(),
             source: source.to_string(),
             folder: folder_of(&i.category),
+            door_type: door_type_hint(&i.name, &i.tags),
         })
         .collect();
     out.sort_by_key(|e| (e.folder.to_lowercase(), e.name.to_lowercase()));
@@ -119,6 +175,7 @@ pub fn chief_doors() -> Vec<DoorEntry> {
                     name: o.name.clone(),
                     source: entry.name.clone(),
                     folder: folder_of(&o.category_path),
+                    door_type: door_type_hint(&o.name, &o.keywords),
                 });
             }
         }
@@ -181,6 +238,10 @@ pub fn choose(entry: &DoorEntry, o: &mut Opening) {
         name: entry.name.clone(),
     });
     o.extras.style_name = Some(entry.name.clone());
+    // The symbol's own door type wins over the dialog's (DOORLIB-4).
+    if let Some(t) = entry.door_type {
+        o.style = t;
+    }
 }
 
 // ----- 3D -----
@@ -355,11 +416,74 @@ mod tests {
                 name: "Colonial".into(),
                 source: "T".into(),
                 folder: String::new(),
+                door_type: None,
             },
             &mut o,
         );
         assert!(o.extras.spec.is_library_door());
         assert_eq!(o.extras.style_name.as_deref(), Some("Colonial"));
+    }
+
+    fn entry(name: &str, folder: &str, door_type: Option<OpeningStyle>) -> DoorEntry {
+        DoorEntry {
+            id: format!("chief.t.{name}"),
+            name: name.into(),
+            source: "T".into(),
+            folder: folder.into(),
+            door_type,
+        }
+    }
+
+    #[test]
+    fn the_door_type_comes_from_the_symbol_name_or_keywords_else_the_dialog_keeps_its_own() {
+        let kw = |k: &[&str]| k.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            door_type_hint("Bifold 4 Panel", &[]),
+            Some(OpeningStyle::Bifold)
+        );
+        assert_eq!(
+            door_type_hint("Plain Slab", &kw(&["Pocket"])),
+            Some(OpeningStyle::Pocket)
+        );
+        assert_eq!(door_type_hint("Barn Door", &[]), Some(OpeningStyle::Barn));
+        assert_eq!(door_type_hint("Six Panel", &kw(&["interior"])), None);
+        let mut o = Opening::default_door(1, 1, 50.0);
+        o.style = OpeningStyle::Sliding;
+        choose(&entry("Six Panel", "Panel", None), &mut o);
+        assert_eq!(o.style, OpeningStyle::Sliding, "no hint: Door Type stands");
+        choose(
+            &entry("Pocket Slab", "Slab", Some(OpeningStyle::Pocket)),
+            &mut o,
+        );
+        assert_eq!(o.style, OpeningStyle::Pocket);
+        // The type is read when the catalog items are listed.
+        let items = [item(
+            "p",
+            "Pocket Panel",
+            &["Architectural", CATEGORY, "Panel"],
+        )];
+        assert_eq!(
+            from_items(items.iter(), "T")[0].door_type,
+            Some(OpeningStyle::Pocket)
+        );
+    }
+
+    #[test]
+    fn the_picker_remembers_its_last_folder_and_searches_by_name() {
+        let all = vec![
+            entry("Six Panel", "Panel", None),
+            entry("Flush", "Slab", None),
+            entry("Four Panel", "Panel", None),
+        ];
+        set_last_folder("");
+        assert_eq!(last_folder(), "");
+        set_last_folder("Panel");
+        assert_eq!(last_folder(), "Panel");
+        assert_eq!(filtered(&all, &last_folder(), "").len(), 2);
+        assert_eq!(filtered(&all, "", "FLU").len(), 1);
+        assert_eq!(filtered(&all, "Panel", "four")[0].name, "Four Panel");
+        assert!(filtered(&all, "Slab", "panel").is_empty());
+        set_last_folder("");
     }
 
     /// Needs Daniel's installed Chief catalogs. Run with:

@@ -1719,9 +1719,29 @@ impl CabinetForm {
     fn layer(&mut self, ui: &mut Ui) {
         section(ui, "Layer");
         row(ui, "Layer", |ui| {
-            dis_combo(ui, "cab_layer", cabinet_layer(self.draft.kind));
+            let kind_layer = cabinet_layer(self.draft.kind);
+            let mut own = self.draft.layer.is_some();
+            if ui.checkbox(&mut !own, "Default").changed() {
+                own = !own;
+                self.draft.layer = own.then(|| kind_layer.to_string());
+            }
+            ui.add_enabled_ui(own, |ui| {
+                let mut shown = self
+                    .draft
+                    .layer
+                    .clone()
+                    .unwrap_or_else(|| kind_layer.to_string());
+                if super::select_layer::layer_field(
+                    ui,
+                    "cab_layer",
+                    &mut shown,
+                    ["Cabinets, Base", "Cabinets, Wall"],
+                ) {
+                    self.draft.layer = Some(shown);
+                }
+            });
         });
-        ui.weak("Cabinets sit on the layer of their type.");
+        ui.weak("Default puts the cabinet on the layer of its type.");
     }
 
     fn materials(&mut self, ui: &mut Ui) {

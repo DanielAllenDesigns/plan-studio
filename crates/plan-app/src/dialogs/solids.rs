@@ -426,13 +426,12 @@ fn compound_general(
             });
     });
     row(ui, "Layer", |ui| {
-        egui::ComboBox::from_id_salt("compound_layer")
-            .selected_text(c.layer.clone())
-            .show_ui(ui, |ui| {
-                for n in layers {
-                    ui.selectable_value(&mut c.layer, n.clone(), n);
-                }
-            });
+        super::select_layer::layer_field(
+            ui,
+            "compound_layer",
+            &mut c.layer,
+            layers.iter().map(String::as_str),
+        );
     });
     row(ui, "Elevations measured", |ui| {
         egui::ComboBox::from_id_salt("compound_elev_ref")

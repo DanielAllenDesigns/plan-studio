@@ -596,3 +596,124 @@ fn add_break_and_make_parallel_work_from_the_edit_buttons_of_a_selected_section(
     sim.app.cx.selection.items.clear();
     assert!(!labels(&sim).contains(&"Add Break"));
 }
+
+// ---- R17-01: annotation tools in the section view ----
+
+use crate::tools::cad::CadMode;
+use crate::tools::dimension::DimMode;
+use crate::tools::text::TextMode;
+use crate::tools::{KeyEvent, ToolId};
+
+fn annotating(sim: &mut Sim, id: Id) {
+    sim.app.cx.defaults.grid.snap = 0.0;
+    sim.app.tools.set_drawing_view(&mut sim.app.cx, Some(id));
+}
+
+fn count(sim: &Sim, id: Id) -> usize {
+    camera(sim, id).view.annotations.len()
+}
+
+#[test]
+fn text_dimension_and_cad_line_are_written_into_the_section_view() {
+    let mut sim = Sim::new();
+    draw_shell(&mut sim, W, H);
+    let id = section(&mut sim);
+    annotating(&mut sim, id);
+    let walls = sim.floor_walls();
+    // Text: click, type, Enter -> one annotation, one undo step.
+    sim.tool(ToolId::TextVariant(TextMode::Text));
+    sim.click(-30.0, 90.0);
+    assert_eq!(count(&sim, id), 0, "the words are still being typed");
+    sim.key(KeyEvent::text("FIELD VERIFY"));
+    sim.key(KeyEvent::key(eframe::egui::Key::Enter));
+    assert_eq!(count(&sim, id), 1);
+    assert!(matches!(
+        &camera(&sim, id).view.annotations[0].kind,
+        AnnotKind::Text { text, .. } if text == "FIELD VERIFY"
+    ));
+    // Dimension: two points, then the line.
+    sim.tool(ToolId::DimensionVariant(DimMode::Manual));
+    sim.click(-40.0, 20.0);
+    sim.click(40.0, 20.0);
+    sim.click(0.0, 32.0);
+    assert_eq!(count(&sim, id), 2);
+    let dim = camera(&sim, id).view.annotations[1].clone();
+    assert_eq!(dim.kind.dimension_value().map(|v| v.round()), Some(80.0));
+    // CAD line.
+    sim.tool(ToolId::CadVariant(CadMode::Line));
+    sim.click(-20.0, 10.0);
+    sim.click(20.0, 10.0);
+    assert_eq!(count(&sim, id), 3);
+    assert_eq!(sim.floor_walls(), walls, "the plan is untouched");
+    assert!(sim.app.cx.project.floors[0].dimensions.is_empty());
+    // Select Objects drags the dimension's end handle: one undo step.
+    sim.tool(ToolId::Select);
+    sim.drag((40.0, 20.0), (52.0, 20.0));
+    match &camera(&sim, id).view.annotations[1].kind {
+        AnnotKind::Dimension { b, .. } => assert!((b[0] - 52.0).abs() < 1e-6, "{b:?}"),
+        k => panic!("{k:?}"),
+    }
+    sim.undo();
+    assert_eq!(
+        camera(&sim, id).view.annotations[1],
+        dim,
+        "handle drag undone"
+    );
+    // The annotations reach the drawing, the layout and a saved plan.
+    let json = sim.app.cx.project.to_json().unwrap();
+    let back = plan_core::Project::from_json(&json).unwrap();
+    assert_eq!(back.camera(id).unwrap().view.annotations.len(), 3);
+    let drawing = camera_drawing(&back, id).expect("a drawing");
+    assert!(drawing.texts.iter().any(|(_, t)| t == "FIELD VERIFY"));
+    let layer = crate::dialogs::camera::annotation_layer(back.camera(id).unwrap());
+    assert!(layer.texts.iter().any(|(_, t)| t == "FIELD VERIFY"));
+    let mut layout = plan_layout::Layout::new("L", plan_docs::SheetSize::ArchC);
+    crate::dialogs::camera::send_camera_to_layout(&mut layout, &back, id, 1).expect("a box");
+    // Undo each placement, newest first.
+    sim.undo();
+    assert_eq!(count(&sim, id), 2);
+    sim.undo();
+    assert_eq!(count(&sim, id), 1);
+    sim.undo();
+    assert_eq!(count(&sim, id), 0);
+}
+
+#[test]
+fn auto_elevation_dimensions_follow_the_model_with_auto_refresh() {
+    let mut sim = Sim::new();
+    draw_shell(&mut sim, W, H);
+    let id = section(&mut sim);
+    annotating(&mut sim, id);
+    sim.app.cx.defaults.dimensions.setup.elevation_overall = true;
+    sim.app.cx.defaults.dimensions.setup.elevation_auto_refresh = true;
+    sim.tool(ToolId::DimensionVariant(DimMode::AutoElevation));
+    sim.click(0.0, 0.0);
+    let c = camera(&sim, id);
+    assert!(
+        !c.view.auto_elevation.is_empty(),
+        "levels found in the view"
+    );
+    let total = |sim: &Sim| -> f64 {
+        let c = camera(sim, id);
+        c.view
+            .annotations
+            .iter()
+            .filter(|a| c.view.auto_elevation.contains(&a.id))
+            .filter_map(|a| a.kind.dimension_value())
+            .fold(0.0_f64, f64::max)
+    };
+    let before = total(&sim);
+    assert!(before > 50.0, "{before}");
+    // One undo step removes the strings.
+    sim.undo();
+    assert!(camera(&sim, id).view.auto_elevation.is_empty());
+    sim.redo();
+    // Raise every wall by a foot: Elevation Auto Refresh replaces the strings.
+    sim.app.cx.begin_change("Raise Walls");
+    for w in &mut sim.app.cx.project.floors[0].walls {
+        w.height += 12.0;
+    }
+    sim.app.cx.refresh();
+    let after = total(&sim);
+    assert!((after - before - 12.0).abs() < 0.6, "{before} -> {after}");
+}

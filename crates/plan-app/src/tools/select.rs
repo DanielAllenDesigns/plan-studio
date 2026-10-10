@@ -267,6 +267,12 @@ pub const MARQUEE_TOUCHING: &str = "select.marquee.touching";
 pub const EDIT_AREA: &str = "select.area.edit";
 pub const EDIT_AREA_VISIBLE: &str = "select.area.visible";
 pub const STRETCH_CAD: &str = "select.area.stretch_cad";
+pub const EDIT_AREA_ALL: &str = "select.area.all_floors";
+pub const EDIT_AREA_ALL_VISIBLE: &str = "select.area.all_floors_visible";
+pub const EDIT_AREA_INCLUDING: &str = "select.area.including";
+pub const EDIT_AREA_VISIBLE_INCLUDING: &str = "select.area.visible_including";
+pub const EDIT_AREA_ALL_INCLUDING: &str = "select.area.all_floors_including";
+pub const EDIT_AREA_ALL_VISIBLE_INCLUDING: &str = "select.area.all_floors_visible_including";
 
 thread_local! {
     static MARQUEE: std::cell::Cell<MarqueeMode> =
@@ -355,6 +361,19 @@ pub fn run_command(cx: &mut EditorContext, id: &str) -> bool {
         }
         STRETCH_CAD => {
             area::begin(cx, area::AreaKind::StretchCad);
+            return true;
+        }
+        // (visible only, all floors, moves the marquee polyline too)
+        EDIT_AREA_ALL
+        | EDIT_AREA_ALL_VISIBLE
+        | EDIT_AREA_INCLUDING
+        | EDIT_AREA_VISIBLE_INCLUDING
+        | EDIT_AREA_ALL_INCLUDING
+        | EDIT_AREA_ALL_VISIBLE_INCLUDING => {
+            let visible_only = id.contains("visible");
+            let all = id.contains("all_floors");
+            let including = id.ends_with("including");
+            area::begin_with(cx, area::AreaKind::Edit { visible_only }, all, including);
             return true;
         }
         _ => {}
@@ -1471,7 +1490,12 @@ impl SelectTool {
         // Chief auto-connects a wall whose end or body was dragged near other
         // walls (W-31..W-36); run inside the drag's own undo step.
         if let Op::WallEnd(id, _) | Op::WallMove(id) = a.op {
+            let rooms_before = wall_edit::room_count(cx);
             crate::editor::connect::auto_connect(cx, id);
+            if matches!(a.op, Op::WallEnd(..)) {
+                wall_edit::merge_collinear_at(cx, id);
+            }
+            wall_edit::auto_reverse_if_closed(cx, id, rooms_before);
             // Joining may have moved the wall again: trim follows it.
             details_view::follow_walls(&mut cx.project, fl, &a.original.floors[fl].walls);
         }

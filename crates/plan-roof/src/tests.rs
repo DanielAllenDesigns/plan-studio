@@ -496,6 +496,7 @@ fn plane_8_12() -> PlaneHeights {
         thickness: 6.0,
         plate_top: 100.0,
         plate_width: 4.5,
+        shadow_rise: 0.0,
     }
 }
 
@@ -757,4 +758,18 @@ fn a_baseline_snaps_to_the_outside_of_a_parallel_wall() {
     assert_eq!(snap_to_wall_surface(far.0, far.1, &[wall]), far);
     let skew = (Point::new(10.0, 2.0), Point::new(300.0, 100.0));
     assert_eq!(snap_to_wall_surface(skew.0, skew.1, &[wall]), skew);
+}
+
+#[test]
+fn the_shadow_board_top_rides_on_the_fascia_and_pivots_with_it() {
+    let mut h = plane_8_12();
+    h.shadow_rise = 1.5;
+    assert!((h.shadow_board_top() - (h.fascia_top() + 1.5)).abs() < 1e-9);
+    // Typing a shadow board top moves the plane with its pitch kept.
+    let up = h.with_height(HeightLock::ShadowBoardTop, h.shadow_board_top() + 6.0);
+    assert!((up.shadow_board_top() - (h.shadow_board_top() + 6.0)).abs() < 1e-9);
+    assert!((up.pitch - h.pitch).abs() < 1e-9);
+    // Locked, a pitch change leaves the shadow board top where it was.
+    let steeper = h.with_pitch(12.0, HeightLock::ShadowBoardTop, true);
+    assert!((steeper.shadow_board_top() - h.shadow_board_top()).abs() < 1e-9);
 }

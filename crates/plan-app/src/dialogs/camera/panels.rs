@@ -477,14 +477,12 @@ impl CameraDialog {
         };
         let l = &mut self.draft.view.layer;
         row(ui, "Layer", |ui| {
-            egui::ComboBox::from_id_salt("camera_layer")
-                .selected_text(l.layer.clone())
-                .width(220.0)
-                .show_ui(ui, |ui| {
-                    for n in &names {
-                        ui.selectable_value(&mut l.layer, n.clone(), n);
-                    }
-                })
+            crate::dialogs::select_layer::layer_field(
+                ui,
+                "camera_layer",
+                &mut l.layer,
+                names.iter().map(String::as_str),
+            );
         });
         section(ui, "Drawing Group");
         let mut own = l.drawing_group.is_some();

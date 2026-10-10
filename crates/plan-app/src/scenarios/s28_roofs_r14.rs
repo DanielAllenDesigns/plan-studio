@@ -105,7 +105,7 @@ fn one_click_on_a_wall_sets_its_roof_directive_and_the_roof_follows() {
 }
 
 #[test]
-fn the_roof_directives_are_only_offered_for_a_selection_of_exterior_walls() {
+fn the_roof_directives_are_offered_for_a_selection_of_walls_not_for_nothing() {
     let mut sim = house();
     sim.app.cx.selection.clear();
     let none = sim.app.cx.extra_edit_actions().iter().any(
@@ -119,7 +119,9 @@ fn the_roof_directives_are_only_offered_for_a_selection_of_exterior_walls() {
     interior.drag((0.0, 0.0), (200.0, 1.0));
     let id = interior.app.cx.floor().walls[0].id;
     interior.app.cx.selection.set(ObjectRef::Wall(id));
-    assert!(!interior.app.cx.extra_edit_actions().iter().any(
+    // R17-07 (DECISIONS RH6): Half Walls, Railings and interior Knee Walls
+    // take a directive too.
+    assert!(interior.app.cx.extra_edit_actions().iter().any(
         |a| matches!(a.kind, EditActionKind::Custom { id, .. } if id.starts_with("roof.wall."))
     ));
 }

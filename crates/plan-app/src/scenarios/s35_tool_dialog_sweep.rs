@@ -607,7 +607,8 @@ fn role(id: ToolId) -> Role {
             RoofMode::Coplanar
             | RoofMode::IntersectionPoint
             | RoofMode::MakeParallel
-            | RoofMode::MakePerpendicular => {
+            | RoofMode::MakePerpendicular
+            | RoofMode::SetBaseline => {
                 NoObject("modifier: places a roof plane against another object")
             }
         },

@@ -446,6 +446,10 @@ fn id_prefix(category: &str) -> &'static str {
         "Electrical" => "EL",
         "Fixtures" => "FX",
         "Interior Finishes" => "INT",
+        "Interior Trim" => "ITR",
+        "Exterior Trim" => "ETR",
+        "Subfloor" => "SUB",
+        "Decks-Walks" => "DW",
         "Landscaping" => "LS",
         _ => "MISC",
     }

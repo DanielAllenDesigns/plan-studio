@@ -47,6 +47,7 @@ pub mod ids {
     pub const REFLECT_COPY: &str = "edit.reflect_copy";
     pub const POINT_TO_POINT: &str = "edit.point_to_point";
     pub const CENTER: &str = "edit.center";
+    pub const POINT_TO_POINT_CENTER: &str = "edit.point_to_point_center";
     pub const PARALLEL: &str = "edit.parallel";
     pub const PERPENDICULAR: &str = "edit.perpendicular";
     pub const DISTRIBUTE_H: &str = "edit.distribute.h";
@@ -495,6 +496,16 @@ impl EditorContext {
                         n += 1;
                     }
                 }
+                ObjectRef::Cabinet(id) => {
+                    if let Some(mut c) =
+                        crate::editor::placed::cabinet_by_id(&self.project.floors[fl], id)
+                    {
+                        c.layer = Some(layer.to_string());
+                        if crate::editor::placed::replace_cabinet(&mut self.project, fl, &c) {
+                            n += 1;
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -609,6 +620,15 @@ impl EditorContext {
         v.push(custom_button(ids::REFLECT, "Reflect About Object"));
         v.push(custom_button(ids::POINT_TO_POINT, "Point to Point Move"));
         v.push(custom_button(ids::CENTER, "Center Object"));
+        v.push(custom_button(
+            ids::POINT_TO_POINT_CENTER,
+            "Point to Point Center",
+        ));
+        // Chief orders the group Transform, Reflect, Point to Point Move,
+        // Center Object, Align/Distribute, then the line tools.
+        if self.selection.len() >= 2 {
+            v.push(custom_button(ids::ALIGN_DIALOG, "Align/Distribute"));
+        }
         let straight = self.selection.items.iter().any(|o| match o {
             ObjectRef::Wall(_) => true,
             ObjectRef::Cad(id) | ObjectRef::Text(id) => self
@@ -621,9 +641,6 @@ impl EditorContext {
         if straight {
             v.push(custom_button(ids::PARALLEL, "Make Parallel"));
             v.push(custom_button(ids::PERPENDICULAR, "Make Perpendicular"));
-        }
-        if self.selection.len() >= 2 {
-            v.push(custom_button(ids::ALIGN_DIALOG, "Align/Distribute"));
         }
         v.push(custom_button(ids::LAYER, "Layer"));
         if self.selection_locks_something() {
@@ -880,6 +897,14 @@ impl EditorContext {
                             to: None,
                         },
                     );
+                    self.requests.push(EditorRequest::SetTool(ToolId::Select));
+                }
+            }
+            ids::POINT_TO_POINT_CENTER => {
+                if self.selection.is_empty() {
+                    self.status = "Select objects to center".into();
+                } else {
+                    transform::begin_mode(self, Mode::PointToPointCenter { a: None });
                     self.requests.push(EditorRequest::SetTool(ToolId::Select));
                 }
             }

@@ -6047,7 +6047,9 @@ mod tests {
         );
         assert!((saved.eye_height - 70.0).abs() < 1e-3);
         assert!((saved.view.tilt_deg - 15.0).abs() < 0.01);
-        assert!((saved.fov_deg - 60.0).abs() < 5.0, "{}", saved.fov_deg);
+        // New cameras start at 55 degrees (DECISIONS CS1); the saved view
+        // keeps the viewport's field of view within a degree.
+        assert!((saved.fov_deg - 55.0).abs() < 1.0, "{}", saved.fov_deg);
         assert_eq!(saved.view.technique.as_deref(), Some("Standard"));
         // Restore brings the same view back.
         st.show_camera(&cx.project, saved.id);

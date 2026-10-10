@@ -2425,6 +2425,7 @@ impl Tool for CadTool {
         self.strip.draw(painter, cam, pal, &self.strip_items());
         self.draw_edit_overlay(cx, painter, cam);
         let ghost = Stroke::new(1.0_f32, pal.ghost_stroke);
+        crate::editor::snap::draw_anchor_markers(painter, cam, cx);
         // The Angle Snap Grid fans out from the last point (manual p. 193).
         if let Some(o) = self.origin() {
             crate::editor::snap::draw_angle_rays(painter, cam, cx, o);

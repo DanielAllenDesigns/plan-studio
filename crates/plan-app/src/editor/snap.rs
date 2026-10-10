@@ -180,10 +180,53 @@ pub fn draw_angle_rays(
     let reach = 100_000.0;
     let stroke = eframe::egui::Stroke::new(1.0_f32, cx.palette.ghost_stroke.gamma_multiply(0.35));
     let a = cam.world_to_screen(from);
+    // Small hatch marks at the Snap Unit along each ray, only while they are
+    // far enough apart on screen to read as marks (and never a runaway count).
+    let unit = cx.defaults.grid.snap;
+    let unit_px = (cam.world_to_screen(from + Point::new(unit, 0.0)) - a).length() as f64;
+    let hatch = (unit > 0.0 && unit_px >= 6.0).then_some(unit);
     for deg in angles {
         let r = deg.to_radians();
-        let to = from + Point::new(r.cos(), r.sin()) * reach;
+        let dir = Point::new(r.cos(), r.sin());
+        let to = from + dir * reach;
         painter.line_segment([a, cam.world_to_screen(to)], stroke);
+        if let Some(unit) = hatch {
+            let perp = Point::new(-dir.y, dir.x);
+            for i in 1..=ANGLE_HATCH_MAX {
+                let c = from + dir * (unit * i as f64);
+                let (p0, p1) = (
+                    c + perp * (3.0 / unit_px * unit),
+                    c - perp * (3.0 / unit_px * unit),
+                );
+                painter.line_segment([cam.world_to_screen(p0), cam.world_to_screen(p1)], stroke);
+            }
+        }
+    }
+}
+
+/// Most hatch marks drawn along one Angle Snap Grid ray.
+const ANGLE_HATCH_MAX: usize = 40;
+
+/// The blue extension-anchor markers: a small square on each object the
+/// pointer has passed over (see [`anchors`]), whose horizontal and vertical
+/// lines the next point can line up with.
+pub fn draw_anchor_markers(
+    painter: &eframe::egui::Painter,
+    cam: &super::Camera,
+    cx: &super::EditorContext,
+) {
+    if !cx.defaults.editing.snap_extension {
+        return;
+    }
+    let blue = eframe::egui::Color32::from_rgb(0x0B, 0x57, 0xD0);
+    for a in anchors() {
+        let c = cam.world_to_screen(a);
+        painter.rect_stroke(
+            eframe::egui::Rect::from_center_size(c, eframe::egui::vec2(7.0, 7.0)),
+            0.0,
+            eframe::egui::Stroke::new(1.5_f32, blue),
+            eframe::egui::StrokeKind::Middle,
+        );
     }
 }
 

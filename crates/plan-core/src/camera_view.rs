@@ -314,6 +314,10 @@ pub struct CameraView {
     pub walk: WalkRecord,
     /// The light set this view uses in place of the plan's active one.
     pub light_set: Option<String>,
+    /// The layer set a new section or elevation started with, taken from
+    /// Layer Set Defaults when one is chosen for that kind (LAY-70); `None`
+    /// follows the active layer set.
+    pub layer_set: Option<String>,
     /// A saved orthographic view (an elevation or the plan overhead).
     pub ortho: Option<OrthoView>,
     /// Scene Clipping of a section or elevation (C-136..C-138, C-152, C-157).
@@ -414,6 +418,7 @@ impl Default for CameraView {
             pose: None,
             walk: WalkRecord::default(),
             light_set: None,
+            layer_set: None,
             ortho: None,
             clip: SectionClip::legacy(),
             annotations: Vec::new(),

@@ -568,6 +568,11 @@ fn arch_cap(ctx: &Ctx, set: &mut MeshSet, arch: &ArchGeom, glazed: bool) {
 }
 
 fn build_style(ctx: &Ctx, set: &mut MeshSet, style: OpeningStyle) {
+    // A library door is drawn by the app from its symbol (DW-126): no leaf
+    // and no hardware of ours, the frame stays.
+    if ctx.opening.extras.spec.library_drawn {
+        return;
+    }
     match style {
         OpeningStyle::Hinged => hinged(ctx, set, open_angle(ctx)),
         OpeningStyle::DoubleDoor => double(ctx, set, open_angle(ctx)),

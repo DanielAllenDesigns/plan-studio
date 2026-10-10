@@ -1,7 +1,7 @@
 //! Door and Window Specification (docs/chief-x18-dialogs.md).
 
 use super::{
-    dis_check, dis_combo, dis_radio, fmt_short, off, on, pv_text, row, section, session_check,
+    dis_check, dis_radio, fmt_short, off, on, pv_text, row, section, session_check,
     Fields, Outcome, SpecDialog, SpecPages, Tab, PV_ACCENT, PV_BG, PV_FAINT, PV_GLASS, PV_INK,
     PV_WALL,
 };
@@ -10,6 +10,8 @@ use eframe::egui::{
 };
 use plan_core::defaults::{OpeningDefaults, WindowDefaults};
 use plan_core::extras::OpeningExtras as StoredExtras;
+use crate::tools::library::door_library::{self, DoorEntry};
+use plan_core::openings::DoorLeafStyle;
 use plan_core::opening_symbol::{bifold_panels, plan_symbol, sliding_panels, PartKind};
 use plan_core::openings::mull::MulledSpec;
 use plan_core::openings::types::{DefaultKey, DynGroup};
@@ -454,6 +456,13 @@ struct OpeningForm {
     /// The revision of the mulled unit's specification this dialog started
     /// from.
     unit_revision: u32,
+    /// Select Library Object (Door Style > Library button) is open; the
+    /// search text; the doors on offer (read when the dialog opens); the doors
+    /// picked in this dialog, listed under Library in the Door Style list.
+    door_picker: bool,
+    door_filter: String,
+    door_choices: Vec<DoorEntry>,
+    door_picked: Vec<DoorEntry>,
 }
 
 /// `0.25, 0.5` as `25, 50`.
@@ -605,6 +614,10 @@ impl OpeningDialog {
                 original,
                 dyn_touched: Vec::new(),
                 unit_revision,
+                door_picker: false,
+                door_filter: String::new(),
+                door_choices: Vec::new(),
+                door_picked: Vec::new(),
             },
         };
         // What the first sync writes (the stored values) is not an edit: the
@@ -902,7 +915,7 @@ impl OpeningForm {
         let door = self.is_door();
         section(ui, "General");
         if door {
-            row(ui, "Door Style", |ui| {
+            row(ui, "Door Type", |ui| {
                 egui::ComboBox::from_id_salt("door_style")
                     .selected_text(self.draft.style.name(OpeningKind::Door))
                     .show_ui(ui, |ui| {
@@ -922,7 +935,7 @@ impl OpeningForm {
                     ui.label(self.extras.style_name.as_str());
                 });
             }
-            row(ui, "Door Type", |ui| dis_combo(ui, "door_type", "Hinged"));
+            self.door_style_rows(ui);
         } else {
             let before = self.draft.style;
             row(ui, "Window Style", |ui| {
@@ -1014,10 +1027,15 @@ impl OpeningForm {
         {
             self.size_changed();
         }
+        // A library symbol keeps its own thickness (manual p. 580).
+        let library = self.draft.extras.spec.is_library_door();
         if door
-            && self
-                .fields
-                .length_row(ui, "Thickness", "thickness", &mut self.extras.thickness)
+            && ui
+                .add_enabled_ui(!library, |ui| {
+                    self.fields
+                        .length_row(ui, "Thickness", "thickness", &mut self.extras.thickness)
+                })
+                .inner
         {
             self.extras.thickness = self.extras.thickness.max(0.25);
         }
@@ -1070,6 +1088,160 @@ impl OpeningForm {
         }
         if !matches!(self.target, OpeningTarget::Placed(_)) {
             self.standard_widths(ui);
+        }
+    }
+
+    /// Door Style (manual p. 580): Use Default, the built-in styles, Library
+    /// and the library doors picked here, with the Library button; Reverse
+    /// Interior/Exterior for a library door.
+    fn door_style_rows(&mut self, ui: &mut Ui) {
+        let placed = matches!(self.target, OpeningTarget::Placed(_));
+        let use_default = placed && self.draft.extras.spec.dynamic.window_type;
+        let style = self.draft.extras.spec.door_style;
+        let name = self.draft.extras.spec.library_door.as_ref().map(|l| l.name.clone());
+        let text = if use_default {
+            "Use Default".to_string()
+        } else if style == DoorLeafStyle::Library {
+            name.clone().unwrap_or_else(|| "Library".into())
+        } else {
+            style.name().to_string()
+        };
+        let mut pick: Option<DoorLeafStyle> = None;
+        let mut again: Option<DoorEntry> = None;
+        let mut default_on = false;
+        row(ui, "Door Style", |ui| {
+            egui::ComboBox::from_id_salt("door_leaf_style")
+                .selected_text(text)
+                .show_ui(ui, |ui| {
+                    if placed
+                        && ui
+                            .selectable_label(use_default, "Use Default")
+                            .on_hover_text("Follows the style of the Door Defaults")
+                            .clicked()
+                    {
+                        default_on = true;
+                    }
+                    for s in DoorLeafStyle::BUILTIN {
+                        if ui.selectable_label(!use_default && style == s, s.name()).clicked() {
+                            pick = Some(s);
+                        }
+                    }
+                    if ui
+                        .selectable_label(!use_default && style == DoorLeafStyle::Library, "Library")
+                        .clicked()
+                    {
+                        pick = Some(DoorLeafStyle::Library);
+                    }
+                    for e in &self.door_picked {
+                        let on = !use_default
+                            && style == DoorLeafStyle::Library
+                            && name.as_deref() == Some(e.name.as_str());
+                        if ui.selectable_label(on, format!("   {}", e.name)).clicked() {
+                            again = Some(e.clone());
+                        }
+                    }
+                });
+            if ui.button("Library").on_hover_text("Select Library Object: a door").clicked() {
+                self.door_picker = true;
+                self.door_choices = door_library::available();
+            }
+        });
+        if let Some(e) = again {
+            self.pick_library_door(&e);
+        }
+        if let Some(s) = pick {
+            self.draft.extras.spec.door_style = s;
+            self.release_type();
+        }
+        if default_on {
+            self.draft.extras.spec.dynamic.window_type = true;
+            if !self.dyn_touched.contains(&DynGroup::Type) {
+                self.dyn_touched.push(DynGroup::Type);
+            }
+        }
+        let library = self.draft.extras.spec.is_library_door();
+        if !self.extras.style_name.is_empty() && library {
+            row(ui, "Library Style", |ui| {
+                ui.label(self.extras.style_name.as_str());
+            });
+        }
+        row(ui, "Reverse", |ui| {
+            ui.add_enabled(
+                library,
+                egui::Checkbox::new(
+                    &mut self.draft.extras.spec.library_reversed,
+                    "Reverse Interior/Exterior",
+                ),
+            )
+            .on_hover_text("Only a library door can be turned to face the other way");
+        });
+        if self.door_picker {
+            self.door_picker_ui(ui);
+        }
+    }
+
+    /// An edit of the Door Style stops the opening following the default.
+    fn release_type(&mut self) {
+        self.draft.extras.spec.dynamic.window_type = false;
+        if !self.dyn_touched.contains(&DynGroup::Type) {
+            self.dyn_touched.push(DynGroup::Type);
+        }
+    }
+
+    /// Makes the door the library door `e`; its name joins the Door Style list.
+    pub(crate) fn pick_library_door(&mut self, e: &DoorEntry) {
+        door_library::choose(e, &mut self.draft);
+        self.extras.style_name = e.name.clone();
+        if !self.door_picked.iter().any(|p| p.id == e.id) {
+            self.door_picked.push(e.clone());
+        }
+        self.release_type();
+    }
+
+    /// Select Library Object: doors only, grouped by the catalog's folders.
+    fn door_picker_ui(&mut self, ui: &mut Ui) {
+        let mut chosen: Option<DoorEntry> = None;
+        let mut close = false;
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.strong("Select Library Object");
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.door_filter)
+                        .hint_text("search")
+                        .desired_width(120.0),
+                );
+                if ui.button("Cancel").clicked() {
+                    close = true;
+                }
+            });
+            if self.door_choices.is_empty() {
+                ui.label("No doors found in the libraries.");
+            }
+            let f = self.door_filter.to_lowercase();
+            egui::ScrollArea::vertical()
+                .max_height(160.0)
+                .id_salt("door_picker")
+                .show(ui, |ui| {
+                    let mut last = String::new();
+                    for e in self.door_choices.iter().filter(|e| {
+                        f.is_empty() || e.name.to_lowercase().contains(&f)
+                    }) {
+                        if e.folder != last {
+                            ui.weak(if e.folder.is_empty() { "Doors" } else { e.folder.as_str() });
+                            last = e.folder.clone();
+                        }
+                        if ui.selectable_label(false, format!("{}  ({})", e.name, e.source)).clicked() {
+                            chosen = Some(e.clone());
+                        }
+                    }
+                });
+        });
+        if let Some(e) = chosen {
+            self.pick_library_door(&e);
+            close = true;
+        }
+        if close {
+            self.door_picker = false;
         }
     }
 
@@ -2771,6 +2943,37 @@ mod tests {
         );
         assert_eq!(d2.extras().window_type, type_index(WindowType::DoubleHung));
         assert_eq!(d2.extras().jamb_side, 0.5);
+    }
+
+    #[test]
+    fn a_library_door_is_picked_stored_and_released_from_the_default() {
+        use plan_core::openings::UseDefault;
+        let mut door = Opening::default_door(6, 1, 100.0);
+        door.extras.spec.dynamic = UseDefault::all(OpeningKind::Door);
+        let mut d = OpeningDialog::for_opening(door, &host(), Vec::new(), OpeningExtras::default());
+        d.sync_stored_for_test();
+        assert!(d.draft().extras.spec.dynamic.window_type);
+        assert!(!d.draft().extras.spec.is_library_door());
+        // A synthetic catalog entry stands in for the Chief install.
+        let e = DoorEntry {
+            id: "chief.fixture.5".into(),
+            name: "Fixture Six Panel".into(),
+            source: "Fixture".into(),
+            folder: "Interior Doors".into(),
+        };
+        d.form.pick_library_door(&e);
+        d.sync_stored_for_test();
+        let o = d.draft();
+        assert!(o.extras.spec.is_library_door());
+        assert_eq!(o.extras.spec.library_door.as_ref().unwrap().id, "chief.fixture.5");
+        assert_eq!(o.extras.style_name.as_deref(), Some("Fixture Six Panel"));
+        assert!(!o.extras.spec.dynamic.window_type, "an edit leaves Use Default");
+        assert_eq!(d.form.door_picked.len(), 1, "its name joins the Door Style list");
+        // The dialog draws with the library door chosen (Reverse is enabled).
+        let ctx = egui::Context::default();
+        let _ = ctx.run(Default::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| d.form.door_style_rows(ui));
+        });
     }
 
     #[test]

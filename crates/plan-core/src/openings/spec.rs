@@ -736,6 +736,18 @@ pub struct OpeningSpec {
     /// General panel, Hinged and Sliding doors: Interior (`Some(false)`) or
     /// Exterior (`Some(true)`) regardless of the wall; `None` follows the wall.
     pub exterior_door: Option<bool>,
+    /// General panel, Door Style (manual p. 580): the look of the leaf.
+    pub door_style: DoorLeafStyle,
+    /// The library door that [`DoorLeafStyle::Library`] draws (catalog id and
+    /// name); kept when another style is chosen, so the name stays listed.
+    pub library_door: Option<LibraryDoor>,
+    /// General panel, Reverse Interior/Exterior: a library door turned to
+    /// face the other way (only a library door has it).
+    pub library_reversed: bool,
+    /// Set while a scene is built: the library symbol is drawn by the app, so
+    /// the 3D builder leaves out its own leaf. Never stored.
+    #[serde(skip)]
+    pub library_drawn: bool,
     /// Window Level (manual p. 611): 0 is drawn in the layer colour and picked
     /// first; the others draw light grey.
     pub level: u8,
@@ -743,6 +755,61 @@ pub struct OpeningSpec {
     pub mulled: Option<super::mull::MulledSpec>,
     /// The Bay/Box and Bow Window Specification (manual p. 639).
     pub bay: super::bay::BayUnit,
+}
+
+/// The Door Style list of the General panel (manual p. 580).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum DoorLeafStyle {
+    Slab,
+    GlassSlab,
+    #[default]
+    Panel,
+    GlassPanel,
+    Louvered,
+    GlassLouver,
+    /// A door from the library: see [`OpeningSpec::library_door`].
+    Library,
+}
+
+impl DoorLeafStyle {
+    /// The built-in styles, in list order; Library follows them.
+    pub const BUILTIN: [DoorLeafStyle; 6] = [
+        DoorLeafStyle::Slab,
+        DoorLeafStyle::GlassSlab,
+        DoorLeafStyle::Panel,
+        DoorLeafStyle::GlassPanel,
+        DoorLeafStyle::Louvered,
+        DoorLeafStyle::GlassLouver,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            DoorLeafStyle::Slab => "Slab",
+            DoorLeafStyle::GlassSlab => "Glass Slab",
+            DoorLeafStyle::Panel => "Panel",
+            DoorLeafStyle::GlassPanel => "Glass Panel",
+            DoorLeafStyle::Louvered => "Louvered",
+            DoorLeafStyle::GlassLouver => "Glass Louver",
+            DoorLeafStyle::Library => "Library",
+        }
+    }
+}
+
+/// A door chosen from the library: the catalog id and the name shown in the
+/// Door Style list. Only these two are stored; the symbol is read from the
+/// catalog when it is installed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LibraryDoor {
+    pub id: String,
+    pub name: String,
+}
+
+impl OpeningSpec {
+    /// Whether a library door is the style (Reverse Interior/Exterior applies
+    /// and Thickness does not, manual p. 580).
+    pub fn is_library_door(&self) -> bool {
+        self.door_style == DoorLeafStyle::Library && self.library_door.is_some()
+    }
 }
 
 fn is_no_default(u: &super::types::UseDefault) -> bool {
@@ -800,6 +867,10 @@ impl Default for OpeningSpec {
             louver_size: 2.0,
             dynamic: super::types::UseDefault::default(),
             exterior_door: None,
+            door_style: DoorLeafStyle::default(),
+            library_door: None,
+            library_reversed: false,
+            library_drawn: false,
             level: 0,
             mulled: None,
             bay: super::bay::BayUnit::default(),
@@ -1028,6 +1099,27 @@ impl StandardWidths {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_library_door_is_stored_and_round_trips() {
+        let mut s = OpeningSpec::default();
+        assert!(!s.is_library_door());
+        s.door_style = DoorLeafStyle::Library;
+        s.library_door = Some(LibraryDoor {
+            id: "chief.abc.7".into(),
+            name: "Six Panel".into(),
+        });
+        s.library_drawn = true;
+        assert!(s.is_library_door());
+        let back: OpeningSpec = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back.library_door, s.library_door);
+        assert_eq!(back.door_style, DoorLeafStyle::Library);
+        assert!(!back.library_drawn, "the drawn flag is never stored");
+        // An old plan has none.
+        let old: OpeningSpec = serde_json::from_str("{}").unwrap();
+        assert_eq!(old.door_style, DoorLeafStyle::Panel);
+        assert!(old.library_door.is_none());
+    }
+
     use super::*;
 
     #[test]

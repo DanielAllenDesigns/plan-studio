@@ -445,3 +445,7 @@ Existing Roof Over** the main roof comes down over the unit and follows its shap
 **Rectangular Roof Over**), unless the ceiling is lowered; build the roof again after changing a roof
 option. **Explode Bay/Bow Window** turns it into walls, one window in each,
 a pass-through in the main wall and, when the ceiling is lowered or the floor raised, a room of its own.
+
+## Door Style and library doors
+
+The General panel of a door has a Door Style list (Use Default, Slab, Glass Slab, Panel, Glass Panel, Louvered, Glass Louver, Library) and a Library button. The button opens Select Library Object, which lists only doors: the Doors and Doorways folders of the catalog (Interior Doors, Exterior Doors, Garage, Entryways) and the doors of the user library. A picked door becomes the style, and its name is added to the Door Style list of that dialog. Reverse Interior/Exterior is available only for a library door, and Thickness does not change a library symbol. Interior Door and Exterior Door defaults carry the style; doors set to Use Default follow a later change. Clicking a doorway, a door or a wall with a library door chosen in the Library Browser replaces or places the door (Place Library Door).

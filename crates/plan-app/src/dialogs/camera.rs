@@ -50,6 +50,9 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 /// Chief's Camera Specification panels (manual pp. 1186 to 1194).
+// TODO parity: Chief's pattern also lists General, Materials, Components,
+// Object Information and Schedule; the camera has no model data for them yet
+// (docs/tool-dialog-sweep.md, Camera Specification row).
 const TABS: &[Tab] = &[
     Tab {
         name: "Camera",

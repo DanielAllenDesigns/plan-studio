@@ -38,6 +38,7 @@ const TABS: &[Tab] = &[
     on("Title Text Style"),
     on("Header Text Style"),
     on("Labels"),
+    on("Layer"),
 ];
 
 /// What the user asked for besides editing.
@@ -328,7 +329,8 @@ impl SpecPages for Form {
             6 => self.text_style(ui, 0),
             7 => self.text_style(ui, 1),
             8 => self.text_style(ui, 2),
-            _ => self.labels(ui),
+            9 => self.labels(ui),
+            _ => self.layer(ui),
         }
     }
 

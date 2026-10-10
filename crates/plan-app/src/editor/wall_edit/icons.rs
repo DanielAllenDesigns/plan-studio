@@ -178,6 +178,41 @@ pub fn draw(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
     }
 }
 
+/// Edit Wall Intersections handles (W-144): a small round handle in the
+/// middle of every structural layer at both ends of each selected straight
+/// wall (the Auto Connect magnet of W-135 is the lock flag on the end).
+pub fn draw_layer_handles(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
+    let types = super::wall_types(cx);
+    for id in super::selected_walls(cx) {
+        let Some(w) = cx.floor().wall(id) else {
+            continue;
+        };
+        if w.is_curved() {
+            continue;
+        }
+        let layers = plan_core::joins::wall_layer_bands(
+            w,
+            w.wall_type
+                .as_deref()
+                .and_then(|n| types.iter().find(|t| t.name == n)),
+        )
+        .len();
+        for end in [WallEnd::Start, WallEnd::End] {
+            for k in 0..layers {
+                if let Some(p) = plan_core::walls::intersect::layer_handle(w, &types, end, k) {
+                    let c = cam.world_to_screen(p);
+                    painter.circle(
+                        c,
+                        3.5,
+                        Color32::from_rgb(255, 255, 255),
+                        Stroke::new(1.2_f32, Color32::from_rgb(30, 90, 200)),
+                    );
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

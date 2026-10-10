@@ -10,7 +10,7 @@ use plan_core::{Id, WallEnd};
 use std::cell::Cell;
 
 pub mod icons;
-pub use icons::{draw as draw_icons, select_for_icon};
+pub use icons::{draw as draw_icons, draw_layer_handles, select_for_icon};
 
 /// Custom command ids (the `id` of `EditActionKind::Custom`).
 pub const BREAK_WALL: &str = "wall.break";
@@ -30,6 +30,7 @@ pub const LOCK_START: &str = "wall.lock_start";
 pub const LOCK_END: &str = "wall.lock_end";
 pub const ALIGN_ABOVE: &str = "wall.align_above";
 pub const ALIGN_BELOW: &str = "wall.align_below";
+pub const RESET_LAYER_JOINS: &str = "wall.reset_layer_joins";
 
 thread_local! {
     /// Break Wall was picked and waits for the click that sets the point.
@@ -131,6 +132,12 @@ pub fn edit_actions(cx: &EditorContext) -> Vec<super::EditAction> {
     v.push(button(ALIGN_ABOVE, "Align With Wall Above", "", true));
     v.push(button(ALIGN_BELOW, "Align With Wall Below", "", true));
     v.push(button(RESET_ICONS, "Reset Notification Icons", "", true));
+    v.push(button(
+        RESET_LAYER_JOINS,
+        "Reset Wall Layer Intersections",
+        "",
+        true,
+    ));
     if walls.len() == 2 {
         v.push(button(CONNECT_WALLS, "Connect Walls", "", true));
     }
@@ -299,6 +306,9 @@ pub fn run_command(cx: &mut EditorContext, id: &str) -> bool {
         RESET_ICONS => {
             reset_icons(cx);
         }
+        RESET_LAYER_JOINS => {
+            reset_layer_joins(cx);
+        }
         CONNECT_WALLS => {
             connect_selected(cx);
         }
@@ -436,6 +446,70 @@ pub fn reset_icons(cx: &mut EditorContext) -> usize {
     cx.mark_dirty();
     cx.status = format!(
         "Notification icons of {n} wall{} are back",
+        if n == 1 { "" } else { "s" }
+    );
+    n
+}
+
+/// The wall types in force (the plan's own, else the defaults').
+fn wall_types(cx: &EditorContext) -> Vec<plan_core::defaults::WallTypeDef> {
+    if cx.project.wall_types.is_empty() {
+        cx.defaults.wall_types.clone()
+    } else {
+        cx.project.wall_types.clone()
+    }
+}
+
+/// Edit Wall Intersections (W-144): drags the handle of structural layer
+/// `layer` at `end` of wall `id` to `want` inches past its joined position;
+/// the slide snaps to the layer lines of the wall it meets (the magnet
+/// positions). One undo step. Returns the slide that was stored.
+pub fn slide_layer(
+    cx: &mut EditorContext,
+    id: Id,
+    end: WallEnd,
+    layer: usize,
+    want: f64,
+) -> Option<f64> {
+    let fl = cx.floor;
+    let types = wall_types(cx);
+    let cands = plan_core::walls::intersect::layer_snap_candidates(
+        &cx.floor().walls,
+        &types,
+        id,
+        end,
+        layer,
+        0.5,
+    );
+    let shift = plan_core::walls::intersect::snap_slide(&cands, want, 3.0);
+    cx.begin_change("Edit Wall Intersections");
+    if !cx.project.set_layer_join(fl, id, end, layer, shift) {
+        cx.cancel_change();
+        return None;
+    }
+    cx.mark_dirty();
+    cx.status = format!("Layer slid {shift:.2} in");
+    Some(shift)
+}
+
+/// Reset Wall Layer Intersections (W-144): the selected walls (every wall of
+/// the floor when none is selected) get their layers back where the join
+/// rules put them. One undo step; nothing slid, no step.
+pub fn reset_layer_joins(cx: &mut EditorContext) -> usize {
+    let ids = selected_walls(cx);
+    let fl = cx.floor;
+    cx.begin_change("Reset Wall Layer Intersections");
+    let n = cx
+        .project
+        .reset_layer_joins(fl, (!ids.is_empty()).then_some(&ids[..]), false);
+    if n == 0 {
+        cx.cancel_change();
+        cx.status = "No wall layer was slid".into();
+        return 0;
+    }
+    cx.mark_dirty();
+    cx.status = format!(
+        "Layer intersections of {n} wall{} reset",
         if n == 1 { "" } else { "s" }
     );
     n

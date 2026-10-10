@@ -70,6 +70,12 @@ pub fn cabinet_layer(kind: CabinetKind) -> &'static str {
     }
 }
 
+/// The layer one cabinet is on: its own Layer panel choice, else the layer
+/// of its kind.
+pub fn layer_of_cabinet(c: &Cabinet) -> &str {
+    c.layer.as_deref().unwrap_or_else(|| cabinet_layer(c.kind))
+}
+
 /// The floor's cabinets; entries that do not parse are skipped.
 pub fn load_cabinets(floor: &Floor) -> Vec<Cabinet> {
     floor
@@ -295,7 +301,7 @@ pub fn hit_cabinet(
 ) -> Option<Id> {
     let cabs = load_cabinets(cx.floor());
     let near = |c: &&Cabinet| {
-        cx.layers().is_visible(cabinet_layer(c.kind))
+        cx.layers().is_visible(layer_of_cabinet(c))
             && !c.auto_filler
             && filter(c)
             && poly_dist(p, &c.footprint()) <= tol
@@ -748,7 +754,7 @@ pub fn draw_placed(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
         .is_visible(plan_core::layers::CABINET_LABEL_LAYER);
     let cabs: Vec<Cabinet> = load_cabinets(floor)
         .into_iter()
-        .filter(|c| cx.layers().is_visible(cabinet_layer(c.kind)))
+        .filter(|c| cx.layers().is_visible(layer_of_cabinet(c)))
         .collect();
     // Merged cabinets (side by side within 3 in, or meeting at a corner) show
     // module lines instead of the end faces they share; the layer "Cabinets,
@@ -853,7 +859,7 @@ pub fn draw_placed(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
 fn locked(cx: &EditorContext, r: PlacedRef) -> bool {
     let layer = match r {
         PlacedRef::Cabinet(id) => {
-            cabinet_by_id(cx.floor(), id).map(|c| cabinet_layer(c.kind).to_string())
+            cabinet_by_id(cx.floor(), id).map(|c| layer_of_cabinet(&c).to_string())
         }
         PlacedRef::Symbol(id) => cx.floor().symbol(id).map(|s| s.layer.clone()),
     };
@@ -1392,7 +1398,7 @@ pub fn generate_countertops(cx: &mut EditorContext) -> usize {
         .filter(|c| {
             (selected.is_empty() || selected.contains(&c.id))
                 && c.countertop.is_some()
-                && !cx.layers().is_locked(cabinet_layer(c.kind))
+                && !cx.layers().is_locked(layer_of_cabinet(c))
         })
         .collect();
     let tops = plan_cabinets::generate_countertops(&cabs);

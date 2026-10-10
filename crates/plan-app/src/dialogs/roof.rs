@@ -1204,13 +1204,12 @@ impl SpecPages for PlanePages {
             6 => {
                 section(ui, "Layer");
                 row(ui, "Layer", |ui| {
-                    egui::ComboBox::from_id_salt("plane_layer")
-                        .selected_text(self.draft.layer.clone())
-                        .show_ui(ui, |ui| {
-                            for l in &self.layers {
-                                ui.selectable_value(&mut self.draft.layer, l.clone(), l);
-                            }
-                        });
+                    super::select_layer::layer_field(
+                        ui,
+                        "plane_layer",
+                        &mut self.draft.layer,
+                        self.layers.iter().map(String::as_str),
+                    );
                 });
             }
             7 => {
@@ -1504,13 +1503,12 @@ impl SpecPages for AllPages {
                 let mut on_ = self.layer.is_some();
                 let mut l = self.layer.clone().unwrap_or_default();
                 change_row(ui, "Layer", &mut on_, |ui| {
-                    egui::ComboBox::from_id_salt("all_layer")
-                        .selected_text(l.clone())
-                        .show_ui(ui, |ui| {
-                            for name in &self.layers {
-                                ui.selectable_value(&mut l, name.clone(), name);
-                            }
-                        });
+                    super::select_layer::layer_field(
+                        ui,
+                        "all_layer",
+                        &mut l,
+                        self.layers.iter().map(String::as_str),
+                    );
                 });
                 self.layer = (on_ && !l.is_empty()).then_some(l);
             }
@@ -1687,13 +1685,12 @@ impl SpecPages for CeilingPages {
             _ => {
                 section(ui, "Layer");
                 row(ui, "Layer", |ui| {
-                    egui::ComboBox::from_id_salt("ceiling_layer")
-                        .selected_text(self.draft.layer.clone())
-                        .show_ui(ui, |ui| {
-                            for l in &self.layers {
-                                ui.selectable_value(&mut self.draft.layer, l.clone(), l);
-                            }
-                        });
+                    super::select_layer::layer_field(
+                        ui,
+                        "ceiling_layer",
+                        &mut self.draft.layer,
+                        self.layers.iter().map(String::as_str),
+                    );
                 });
             }
         }

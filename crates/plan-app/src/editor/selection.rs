@@ -313,7 +313,7 @@ pub fn layer_of(floor: &Floor, o: ObjectRef) -> Option<String> {
             .find(|c| c.id == i)
             .map(|c| c.layer.clone()),
         ObjectRef::Cabinet(i) => {
-            placed::cabinet_by_id(floor, i).map(|c| placed::cabinet_layer(c.kind).to_string())
+            placed::cabinet_by_id(floor, i).map(|c| placed::layer_of_cabinet(&c).to_string())
         }
         ObjectRef::Symbol(i) => floor.symbol(i).map(|s| s.layer.clone()),
         ObjectRef::Stair(i) => {

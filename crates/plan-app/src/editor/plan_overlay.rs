@@ -10,8 +10,7 @@
 //! `LayoutRenderContext::with_plan_overlay`.
 
 use super::placed::{
-    cabinet_layer, load_cabinets, merged_countertops, placed_symbol_strokes, stroke_polylines,
-    symbol_center,
+    load_cabinets, merged_countertops, placed_symbol_strokes, stroke_polylines, symbol_center,
 };
 use super::stairs_view as sv;
 use crate::tools::library::find_item;
@@ -70,7 +69,7 @@ fn cabinet_fill(cab: &Cabinet, out: &mut Vec<PlanOverlayItem>) {
     if !fill.is_visible() {
         return;
     }
-    let layer = cabinet_layer(cab.kind);
+    let layer = crate::editor::placed::layer_of_cabinet(cab);
     let ring = cab.footprint();
     if fill.pattern == FillPattern::Solid {
         for t in plan_cabinets::triangulate(&ring, &[]) {
@@ -95,7 +94,7 @@ fn cabinet_fill(cab: &Cabinet, out: &mut Vec<PlanOverlayItem>) {
 /// One cabinet's plan symbol (the countertop outline is left to the merged
 /// tops) and label.
 fn cabinet_items(cab: &Cabinet, out: &mut Vec<PlanOverlayItem>) {
-    let layer = cabinet_layer(cab.kind);
+    let layer = crate::editor::placed::layer_of_cabinet(cab);
     for (i, k) in plan_cabinets::plan_symbol(cab).iter().enumerate() {
         match k {
             CabStroke::Line(a, b) => out.push(PlanOverlayItem::line(layer, vec![*a, *b], false)),

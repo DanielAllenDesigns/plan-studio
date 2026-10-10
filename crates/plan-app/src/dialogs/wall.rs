@@ -2193,13 +2193,12 @@ impl WallForm {
         section(ui, "Layer");
         row(ui, "Layer", |ui| {
             dis_check(ui, "Default", true);
-            egui::ComboBox::from_id_salt("wall_layer")
-                .selected_text(self.draft.layer.clone())
-                .show_ui(ui, |ui| {
-                    for name in WALL_LAYERS {
-                        ui.selectable_value(&mut self.draft.layer, name.to_string(), name);
-                    }
-                });
+            super::select_layer::layer_field(
+                ui,
+                "wall_layer",
+                &mut self.draft.layer,
+                WALL_LAYERS.iter().copied(),
+            );
         });
         self.drawing_group_row(ui);
     }

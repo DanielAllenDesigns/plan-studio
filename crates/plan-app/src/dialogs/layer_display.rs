@@ -72,6 +72,8 @@ pub struct LayerPanelState {
     pub message: String,
     /// The New button is asking for a layer name.
     pub naming: bool,
+    /// Rename is open: the layer and the text being typed.
+    pub renaming: Option<(String, String)>,
     /// The text of the New Layer Name box.
     pub new_name: String,
     /// Only these layers are listed (Object Layer Properties: the layers of
@@ -448,6 +450,11 @@ fn layer_panel_body(
             ContextAction::Find => {
                 crate::dialogs::object_layers::find_objects_on_layers(cx, &sel);
             }
+            ContextAction::Rename => {
+                if let Some(first) = sel.first() {
+                    st.renaming = Some((first.clone(), first.clone()));
+                }
+            }
         }
     }
     for (layers, edit, merged) in pending {
@@ -485,6 +492,8 @@ enum ContextAction {
     EditFill,
     /// Find Objects on Layer(s) (LAY-62).
     Find,
+    /// Rename the layer (LAY-67).
+    Rename,
 }
 
 /// The text style names a layer may use: the plan's styles plus any name a
@@ -528,7 +537,14 @@ fn draw_row(
     if r.clicked() {
         *click = Some((name.clone(), ui.input(|i| i.modifiers)));
     }
+    if r.double_clicked() && !plan_core::layers::is_system_layer(name) {
+        *context = Some((name.clone(), ContextAction::Rename));
+    }
     r.context_menu(|ui| {
+        if !plan_core::layers::is_system_layer(name) && ui.button("Rename\u{2026}").clicked() {
+            *context = Some((name.clone(), ContextAction::Rename));
+            ui.close_menu();
+        }
         if ui.button("Select All on Layer").clicked() {
             *context = Some((name.clone(), ContextAction::SelectObjects));
             ui.close_menu();
@@ -1108,6 +1124,22 @@ pub fn new_layer_named(cx: &mut EditorContext, name: &str) -> Result<String, Str
     }
 }
 
+/// Rename: gives a user layer a new name; one undo step.
+pub fn rename_layer_named(cx: &mut EditorContext, old: &str, new: &str) -> Result<String, String> {
+    cx.begin_change("Rename Layer");
+    match cx.project.rename_layer(old, new) {
+        Ok(n) => {
+            cx.mark_dirty();
+            cx.status = format!("Renamed {old} to {n}");
+            Ok(n)
+        }
+        Err(e) => {
+            cx.cancel_change();
+            Err(e)
+        }
+    }
+}
+
 /// Copy: a copy of `name` below it.
 pub fn copy_layer(cx: &mut EditorContext, name: &str) -> Result<String, String> {
     cx.begin_change("Copy Layer");
@@ -1312,6 +1344,25 @@ fn management_buttons(ui: &mut egui::Ui, cx: &mut EditorContext, st: &mut LayerP
             }
             if ui.small_button("Cancel").clicked() {
                 st.naming = false;
+            }
+        });
+    }
+    if let Some((old, text)) = st.renaming.clone() {
+        let mut text = text;
+        ui.horizontal(|ui| {
+            ui.label("Rename Layer");
+            let edit = ui.text_edit_singleline(&mut text);
+            let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+            if ui.small_button("OK").clicked() || enter {
+                result = Some(rename_layer_named(cx, &old, &text).map(|n| {
+                    st.renaming = None;
+                    st.select_only(&n);
+                    format!("Renamed to {n}")
+                }));
+            } else if ui.small_button("Cancel").clicked() {
+                st.renaming = None;
+            } else {
+                st.renaming = Some((old.clone(), text.clone()));
             }
         });
     }

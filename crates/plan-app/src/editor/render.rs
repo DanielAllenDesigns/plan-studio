@@ -544,6 +544,7 @@ fn draw_walls(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
         weighted(cx, painter, &wall.layer, || {
             draw_one_wall(cx, painter, cam, wall)
         });
+        crate::editor::wall_system_lines::draw(cx, painter, cam, wall);
     }
     // Walls left whole across each other draw as one shape (W-36).
     crate::editor::wall_edit::draw_crossing_merges(cx, painter, cam);

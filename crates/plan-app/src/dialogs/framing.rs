@@ -881,13 +881,12 @@ impl Form {
     fn layer(&mut self, ui: &mut Ui) {
         section(ui, "Layer");
         row(ui, "Layer", |ui| {
-            egui::ComboBox::from_id_salt("framing_layer")
-                .selected_text(self.draft.layer_name.clone())
-                .show_ui(ui, |ui| {
-                    for l in &self.layers {
-                        ui.selectable_value(&mut self.draft.layer_name, l.clone(), l);
-                    }
-                });
+            super::select_layer::layer_field(
+                ui,
+                "framing_layer",
+                &mut self.draft.layer_name,
+                self.layers.iter().map(String::as_str),
+            );
         });
     }
 }

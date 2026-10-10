@@ -658,13 +658,12 @@ impl CadForm {
     fn layer(&mut self, ui: &mut Ui) {
         section(ui, "Layer");
         row(ui, "Layer", |ui| {
-            egui::ComboBox::from_id_salt("cad_layer")
-                .selected_text(self.draft.layer.clone())
-                .show_ui(ui, |ui| {
-                    for l in &self.layers {
-                        ui.selectable_value(&mut self.draft.layer, l.name.clone(), l.name.as_str());
-                    }
-                });
+            super::select_layer::layer_field(
+                ui,
+                "cad_layer",
+                &mut self.draft.layer,
+                self.layers.iter().map(|l| l.name.as_str()),
+            );
         });
     }
 }

@@ -45,6 +45,7 @@ pub mod tempdim;
 pub mod transform;
 pub mod typed_input;
 pub mod wall_edit;
+pub mod wall_system_lines;
 
 pub use actions::{Clipboard, EditAction, EditActionKind};
 pub use camera::Camera;

@@ -433,8 +433,8 @@ impl SendToLayoutDialog {
                     egui::ComboBox::from_id_salt("stl_layer_set")
                         .selected_text(layer_set.clone())
                         .show_ui(ui, |ui| {
-                            for n in &self.layer_sets {
-                                ui.selectable_value(layer_set, n.clone(), n);
+                            for l in &self.layer_sets {
+                                ui.selectable_value(layer_set, l.clone(), l);
                             }
                         });
                 });

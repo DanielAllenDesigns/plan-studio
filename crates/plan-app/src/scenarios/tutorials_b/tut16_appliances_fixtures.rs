@@ -29,37 +29,95 @@ fn partition_and_wall_cabinet_are_one_undo_step_each() {
 }
 
 #[test]
-#[ignore = "T7-16: CB-635 (wall cabinet over the refrigerator: bottom meets the appliance top)"]
-fn wall_cabinet_meets_refrigerator_top() {
-    assert_ignored_break("CB-635");
-}
-
-#[test]
-#[ignore = "T7-16: CB-434 (Explode Architectural Block)"]
-fn explode_block() {
-    assert_ignored_break("CB-434");
-}
-
-#[test]
 #[ignore = "T7-16: CB-636 (dishwasher between cabinets: countertop extension continuous)"]
 fn dishwasher_countertop() {
     assert_ignored_break("CB-636");
 }
 
 #[test]
-#[ignore = "T7-16: L-233 (fixture schedules by category and room: Kitchen Appliance Schedule)"]
-fn fixture_schedules_by_room() {
-    assert_ignored_break("L-233");
-}
-
-#[test]
-#[ignore = "T7-16: S-118 (Find Object in Plan from the schedule row)"]
-fn find_in_plan() {
-    assert_ignored_break("S-118");
-}
-
-#[test]
 #[ignore = "T7-16: DIM-63 (auto elevation dimensions with Move Extension Line handles)"]
 fn elevation_dimension_extensions() {
     assert_ignored_break("DIM-63");
+}
+
+fn fridge(sim: &mut Sim, x: f64, y: f64) {
+    let mut f = plan_core::PlacedSymbol::new(
+        "appliances/refrigerator-side-by-side",
+        plan_core::geometry::Point::new(x, y),
+        36.0,
+        30.0,
+        70.0,
+    );
+    f.layer = "Fixtures, Interior".into();
+    sim.app.cx.project.add_symbol(0, f);
+    sim.app.cx.refresh();
+}
+
+#[test]
+fn wall_cabinet_meets_refrigerator_top() {
+    let mut sim = cottage();
+    fridge(&mut sim, 60.0, 20.0);
+    place(&mut sim, CabinetKind::Wall, 60.0, 20.0);
+    let over = load_cabinets(sim.app.cx.floor())
+        .into_iter()
+        .find(|c| c.kind == CabinetKind::Wall)
+        .unwrap();
+    assert_eq!(over.elevation, 70.0, "the bottom meets the appliance top");
+    place(&mut sim, CabinetKind::Wall, 300.0, 20.0);
+    let far = load_cabinets(sim.app.cx.floor())
+        .into_iter()
+        .filter(|c| c.kind == CabinetKind::Wall)
+        .max_by(|a, b| a.position.x.total_cmp(&b.position.x))
+        .unwrap();
+    assert_ne!(
+        far.elevation, 70.0,
+        "away from the appliance the usual bottom"
+    );
+}
+
+#[test]
+fn explode_releases_a_cabinet_block_in_one_step() {
+    let mut sim = cottage();
+    for i in 0..2 {
+        place(&mut sim, CabinetKind::Base, 60.0 + 24.0 * i as f64, 20.0);
+    }
+    sim.app.cx.selection.items = load_cabinets(sim.app.cx.floor())
+        .iter()
+        .map(|c| crate::editor::ObjectRef::Cabinet(c.id))
+        .collect();
+    sim.action(crate::toolbar::Action::Custom(
+        crate::tools::arch_block::MAKE_BLOCK,
+    ));
+    assert_eq!(sim.app.cx.floor().blocks.len(), 1);
+    assert_one_undo_step(&mut sim, "explode", |s| {
+        s.action(crate::toolbar::Action::Custom(
+            crate::tools::arch_block::EXPLODE_BLOCK,
+        ))
+    });
+    assert!(sim.app.cx.floor().blocks.is_empty());
+    assert_eq!(load_cabinets(sim.app.cx.floor()).len(), 2);
+}
+
+#[test]
+fn a_fixture_schedule_is_made_from_one_room() {
+    use crate::editor::schedule_view as sv;
+    let mut sim = cottage();
+    assert!(!sim.app.cx.rooms.is_empty(), "the cottage encloses a room");
+    let id = assert_one_undo_step(&mut sim, "schedule", |s| {
+        sv::create_from_room(
+            &mut s.app.cx,
+            plan_core::schedules::ScheduleKind::Fixture,
+            0,
+            plan_core::geometry::Point::new(0.0, 700.0),
+        )
+    })
+    .expect("created");
+    let d = sv::find(&sim.app.cx, id).unwrap();
+    assert_eq!(d.rooms.len(), 1, "limited to the one room");
+}
+
+#[test]
+#[ignore = "T7-16: S-118 (a placed library refrigerator yields no Fixture schedule row in the app, so there is nothing to Find in Plan; investigate the schedule filter)"]
+fn find_in_plan() {
+    assert_ignored_break("S-118");
 }

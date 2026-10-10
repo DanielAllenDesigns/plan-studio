@@ -405,6 +405,12 @@ pub struct TransformParams {
     /// Resize factor (1 leaves the size); about the center of the selection.
     pub resize: f64,
     pub reflect: Option<ReflectAxis>,
+    /// `move_x`, `move_y` are the place the selection's center goes to in the
+    /// plan, not a distance (S-103 "Move to").
+    pub move_to: bool,
+    /// Radians: the move is measured along axes turned by this angle (the
+    /// selection's own direction) instead of the plan's.
+    pub move_frame: f64,
 }
 
 impl Default for TransformParams {
@@ -417,6 +423,8 @@ impl Default for TransformParams {
             rotate_about: None,
             resize: 1.0,
             reflect: None,
+            move_to: false,
+            move_frame: 0.0,
         }
     }
 }
@@ -437,11 +445,53 @@ impl TransformParams {
             let about = self.rotate_about.unwrap_or(center);
             x = x.then(Xform::rotate(about, self.rotate_deg.to_radians()));
         }
-        if self.move_x.abs() > 1e-9 || self.move_y.abs() > 1e-9 {
-            x = x.then(Xform::translate(Point::new(self.move_x, self.move_y)));
+        let mut d = Point::new(self.move_x, self.move_y);
+        if self.move_to {
+            // Wherever the other steps leave the center, it ends at (x, y).
+            d = d - x.apply(center);
+        } else if self.move_frame.abs() > 1e-9 {
+            d = Xform::rotate(Point::ZERO, self.move_frame).apply(d);
+        }
+        if d.x.abs() > 1e-9 || d.y.abs() > 1e-9 {
+            x = x.then(Xform::translate(d));
         }
         x
     }
+}
+
+/// The direction of the selection itself: the first wall or CAD line, as a
+/// counter-clockwise angle in radians; 0 for anything else.
+pub fn selection_angle(cx: &EditorContext) -> f64 {
+    for o in &cx.selection.items {
+        match o {
+            ObjectRef::Wall(id) => {
+                if let Some(w) = cx.floor().wall(*id) {
+                    return (w.end - w.start).angle();
+                }
+            }
+            ObjectRef::Cad(id) => {
+                if let Some(CadItem::Line { a, b }) =
+                    cx.floor().cad.iter().find(|c| c.id == *id).map(|c| &c.item)
+                {
+                    return (*b - *a).angle();
+                }
+            }
+            _ => {}
+        }
+    }
+    0.0
+}
+
+/// Center Object on a line: the selection moves square to the line `a`-`b`
+/// until its center lies on it.
+pub fn center_on_line(cx: &mut EditorContext, a: Point, b: Point) -> Result<(), String> {
+    let c = selection_center(cx).ok_or("Select objects to center")?;
+    let dir = (b - a).normalized();
+    if dir.length() < 1e-9 {
+        return Err("That line has no length".into());
+    }
+    let off = (c - a) - dir * (c - a).dot(dir);
+    move_selection(cx, Point::ZERO - off, "Center Object")
 }
 
 /// Transform/Replicate Object (S-47, S-103, S-104): one undo step. With
@@ -844,6 +894,9 @@ pub enum Mode {
         from: Option<Point>,
         to: Option<Point>,
     },
+    /// Point to Point Center: click two points; the selection is centered
+    /// between them.
+    PointToPointCenter { a: Option<Point> },
     /// Reflect About Object: click a wall or CAD line to mirror about.
     Reflect { copy: bool },
     /// Center Object: click a room, or two walls.
@@ -870,6 +923,9 @@ pub fn begin_mode(cx: &mut EditorContext, mode: Mode) {
     cx.status = match &mode {
         Mode::Paste { .. } => "Paste: click to place the objects, Esc cancels".into(),
         Mode::PointToPoint { .. } => "Point to Point Move: click the point to move from".into(),
+        Mode::PointToPointCenter { .. } => {
+            "Point to Point Center: click the first of the two points".into()
+        }
         Mode::Reflect { .. } => "Reflect: click a wall or line to mirror about".into(),
         Mode::Center { .. } => "Center Object: click a room, or click two walls".into(),
         Mode::Parallel { perpendicular } => format!(
@@ -964,10 +1020,36 @@ pub fn mode_pointer_down(cx: &mut EditorContext, p: &PointerEvent) -> Option<Too
                 ToolResult::consumed()
             })
         }
+        Mode::PointToPointCenter { a: None } => {
+            MODE.with(|m| {
+                *m.borrow_mut() = Some(Mode::PointToPointCenter {
+                    a: Some(click_point(p)),
+                })
+            });
+            cx.status = "Point to Point Center: click the second point".into();
+            Some(ToolResult::consumed())
+        }
+        Mode::PointToPointCenter { a: Some(a) } => {
+            end(cx);
+            let b = click_point_from(cx, p, a);
+            let result = selection_center(cx)
+                .ok_or_else(|| "Select objects to center".to_string())
+                .and_then(|c| move_selection(cx, (a + b) * 0.5 - c, "Point to Point Center"));
+            Some(match result {
+                Ok(()) => {
+                    cx.status = "Centered the objects between the two points".into();
+                    ToolResult::committed("Point to Point Center")
+                }
+                Err(e) => {
+                    cx.status = e;
+                    ToolResult::consumed()
+                }
+            })
+        }
         Mode::PointToPoint { from: None, .. } => {
             MODE.with(|m| {
                 *m.borrow_mut() = Some(Mode::PointToPoint {
-                    from: Some(p.snapped),
+                    from: Some(click_point(p)),
                     to: None,
                 })
             });
@@ -978,7 +1060,11 @@ pub fn mode_pointer_down(cx: &mut EditorContext, p: &PointerEvent) -> Option<Too
             from: Some(from), ..
         } => {
             end(cx);
-            match move_selection(cx, p.snapped - from, "Point to Point Move") {
+            match move_selection(
+                cx,
+                click_point_from(cx, p, from) - from,
+                "Point to Point Move",
+            ) {
                 Ok(()) => {
                     cx.status = "Moved the objects".into();
                     Some(ToolResult::committed("Point to Point Move"))
@@ -1036,7 +1122,20 @@ pub fn mode_pointer_down(cx: &mut EditorContext, p: &PointerEvent) -> Option<Too
                 ObjectRef::Wall(id) => Some(*id),
                 _ => None,
             });
+            // A CAD line to center on (a wall still starts the two-wall form).
+            let cad_line = if wall.is_none() && first_wall.is_none() {
+                hits.iter().find_map(|h| match h {
+                    ObjectRef::Cad(_) => reference_line(cx, p.world),
+                    _ => None,
+                })
+            } else {
+                None
+            };
             let result = match (wall, first_wall) {
+                _ if cad_line.is_some() => {
+                    let (a, b) = cad_line.unwrap();
+                    center_on_line(cx, a, b)
+                }
                 (Some(w), None) => {
                     MODE.with(|m| {
                         *m.borrow_mut() = Some(Mode::Center {
@@ -1076,6 +1175,29 @@ pub fn mode_pointer_down(cx: &mut EditorContext, p: &PointerEvent) -> Option<Too
             })
         }
     }
+}
+
+/// Where a click counts: the snapped point, or the raw one with Ctrl or Cmd
+/// held (the override of Grid and Object Snaps).
+fn click_point(p: &PointerEvent) -> Point {
+    if p.modifiers.ctrl || p.modifiers.command {
+        p.world
+    } else {
+        p.snapped
+    }
+}
+
+/// The second click of a two-point move: as [`click_point`], and with Shift
+/// held turned onto the nearest allowed angle about `from`.
+fn click_point_from(cx: &EditorContext, p: &PointerEvent, from: Point) -> Point {
+    let q = click_point(p);
+    if !p.modifiers.shift {
+        return q;
+    }
+    let inc = cx.defaults.grid.angle_snap_deg.max(1.0).to_radians();
+    let v = q - from;
+    let a = (v.angle() / inc).round() * inc;
+    from + Point::new(a.cos(), a.sin()) * v.length()
 }
 
 /// Esc (or a right click) ends the mode. Returns whether one was active.

@@ -786,6 +786,25 @@ fn edit_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
             Action::Custom(sel::EDIT_AREA_VISIBLE),
             out,
         );
+        for (label, id) in [
+            ("Edit Area (All Floors)", sel::EDIT_AREA_ALL),
+            ("Edit Area (All Floors) Visible", sel::EDIT_AREA_ALL_VISIBLE),
+            ("Edit Area Including the Polyline", sel::EDIT_AREA_INCLUDING),
+            (
+                "Edit Area Visible Including the Polyline",
+                sel::EDIT_AREA_VISIBLE_INCLUDING,
+            ),
+            (
+                "Edit Area (All Floors) Including the Polyline",
+                sel::EDIT_AREA_ALL_INCLUDING,
+            ),
+            (
+                "Edit Area (All Floors) Visible Including the Polyline",
+                sel::EDIT_AREA_ALL_VISIBLE_INCLUDING,
+            ),
+        ] {
+            live(ui, label, "", false, Action::Custom(id), out);
+        }
     });
     live(
         ui,

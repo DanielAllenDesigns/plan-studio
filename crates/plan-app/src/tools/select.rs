@@ -267,6 +267,12 @@ pub const MARQUEE_TOUCHING: &str = "select.marquee.touching";
 pub const EDIT_AREA: &str = "select.area.edit";
 pub const EDIT_AREA_VISIBLE: &str = "select.area.visible";
 pub const STRETCH_CAD: &str = "select.area.stretch_cad";
+pub const EDIT_AREA_ALL: &str = "select.area.all_floors";
+pub const EDIT_AREA_ALL_VISIBLE: &str = "select.area.all_floors_visible";
+pub const EDIT_AREA_INCLUDING: &str = "select.area.including";
+pub const EDIT_AREA_VISIBLE_INCLUDING: &str = "select.area.visible_including";
+pub const EDIT_AREA_ALL_INCLUDING: &str = "select.area.all_floors_including";
+pub const EDIT_AREA_ALL_VISIBLE_INCLUDING: &str = "select.area.all_floors_visible_including";
 
 thread_local! {
     static MARQUEE: std::cell::Cell<MarqueeMode> =
@@ -355,6 +361,16 @@ pub fn run_command(cx: &mut EditorContext, id: &str) -> bool {
         }
         STRETCH_CAD => {
             area::begin(cx, area::AreaKind::StretchCad);
+            return true;
+        }
+        // (visible only, all floors, moves the marquee polyline too)
+        EDIT_AREA_ALL | EDIT_AREA_ALL_VISIBLE | EDIT_AREA_INCLUDING
+        | EDIT_AREA_VISIBLE_INCLUDING | EDIT_AREA_ALL_INCLUDING
+        | EDIT_AREA_ALL_VISIBLE_INCLUDING => {
+            let visible_only = id.contains("visible");
+            let all = id.contains("all_floors");
+            let including = id.ends_with("including");
+            area::begin_with(cx, area::AreaKind::Edit { visible_only }, all, including);
             return true;
         }
         _ => {}

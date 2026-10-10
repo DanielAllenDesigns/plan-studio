@@ -19,6 +19,8 @@
 
 use super::*;
 use crate::editor::typed_input::TypedKey;
+use plan_core::cad::CadItem;
+use plan_core::geometry::point_in_polygon;
 use plan_core::transform::Xform;
 use std::cell::RefCell;
 
@@ -56,9 +58,82 @@ enum Stage {
     },
 }
 
+/// What a command covers beyond a rectangle on the current floor: all floors,
+/// or a closed polyline as the marquee (manual p. 298 to 299).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Scope {
+    pub all_floors: bool,
+    /// The outline of the selected closed polyline, when it is the marquee.
+    pub poly: Option<Vec<Point>>,
+    /// That polyline's CAD object and floor.
+    pub poly_cad: Option<Id>,
+    pub poly_floor: usize,
+    /// The "Including the Polyline" forms move the polyline with the contents.
+    pub include_poly: bool,
+}
+
 struct State {
     kind: AreaKind,
     stage: Stage,
+    scope: Scope,
+}
+
+/// The region as the geometry sees it: a rectangle or the polyline outline.
+struct Region<'a> {
+    lo: Point,
+    hi: Point,
+    poly: Option<&'a [Point]>,
+}
+
+impl<'a> Region<'a> {
+    fn new(lo: Point, hi: Point, scope: &'a Scope) -> Self {
+        Region {
+            lo,
+            hi,
+            poly: scope.poly.as_deref(),
+        }
+    }
+
+    fn contains(&self, p: Point) -> bool {
+        match self.poly {
+            Some(q) => point_in_polygon(p, q),
+            None => in_rect(p, self.lo, self.hi),
+        }
+    }
+
+    fn edges(&self) -> Vec<(Point, Point)> {
+        let pts: Vec<Point> = match self.poly {
+            Some(q) => q.to_vec(),
+            None => rect_corners(self.lo, self.hi).to_vec(),
+        };
+        (0..pts.len())
+            .map(|i| (pts[i], pts[(i + 1) % pts.len()]))
+            .collect()
+    }
+}
+
+/// Where the segment `a`-`b` crosses `c`-`d`, as a fraction of `a`-`b`.
+fn seg_cross_t(a: Point, b: Point, c: Point, d: Point) -> Option<f64> {
+    let (r, s) = (b - a, d - c);
+    let den = r.x * s.y - r.y * s.x;
+    if den.abs() < 1e-12 {
+        return None;
+    }
+    let q = c - a;
+    let t = (q.x * s.y - q.y * s.x) / den;
+    let u = (q.x * r.y - q.y * r.x) / den;
+    ((0.0..=1.0).contains(&u) && t > 0.0 && t < 1.0).then_some(t)
+}
+
+fn dist_to_segment(p: Point, a: Point, b: Point) -> f64 {
+    let ab = b - a;
+    let l2 = ab.dot(ab);
+    let t = if l2 < 1e-12 {
+        0.0
+    } else {
+        ((p - a).dot(ab) / l2).clamp(0.0, 1.0)
+    };
+    p.dist(a + ab * t)
 }
 
 thread_local! {
@@ -90,15 +165,61 @@ pub fn region() -> Option<(Point, Point)> {
 
 /// Starts the command: the next press-drag draws the rubber band.
 pub fn begin(cx: &mut EditorContext, kind: AreaKind) {
+    begin_with(cx, kind, false, false);
+}
+
+/// The selected closed polyline, if exactly one is selected (CAD object id,
+/// its outline).
+fn selected_closed_polyline(cx: &EditorContext) -> Option<(Id, Vec<Point>)> {
+    let [ObjectRef::Cad(id)] = cx.selection.items[..] else {
+        return None;
+    };
+    match &cx.floor().cad.iter().find(|c| c.id == id)?.item {
+        CadItem::Polyline {
+            points,
+            closed: true,
+        } if points.len() >= 3 => Some((id, points.clone())),
+        _ => None,
+    }
+}
+
+/// Starts an Edit Area command. `all_floors` takes every floor; `including`
+/// moves the marquee polyline along with its contents. When a closed
+/// polyline is selected it becomes the marquee at once (no rubber band).
+pub fn begin_with(cx: &mut EditorContext, kind: AreaKind, all_floors: bool, including: bool) {
     transform::cancel_mode(cx);
     cancel(cx);
-    put(State {
-        kind,
-        stage: Stage::Band {
-            start: None,
-            current: Point::ZERO,
-        },
-    });
+    let mut scope = Scope {
+        all_floors,
+        ..Scope::default()
+    };
+    let mut stage = Stage::Band {
+        start: None,
+        current: Point::ZERO,
+    };
+    if matches!(kind, AreaKind::Edit { .. }) {
+        if let Some((id, pts)) = selected_closed_polyline(cx) {
+            let lo = Point::new(
+                pts.iter().map(|p| p.x).fold(f64::INFINITY, f64::min),
+                pts.iter().map(|p| p.y).fold(f64::INFINITY, f64::min),
+            );
+            let hi = Point::new(
+                pts.iter().map(|p| p.x).fold(f64::NEG_INFINITY, f64::max),
+                pts.iter().map(|p| p.y).fold(f64::NEG_INFINITY, f64::max),
+            );
+            scope.poly = Some(pts);
+            scope.poly_cad = Some(id);
+            scope.poly_floor = cx.floor;
+            scope.include_poly = including;
+            stage = Stage::Placed { lo, hi };
+        }
+    }
+    let placed = matches!(stage, Stage::Placed { .. });
+    put(State { kind, stage, scope });
+    if placed {
+        cx.status = "Edit area from the polyline: drag to move, the handle to rotate, Delete removes, Esc ends".into();
+        return;
+    }
     cx.status = match kind {
         AreaKind::Edit { visible_only: true } => {
             "Edit Area Visible: drag a rectangle around what to edit".into()
@@ -141,63 +262,203 @@ fn center_of(lo: Point, hi: Point) -> Point {
 // ----- what the region holds -----
 
 /// The objects wholly inside the region, apart from walls and openings (those
-/// are handled end by end).
-fn region_items(cx: &EditorContext, lo: Point, hi: Point, visible_only: bool) -> Vec<ObjectRef> {
-    objects_in_box(cx, lo, hi, false, !visible_only)
+/// are handled end by end). The marquee polyline is left out unless the
+/// command includes it.
+fn region_items(
+    cx: &EditorContext,
+    reg: &Region,
+    visible_only: bool,
+    scope: &Scope,
+) -> Vec<ObjectRef> {
+    let mut v: Vec<ObjectRef> = objects_in_box(cx, reg.lo, reg.hi, false, !visible_only)
         .into_iter()
         .filter(|o| !matches!(o, ObjectRef::Wall(_) | ObjectRef::Opening(_)))
-        .collect()
+        .collect();
+    if let Some(q) = reg.poly {
+        v.retain(|o| {
+            let pts = transform::object_points(cx, *o);
+            !pts.is_empty() && pts.iter().all(|p| point_in_polygon(*p, q))
+        });
+    }
+    if let Some(id) = scope.poly_cad {
+        v.retain(|o| *o != ObjectRef::Cad(id));
+        if scope.include_poly && cx.floor == scope.poly_floor {
+            v.push(ObjectRef::Cad(id));
+        }
+    }
+    v
 }
 
-/// The walls whose whole outline lies inside the region.
-fn walls_inside(cx: &EditorContext, lo: Point, hi: Point, visible_only: bool) -> Vec<Id> {
-    objects_in_box(cx, lo, hi, false, !visible_only)
+/// The walls that lie wholly inside the region.
+fn walls_inside(cx: &EditorContext, reg: &Region, visible_only: bool) -> Vec<Id> {
+    let edges = reg.edges();
+    objects_in_box(cx, reg.lo, reg.hi, false, !visible_only)
         .into_iter()
         .filter_map(|o| match o {
             ObjectRef::Wall(id) => Some(id),
             _ => None,
         })
+        .filter(|id| {
+            reg.poly.is_none()
+                || cx.floor().wall(*id).is_some_and(|w| {
+                    reg.contains(w.start)
+                        && reg.contains(w.end)
+                        && edges
+                            .iter()
+                            .all(|(c, d)| seg_cross_t(w.start, w.end, *c, *d).is_none())
+                })
+        })
         .collect()
 }
 
-/// Moves (or turns) the ends of walls that lie inside the region; a wall with
-/// one end in and one out stretches, its openings staying where they were
-/// when the start end is the one that moved. Returns how many walls changed.
-fn move_wall_ends(project: &mut Project, fl: usize, lo: Point, hi: Point, xf: &Xform) -> usize {
+/// Moves (or turns) the parts of walls that lie inside the region. A wall
+/// the boundary crosses is cut there: the part inside moves with the region,
+/// the parts outside stay, and the cut ends follow the moved part so the wall
+/// stays connected. Parts that end up in line again are one wall once more
+/// (the rejoin on drop); openings keep their place in the plan unless they
+/// were inside. Returns how many walls changed.
+fn move_wall_ends(project: &mut Project, fl: usize, reg: &Region, xf: &Xform) -> usize {
     let ids: Vec<Id> = project.floors[fl].walls.iter().map(|w| w.id).collect();
+    let edges = reg.edges();
     let mut n = 0;
     for id in ids {
         let Some(w) = project.floors[fl].wall(id).cloned() else {
             continue;
         };
-        let (s_in, e_in) = (in_rect(w.start, lo, hi), in_rect(w.end, lo, hi));
-        if !s_in && !e_in {
+        let len = w.start.dist(w.end);
+        if len < 1.0 {
             continue;
         }
-        let ns = if s_in { xf.apply(w.start) } else { w.start };
-        let ne = if e_in { xf.apply(w.end) } else { w.end };
-        if ns.dist(ne) < 1.0 {
+        if w.is_curved() {
+            // A curve is not cut: the ends inside the region move.
+            let (s_in, e_in) = (reg.contains(w.start), reg.contains(w.end));
+            if !s_in && !e_in {
+                continue;
+            }
+            let ns = if s_in { xf.apply(w.start) } else { w.start };
+            let ne = if e_in { xf.apply(w.end) } else { w.end };
+            if ns.dist(ne) < 1.0 {
+                continue;
+            }
+            if let Some(wm) = project.floors[fl].wall_mut(id) {
+                wm.start = ns;
+                wm.end = ne;
+            }
+            n += 1;
             continue;
         }
-        // Openings stay where they are in the plan when only the start moves.
-        let mut offsets: Vec<(Id, f64)> = Vec::new();
-        if s_in && !e_in && !w.is_curved() {
-            let dir_old = (w.end - w.start).normalized();
-            let dir_new = (ne - ns).normalized();
-            for o in project.floors[fl].openings_on(id) {
-                let at = w.start + dir_old * o.center_offset;
-                offsets.push((o.id, (at - ns).dot(dir_new)));
+        let at = |t: f64| w.start + (w.end - w.start) * t;
+        let mut ts: Vec<f64> = edges
+            .iter()
+            .filter_map(|(c, d)| seg_cross_t(w.start, w.end, *c, *d))
+            .filter(|t| t * len >= 1.0 && (1.0 - t) * len >= 1.0)
+            .collect();
+        ts.sort_by(|a, b| a.total_cmp(b));
+        ts.dedup_by(|a, b| (*a - *b).abs() * len < 0.5);
+        let mut cuts = vec![0.0];
+        cuts.extend(ts);
+        cuts.push(1.0);
+        // Spans along the wall, neighbours on the same side merged.
+        let mut spans: Vec<(f64, f64, bool)> = Vec::new();
+        for k in 0..cuts.len() - 1 {
+            let inside = reg.contains(at((cuts[k] + cuts[k + 1]) * 0.5));
+            match spans.last_mut() {
+                Some(l) if l.2 == inside => l.1 = cuts[k + 1],
+                _ => spans.push((cuts[k], cuts[k + 1], inside)),
             }
         }
-        let len = ns.dist(ne);
-        if let Some(wm) = project.floors[fl].wall_mut(id) {
-            wm.start = ns;
-            wm.end = ne;
+        if !spans.iter().any(|s| s.2) {
+            continue;
         }
-        for (oid, off) in offsets {
+        let mut nodes = vec![if spans[0].2 {
+            xf.apply(w.start)
+        } else {
+            w.start
+        }];
+        for s in &spans[..spans.len() - 1] {
+            nodes.push(xf.apply(at(s.1)));
+        }
+        nodes.push(if spans[spans.len() - 1].2 {
+            xf.apply(w.end)
+        } else {
+            w.end
+        });
+        // Parts in line with each other are one wall.
+        let mut pieces: Vec<(Point, Point)> = Vec::new();
+        for k in 0..spans.len() {
+            let (a, b) = (nodes[k], nodes[k + 1]);
+            if let Some(last) = pieces.last_mut() {
+                let (u, v) = (last.1 - last.0, b - a);
+                let cross = u.x * v.y - u.y * v.x;
+                if cross.abs() <= 1e-4 * u.length() * v.length() && u.dot(v) > 0.0 {
+                    last.1 = b;
+                    continue;
+                }
+            }
+            pieces.push((a, b));
+        }
+        if pieces.iter().any(|p| p.0.dist(p.1) < 1.0) {
+            continue;
+        }
+        // Where the openings stand after the move.
+        let places: Vec<(Id, Point)> = if spans.len() > 1 {
+            project.floors[fl]
+                .openings_on(id)
+                .map(|o| {
+                    let t = o.center_offset / len;
+                    let inside = spans
+                        .iter()
+                        .find(|s| t >= s.0 - 1e-9 && t <= s.1 + 1e-9)
+                        .is_some_and(|s| s.2);
+                    let p = at(t);
+                    (o.id, if inside { xf.apply(p) } else { p })
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        // The longest part keeps the wall's id (the first on a tie).
+        let mut keep = 0;
+        for (i, pc) in pieces.iter().enumerate() {
+            if pc.0.dist(pc.1) > pieces[keep].0.dist(pieces[keep].1) + 1e-9 {
+                keep = i;
+            }
+        }
+        let mut piece_ids = Vec::new();
+        for i in 0..pieces.len() {
+            if i == keep {
+                piece_ids.push(id);
+                continue;
+            }
+            let nid = project.alloc_id();
+            let mut extra = w.clone();
+            extra.id = nid;
+            project.floors[fl].walls.push(extra);
+            piece_ids.push(nid);
+        }
+        for (pid, (a, b)) in piece_ids.iter().zip(&pieces) {
+            if let Some(wm) = project.floors[fl].wall_mut(*pid) {
+                wm.start = *a;
+                wm.end = *b;
+            }
+        }
+        for (oid, q) in places {
+            let best = (0..pieces.len())
+                .min_by(|i, j| {
+                    dist_to_segment(q, pieces[*i].0, pieces[*i].1).total_cmp(&dist_to_segment(
+                        q,
+                        pieces[*j].0,
+                        pieces[*j].1,
+                    ))
+                })
+                .unwrap_or(0);
+            let (a, b) = pieces[best];
+            let plen = a.dist(b);
+            let off = (q - a).dot((b - a).normalized());
             if let Some(o) = project.floors[fl].openings.iter_mut().find(|o| o.id == oid) {
                 let half = o.width * 0.5;
-                o.center_offset = off.clamp(half, (len - half).max(half));
+                o.wall_id = piece_ids[best];
+                o.center_offset = off.clamp(half, (plen - half).max(half));
             }
         }
         n += 1;
@@ -245,49 +506,69 @@ fn stretch_cad(cx: &mut EditorContext, lo: Point, hi: Point, d: Point) -> usize 
     n
 }
 
+/// Runs `f` on each floor the command covers (the current one, or all with
+/// `all`), then goes back to the floor it started on.
+fn each_floor(cx: &mut EditorContext, all: bool, mut f: impl FnMut(&mut EditorContext)) {
+    let home = cx.floor;
+    let floors: Vec<usize> = if all {
+        (0..cx.project.floors.len()).collect()
+    } else {
+        vec![home]
+    };
+    for fl in floors {
+        cx.floor = fl;
+        f(cx);
+    }
+    cx.floor = home;
+}
+
 /// Rebuilds the plan from `original` with the region's contents moved by `d`
 /// (a copy of them placed `d` away with `copy`) or, for `turn`, turned.
 /// Returns what changed, for the status line.
+#[allow(clippy::too_many_arguments)]
 fn apply(
     cx: &mut EditorContext,
     original: &Project,
     kind: AreaKind,
     (lo, hi): (Point, Point),
+    scope: &Scope,
     d: Point,
     turn: Option<f64>,
     copy: bool,
 ) -> usize {
     cx.project = original.clone();
-    let fl = cx.floor;
-    let walls_before = cx.floor().walls.clone();
-    let n = match kind {
-        AreaKind::StretchCad => stretch_cad(cx, lo, hi, d),
-        AreaKind::Edit { visible_only } => {
-            let items = region_items(cx, lo, hi, visible_only);
+    let mut n = 0;
+    if kind == AreaKind::StretchCad {
+        n = stretch_cad(cx, lo, hi, d);
+    } else if let AreaKind::Edit { visible_only } = kind {
+        let reg = Region::new(lo, hi, scope);
+        let all = scope.all_floors;
+        each_floor(cx, all, |cx| {
+            let fl = cx.floor;
+            let walls_before = cx.floor().walls.clone();
+            let items = region_items(cx, &reg, visible_only, scope);
             if copy {
                 // Copies of everything inside, placed `d` away.
-                let mut all = items;
-                all.extend(
-                    walls_inside(cx, lo, hi, visible_only)
+                let mut every = items;
+                every.extend(
+                    walls_inside(cx, &reg, visible_only)
                         .into_iter()
                         .map(ObjectRef::Wall),
                 );
-                let saved = std::mem::replace(&mut cx.selection.items, all);
+                let saved = std::mem::replace(&mut cx.selection.items, every);
                 let clip = Clipboard::capture(cx);
                 cx.selection.items = saved;
-                clip.paste(cx, d, false).len()
+                n += clip.paste(cx, d, false).len();
             } else {
                 let xf = match turn {
                     Some(a) => Xform::rotate(center_of(lo, hi), a),
                     None => Xform::translate(d),
                 };
-                let walls = move_wall_ends(&mut cx.project, fl, lo, hi, &xf);
-                walls + transform::apply_xform(cx, &items, &xf).changed
+                let walls = move_wall_ends(&mut cx.project, fl, &reg, &xf);
+                n += walls + transform::apply_xform(cx, &items, &xf).changed;
+                details_view::follow_walls(&mut cx.project, fl, &walls_before);
             }
-        }
-    };
-    if !copy {
-        details_view::follow_walls(&mut cx.project, fl, &walls_before);
+        });
     }
     crate::editor::placed::sync_distributions(cx);
     cx.mark_dirty();
@@ -331,7 +612,7 @@ pub fn pointer_down(cx: &mut EditorContext, p: &PointerEvent) -> Option<ToolResu
                     original: Box::new(cx.project.clone()),
                     angle: 0.0,
                 };
-            } else if in_rect(p.world, lo, hi) {
+            } else if Region::new(lo, hi, &st.scope).contains(p.world) {
                 let copy = matches!(kind, AreaKind::Edit { .. })
                     && (p.modifiers.ctrl || p.modifiers.command);
                 cx.begin_change(label(kind, false, copy));
@@ -413,6 +694,7 @@ fn turn_angle(cx: &mut EditorContext, center: Point, start: Point, p: &PointerEv
 /// Re-applies the drag in progress for the pointer `p`.
 fn drag_to(cx: &mut EditorContext, st: &mut State, p: &PointerEvent) {
     let kind = st.kind;
+    let scope = st.scope.clone();
     match &mut st.stage {
         Stage::Moving {
             lo,
@@ -424,7 +706,7 @@ fn drag_to(cx: &mut EditorContext, st: &mut State, p: &PointerEvent) {
         } => {
             let d = move_delta(cx, *start, p);
             *shift = d;
-            apply(cx, original, kind, (*lo, *hi), d, None, *copy);
+            apply(cx, original, kind, (*lo, *hi), &scope, d, None, *copy);
         }
         Stage::Turning {
             lo,
@@ -436,7 +718,16 @@ fn drag_to(cx: &mut EditorContext, st: &mut State, p: &PointerEvent) {
             let center = center_of(*lo, *hi);
             let a = turn_angle(cx, center, *start, p);
             *angle = a;
-            apply(cx, original, kind, (*lo, *hi), Point::ZERO, Some(a), false);
+            apply(
+                cx,
+                original,
+                kind,
+                (*lo, *hi),
+                &scope,
+                Point::ZERO,
+                Some(a),
+                false,
+            );
         }
         _ => {}
     }
@@ -497,6 +788,7 @@ pub fn pointer_up(cx: &mut EditorContext, p: &PointerEvent) -> Option<ToolResult
             // The last position of the pointer counts.
             let mut tmp = State {
                 kind,
+                scope: st.scope.clone(),
                 stage: Stage::Moving {
                     lo,
                     hi,
@@ -525,6 +817,9 @@ pub fn pointer_up(cx: &mut EditorContext, p: &PointerEvent) -> Option<ToolResult
                         lo: lo + shift,
                         hi: hi + shift,
                     };
+                    if let Some(q) = st.scope.poly.as_mut() {
+                        q.iter_mut().for_each(|c| *c = *c + shift);
+                    }
                 }
             }
         }
@@ -537,6 +832,7 @@ pub fn pointer_up(cx: &mut EditorContext, p: &PointerEvent) -> Option<ToolResult
         } => {
             let mut tmp = State {
                 kind,
+                scope: st.scope.clone(),
                 stage: Stage::Turning {
                     lo,
                     hi,
@@ -596,19 +892,27 @@ pub fn key(cx: &mut EditorContext, k: &KeyEvent) -> Option<ToolResult> {
     if (k.is(Key::Delete) || k.is(Key::Backspace)) && !dragging {
         if let (Stage::Placed { lo, hi }, AreaKind::Edit { visible_only }) = (&st.stage, kind) {
             let (lo, hi) = (*lo, *hi);
-            let mut all = region_items(cx, lo, hi, visible_only);
-            all.extend(
-                walls_inside(cx, lo, hi, visible_only)
-                    .into_iter()
-                    .map(ObjectRef::Wall),
-            );
-            if all.is_empty() {
+            let scope = st.scope.clone();
+            let reg = Region::new(lo, hi, &scope);
+            let mut found = 0;
+            each_floor(cx, scope.all_floors, |cx| {
+                let mut all = region_items(cx, &reg, visible_only, &scope);
+                all.extend(
+                    walls_inside(cx, &reg, visible_only)
+                        .into_iter()
+                        .map(ObjectRef::Wall),
+                );
+                if !all.is_empty() {
+                    found += all.len();
+                    cx.selection.items = all;
+                    cx.delete_selection();
+                }
+            });
+            if found == 0 {
                 cx.status = "Nothing inside the edit area".into();
                 put(st);
                 return Some(ToolResult::consumed());
             }
-            cx.selection.items = all;
-            cx.delete_selection();
             put(st);
             return Some(ToolResult::committed("Delete Edit Area"));
         }
@@ -622,10 +926,10 @@ pub fn key(cx: &mut EditorContext, k: &KeyEvent) -> Option<ToolResult> {
 /// The rubber band, the region with its Rotate handle and the live outline of
 /// a move or turn.
 pub fn draw_overlay(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
-    let (kind, band, placed, shift, angle) = STATE.with(|s| {
+    let (kind, band, placed, shift, angle, poly) = STATE.with(|s| {
         let b = s.borrow();
         let Some(st) = b.as_ref() else {
-            return (None, None, None, Point::ZERO, 0.0);
+            return (None, None, None, Point::ZERO, 0.0, None);
         };
         let mut band = None;
         let mut placed = None;
@@ -651,7 +955,14 @@ pub fn draw_overlay(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
             }
             _ => {}
         }
-        (Some(st.kind), band, placed, shift, angle)
+        (
+            Some(st.kind),
+            band,
+            placed,
+            shift,
+            angle,
+            st.scope.poly.clone(),
+        )
     });
     let Some(kind) = kind else { return };
     let col = cx.palette.selection;
@@ -663,7 +974,11 @@ pub fn draw_overlay(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
     if let Some((lo, hi)) = placed {
         let center = center_of(lo, hi);
         let xf = Xform::rotate(center, angle);
-        let pts: Vec<Pos2> = rect_corners(lo, hi)
+        let outline: Vec<Point> = match poly {
+            Some(q) => q,
+            None => rect_corners(lo, hi).to_vec(),
+        };
+        let pts: Vec<Pos2> = outline
             .iter()
             .map(|c| cam.world_to_screen(xf.apply(*c) + shift))
             .collect();

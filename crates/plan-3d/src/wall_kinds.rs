@@ -75,6 +75,7 @@ fn class_top(cover: Option<&FloorCover>, wall: &Wall, elevation: f64) -> Option<
 
 /// Builds the wall and the openings it hosts into `out`. `cover` is the roof
 /// above the floor, which cuts the wall tops.
+#[allow(clippy::too_many_arguments)]
 pub fn add_wall(
     floor: &Floor,
     wall: &Wall,
@@ -82,6 +83,7 @@ pub fn add_wall(
     opts: &SceneOptions,
     lookup: Lookup,
     cover: Option<&FloorCover>,
+    cuts: &EndCuts,
     out: &mut Vec<Mesh>,
 ) {
     if wall.class == WallClass::RoomDivider || wall.length() <= 1e-6 {
@@ -100,13 +102,16 @@ pub fn add_wall(
         .collect();
     let holes: Vec<Hole> = hosted.iter().map(|(_, h)| *h).collect();
     let top = class_top(cover, wall, floor.elevation);
-    out.extend(build_class_with_top(
+    // Half, pony and foundation walls meet the walls they join in the same
+    // mitre or butt the plan draws (brief 40).
+    out.extend(build_class_cut(
         wall,
         floor.elevation,
         &holes,
         interior,
         lookup,
         top.as_ref(),
+        cuts,
     ));
     let base = match wall.class {
         WallClass::Foundation => floor.elevation - wall.foundation_height,

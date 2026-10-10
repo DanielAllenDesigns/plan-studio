@@ -165,7 +165,9 @@ impl ArcFrame {
             vec![wall.start.add(off), wall.end.add(off)]
         };
         let (mut left, mut right) = (face(1.0), face(-1.0));
-        let limit = wall.thickness * 6.0 + 1.0;
+        // The plan outline has already applied the mitre limit; a thin layer
+        // slab of a thick wall may still be cut far along its length.
+        let limit = (wall.thickness * 6.0 + 1.0).max(600.0);
         for (cut, at) in [(cuts.start, 0), (cuts.end, 1)] {
             if let Some((a, b)) = cut {
                 left[at] = cut_line_point(a, b, left[at], dir, limit);

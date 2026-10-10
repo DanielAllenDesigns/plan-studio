@@ -9,6 +9,7 @@ pub mod actions;
 pub mod behaviors;
 pub mod cabinet_edit;
 pub mod camera;
+pub mod camera_edit;
 pub mod clipboard;
 pub mod code;
 pub mod connect;

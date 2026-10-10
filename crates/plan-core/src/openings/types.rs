@@ -487,6 +487,9 @@ pub fn group_eq(a: &Opening, b: &Opening, g: DynGroup) -> bool {
         DynGroup::Type => {
             a.style == b.style
                 && sa.window_type == sb.window_type
+                && sa.door_style == sb.door_style
+                && sa.library_door == sb.library_door
+                && sa.library_reversed == sb.library_reversed
                 && a.extras.style_name == b.extras.style_name
         }
         DynGroup::Casing => {
@@ -530,6 +533,9 @@ pub fn copy_group(dst: &mut Opening, src: &Opening, g: DynGroup) {
         DynGroup::Type => {
             dst.style = src.style;
             dst.extras.spec.window_type = sp.window_type;
+            dst.extras.spec.door_style = sp.door_style;
+            dst.extras.spec.library_door = sp.library_door.clone();
+            dst.extras.spec.library_reversed = sp.library_reversed;
             dst.extras.style_name = src.extras.style_name.clone();
         }
         DynGroup::Casing => {
@@ -866,6 +872,39 @@ mod tests {
         // A pocket door is just a pocket door.
         d.style = OpeningStyle::Pocket;
         assert!(!DefaultKey::of(&d, WallKind::Exterior).exterior);
+    }
+
+    #[test]
+    fn a_door_on_use_default_follows_the_default_door_style_and_an_edit_releases_it() {
+        use crate::openings::spec::{DoorLeafStyle, LibraryDoor};
+        let (mut p, w) = plan();
+        let mut v = OpeningVariantDefaults::default();
+        let mut a = v.place(&template(OpeningKind::Door), OpeningStyle::Hinged, true);
+        assert!(a.extras.spec.dynamic.window_type);
+        a.id = p.alloc_id();
+        a.wall_id = w;
+        a.center_offset = 100.0;
+        p.floors[0].openings.push(a);
+        // The Interior Door default takes a library door.
+        let mut def = template(OpeningKind::Door);
+        def.extras.spec.door_style = DoorLeafStyle::Library;
+        def.extras.spec.library_door = Some(LibraryDoor {
+            id: "chief.u.9".into(),
+            name: "Colonial".into(),
+        });
+        v.set_type_default(
+            DefaultKey::new(OpeningKind::Door, OpeningStyle::Hinged, true),
+            def,
+        );
+        assert_eq!(p.follow_type_defaults(&v), 1);
+        let o = &p.floors[0].openings[0];
+        assert_eq!(o.extras.spec.door_style, DoorLeafStyle::Library);
+        assert_eq!(o.extras.spec.library_door.as_ref().unwrap().id, "chief.u.9");
+        // Choosing a built-in style in the dialog stops following.
+        let mut after = o.clone();
+        after.extras.spec.door_style = DoorLeafStyle::Slab;
+        assert_eq!(release_edited_groups(o, &mut after), 1);
+        assert!(!after.extras.spec.dynamic.window_type);
     }
 
     #[test]

@@ -9,7 +9,7 @@
 
 use crate::defaults::WallTypeDef;
 use crate::geometry::Point;
-use crate::joins::wall_layer_bands;
+use crate::joins::{wall_layer_bands, wall_layer_outlines, WallLayerOutline};
 use crate::model::{Id, Project, Wall, WallEnd};
 use serde::{Deserialize, Serialize};
 
@@ -193,6 +193,62 @@ pub fn layer_handle(w: &Wall, types: &[WallTypeDef], end: WallEnd, layer: usize)
     Some(p + w.normal() * ((band.outer + band.inner) * 0.5) + outward * shift)
 }
 
+/// The plan outline of layer `layer` of wall `id`, joined to the walls around
+/// it exactly as the plan draws it (start-left, end-left, end-right,
+/// start-right; left = +normal), with Edit Wall Intersections slides applied
+/// (`spec.layer_joins`). `None` for an unknown wall or layer, or a curved wall.
+pub fn layer_end_polygon(
+    walls: &[Wall],
+    types: &[WallTypeDef],
+    id: Id,
+    layer: usize,
+    tol: f64,
+) -> Option<[Point; 4]> {
+    let outlines = wall_layer_outlines(walls, types, tol);
+    outline_of(&outlines, id, layer)
+}
+
+/// [`layer_end_polygon`] from outlines already computed for the whole floor.
+pub fn outline_of(outlines: &[WallLayerOutline], id: Id, layer: usize) -> Option<[Point; 4]> {
+    let o = outlines
+        .iter()
+        .find(|o| o.wall_id == id && o.layer_index == layer)?;
+    <[Point; 4]>::try_from(o.polygon.as_slice()).ok()
+}
+
+/// Whether the end face of a layer slab is hidden against another wall's
+/// layer: the end edge `a`-`b` lies along an edge of some other wall's layer
+/// outline (a mitre shares the whole edge; a butt stops on the surface of the
+/// layer it meets). Such a face is not drawn, so the two materials meet along
+/// one edge with nothing coincident to fight over.
+pub fn end_edge_is_shared(outlines: &[WallLayerOutline], id: Id, a: Point, b: Point) -> bool {
+    const EDGE: f64 = 1e-4;
+    let len = a.dist(b);
+    if len <= EDGE {
+        return false;
+    }
+    let on_line = |q: Point, p0: Point, p1: Point| {
+        let e = p1 - p0;
+        let l = e.length();
+        l > EDGE && ((q - p0).cross(e * (1.0 / l))).abs() <= EDGE
+    };
+    outlines.iter().filter(|o| o.wall_id != id).any(|o| {
+        let n = o.polygon.len();
+        (0..n).any(|i| {
+            let (p0, p1) = (o.polygon[i], o.polygon[(i + 1) % n]);
+            let e = p1 - p0;
+            if !on_line(a, p0, p1) || !on_line(b, p0, p1) {
+                return false;
+            }
+            // Both ends inside the other edge's span.
+            let l = e.length();
+            let u = e * (1.0 / l);
+            let (ta, tb) = ((a - p0).dot(u), (b - p0).dot(u));
+            ta >= -EDGE && ta <= l + EDGE && tb >= -EDGE && tb <= l + EDGE
+        })
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -282,5 +338,126 @@ mod tests {
         assert!(p.floors[0].wall(b).unwrap().flags.lock_start, "locks stay");
         assert_eq!(p.reset_layer_joins(0, None, true), 1);
         assert!(!p.floors[0].wall(b).unwrap().flags.lock_start);
+    }
+
+    // ----- 3D layer outlines (brief 40) -----
+
+    fn typed(id: u64, a: (f64, f64), b: (f64, f64)) -> (Wall, WallTypeDef) {
+        let ty = PlanDefaults::chief_x18_daniel()
+            .wall_type("Stucco-6")
+            .unwrap()
+            .clone();
+        let mut w = Wall::new(
+            Point::new(a.0, a.1),
+            Point::new(b.0, b.1),
+            ty.thickness(),
+            96.0,
+            WallKind::Exterior,
+        );
+        w.id = id;
+        w.wall_type = Some(ty.name.clone());
+        (w, ty)
+    }
+
+    fn area(poly: &[Point]) -> f64 {
+        let n = poly.len();
+        (0..n)
+            .map(|i| poly[i].cross(poly[(i + 1) % n]))
+            .sum::<f64>()
+            .abs()
+            * 0.5
+    }
+
+    /// Total overlap area between layers of different walls, and the
+    /// difference between each wall's layer areas and its whole outline.
+    fn overlap_and_gap(walls: &[Wall], ty: &WallTypeDef) -> (f64, f64) {
+        let types = vec![ty.clone()];
+        let outs = wall_layer_outlines(walls, &types, 0.5);
+        let mut overlap = 0.0;
+        for (i, a) in outs.iter().enumerate() {
+            for b in outs.iter().skip(i + 1).filter(|b| b.wall_id != a.wall_id) {
+                overlap += area(&crate::joins::convex_overlap(&a.polygon, &b.polygon));
+            }
+        }
+        let whole = crate::joins::wall_outlines(walls, 0.5);
+        let mut gap = 0.0;
+        for w in walls {
+            let layers: f64 = outs
+                .iter()
+                .filter(|o| o.wall_id == w.id)
+                .map(|o| area(&o.polygon))
+                .sum();
+            let o = whole.iter().find(|o| o.wall_id == w.id).unwrap();
+            gap += (layers - area(&o.polygon)).abs();
+        }
+        (overlap, gap)
+    }
+
+    #[test]
+    fn l_corner_layers_meet_edge_to_edge() {
+        let (a, ty) = typed(1, (0.0, 0.0), (120.0, 0.0));
+        let (b, _) = typed(2, (120.0, 0.0), (120.0, 100.0));
+        let walls = vec![a, b];
+        let types = vec![ty.clone()];
+        let (overlap, gap) = overlap_and_gap(&walls, &ty);
+        assert!(overlap < 1e-6, "layers overlap by {overlap}");
+        assert!(gap < 1e-6, "layers leave a gap of {gap}");
+        let outs = wall_layer_outlines(&walls, &types, 0.5);
+        // The end edge of every layer of the first wall lies along an edge of
+        // the second wall's layers, so no end face is needed there.
+        for k in 0..ty.layers.len() {
+            let p = layer_end_polygon(&walls, &types, 1, k, 0.5).unwrap();
+            assert!(end_edge_is_shared(&outs, 1, p[1], p[2]), "layer {k}");
+        }
+        // The far end is free.
+        let p = layer_end_polygon(&walls, &types, 1, 0, 0.5).unwrap();
+        assert!(!end_edge_is_shared(&outs, 1, p[0], p[3]));
+        assert!(layer_end_polygon(&walls, &types, 1, 99, 0.5).is_none());
+    }
+
+    #[test]
+    fn forty_five_degree_corner_layers_meet_edge_to_edge() {
+        let (a, ty) = typed(1, (0.0, 0.0), (100.0, 0.0));
+        let (b, _) = typed(2, (100.0, 0.0), (170.7, 70.7));
+        let walls = vec![a, b];
+        let (overlap, gap) = overlap_and_gap(&walls, &ty);
+        assert!(overlap < 1e-6, "layers overlap by {overlap}");
+        assert!(gap < 1e-6, "layers leave a gap of {gap}");
+        let types = vec![ty.clone()];
+        let outs = wall_layer_outlines(&walls, &types, 0.5);
+        for k in 0..ty.layers.len() {
+            let p = layer_end_polygon(&walls, &types, 1, k, 0.5).unwrap();
+            assert!(end_edge_is_shared(&outs, 1, p[1], p[2]), "layer {k}");
+        }
+    }
+
+    #[test]
+    fn tee_abutting_layers_stop_on_the_through_wall() {
+        let (a, ty) = typed(1, (0.0, 0.0), (240.0, 0.0));
+        let (b, _) = typed(2, (120.0, 0.0), (120.0, 100.0));
+        let walls = vec![a, b];
+        let (overlap, _) = overlap_and_gap(&walls, &ty);
+        assert!(overlap < 1e-6, "layers overlap by {overlap}");
+        let types = vec![ty.clone()];
+        let outs = wall_layer_outlines(&walls, &types, 0.5);
+        for k in 0..ty.layers.len() {
+            let p = layer_end_polygon(&walls, &types, 2, k, 0.5).unwrap();
+            assert!(end_edge_is_shared(&outs, 2, p[0], p[3]), "layer {k}");
+        }
+        // The through wall's layers are whole and uncut.
+        let p = layer_end_polygon(&walls, &types, 1, 0, 0.5).unwrap();
+        assert!((p[0].dist(p[1]) - 240.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn cross_of_four_walls_keeps_both_main_layers_whole() {
+        let (a, ty) = typed(1, (0.0, 0.0), (120.0, 0.0));
+        let (b, _) = typed(2, (120.0, 0.0), (240.0, 0.0));
+        let (c, _) = typed(3, (120.0, -100.0), (120.0, 0.0));
+        let (d, _) = typed(4, (120.0, 0.0), (120.0, 100.0));
+        let walls = vec![a, b, c, d];
+        let (overlap, gap) = overlap_and_gap(&walls, &ty);
+        assert!(overlap < 1e-6, "layers overlap by {overlap}");
+        assert!(gap < 1e-6, "layers leave a gap of {gap}");
     }
 }

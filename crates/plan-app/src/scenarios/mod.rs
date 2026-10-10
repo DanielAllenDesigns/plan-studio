@@ -84,6 +84,7 @@ mod s66_construction_reference;
 mod s67_line_fill_poche;
 mod s68_layers;
 mod s69_edit_behaviours;
+mod s70_cad_edit_tools;
 mod s70_plan_agent;
 mod s71_wall_types;
 mod s73_wall_edit_tools;
@@ -109,6 +110,9 @@ mod s92_floors_foundation;
 mod s92_terrain_site;
 mod s94_text_macros_rescheck;
 mod s97_saved_defaults_views;
+mod tutorials_a;
+mod tutorials_b;
+mod tutorials_support;
 
 use crate::editor::{EditorContext, EditorRequest, ObjectRef};
 use crate::tools::{KeyEvent, PointerEvent, ToolId, ToolResult};

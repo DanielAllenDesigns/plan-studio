@@ -156,3 +156,49 @@ Today: partial (ignore at 1 ft = 100 ft, Plot Lines, callout).
 ## Running the whole set
 
 `cargo test -p plan-app scenarios::tut` replays the tutorials; each ignored test names its break id, so `cargo test -p plan-app scenarios::tut -- --ignored` lists the open work in tutorial order. A final assertion in `tut_support.rs` could count the ignored tests and compare it with `docs/parity-status.md` so a feature that lands without its `#[ignore]` being removed fails the gate.
+
+---
+
+## Status, lessons 1 to 14 (Round 16, brief 34)
+
+Replays live in `crates/plan-app/src/scenarios/tutorials_a/` with the shared `chic_cottage` helper in `scenarios/tutorials_support.rs`. `cargo test -p plan-app --bin plan-studio scenarios::tutorials` is green (19 pass, 61 ignored); `-- --ignored` lists the open work in lesson order. Ignore tags read `T7-<lesson>: <break id>`.
+
+| Lesson | Status | Green now | Ignored (break ids) |
+|---|---|---|---|
+| 1 | partial | six walls close into one room, one undo step per wall; Floor Defaults ceiling 97 1/8; Auto Exterior Dimensions undo | wall-type-layers, R-143, RF-164, DIM-48, TXT-65, APP-93 |
+| 2 | partial | three partitions make four rooms; delete a partition merges; Wall Specification opens | W-152, R-107, wall-type-layers |
+| 3 | partial | Build New Floor derives the shell in one step; floor elevation | R-133, W-138, W-145, L-235 |
+| 4 | partial | Draw Stairs between floors: rise equals floor delta, 14-18 risers | CB-160, CB-162, DIM-62, C-136, TXT-56 |
+| 5 | partial | door and window clicks, interior door in a partition | CB-395, DW-168, TXT-65 |
+| 6 | ignored | cottage stays one room | CB-627, CB-530, W-145, CB-109, CB-170, L-63 (half-wall and railing flyout steps not driven) |
+| 7 | partial | hip roof, four planes, one step | RF-166 (all other styles), RF-165 |
+| 8 | partial | Build Roof on the cottage, undo | RF-166, RF-61, RF-86, RF-96, DS-27 |
+| 9 | partial | Floating Dormer, one step | RF-166, RF-80, S-137 |
+| 10 | ignored | none | R-122, R-146, CB-210, R-111 |
+| 11 | partial | room floor finish name, one step | R-122, CB-646, CAD-101, L-233 |
+| 12 | ignored | none | R-117, R-106, R-110, S-170 |
+| 13 | ignored | none | CB-427, CB-436, S-118, S-195, L-234 |
+| 14 | partial | base, wall, full-height cabinets, one step each | CB-395, DS-27, CB-631, CB-632, CB-344, DS-26 |
+
+---
+
+## Status of lessons 15 to 28 (round 16, brief 35)
+
+Implemented in `crates/plan-app/src/scenarios/tutorials_b/` (one file per lesson, `support_b.rs` for the framing/terrain/layout helpers). `cargo test -p plan-app --bin plan-studio scenarios::tutorials_b` runs the green replays; add `-- --ignored` for the open work in lesson order (each ignore carries `T7-<lesson>: <id>`).
+
+| Lesson | Real replay (green) | Still ignored |
+|---|---|---|
+| 15 | butting row of base cabinets, filler, wall cabinet | S-137, CB-427, CB-634, CB-633, R-113 |
+| 16 | partition and wall cabinet, one undo step each | CB-635, CB-434, CB-636, L-233, S-118, DIM-63 |
+| 17 | lights on a 40 in pitch, wall light on its wall | E-33, R-105, TXT-65, E-31 |
+| 18 | outlet family, three switches | E-32, E-25, CB-428 |
+| 19 | floor 2 framing, one step, floor 1 untouched | CB-283, S-137, CB-638 |
+| 20 | wall framing studs, one step | W-138, CB-645, DIM-46, DS-32 |
+| 21 | roof rafters from Build Framing | CB-283, RF-115, CB-644 |
+| 22 | survey courses of the guide chain at the bearings | S-172, CAD-22, PR-31 |
+| 23 | two elevation lines, slope | CB-530, CAD-22, CB-512 |
+| 24 | road, driveway, sidewalk strips | CB-628, CB-629, CB-630, CB-588 |
+| 25 | polyline garden bed | CAD-22, S-170, CB-649, CB-427, CB-617 |
+| 26 | patterned labels (A0.1, A1.1, A1.2, E1.1), template pages not printed, insert page | L-190 (template boxes repeat), L-192 |
+| 27 | page on its own sheet and back | L-230, L-231, L-189, L-195, L-236, L-193 |
+| 28 | site plan at 1:1200, PDF one ARCH D page per content page | L-229, L-155, L-232, L-161 |

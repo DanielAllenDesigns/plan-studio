@@ -1155,6 +1155,7 @@ impl Tool for WallTool {
             let pts = [cam.world_to_screen(g.from), cam.world_to_screen(g.to)];
             painter.extend(Shape::dashed_line(&pts, stroke, 6.0, 4.0));
         }
+        snap::draw_anchor_markers(painter, cam, cx);
         if let Some(start) = self.drag_from.or(self.pending) {
             snap::draw_angle_rays(painter, cam, cx, start);
             let len = start.dist(to);

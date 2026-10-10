@@ -59,6 +59,8 @@ pub const DEFAULT_WIDTH: f64 = 36.0;
 pub const PLATFORM: f64 = 12.125;
 /// Default landing size.
 pub const DEFAULT_LANDING: f64 = 36.0;
+/// The side of the landing a single click places (CB-136).
+pub const CLICK_LANDING: f64 = 39.0;
 /// Rise of a ramp (the 30" maximum between landings, CB-34).
 pub const RAMP_RISE: f64 = 30.0;
 /// Smallest width / landing size the handles allow.

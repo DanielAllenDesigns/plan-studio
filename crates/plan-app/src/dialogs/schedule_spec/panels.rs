@@ -917,6 +917,9 @@ impl Form {
                     .speed(0.1),
             );
         });
+    }
+
+    pub(super) fn layer(&mut self, ui: &mut Ui) {
         section(ui, "Layer");
         row(ui, "Layer", |ui| {
             egui::ComboBox::from_id_salt("schedule_layer")

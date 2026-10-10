@@ -27,9 +27,9 @@ pub mod types;
 pub use bay::{BayUnit, MIN_UNIT_WIDTH};
 pub use mull::{MulledArrangement, MulledLabel, MulledSpec};
 pub use spec::{
-    door_panel_count, Arch, ArchType, BayRoof, BayRoofKind, CasingProfile, ExteriorSill,
-    HandleStyle, Hardware, Lintel, LintelStyle, LiteStyle, OpeningSpec, OpeningView3d, RecessTo,
-    ShutterSides, ShutterStyle, Shutters, StandardWidths, StyleWidths,
+    door_panel_count, Arch, ArchType, BayRoof, BayRoofKind, CasingProfile, DoorLeafStyle,
+    ExteriorSill, HandleStyle, Hardware, LibraryDoor, Lintel, LintelStyle, LiteStyle, OpeningSpec,
+    OpeningView3d, RecessTo, ShutterSides, ShutterStyle, Shutters, StandardWidths, StyleWidths,
 };
 pub use types::{
     copy_group, group_eq, release_edited_groups, DefaultKey, DynGroup, OpenMode, TypeDefault,

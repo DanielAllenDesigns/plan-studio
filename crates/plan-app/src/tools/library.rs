@@ -38,6 +38,7 @@ use std::sync::{Arc, OnceLock};
 
 pub mod chief;
 pub mod convert;
+pub mod door_library;
 pub mod door_styles;
 pub mod make;
 pub mod thumb;
@@ -424,6 +425,13 @@ impl LibraryTool {
             cx.status = self.hint();
             return ToolResult::consumed();
         };
+        // A door clicked onto a doorway, a door or a wall (DW-126).
+        if door_library::is_door_item(&item) {
+            if let Some(r) = door_library::place_door(cx, &item, p.world) {
+                user::touch_recent(&item.id);
+                return r;
+            }
+        }
         let mut sym = placement_for(cx, &item, p);
         // An appliance dropped near its bay turns and sits in the cabinet's bay.
         placed::snap_symbol_to_bay(cx.floor(), &mut sym, placed::BAY_SNAP_REACH);

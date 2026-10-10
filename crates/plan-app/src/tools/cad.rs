@@ -657,12 +657,20 @@ pub enum CadMode {
     ConvertToPolyline,
     ConvertToSpline,
     PolylineToLines,
+    /// Intersect / Join Two Lines: extends or trims two lines to meet.
+    JoinTwoLines,
+    /// Closes the selected open polylines.
+    ClosePolyline,
+    /// Drops short edges and straight-through vertices.
+    SimplifyPolyline,
+    /// Rounds every corner of the selected polylines (Set Fillet Radius).
+    FilletAllCorners,
     Hatch,
     DetailFromView,
 }
 
 impl CadMode {
-    pub const ALL: [CadMode; 49] = [
+    pub const ALL: [CadMode; 53] = [
         CadMode::Line,
         CadMode::InputLine,
         CadMode::LineArrow,
@@ -710,6 +718,10 @@ impl CadMode {
         CadMode::ConvertToPolyline,
         CadMode::ConvertToSpline,
         CadMode::PolylineToLines,
+        CadMode::JoinTwoLines,
+        CadMode::ClosePolyline,
+        CadMode::SimplifyPolyline,
+        CadMode::FilletAllCorners,
         CadMode::Hatch,
         CadMode::DetailFromView,
     ];
@@ -764,6 +776,10 @@ impl CadMode {
             CadMode::ConvertToPolyline => "Convert to Polyline",
             CadMode::ConvertToSpline => "Convert to Spline",
             CadMode::PolylineToLines => "Convert Polyline to Lines",
+            CadMode::JoinTwoLines => "Intersect Two Lines",
+            CadMode::ClosePolyline => "Close Polyline",
+            CadMode::SimplifyPolyline => "Simplify Polyline",
+            CadMode::FilletAllCorners => "Fillet All Corners",
             CadMode::Hatch => "Hatch",
             CadMode::DetailFromView => "CAD Detail From View",
         }
@@ -824,6 +840,10 @@ impl CadMode {
             CadMode::ConvertToPolyline => "To Polyline",
             CadMode::ConvertToSpline => "To Spline",
             CadMode::PolylineToLines => "To Lines",
+            CadMode::JoinTwoLines => "Intersect",
+            CadMode::ClosePolyline => "Close",
+            CadMode::SimplifyPolyline => "Simplify",
+            CadMode::FilletAllCorners => "Fillet All",
             CadMode::Hatch => "Hatch",
             CadMode::DetailFromView => "Detail From View",
         }
@@ -879,6 +899,9 @@ impl CadMode {
                 | CadMode::ConvertToPolyline
                 | CadMode::ConvertToSpline
                 | CadMode::PolylineToLines
+                | CadMode::ClosePolyline
+                | CadMode::SimplifyPolyline
+                | CadMode::FilletAllCorners
                 | CadMode::DetailFromView
         )
     }
@@ -891,6 +914,7 @@ impl CadMode {
                 | CadMode::AddBackoffPoint
                 | CadMode::InsertBlock
                 | CadMode::Fillet
+                | CadMode::JoinTwoLines
                 | CadMode::Chamfer
                 | CadMode::Offset
                 | CadMode::Trim
@@ -1072,6 +1096,18 @@ impl CadMode {
             }
             CadMode::PolylineToLines => {
                 "Convert Polyline to Lines: select polylines, then use this command"
+            }
+            CadMode::JoinTwoLines => {
+                "Intersect Two Lines: click the part of each line to keep; both meet at the crossing"
+            }
+            CadMode::ClosePolyline => {
+                "Close Polyline: select open polylines, then use this command"
+            }
+            CadMode::SimplifyPolyline => {
+                "Simplify Polyline: select polylines; short edges and straight-through corners go"
+            }
+            CadMode::FilletAllCorners => {
+                "Fillet All Corners: select polylines (radius in Set Fillet Radius, 0 = none)"
             }
             CadMode::Hatch => {
                 "Hatch: click inside a closed polyline or circle (pattern in the option strip)"
@@ -1545,6 +1581,13 @@ impl CadTool {
         } else {
             current_arc_mode()
         };
+        if pts.len() == 2 && self.mode == CadMode::Arc && mode == ArcMode::AboutCenter {
+            // With a Current Point set, it is the center: two clicks (the
+            // start and the end) make the arc.
+            if let Some(c) = survey::current_point() {
+                return Some(vec![arcs::arc_about_center(c, pts[0], pts[1])?]);
+            }
+        }
         if pts.len() == 2 {
             // A Tangent arc that starts where the last line or arc ended
             // continues it: two clicks make it.
@@ -1611,6 +1654,12 @@ impl CadTool {
                 }
             }
         }
+        if self.mode == CadMode::Arc
+            && current_arc_mode() == ArcMode::AboutCenter
+            && survey::current_point().is_some()
+        {
+            return Some(2);
+        }
         self.mode.clicks()
     }
 
@@ -1626,7 +1675,7 @@ impl CadTool {
                         current_arc_mode(),
                         ArcMode::CenterStartEnd | ArcMode::AboutCenter
                     ) {
-                    *pts.get(2)?
+                    *pts.get(2).or_else(|| pts.get(1))?
                 } else {
                     *pts.get(1)?
                 };
@@ -2425,6 +2474,7 @@ impl Tool for CadTool {
         self.strip.draw(painter, cam, pal, &self.strip_items());
         self.draw_edit_overlay(cx, painter, cam);
         let ghost = Stroke::new(1.0_f32, pal.ghost_stroke);
+        crate::editor::snap::draw_anchor_markers(painter, cam, cx);
         // The Angle Snap Grid fans out from the last point (manual p. 193).
         if let Some(o) = self.origin() {
             crate::editor::snap::draw_angle_rays(painter, cam, cx, o);

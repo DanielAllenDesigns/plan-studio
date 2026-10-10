@@ -429,10 +429,26 @@ pub(super) fn behaviors(ui: &mut egui::Ui, cx: &mut EditorContext) {
                 });
         });
         ui.checkbox(&mut b.resize_proportional, "Resize keeps proportions");
+        ui.horizontal(|ui| {
+            ui.label("Primary Movement Method");
+            ui.selectable_value(&mut b.movement_polar, true, "Polar");
+            ui.selectable_value(&mut b.movement_polar, false, "Orthogonal");
+        });
         ui.checkbox(
-            &mut b.alternate_lock_axis,
-            "Alternate locks the move to one axis",
+            &mut b.stop_when_connected,
+            "Stop When Connected (Alternate drawing halts when a shape closes)",
         );
+        ui.horizontal(|ui| {
+            ui.label("Concentric Jump");
+            ui.add(
+                egui::DragValue::new(&mut b.concentric_jump)
+                    .range(0.0..=240.0)
+                    .speed(0.25)
+                    .suffix("\""),
+            )
+            .on_hover_text("0 uses the Snap Unit");
+        });
+        ui.checkbox(&mut b.behavior_indicators, "Behavior Indicators");
         ui.horizontal(|ui| {
             ui.label("Concentric");
             ui.add(
@@ -586,6 +602,16 @@ pub(super) fn snaps(ui: &mut egui::Ui, cx: &mut EditorContext) {
                     .suffix(" px"),
             );
         });
+        ui.horizontal(|ui| {
+            ui.label("Shift Restricts To");
+            ui.selectable_value(&mut e.restrictive_angle_deg, 90.0, "90\u{b0}");
+            ui.selectable_value(&mut e.restrictive_angle_deg, 45.0, "45\u{b0}");
+        });
+        ui.horizontal(|ui| {
+            ui.label("Objects in History");
+            ui.add(egui::DragValue::new(&mut e.anchor_history).range(0..=20));
+        });
+        ui.checkbox(&mut e.angle_snap_grid, "Display Angle Snap Grid");
         ui.checkbox(&mut e.bumping, "Bumping");
         ui.add_enabled_ui(e.bumping, |ui| {
             ui.horizontal(|ui| {

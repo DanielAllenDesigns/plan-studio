@@ -28,9 +28,22 @@ use plan_terrain::{
     RoadKind, WallKind,
 };
 
+// TODO parity: a Terrain Hole has no Layer tab; its `style` is not drawn from yet.
 const GENERAL_ONLY: &[Tab] = &[on("General")];
-const POINT_TABS: &[Tab] = &[on("General"), on("Display"), on("Line Style"), on("Label")];
-const DATA_TABS: &[Tab] = &[on("General"), on("Polyline"), on("Line Style"), on("Label")];
+const POINT_TABS: &[Tab] = &[
+    on("General"),
+    on("Display"),
+    on("Line Style"),
+    on("Label"),
+    on("Layer"),
+];
+const DATA_TABS: &[Tab] = &[
+    on("General"),
+    on("Polyline"),
+    on("Line Style"),
+    on("Label"),
+    on("Layer"),
+];
 const MODIFIER_TABS: &[Tab] = &[
     on("General"),
     on("Polyline"),
@@ -39,6 +52,7 @@ const MODIFIER_TABS: &[Tab] = &[
     on("Label"),
     on("Object Information"),
     on("Schedule"),
+    on("Layer"),
 ];
 const ROAD_TABS: &[Tab] = &[
     on("General"),
@@ -1114,13 +1128,19 @@ mod tests {
                         .all(|t| has(t) || r.kind == RoadKind::Marking && *t != "Label"));
                 }
                 TerrainObject::Point(..) => {
-                    assert_eq!(tabs, ["General", "Display", "Line Style", "Label"]);
+                    assert_eq!(tabs, ["General", "Display", "Line Style", "Label", "Layer"]);
                 }
                 TerrainObject::Line(_) | TerrainObject::Region(..) => {
-                    assert_eq!(tabs, ["General", "Polyline", "Line Style", "Label"]);
+                    assert_eq!(
+                        tabs,
+                        ["General", "Polyline", "Line Style", "Label", "Layer"]
+                    );
                 }
                 TerrainObject::Modifier(..) => {
-                    assert!(has("Fill Style") && tail.iter().all(|t| has(t)), "{tabs:?}");
+                    assert!(
+                        has("Fill Style") && has("Layer") && tail.iter().all(|t| has(t)),
+                        "{tabs:?}"
+                    );
                 }
                 TerrainObject::Feature(f) if f.kind == FeatureKind::Hole => {
                     assert_eq!(tabs, ["General"]);

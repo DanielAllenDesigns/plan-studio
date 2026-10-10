@@ -158,9 +158,13 @@ fn a_12_inch_floor_of_osb_and_a_2x12_builds_a_12_inch_platform_in_one_undo_step(
     assert_eq!(st.floor_structure_thickness, 12.0, "the old field follows");
     assert!(st.platform.floor_structure.own().is_some());
 
-    // OSB and joist are two layers of framing material from the datum down.
+    // OSB and joist are two layers of framing material from the datum down
+    // (the walls' own framing layers stand above the datum, W-156).
     let low = bottom(&sim, Material::Framing, WEST);
-    let high = top(&sim, Material::Framing, WEST);
+    let high = heights(&sim, Material::Framing, WEST)
+        .into_iter()
+        .filter(|y| *y <= datum + 0.01)
+        .fold(f32::MIN, f32::max);
     assert!((high - datum).abs() < 0.01, "top {high}");
     assert!(
         (high - low - 12.0).abs() < 0.01,

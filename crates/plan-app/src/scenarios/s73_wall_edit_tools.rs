@@ -178,3 +178,108 @@ fn a_wall_aligns_with_the_wall_below_and_its_joined_wall_follows() {
     cx.undo();
     assert!((cx.floor().wall(up).unwrap().start.y - 4.0).abs() < 1e-9);
 }
+
+#[test]
+fn a_layer_slides_to_the_other_walls_line_and_reset_puts_it_back_in_one_step_each() {
+    let mut cx = cx();
+    let a = add(&mut cx, 0, (0.0, 0.0), (120.0, 0.0));
+    let _b = add(&mut cx, 0, (120.0, 0.0), (120.0, 120.0));
+    cx.refresh();
+    // 4.4 inches asked, the other wall's face is at 2.25: it snaps there.
+    let shift = wall_edit::slide_layer(&mut cx, a, WallEnd::End, 0, 2.0).unwrap();
+    assert!((shift - 2.25).abs() < 1e-6, "{shift}");
+    assert_eq!(cx.undo_label(), Some("Edit Wall Intersections"));
+    assert_eq!(cx.floor().wall(a).unwrap().spec.layer_joins.len(), 1);
+    select(&mut cx, &[a]);
+    assert_eq!(wall_edit::reset_layer_joins(&mut cx), 1);
+    assert!(cx.floor().wall(a).unwrap().spec.layer_joins.is_empty());
+    assert_eq!(cx.undo_label(), Some("Reset Wall Layer Intersections"));
+    // Nothing slid any more: no undo step.
+    assert_eq!(wall_edit::reset_layer_joins(&mut cx), 0);
+    cx.undo();
+    assert_eq!(cx.floor().wall(a).unwrap().spec.layer_joins.len(), 1);
+    let labels: Vec<_> = wall_edit::edit_actions(&cx)
+        .iter()
+        .map(|e| e.label)
+        .collect();
+    assert!(labels.contains(&"Reset Wall Layer Intersections"));
+}
+
+/// Wall layers join in 3D (brief 40, W-137): the scene builds one slab per
+/// layer from the plan's layer outlines, an L and a T meet layer by layer,
+/// and a layer slid with Edit Wall Intersections reaches that far in 3D.
+fn typed_scene(cx: &EditorContext) -> Vec<plan_3d::Mesh> {
+    let defaults = plan_defaults::embedded();
+    plan_3d::build_scene_with_types(
+        &cx.project,
+        &plan_3d::SceneOptions::default(),
+        &defaults.wall_types,
+    )
+    .meshes
+}
+
+fn typed(cx: &mut EditorContext, a: (f64, f64), b: (f64, f64)) -> Id {
+    let ty = plan_defaults::embedded()
+        .wall_type("Stucco-6")
+        .unwrap()
+        .clone();
+    let id = cx.project.add_wall(
+        0,
+        Point::new(a.0, a.1),
+        Point::new(b.0, b.1),
+        ty.thickness(),
+        96.0,
+        WallKind::Exterior,
+    );
+    cx.project.floors[0].wall_mut(id).unwrap().wall_type = Some(ty.name);
+    id
+}
+
+fn x_extent(meshes: &[plan_3d::Mesh], id: Id, layer: usize) -> (f64, f64) {
+    let m: Vec<_> = meshes.iter().filter(|m| m.object_id == Some(id)).collect();
+    m[layer]
+        .vertices
+        .iter()
+        .map(|v| v.position[0] as f64)
+        .fold((f64::MAX, f64::MIN), |(lo, hi), x| (lo.min(x), hi.max(x)))
+}
+
+#[test]
+fn an_l_and_a_t_join_layer_by_layer_in_3d_and_a_slid_layer_reaches_in_3d() {
+    let layers = plan_defaults::embedded()
+        .wall_type("Stucco-6")
+        .unwrap()
+        .layers
+        .len();
+    let mut cx = cx();
+    let a = typed(&mut cx, (0.0, 0.0), (120.0, 0.0));
+    let b = typed(&mut cx, (120.0, 0.0), (120.0, 120.0));
+    // A tee: a branch off the middle of the second wall's far side.
+    let c = typed(&mut cx, (-200.0, 300.0), (200.0, 300.0));
+    let d = typed(&mut cx, (0.0, 300.0), (0.0, 400.0));
+    cx.refresh();
+    let meshes = typed_scene(&cx);
+    for id in [a, b, c, d] {
+        let n = meshes.iter().filter(|m| m.object_id == Some(id)).count();
+        assert_eq!(n, layers, "one slab per layer");
+    }
+    // The layers of the L's first wall end on the mitre line: the end of the
+    // outermost layer reaches no further than the outer corner.
+    let wall_b = cx.floor().wall(b).unwrap().thickness * 0.5;
+    for k in 0..layers {
+        let (_, hi) = x_extent(&meshes, a, k);
+        assert!(hi <= 120.0 + wall_b + 1e-3, "layer {k} reaches {hi}");
+    }
+    // The tee's through wall is whole.
+    let (lo, hi) = x_extent(&meshes, c, 0);
+    assert!((lo + 200.0).abs() < 1e-3 && (hi - 200.0).abs() < 1e-3);
+    // Slide the outer layer of the first wall's end past the join: 3D follows.
+    let before = x_extent(&meshes, a, 0).1;
+    let shift = wall_edit::slide_layer(&mut cx, a, WallEnd::End, 0, 2.0).unwrap();
+    assert!(shift > 0.0);
+    let after = x_extent(&typed_scene(&cx), a, 0).1;
+    assert!(
+        (after - before - shift).abs() < 1e-3,
+        "{before} {after} {shift}"
+    );
+}

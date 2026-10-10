@@ -460,6 +460,8 @@ struct OpeningForm {
     /// picked in this dialog, listed under Library in the Door Style list.
     door_picker: bool,
     door_filter: String,
+    /// The folder the picker shows (empty: all); starts at the last one used.
+    door_folder: String,
     door_choices: Vec<DoorEntry>,
     door_picked: Vec<DoorEntry>,
 }
@@ -615,6 +617,7 @@ impl OpeningDialog {
                 unit_revision,
                 door_picker: false,
                 door_filter: String::new(),
+                door_folder: String::new(),
                 door_choices: Vec::new(),
                 door_picked: Vec::new(),
             },
@@ -789,6 +792,36 @@ impl OpeningDialog {
 
     pub fn extras(&self) -> &OpeningExtras {
         &self.form.extras
+    }
+
+    /// Picks the library door `e` as the Door Style (what a click in Select
+    /// Library Object does).
+    pub fn pick_library_door(&mut self, e: &DoorEntry) {
+        self.form.pick_library_door(e);
+        self.sync_stored();
+    }
+
+    /// Picks `e` in the open Select Library Object, as a click on its row.
+    pub fn pick_from_picker(&mut self, e: &DoorEntry) {
+        self.form.choose_in_picker(e);
+        self.form.door_picker = false;
+        self.sync_stored();
+    }
+
+    /// Opens Select Library Object as the Library button does.
+    pub fn open_door_picker(&mut self) {
+        self.form.open_door_picker();
+    }
+
+    /// The folder Select Library Object shows now (empty: all folders).
+    pub fn door_picker_folder(&self) -> &str {
+        &self.form.door_folder
+    }
+
+    /// Sets the picker's folder and search text as the controls would.
+    pub fn set_door_picker_view(&mut self, folder: &str, search: &str) {
+        self.form.door_folder = folder.to_string();
+        self.form.door_filter = search.to_string();
     }
 
     /// Draws the tab called `tab` in a headless frame, so a test runs that
@@ -1157,8 +1190,7 @@ impl OpeningForm {
                 .on_hover_text("Select Library Object: a door")
                 .clicked()
             {
-                self.door_picker = true;
-                self.door_choices = door_library::available();
+                self.open_door_picker();
             }
         });
         if let Some(e) = again {
@@ -1213,6 +1245,26 @@ impl OpeningForm {
         self.release_type();
     }
 
+    /// A click on a door in Select Library Object: picks it, and the picker
+    /// comes back to this folder next time.
+    pub(crate) fn choose_in_picker(&mut self, e: &DoorEntry) {
+        door_library::set_last_folder(&self.door_folder);
+        self.pick_library_door(e);
+    }
+
+    /// Opens Select Library Object at the folder it was last used in.
+    pub(crate) fn open_door_picker(&mut self) {
+        self.door_picker = true;
+        self.door_choices = door_library::available();
+        self.door_folder = door_library::last_folder();
+        // A remembered folder the catalogs no longer have shows everything.
+        if !self.door_folder.is_empty()
+            && !door_library::folders(&self.door_choices).contains(&self.door_folder)
+        {
+            self.door_folder.clear();
+        }
+    }
+
     /// Select Library Object: doors only, grouped by the catalog's folders.
     fn door_picker_ui(&mut self, ui: &mut Ui) {
         let mut chosen: Option<DoorEntry> = None;
@@ -1225,6 +1277,19 @@ impl OpeningForm {
                         .hint_text("search")
                         .desired_width(120.0),
                 );
+                let folders = door_library::folders(&self.door_choices);
+                egui::ComboBox::from_id_salt("door_picker_folder")
+                    .selected_text(if self.door_folder.is_empty() {
+                        "All Folders"
+                    } else {
+                        self.door_folder.as_str()
+                    })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut self.door_folder, String::new(), "All Folders");
+                        for f in &folders {
+                            ui.selectable_value(&mut self.door_folder, f.clone(), f.as_str());
+                        }
+                    });
                 if ui.button("Cancel").clicked() {
                     close = true;
                 }
@@ -1232,17 +1297,16 @@ impl OpeningForm {
             if self.door_choices.is_empty() {
                 ui.label("No doors found in the libraries.");
             }
-            let f = self.door_filter.to_lowercase();
             egui::ScrollArea::vertical()
                 .max_height(160.0)
                 .id_salt("door_picker")
                 .show(ui, |ui| {
                     let mut last = String::new();
-                    for e in self
-                        .door_choices
-                        .iter()
-                        .filter(|e| f.is_empty() || e.name.to_lowercase().contains(&f))
-                    {
+                    for e in door_library::filtered(
+                        &self.door_choices,
+                        &self.door_folder,
+                        &self.door_filter,
+                    ) {
                         if e.folder != last {
                             ui.weak(if e.folder.is_empty() {
                                 "Doors"
@@ -1261,7 +1325,7 @@ impl OpeningForm {
                 });
         });
         if let Some(e) = chosen {
-            self.pick_library_door(&e);
+            self.choose_in_picker(&e);
             close = true;
         }
         if close {
@@ -2984,6 +3048,7 @@ mod tests {
             name: "Fixture Six Panel".into(),
             source: "Fixture".into(),
             folder: "Interior Doors".into(),
+            door_type: None,
         };
         d.form.pick_library_door(&e);
         d.sync_stored_for_test();

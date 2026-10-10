@@ -385,6 +385,9 @@ impl EditorContext {
             self.run_edit_command(id);
             return;
         }
+        if super::camera_edit::run_command(self, id) {
+            return;
+        }
         // Tools > Materials List and the Calculate Materials buttons.
         if crate::dialogs::materials_list::run_command(self, id) {
             return;

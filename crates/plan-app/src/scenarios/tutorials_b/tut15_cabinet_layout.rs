@@ -1,6 +1,7 @@
 //! Lesson 15, Cabinet Layout (pp. 260-277). Real: a row of base cabinets
-//! butts, fillers and wall cabinets place as one undo step each. Open: the
-//! Sticky Mode, island block, suppress label and shelf dialog steps.
+//! butts, fillers and wall cabinets place as one undo step each, the island
+//! becomes one block, a label is suppressed and a door takes five manual
+//! shelves. Open: Sticky Mode and the soffit crown wrap.
 use crate::editor::placed::load_cabinets;
 use crate::scenarios::tutorials_support::*;
 use crate::scenarios::Sim;
@@ -67,25 +68,67 @@ fn sticky_mode_reflect() {
 }
 
 #[test]
-#[ignore = "T7-15: CB-427 (island: marquee the cabinets and countertop, Make Architectural Block)"]
-fn island_architectural_block() {
-    assert_ignored_break("CB-427");
-}
-
-#[test]
-#[ignore = "T7-15: CB-634 (Suppress Label on a cabinet)"]
-fn suppress_label() {
-    assert_ignored_break("CB-634");
-}
-
-#[test]
-#[ignore = "T7-15: CB-633 (Cabinet Shelf Specification: Manual, 5 shelves)"]
-fn shelf_specification() {
-    assert_ignored_break("CB-633");
-}
-
-#[test]
 #[ignore = "T7-15: R-113 (room crown molding wraps the soffit above a full height cabinet)"]
 fn soffit_crown_wraps() {
     assert_ignored_break("R-113");
+}
+
+#[test]
+fn the_island_becomes_one_architectural_block_and_explodes_back() {
+    let mut sim = cottage();
+    for i in 0..3 {
+        place(&mut sim, CabinetKind::Base, 100.0 + 24.0 * i as f64, 200.0);
+    }
+    sim.app.cx.selection.items = cabs(&sim)
+        .iter()
+        .map(|c| crate::editor::ObjectRef::Cabinet(c.id))
+        .collect();
+    assert_eq!(sim.app.cx.selection.len(), 3);
+    assert_one_undo_step(&mut sim, "make block", |s| {
+        s.action(crate::toolbar::Action::Custom(
+            crate::tools::arch_block::MAKE_BLOCK,
+        ))
+    });
+    assert_eq!(sim.app.cx.floor().blocks.len(), 1);
+    assert_one_undo_step(&mut sim, "explode", |s| {
+        s.action(crate::toolbar::Action::Custom(
+            crate::tools::arch_block::EXPLODE_BLOCK,
+        ))
+    });
+    assert_eq!(sim.app.cx.floor().blocks.len(), 0);
+    assert_eq!(cabs(&sim).len(), 3, "the members survive Explode");
+}
+
+#[test]
+fn suppress_label_hides_one_cabinet_label_only() {
+    let mut sim = cottage();
+    place(&mut sim, CabinetKind::Base, 60.0, 20.0);
+    place(&mut sim, CabinetKind::Base, 100.0, 20.0);
+    let mut all = cabs(&sim);
+    assert!(all.iter().all(|c| !c.display_label().is_empty()));
+    all[0].suppress_label = true;
+    assert!(crate::editor::placed::replace_cabinet(
+        &mut sim.app.cx.project,
+        0,
+        &all[0]
+    ));
+    let now = cabs(&sim);
+    let hidden = now.iter().filter(|c| c.display_label().is_empty()).count();
+    assert_eq!(hidden, 1, "only the suppressed cabinet loses its label");
+}
+
+#[test]
+fn a_door_takes_five_manual_shelves() {
+    use plan_cabinets::ShelfSpec;
+    let mut c = Cabinet::wall(24.0);
+    let door = c.face.items.iter_mut().find(|i| i.is_door()).unwrap();
+    let spec = &mut door.props_mut().unwrap().shelves;
+    assert!(!spec.manual, "Automatic is the starting choice");
+    crate::dialogs::cabinet_shelf::set_manual(spec, 30.0);
+    *spec = ShelfSpec::manual_of(5);
+    spec.equalize(30.0);
+    assert!(spec.manual);
+    assert_eq!(spec.shelves.len(), 5);
+    crate::dialogs::cabinet_shelf::set_automatic(spec);
+    assert!(!spec.manual && spec.shelves.is_empty());
 }

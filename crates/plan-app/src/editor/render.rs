@@ -1809,7 +1809,9 @@ fn draw_dimension_end(
     match look.mark {
         DimArrow::None => {}
         DimArrow::Tick => {
-            let tick = perp * (size * 0.5).clamp(2.5, 14.0);
+            // Chief's architectural tick: a short stroke at 45 degrees to
+            // the dimension line.
+            let tick = (perp + dir).normalized() * (size * 0.5).clamp(2.5, 14.0);
             painter.line_segment([at - tick, at + tick], stroke);
         }
         DimArrow::Slash => {

@@ -879,10 +879,15 @@ fn draw_dimension_ends(
     match mark {
         DimArrow::None => {}
         DimArrow::Tick => {
+            // The architectural tick: a short stroke at 45 degrees to the
+            // dimension line, whichever way the line runs.
+            let (tx, ty) = (ux - uy, uy + ux);
+            let n = tx.hypot(ty).max(1e-9);
+            let (tx, ty) = (tx / n * tick, ty / n * tick);
             for p in [pa, pb] {
                 cv.line(
-                    (p.0 - tick, p.1 - tick),
-                    (p.0 + tick, p.1 + tick),
+                    (p.0 - tx, p.1 - ty),
+                    (p.0 + tx, p.1 + ty),
                     pen.scaled(1.5).solid(),
                 );
             }

@@ -580,6 +580,46 @@ fn rays_from(segments: &[(Point, Point)], origin: Point) -> Rays {
     }
 }
 
+/// The axis-aligned box of `poly`.
+fn bbox(poly: &[Point]) -> (Point, Point) {
+    poly.iter().fold(
+        (
+            Point::new(f64::INFINITY, f64::INFINITY),
+            Point::new(f64::NEG_INFINITY, f64::NEG_INFINITY),
+        ),
+        |(lo, hi), p| {
+            (
+                Point::new(lo.x.min(p.x), lo.y.min(p.y)),
+                Point::new(hi.x.max(p.x), hi.y.max(p.y)),
+            )
+        },
+    )
+}
+
+/// The dimension string along `a -> b`: every crossing of `edges`, in order,
+/// joined into consecutive segments on the line itself (DECISIONS DM25).
+fn string_along(edges: &[(Point, Point)], a: Point, b: Point) -> Vec<Dimension> {
+    let len = a.dist(b);
+    let mut ts: Vec<f64> = edges
+        .iter()
+        .filter_map(|(p, q)| segment_intersection(a, b, *p, *q).map(|(t, _)| t))
+        .collect();
+    ts.sort_by(f64::total_cmp);
+    ts.dedup_by(|x, y| (*x - *y).abs() * len < 0.25);
+    ts.windows(2)
+        .filter(|w| (w[1] - w[0]) * len >= MIN_LENGTH)
+        .map(|w| {
+            Dimension::new(
+                0,
+                DimensionKind::AutoExterior,
+                Point::lerp(a, b, w[0]),
+                Point::lerp(a, b, w[1]),
+                0.0,
+            )
+        })
+        .collect()
+}
+
 fn polygon_edges(poly: &[Point]) -> Vec<(Point, Point)> {
     (0..poly.len())
         .map(|i| (poly[i], poly[(i + 1) % poly.len()]))
@@ -1610,6 +1650,17 @@ impl DimensionTool {
         let side = if setup.room_inside { 1.0 } else { -1.0 };
         let mut dims = Vec::new();
         let rooms = cx.rooms.clone();
+        // Daniel's drafting practice (DECISIONS DM25): one string through the
+        // whole plan in the upper third of each room, and one in its right
+        // third, locating every interior surface they cross. A room whose
+        // third already holds a line from another room gets no second one.
+        let all_edges: Vec<(Point, Point)> = rooms
+            .iter()
+            .filter(|r| r.inner_polygon.len() >= 3)
+            .flat_map(|r| polygon_edges(&r.inner_polygon))
+            .collect();
+        let mut h_lines: Vec<f64> = Vec::new();
+        let mut v_lines: Vec<f64> = Vec::new();
         for room in &rooms {
             if room.interior_area_sq_in / 144.0 < min_area || room.inner_polygon.len() < 3 {
                 continue;
@@ -1618,27 +1669,35 @@ impl DimensionTool {
             if !point_in_polygon(c, &room.inner_polygon) {
                 continue;
             }
-            let segs = Self::interior_segments(cx, Some(&room.inner_polygon));
-            let rays = rays_from(&segs, c);
             let mut spans = Vec::new();
             if setup.room_overall {
-                if let Some((l, r)) = rays.left.zip(rays.right) {
-                    spans.push(Dimension::new(
-                        0,
-                        DimensionKind::AutoExterior,
-                        l,
-                        r,
-                        sep * side,
-                    ));
-                }
-                if let Some((d, u)) = rays.down.zip(rays.up) {
-                    spans.push(Dimension::new(
-                        0,
-                        DimensionKind::AutoExterior,
-                        d,
-                        u,
-                        -sep * side,
-                    ));
+                let (min, max) = bbox(&room.inner_polygon);
+                let (w, h) = (max.x - min.x, max.y - min.y);
+                if w > 12.0 && h > 12.0 {
+                    const FAR: f64 = 1.0e5;
+                    let covered = |lines: &[f64], hi: f64, third: f64| {
+                        lines
+                            .iter()
+                            .any(|l| *l >= hi - third - 1e-6 && *l <= hi + 1e-6)
+                    };
+                    if !covered(&h_lines, max.y, h / 3.0) {
+                        let y = max.y - h / 6.0;
+                        h_lines.push(y);
+                        spans.extend(string_along(
+                            &all_edges,
+                            Point::new(min.x - FAR, y),
+                            Point::new(max.x + FAR, y),
+                        ));
+                    }
+                    if !covered(&v_lines, max.x, w / 3.0) {
+                        let x = max.x - w / 6.0;
+                        v_lines.push(x);
+                        spans.extend(string_along(
+                            &all_edges,
+                            Point::new(x, min.y - FAR),
+                            Point::new(x, max.y + FAR),
+                        ));
+                    }
                 }
             }
             for d in &mut spans {
@@ -4502,6 +4561,56 @@ mod tests {
         assert_eq!(cx.floor().dimensions.len(), 2 + 16);
         click(&mut t, &mut cx, 120.0, 60.0);
         assert_eq!(cx.floor().dimensions.len(), 2 + 16);
+    }
+
+    #[test]
+    fn auto_interior_strings_run_through_the_plan_in_the_upper_and_right_thirds() {
+        // DECISIONS DM25: two rooms side by side share one horizontal string
+        // through the whole plan, in the upper third; each gets its own
+        // vertical string in its right third.
+        let mut cx = new_cx();
+        rect_room(&mut cx);
+        cx.project.add_wall(
+            0,
+            Point::new(120.0, 0.0),
+            Point::new(120.0, 120.0),
+            4.5,
+            96.0,
+            WallKind::Interior,
+        );
+        let mut t = tool(DimMode::AutoInterior);
+        click(&mut t, &mut cx, 60.0, 60.0);
+        let dims = cx.floor().dimensions.clone();
+        let horizontal: Vec<&Dimension> = dims
+            .iter()
+            .filter(|d| (d.start.y - d.end.y).abs() < 1e-6)
+            .collect();
+        let vertical: Vec<&Dimension> = dims
+            .iter()
+            .filter(|d| (d.start.x - d.end.x).abs() < 1e-6)
+            .collect();
+        assert_eq!(dims.len(), 5, "{dims:?}");
+        // Inner faces: y 3..117 (clear 114), x 3..237 with the partition's
+        // faces at 117.75 and 122.25.
+        assert_eq!(horizontal.len(), 3);
+        for d in &horizontal {
+            assert!((d.start.y - (117.0 - 114.0 / 6.0)).abs() < 1e-6, "{d:?}");
+            assert_eq!(d.offset, 0.0);
+        }
+        let total: f64 = horizontal.iter().map(|d| d.length()).sum();
+        assert!((total - 234.0).abs() < 1e-6, "{total}");
+        assert!(horizontal.iter().any(|d| (d.length() - 4.5).abs() < 1e-6));
+        // One vertical string per room, each the full clear height, in the
+        // right third of its room.
+        assert_eq!(vertical.len(), 2);
+        let mut xs: Vec<f64> = vertical.iter().map(|d| d.start.x).collect();
+        xs.sort_by(f64::total_cmp);
+        assert!((xs[0] - (117.75 - 114.75 / 6.0)).abs() < 1e-6, "{xs:?}");
+        assert!((xs[1] - (237.0 - 114.75 / 6.0)).abs() < 1e-6, "{xs:?}");
+        assert!(vertical.iter().all(|d| (d.length() - 114.0).abs() < 1e-6));
+        // A second run replaces, never doubles.
+        click(&mut t, &mut cx, 60.0, 60.0);
+        assert_eq!(cx.floor().dimensions.len(), 5);
     }
 
     /// Selects the dimension, clicks its text, types a value, presses Enter.

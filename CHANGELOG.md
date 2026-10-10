@@ -12,6 +12,17 @@ Test counts are the workspace totals the commit messages and manual state.
 
 ## [Unreleased]
 
+### Round 17 wave A - 2026-10-10 (branch `wip/round-16`, seven single-pass builders in isolated worktrees)
+
+#### Added
+- **Section and elevation annotations**: Text, Rich Text, Note, Leader Line, Dimension and CAD tools draw into a section or elevation view (one undo step each, handles, delete), reach layout and PDF; Auto Elevation Dimensions with Elevation Auto Refresh (R17-01a/b).
+- **Wall edit tail**: Auto Merge Collinear Walls switch, siding-out auto reverse when a room closes (default off, WT1), Reset Walls to Defaults, Tools > Checks > Reset Notification Icons (WT1, WT2).
+- **CAD Edit Area and Positioning**: Edit Area (Visible / All Floors / Including the Polyline) cutting and rejoining walls at the boundary, Transform/Replicate moves and reflections, Center Object on a line, Point to Point Center, Chief's Edit toolbar order (R17-EA1/EA2, TR1, POS1).
+- **Materials List**: framing rows from the active Structural Member Reporting default in Framing, Subfloor, Roofing and Decks-Walks; moldings, corner boards and quoins under Interior/Exterior Trim; scope filters count trim (MT1, MT2).
+- **Layers**: one Layer tab control with a Define button across the object dialogs, a layer slot on cabinets, the five wall system layers drawn, user layers renamed with Reset Names restoring originals (LS12).
+- **Doors**: scenario tests for the library picker on interior and exterior doors and both defaults dialogs, Door Type read from the symbol's words, folder memory and a folder filter in the picker (DOORLIB-4).
+- **Roofs**: Set Baseline Height edit button, roof directive buttons on interior walls, Shadow Board Top height and the lock diagram (RH5 to RH7).
+
 ### Round 16 - 2026-10-10 (branch `wip/round-16`, gate green: all workspace tests, clippy `-Dwarnings`, rustfmt)
 
 #### Added

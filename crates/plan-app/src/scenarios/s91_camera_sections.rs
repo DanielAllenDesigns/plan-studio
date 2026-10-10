@@ -654,7 +654,11 @@ fn text_dimension_and_cad_line_are_written_into_the_section_view() {
         k => panic!("{k:?}"),
     }
     sim.undo();
-    assert_eq!(camera(&sim, id).view.annotations[1], dim, "handle drag undone");
+    assert_eq!(
+        camera(&sim, id).view.annotations[1],
+        dim,
+        "handle drag undone"
+    );
     // The annotations reach the drawing, the layout and a saved plan.
     let json = sim.app.cx.project.to_json().unwrap();
     let back = plan_core::Project::from_json(&json).unwrap();
@@ -685,7 +689,10 @@ fn auto_elevation_dimensions_follow_the_model_with_auto_refresh() {
     sim.tool(ToolId::DimensionVariant(DimMode::AutoElevation));
     sim.click(0.0, 0.0);
     let c = camera(&sim, id);
-    assert!(!c.view.auto_elevation.is_empty(), "levels found in the view");
+    assert!(
+        !c.view.auto_elevation.is_empty(),
+        "levels found in the view"
+    );
     let total = |sim: &Sim| -> f64 {
         let c = camera(sim, id);
         c.view

@@ -364,8 +364,11 @@ pub fn run_command(cx: &mut EditorContext, id: &str) -> bool {
             return true;
         }
         // (visible only, all floors, moves the marquee polyline too)
-        EDIT_AREA_ALL | EDIT_AREA_ALL_VISIBLE | EDIT_AREA_INCLUDING
-        | EDIT_AREA_VISIBLE_INCLUDING | EDIT_AREA_ALL_INCLUDING
+        EDIT_AREA_ALL
+        | EDIT_AREA_ALL_VISIBLE
+        | EDIT_AREA_INCLUDING
+        | EDIT_AREA_VISIBLE_INCLUDING
+        | EDIT_AREA_ALL_INCLUDING
         | EDIT_AREA_ALL_VISIBLE_INCLUDING => {
             let visible_only = id.contains("visible");
             let all = id.contains("all_floors");

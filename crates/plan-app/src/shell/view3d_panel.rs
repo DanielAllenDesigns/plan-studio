@@ -4025,12 +4025,16 @@ fn show_vector(ui: &mut egui::Ui, cx: &mut EditorContext, st: &mut View3dState) 
             (
                 i.pointer.button_pressed(egui::PointerButton::Primary),
                 i.pointer.button_released(egui::PointerButton::Primary),
-                i.pointer.button_double_clicked(egui::PointerButton::Primary),
+                i.pointer
+                    .button_double_clicked(egui::PointerButton::Primary),
                 i.pointer.button_down(egui::PointerButton::Primary),
                 i.pointer.latest_pos(),
             )
         });
-        if let Some(at) = pos.filter(|_| resp.hovered() || held).map(|p| xf.to_drawing(p)) {
+        if let Some(at) = pos
+            .filter(|_| resp.hovered() || held)
+            .map(|p| xf.to_drawing(p))
+        {
             let mk = |kind, down| ViewPointer { kind, at, down };
             if pressed && resp.hovered() {
                 if dbl {

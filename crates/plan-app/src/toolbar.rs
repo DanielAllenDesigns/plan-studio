@@ -703,6 +703,7 @@ pub fn straight_wall() -> Flyout {
             det("slab", DetailsVariant::SlabFooting),
             det("wall_hatch", DetailsVariant::WallHatching),
             det("wall_hatch", DetailsVariant::WallMaterialRegion),
+            wall_item("wall_interior", Style::PolygonRoom, false),
         ],
     )
 }
@@ -732,6 +733,7 @@ pub fn railing_deck() -> Flyout {
             sep(wall_item("deck_edge", Style::DeckEdge, false)),
             wall_item("deck_edge", Style::DeckEdge, true),
             sep(det("deck_edge", DetailsVariant::PolygonDeck)),
+            wall_item("deck_edge", Style::PolygonDeck, false),
         ],
     )
 }

@@ -479,6 +479,15 @@ fn role(id: ToolId) -> Role {
         ToolId::Library => Creates(Fx::Library, IN_ROOM),
         ToolId::Images => NoObject("base id: the Images flyout entries are the tools"),
         ToolId::Wall { .. } => Creates(Fx::Shell, DRAG),
+        ToolId::WallVariant(v)
+            if matches!(
+                v.style,
+                crate::tools::wall::WallStyle::PolygonRoom
+                    | crate::tools::wall::WallStyle::PolygonDeck
+            ) =>
+        {
+            NoObject("W-123: the New Polygon dialog must be confirmed before a click places the ring (tools::wall tests)")
+        }
         ToolId::WallVariant(v) => {
             if v.curved {
                 Creates(Fx::Shell, G::Clicks(THREE, End::Enter))

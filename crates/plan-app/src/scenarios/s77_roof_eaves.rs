@@ -169,3 +169,117 @@ fn the_height_group_is_kept_with_the_roof_and_a_build_is_one_undo_step() {
     fresh.undo();
     assert!(roof_view::load(fresh.app.cx.floor()).planes.is_empty());
 }
+
+fn top_of(r: &RoofPlaneRecord) -> f64 {
+    r.polygon3d.iter().map(|v| v[1]).fold(f64::MIN, f64::max)
+}
+
+#[test]
+fn locking_the_ridge_and_changing_the_pitch_keeps_the_ridge_where_it_was() {
+    let mut sim = mixed_pitch_house();
+    let planes = build(&mut sim, HeightSettings::default());
+    let old = planes[0].clone();
+    let thickness = roof_view::RoofStructure::default().thickness();
+    let mut edited = old.clone();
+    let h = old.plane_heights(thickness);
+    let ridge = h.ridge_top();
+    // The General panel with the Ridge Top radio set: 12:12 becomes 8:12.
+    let steeper = h.with_pitch(old.pitch + 4.0, plan_roof::HeightLock::RidgeTop, true);
+    edited.apply_heights(&steeper);
+    let fl = sim.app.cx.floor;
+    assert!(roof_view::apply_plane_edit(
+        &mut sim.app.cx.project,
+        fl,
+        &edited
+    ));
+    let now = roof_view::load(sim.app.cx.floor())
+        .planes
+        .into_iter()
+        .find(|r| r.id == old.id)
+        .unwrap();
+    assert_eq!(now.pitch, old.pitch + 4.0);
+    assert!((now.plane_heights(thickness).ridge_top() - ridge).abs() < 1e-6);
+    assert!((top_of(&now) - ridge).abs() < 1e-6, "ridge moved");
+    // The eave dropped to make room for the steeper slope.
+    assert!(eave_height(&now) < eave_height(&old) - 1.0);
+    assert!(!now.auto, "an edited plane is kept");
+}
+
+#[test]
+fn a_roof_directive_typed_over_several_walls_builds_a_gambrel_in_one_undo_step() {
+    use crate::tools::ToolId as T;
+    use plan_core::defaults::RoofWallKind;
+    use crate::editor::selection::ObjectRef;
+    let mut sim = Sim::new();
+    draw_shell(&mut sim, W, H);
+    let long: Vec<_> = sim
+        .app
+        .cx
+        .floor()
+        .walls
+        .iter()
+        .filter(|w| (w.start.y - w.end.y).abs() < 1e-6)
+        .map(|w| w.id)
+        .collect();
+    let short: Vec<_> = sim
+        .app
+        .cx
+        .floor()
+        .walls
+        .iter()
+        .filter(|w| (w.start.y - w.end.y).abs() >= 1e-6)
+        .map(|w| w.id)
+        .collect();
+    assert_eq!((long.len(), short.len()), (2, 2));
+    // Gable ends first, a one-wall edit each.
+    for id in &short {
+        sim.app.cx.floor_mut().wall_mut(*id).unwrap().roof.kind = RoofWallKind::FullGable;
+    }
+    // Shift-select the two long walls and fill in their Roof panel once.
+    sim.tool(T::Select);
+    for id in &long {
+        sim.cx().selection.add(ObjectRef::Wall(*id));
+    }
+    sim.cx()
+        .apply_edit_action(crate::editor::actions::EditActionKind::OpenObject);
+    sim.app.process_requests();
+    {
+        let d = sim.app.spec.walls_dialog_mut().expect("multi-wall dialog");
+        d.edit_field("roof", |w| {
+            w.roof.kind = RoofWallKind::Hip;
+            w.roof.pitch_in_12 = Some(18.0);
+            w.roof.upper_pitch = Some((6.0, 150.0));
+        });
+    }
+    sim.ok();
+    for id in &long {
+        let r = &sim.app.cx.floor().wall(*id).unwrap().roof;
+        assert_eq!(r.pitch_in_12, Some(18.0));
+        assert_eq!(r.upper_pitch, Some((6.0, 150.0)));
+    }
+    sim.undo();
+    assert!(long.iter().all(|id| {
+        sim.app
+            .cx
+            .floor()
+            .wall(*id)
+            .unwrap()
+            .roof
+            .upper_pitch
+            .is_none()
+    }));
+    sim.redo();
+    let fl = sim.app.cx.floor;
+    let s = RoofSettings::from_defaults(&sim.app.cx.defaults);
+    roof_view::rebuild(&mut sim.app.cx.project, fl, s, false).expect("roof built");
+    let planes = roof_view::load(sim.app.cx.floor()).planes;
+    let pitches: Vec<f64> = planes.iter().map(|p| p.pitch).collect();
+    assert!(
+        pitches.iter().filter(|p| **p == 18.0).count() >= 2,
+        "{pitches:?}"
+    );
+    assert!(
+        pitches.iter().filter(|p| **p == 6.0).count() >= 2,
+        "{pitches:?}"
+    );
+}

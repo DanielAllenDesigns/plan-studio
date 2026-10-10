@@ -76,6 +76,18 @@ pub fn general() -> PageSpec {
                 .bound(bind_flag!(walls_connect.split_on_tee)),
                 F::len("general.connect_distance", "Connect Walls Within", 1.0)
                     .bound(bind_num!(walls_connect.connect_distance_min)),
+                F::flag(
+                    "general.auto_merge_collinear",
+                    "Auto Merge Collinear Walls",
+                    true,
+                )
+                .bound(bind_flag!(walls_connect.auto_merge_collinear)),
+                F::flag(
+                    "general.auto_reverse_layers",
+                    "Auto Reverse Wall Layers",
+                    false,
+                )
+                .bound(bind_flag!(walls_connect.auto_reverse_layers)),
             ],
         )
 }

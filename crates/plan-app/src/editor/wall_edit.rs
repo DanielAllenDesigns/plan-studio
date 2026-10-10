@@ -31,6 +31,7 @@ pub const LOCK_END: &str = "wall.lock_end";
 pub const ALIGN_ABOVE: &str = "wall.align_above";
 pub const ALIGN_BELOW: &str = "wall.align_below";
 pub const RESET_LAYER_JOINS: &str = "wall.reset_layer_joins";
+pub const RESET_VALUES: &str = "wall.reset_values";
 
 thread_local! {
     /// Break Wall was picked and waits for the click that sets the point.
@@ -132,6 +133,7 @@ pub fn edit_actions(cx: &EditorContext) -> Vec<super::EditAction> {
     v.push(button(ALIGN_ABOVE, "Align With Wall Above", "", true));
     v.push(button(ALIGN_BELOW, "Align With Wall Below", "", true));
     v.push(button(RESET_ICONS, "Reset Notification Icons", "", true));
+    v.push(button(RESET_VALUES, "Reset Walls to Defaults", "", true));
     v.push(button(
         RESET_LAYER_JOINS,
         "Reset Wall Layer Intersections",
@@ -308,6 +310,9 @@ pub fn run_command(cx: &mut EditorContext, id: &str) -> bool {
         }
         RESET_LAYER_JOINS => {
             reset_layer_joins(cx);
+        }
+        RESET_VALUES => {
+            reset_wall_values(cx);
         }
         CONNECT_WALLS => {
             connect_selected(cx);
@@ -566,6 +571,7 @@ pub fn connect_walls(cx: &mut EditorContext, a: Id, b: Id) -> usize {
     }
     cx.begin_change("Connect Walls");
     let opts = super::connect::ConnectOptions::from_defaults(&cx.defaults);
+    let rooms_before = room_count(cx);
     let n = super::connect::connect_walls_project(&mut cx.project, cx.floor, a, b, &opts);
     if n == 0 {
         cx.cancel_change();
@@ -573,9 +579,85 @@ pub fn connect_walls(cx: &mut EditorContext, a: Id, b: Id) -> usize {
             "Connect Walls: those walls are already connected, too far apart or locked".into();
         return 0;
     }
+    merge_collinear_at(cx, a);
+    merge_collinear_at(cx, b);
+    auto_reverse_if_closed(cx, a, rooms_before);
+    auto_reverse_if_closed(cx, b, rooms_before);
     cx.mark_dirty();
     cx.refresh();
     cx.status = format!("Connect Walls: {n} edit{}", if n == 1 { "" } else { "s" });
+    n
+}
+
+/// How many rooms the walls of the active floor enclose right now.
+pub fn room_count(cx: &EditorContext) -> usize {
+    plan_core::rooms::detect_rooms(&cx.floor().walls, 0.5).len()
+}
+
+/// Auto Merge Collinear Walls (W-120): when the switch is on, wall `id` is
+/// merged with the one wall that meets each of its ends in a straight line
+/// and has the same specification (`Project::join_collinear_walls`). Runs
+/// inside the caller's undo step; returns how many merges were made.
+pub fn merge_collinear_at(cx: &mut EditorContext, id: Id) -> usize {
+    if !cx.defaults.walls_connect.auto_merge_collinear {
+        return 0;
+    }
+    let fl = cx.floor;
+    let mut n = 0;
+    for end in [WallEnd::Start, WallEnd::End] {
+        let Some(w) = cx.project.floors[fl].wall(id) else {
+            break;
+        };
+        let p = if end == WallEnd::Start {
+            w.start
+        } else {
+            w.end
+        };
+        let others = super::ops::walls_at(&cx.project, fl, p, 0.5, Some(id));
+        if let [(other, _)] = others[..] {
+            if cx.project.join_collinear_walls(fl, id, other).is_some() {
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
+/// Auto Reverse Wall Layers (W-131): when the edit just closed a room
+/// (`rooms_before` was the count before it) and the switch is on, the
+/// exterior walls of the new room turn their exterior layers outward. Runs
+/// inside the caller's undo step; returns how many walls turned.
+pub fn auto_reverse_if_closed(cx: &mut EditorContext, id: Id, rooms_before: usize) -> usize {
+    if !cx.defaults.walls_connect.auto_reverse_layers || room_count(cx) <= rooms_before {
+        return 0;
+    }
+    let fl = cx.floor;
+    cx.project.auto_reverse_enclosed(fl, id)
+}
+
+/// Reset to Defaults for the selected walls, or every wall of the floor when
+/// none is selected (W-121): wall type, thickness and height follow the
+/// defaults again. One undo step; returns how many walls changed.
+pub fn reset_wall_values(cx: &mut EditorContext) -> usize {
+    let ids = selected_walls(cx);
+    if ids.iter().any(|i| !cx.check_unlocked(ObjectRef::Wall(*i))) {
+        return 0;
+    }
+    cx.begin_change("Reset Walls to Defaults");
+    let (d, fl) = (cx.defaults.clone(), cx.floor);
+    let n = cx.project.reset_walls_to_defaults(&d, fl, &ids);
+    if n == 0 {
+        cx.cancel_change();
+        cx.status = "Reset to Defaults: the walls already match the defaults".into();
+        return 0;
+    }
+    cx.project.sync_platform_walls();
+    cx.mark_dirty();
+    cx.refresh();
+    cx.status = format!(
+        "Reset {n} wall{} to the defaults",
+        if n == 1 { "" } else { "s" }
+    );
     n
 }
 

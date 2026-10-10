@@ -285,6 +285,10 @@ fn tools_rows() -> Vec<(&'static str, Action)> {
         ),
         ("Plan Check", Action::PlanCheck),
         (
+            "Reset Notification Icons",
+            Action::Custom(crate::editor::wall_edit::RESET_ICONS),
+        ),
+        (
             "Plan Check Settings\u{2026}",
             Action::Custom(plan_check::SETTINGS),
         ),

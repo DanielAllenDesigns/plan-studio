@@ -24,6 +24,7 @@ mod arrange;
 mod boxops;
 mod boxview;
 mod cadattrs;
+mod concentric;
 mod canvas;
 mod clip;
 mod extent;

@@ -2146,6 +2146,114 @@ impl LayoutView {
         true
     }
 
+    /// Copies the open layout into a new layout file called `name` and opens
+    /// the copy; the original is parked. The copy keeps every page, the page
+    /// templates, labels and sheets. One undo step. `false` when there is no
+    /// layout or the name is empty or taken.
+    pub fn copy_layout_file(&mut self, project: &mut Project, name: &str) -> bool {
+        let name = name.trim();
+        if name.is_empty()
+            || layout_names(project)
+                .iter()
+                .any(|n| n.trim().eq_ignore_ascii_case(name))
+        {
+            return false;
+        }
+        let Some(mut copy) = load(project) else {
+            return false;
+        };
+        self.steps
+            .push(("Copy Layout File".to_string(), project.clone()));
+        copy.name = name.to_string();
+        if let Some(current) = project.layout.take() {
+            project.layout_files.insert(0, current);
+        }
+        store(project, &copy);
+        self.reload_layout(project);
+        true
+    }
+
+    /// Concentric copy of the selected page rectangle, `inset` paper inches
+    /// inside it (negative: outside), selected afterwards. One undo step.
+    pub fn concentric_copy(&mut self, project: &mut Project, inset: f64) -> Option<Id> {
+        let (src, page) = (self.selected_cad?, self.page);
+        let mut made = None;
+        self.edit(project, "Concentric Copy", |l| {
+            made = l.pages.get_mut(page).and_then(|p| p.concentric_copy(src, inset));
+            made.is_some()
+        });
+        if made.is_some() {
+            self.selected_cad = made;
+        }
+        made
+    }
+
+    /// Types column headings over the table box `id` (Layout Page Table,
+    /// Revision Table or Sheet Index); a blank heading keeps the table's own.
+    /// One undo step.
+    pub fn set_table_titles(&mut self, project: &mut Project, id: Id, titles: &[String]) -> bool {
+        let done = self.edit(project, "Table Column Titles", |l| {
+            for p in &mut l.pages {
+                if let Some(b) = p.boxes.iter_mut().find(|b| b.id == id) {
+                    if b.view.column_titles == titles {
+                        return false;
+                    }
+                    b.view.column_titles = titles.to_vec();
+                    return true;
+                }
+            }
+            false
+        });
+        if done {
+            self.cache.map.remove(&id);
+        }
+        done
+    }
+
+    /// Imports a picture whose pixels are `rgba` (`width` x `height`) as an
+    /// image box `size_in` paper inches across, saved in the plan (the
+    /// layout keeps the pixels, not the file). The box is labelled with
+    /// `name` unless `suppress_label`. One undo step.
+    pub fn add_image_data_box(
+        &mut self,
+        project: &mut Project,
+        name: &str,
+        (width, height, rgba): (u32, u32, Vec<u8>),
+        size_in: (f64, f64),
+        suppress_label: bool,
+    ) -> Option<Id> {
+        if rgba.len() != (width as usize) * (height as usize) * 4 {
+            return None;
+        }
+        let mut layout = self.layout.clone()?;
+        let page_no = layout.pages.get(self.page)?.number;
+        let rcx = render_context(project);
+        let id = plan_layout::send_to_layout_sized(
+            &mut layout,
+            &rcx,
+            page_no,
+            BoxSource::ImageData {
+                width,
+                height,
+                rgba,
+            },
+            Scale::QuarterInch,
+            None,
+            Some(size_in),
+        );
+        drop(rcx);
+        if let Some(b) = layout
+            .page_mut(page_no)
+            .and_then(|p| p.boxes.iter_mut().find(|b| b.id == id))
+        {
+            b.label = (!suppress_label).then(|| name.to_uppercase());
+        }
+        self.commit(project, "Import Image", layout);
+        self.selected = Some(id);
+        self.selected_cad = None;
+        Some(id)
+    }
+
     /// Sends `spec` to the layout file `target` names, as one undo step. A
     /// file other than the open one is opened (the open one parked); the box
     /// goes to a new page there, in the first free spot.

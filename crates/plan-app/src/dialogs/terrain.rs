@@ -53,6 +53,7 @@ const TABS: &[Tab] = &[
     on("Building Pad"),
     on("Materials"),
     on("Label"),
+    on("Components"),
     on("Object Information"),
     on("Schedule"),
     on("Layer"),
@@ -939,6 +940,7 @@ impl SpecPages for Form {
             "Building Pad" => self.building_pad(ui),
             "Materials" => self.materials(ui),
             "Label" => self.label(ui),
+            "Components" => panels::components_panel(ui, &mut self.draft.terrain.perimeter_extras),
             "Object Information" => self.info(ui),
             "Schedule" => self.schedule(ui),
             "Layer" => self.layer(ui),
@@ -1113,6 +1115,7 @@ mod tests {
                 "Building Pad",
                 "Materials",
                 "Label",
+                "Components",
                 "Object Information",
                 "Schedule",
                 "Layer"

@@ -58,6 +58,7 @@ const TABS_PLAIN: &[Tab] = &[
     on("End Profile"),
     on("Line Style"),
     on("Fill Style"),
+    on("Materials"),
     on("Label"),
     on("Layer"),
 ];
@@ -65,6 +66,7 @@ const TABS_NO_PROFILE: &[Tab] = &[
     on("General"),
     on("Line Style"),
     on("Fill Style"),
+    on("Materials"),
     on("Label"),
     on("Layer"),
 ];
@@ -878,6 +880,21 @@ impl Form {
         ui.weak("Line style and weight follow the member's layer.");
     }
 
+    fn materials(&mut self, ui: &mut Ui) {
+        use plan_framing::FramingMaterial as M;
+        section(ui, "Materials");
+        row(ui, "Material", |ui| {
+            egui::ComboBox::from_id_salt("framing_material")
+                .selected_text(self.draft.material.name())
+                .show_ui(ui, |ui| {
+                    for m in [M::Lumber, M::Steel, M::Glulam, M::Lvl, M::Psl] {
+                        ui.selectable_value(&mut self.draft.material, m, m.name());
+                    }
+                })
+                .response
+        });
+    }
+
     fn layer(&mut self, ui: &mut Ui) {
         section(ui, "Layer");
         row(ui, "Layer", |ui| {
@@ -948,6 +965,7 @@ impl SpecPages for Form {
             "Line Style" => self.line_style(ui),
             "Fill Style" => self.fill(ui),
             "Label" => self.label(ui),
+            "Materials" => self.materials(ui),
             "Layer" => self.layer(ui),
             _ => {}
         }
@@ -2067,13 +2085,14 @@ mod tests {
             ),
         ] {
             let mut d = FramingMemberDialog::new(&m, layers());
-            // Joists take an End Profile; trusses their own General; posts neither.
+            // Joists take an End Profile; trusses their own General; posts
+            // neither; every kind has a Materials tab.
             let want = if m.kind.is_truss() {
-                5
-            } else if takes_end_profile(m.kind) {
                 6
+            } else if takes_end_profile(m.kind) {
+                7
             } else {
-                5
+                6
             };
             assert_eq!(d.form.tabs().len(), want, "{:?}", m.kind);
             assert!(d.form.tabs().iter().any(|t| t.name == "Fill Style"));

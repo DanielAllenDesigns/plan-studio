@@ -31,6 +31,7 @@ pub const ROOF_TABS: &[Tab] = &[
     on("General"),
     on("Line Style"),
     on("Fill Style"),
+    on("Materials"),
     on("Label"),
     on("Layer"),
 ];

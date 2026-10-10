@@ -759,3 +759,52 @@ fn set_as_default_copies_a_device_a_spline_and_a_rope_light() {
     assert!(et::run_command(&mut sim.app.cx, cmd::SET_DEFAULT));
     assert_eq!(label(&sim), n);
 }
+
+#[test]
+fn auto_place_outlets_serves_appliances_and_sinks() {
+    use plan_core::symbols::PlacedSymbol;
+    let mut sim = house();
+    let anchor = Point::new(W / 2.0, H / 2.0);
+    let floor = &mut sim.app.cx.project.floors[0];
+    floor.room_names.push(plan_core::model::RoomName::new(
+        anchor, "Kitchen", "Kitchen",
+    ));
+    // Synthetic library items: a range and a dryer against the north wall,
+    // a refrigerator in the corner and a sink against the south wall.
+    for (id, x, y) in [
+        ("test.appliances.range_30", 100.0, 20.0),
+        ("test.appliances.dryer_27", 200.0, 20.0),
+        ("test.appliances.refrigerator_36", 440.0, 20.0),
+        ("test.plumbing.sink_double", 300.0, 340.0),
+    ] {
+        floor
+            .symbols
+            .push(PlacedSymbol::new(id, Point::new(x, y), 30.0, 26.0, 36.0));
+    }
+    sim.app.cx.refresh();
+    et::auto_place_floor_outlets(&mut sim.app.cx);
+    let d = devices(&sim);
+    let n220 = d.iter().filter(|d| d.kind == DeviceKind::Outlet220).count();
+    assert_eq!(n220, 2, "range and dryer get 220 V outlets");
+    let behind_range = d
+        .iter()
+        .find(|d| d.kind == DeviceKind::Outlet220 && (d.position.x - 100.0).abs() < 1.0)
+        .expect("an outlet behind the range");
+    assert!(behind_range.wall_id.is_some() && behind_range.position.y < 10.0);
+    assert!(
+        d.iter().any(|d| d.kind == DeviceKind::Outlet110
+            && (d.position.x - 440.0).abs() < 1.0
+            && d.height == 12.0),
+        "110 V behind the refrigerator"
+    );
+    let lights: Vec<_> = d
+        .iter()
+        .filter(|d| d.kind == DeviceKind::RecessedCan)
+        .collect();
+    assert_eq!(lights.len(), 1, "a light above the sink");
+    assert_eq!(lights[0].position, Point::new(300.0, 340.0));
+    assert_eq!(label(&sim).as_deref(), Some("Auto Place Outlets"));
+    // One undo step takes outlets and light away.
+    sim.undo();
+    assert!(devices(&sim).is_empty());
+}

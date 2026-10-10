@@ -161,6 +161,98 @@ pub struct AutoOutletOptions {
     /// this crate does not depend on `plan-cabinets`.
     #[serde(default)]
     pub counter_runs: Vec<Vec<Point>>,
+    /// The large appliances standing in the plan; each gets an outlet on the
+    /// wall behind it (220 V for a range or dryer, 110 V otherwise).
+    #[serde(default)]
+    pub appliances: Vec<ApplianceSpot>,
+    /// The centres of the plan's sinks; each gets a light overhead.
+    #[serde(default)]
+    pub sinks: Vec<Point>,
+}
+
+/// The large appliances that need their own outlet (manual p. 447).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ApplianceKind {
+    Range,
+    Dryer,
+    Refrigerator,
+    Dishwasher,
+}
+
+impl ApplianceKind {
+    /// The appliance a library item stands for, from its catalog id.
+    pub fn from_catalog(catalog_id: &str) -> Option<Self> {
+        let id = catalog_id.to_ascii_lowercase();
+        [
+            ("dishwasher", Self::Dishwasher),
+            ("refrigerator", Self::Refrigerator),
+            ("fridge", Self::Refrigerator),
+            ("dryer", Self::Dryer),
+            ("range", Self::Range),
+            ("cooktop", Self::Range),
+        ]
+        .into_iter()
+        .find(|(k, _)| id.contains(k))
+        .map(|(_, a)| a)
+    }
+
+    /// The outlet kind behind it: 220 V for a range or dryer, 110 V otherwise.
+    pub fn outlet_kind(self) -> DeviceKind {
+        match self {
+            Self::Range | Self::Dryer => DeviceKind::Outlet220,
+            Self::Refrigerator | Self::Dishwasher => DeviceKind::Outlet110,
+        }
+    }
+}
+
+/// One appliance standing in the plan: its centre and footprint size, inches.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ApplianceSpot {
+    pub kind: ApplianceKind,
+    pub center: Point,
+    pub depth: f64,
+}
+
+/// How far the back of an appliance may stand from the wall and still count
+/// as against it, inches.
+const APPLIANCE_AGAINST_WALL: f64 = 12.0;
+
+/// Walls that carry no devices: invisible, railing, room divider and
+/// generated walls.
+pub fn wall_takes_devices(w: &Wall) -> bool {
+    use plan_core::walls::WallClass;
+    !(w.flags.invisible
+        || w.flags.railing
+        || w.flags.room_divider
+        || w.flags.auto_generated
+        || w.class.is_railing()
+        || matches!(w.class, WallClass::RoomDivider | WallClass::DeckEdge))
+}
+
+/// The outlet behind `spot`: on the nearest wall run of the room it stands
+/// against, level with the appliance.
+fn appliance_outlet(
+    runs: &[Run<'_>],
+    spot: &ApplianceSpot,
+    opts: &AutoOutletOptions,
+) -> Option<Device> {
+    let mut best: Option<(f64, &Run<'_>, f64)> = None;
+    for run in runs {
+        let d = spot.center.sub(run.wall.start);
+        let t = d.dot(run.wall.direction());
+        let into = d.dot(run.wall.normal()) * run.side.sign() - run.wall.thickness * 0.5;
+        let gap = into - spot.depth * 0.5;
+        if t < run.lo - 6.0 || t > run.hi + 6.0 || gap > APPLIANCE_AGAINST_WALL || into < 0.0 {
+            continue;
+        }
+        if best.is_none_or(|(g, _, _)| gap < g) {
+            best = Some((gap, run, t.clamp(run.lo, run.hi)));
+        }
+    }
+    let (_, run, t) = best?;
+    let mut dev = place_on_wall(spot.kind.outlet_kind(), run.wall, t, run.side);
+    dev.height = opts.outlet_height;
+    Some(dev)
 }
 
 /// How far from a wall's face a cabinet may stand and still count as against
@@ -243,6 +335,8 @@ impl Default for AutoOutletOptions {
             exterior_wp: true,
             min_wet_segment: 12.0,
             counter_runs: Vec::new(),
+            appliances: Vec::new(),
+            sinks: Vec::new(),
         }
     }
 }
@@ -333,6 +427,9 @@ fn room_runs<'a>(floor: &'a Floor, room: &Room) -> Vec<Run<'a>> {
     for (i, r) in raw.iter().enumerate() {
         let Some(wi) = r.wall else { continue };
         let wall = &floor.walls[wi];
+        if !wall_takes_devices(wall) {
+            continue;
+        }
         let dir = wall.direction();
         let forward = r.q.sub(r.p).dot(dir) >= 0.0;
         let (inset_start, inset_end) = (half(&raw[(i + m - 1) % m]), half(&raw[(i + 1) % m]));
@@ -635,6 +732,23 @@ pub fn auto_place_outlets_by_rules(
             for &t in &span.at {
                 let mut d = place_on_wall(span.kind, span.wall, t, span.side);
                 d.height = span.height;
+                d.label = room.label.clone();
+                out.push(d);
+            }
+        }
+        // 110/220 V outlets behind the range, dryer, refrigerator and
+        // dishwasher standing in the room, and a light over each sink.
+        for spot in &opts.appliances {
+            if point_in_polygon(spot.center, &room.polygon) {
+                if let Some(mut d) = appliance_outlet(&runs, spot, opts) {
+                    d.label = room.label.clone();
+                    out.push(d);
+                }
+            }
+        }
+        for &sink in &opts.sinks {
+            if point_in_polygon(sink, &room.polygon) {
+                let mut d = place_free(DeviceKind::RecessedCan, sink);
                 d.label = room.label.clone();
                 out.push(d);
             }

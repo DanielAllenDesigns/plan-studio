@@ -44,8 +44,8 @@ use serde_json::{json, Value};
 
 mod plane_extras;
 pub use plane_extras::{
-    align_plane, attic_wall_above, build_when_room_closes, move_coplanar, place_intersection_point, reference_direction, run_plane_command,
-    snap_baseline, snap_edge_to_walls, FillKind, PlaneFill, PlaneStyle, SlopeArrow, LOCKS,
+    align_plane, attic_wall_above, build_when_room_closes, move_coplanar, move_display, place_intersection_point, reference_direction,
+    run_plane_command, snap_baseline, snap_edge_to_walls, FillKind, PlaneFill, PlaneStyle, SlopeArrow, LOCKS,
     PLANE_COMMANDS,
 };
 

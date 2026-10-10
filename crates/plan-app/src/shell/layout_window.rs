@@ -7154,15 +7154,13 @@ impl LayoutView {
                         cx.status = "Drew a layout line".into();
                     }
                 }
-                Some(Drag::Marquee { id, start, cur }) => {
-                    if self.selected == Some(id) {
-                        self.line_sel = self
-                            .selected_box()
-                            .and_then(|b| b.view.art.as_ref())
-                            .map(|a| a.lines_in_rect(start, cur))
-                            .unwrap_or_default();
-                        cx.status = format!("Selected {} layout line(s)", self.line_sel.len());
-                    }
+                Some(Drag::Marquee { id, start, cur }) if self.selected == Some(id) => {
+                    self.line_sel = self
+                        .selected_box()
+                        .and_then(|b| b.view.art.as_ref())
+                        .map(|a| a.lines_in_rect(start, cur))
+                        .unwrap_or_default();
+                    cx.status = format!("Selected {} layout line(s)", self.line_sel.len());
                 }
                 _ => {}
             }

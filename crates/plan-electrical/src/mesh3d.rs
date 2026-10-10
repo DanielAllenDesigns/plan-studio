@@ -494,7 +494,7 @@ fn rope_mesh(r: &RopeLightPath, floor_elevation: f64, ceiling: f64) -> Option<Me
         let dir = b.sub(a).normalized();
         soup.prism(&rect(a, dir.perp(), dir, w, len), top - h, top);
     }
-    (!soup.indices.is_empty()).then(|| Mesh {
+    (!soup.indices.is_empty()).then_some(Mesh {
         vertices: soup.vertices,
         indices: soup.indices,
         material: Material::Trim,

@@ -436,7 +436,9 @@ impl RoofTool {
                 if make {
                     // Make Roof Baseline Polylines (RF-70): polylines, not planes.
                     let n: usize = (0..=fi)
-                        .map(|g| crate::tools::roof_baseline::baselines(&cx.project.floors[g]).len())
+                        .map(|g| {
+                            crate::tools::roof_baseline::baselines(&cx.project.floors[g]).len()
+                        })
                         .sum();
                     cx.status = format!(
                         "Made {n} roof baseline polyline{}",

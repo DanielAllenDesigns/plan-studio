@@ -2347,7 +2347,7 @@ mod tests {
             }
         }
         assert_eq!(readable_angle(-FRAC_PI_2).0, FRAC_PI_2);
-        assert_eq!(readable_angle(0.5).1, false);
+        assert!(!readable_angle(0.5).1);
         assert!(readable_angle(3.0).1);
     }
 
@@ -2676,7 +2676,7 @@ mod tests {
         let sid = p
             .create_note_schedule(0, &["General Note".to_string()], Point::new(500.0, 0.0))
             .unwrap();
-        assert!(sid > 0 || sid == 0);
+        let _ = sid;
         p.sync_annotations();
         assert_eq!(n_items(&p), 2);
         assert_eq!(p.floors[0].annot_of(id), Some(AnnotRef::Note(0)));

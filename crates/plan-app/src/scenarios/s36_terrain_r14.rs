@@ -203,7 +203,7 @@ fn road_markings_lie_on_the_ground_and_on_the_crown_of_a_road() {
     assert_eq!(of(1)[0].material, plan_3d::Material::Trim);
     let crown = f64::from(top(1));
     assert!(
-        crown > f64::from(top(0)) - 0.5 && crown >= road.crown as f64,
+        crown > f64::from(top(0)) - 0.5 && crown >= road.crown,
         "stripe {crown} vs road {}",
         top(0)
     );
@@ -224,7 +224,10 @@ fn stepped_retaining_walls_drop_in_courses_in_the_3d_scene() {
         &[(-200.0, 450.0), (700.0, 450.0)],
     );
     let w = rec(&sim).terrain.walls[0].clone();
-    assert!(!w.stepped, "terrain walls follow the ground until stepping is chosen");
+    assert!(
+        !w.stepped,
+        "terrain walls follow the ground until stepping is chosen"
+    );
     site_view::edit_terrain(&mut sim.app.cx, "Terrain Wall Specification", |r| {
         r.terrain.walls[0].stepped = true;
     });

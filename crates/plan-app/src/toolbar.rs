@@ -1894,11 +1894,7 @@ pub fn sprinkler() -> Flyout {
                 "Polyline Sprinkler Line",
                 T::SprinklerLinePolyline,
             )),
-            terr(
-                "terrain",
-                "Spline Sprinkler Line",
-                T::SprinklerLineSpline,
-            ),
+            terr("terrain", "Spline Sprinkler Line", T::SprinklerLineSpline),
         ],
     )
 }
@@ -2500,7 +2496,7 @@ fn show_slot(
                 "Active Layer Set",
                 &bar.layer_sets,
                 &bar.shown_layer_set,
-                |n| crate::dialogs::default_sets::Pick::LayerSet(n),
+                crate::dialogs::default_sets::Pick::LayerSet,
                 out,
             );
         }
@@ -2512,7 +2508,7 @@ fn show_slot(
                 "Active Dimension Defaults",
                 &bar.dimension_sets,
                 &bar.active_dimension_set,
-                |n| crate::dialogs::default_sets::Pick::DimensionDefaults(n),
+                crate::dialogs::default_sets::Pick::DimensionDefaults,
                 out,
             );
         }
@@ -2528,7 +2524,7 @@ fn show_slot(
                 "Active Default Set",
                 &bar.default_sets,
                 &shown,
-                |n| crate::dialogs::default_sets::Pick::DefaultSet(n),
+                crate::dialogs::default_sets::Pick::DefaultSet,
                 out,
             );
         }

@@ -835,7 +835,7 @@ fn polyline_arcs_are_plain_points_for_everything_else() {
     let mut cx = sim.app.cx;
     cx.selection.set(ObjectRef::Cad(id));
     crate::editor::transform::translate_objects(&mut cx, &[ObjectRef::Cad(id)], p(30.0, 40.0));
-    assert_eq!(arcs::logical_of(&cx, id).unwrap().bulge[0].is_some(), true);
+    assert!(arcs::logical_of(&cx, id).unwrap().bulge[0].is_some());
 }
 
 // ----- S-66: the Edit Behavior indicator -----

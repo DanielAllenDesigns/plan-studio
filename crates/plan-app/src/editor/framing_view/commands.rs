@@ -81,11 +81,19 @@ pub fn edit_actions(cx: &EditorContext) -> Vec<EditAction> {
     // In a Wall Detail the CAD objects stand for members.
     if details::in_wall_detail(cx) {
         if !details::selected_wall_members(cx).is_empty() {
-            v.push(button(cmd::BUILD_PARENT, "Build Framing for Parent Object(s)", true));
+            v.push(button(
+                cmd::BUILD_PARENT,
+                "Build Framing for Parent Object(s)",
+                true,
+            ));
             v.push(button(cmd::FIND_WALL, "Find Wall", true));
             v.push(button(cmd::FLAT_INSIDE, "Flat to Inside", true));
             v.push(button(cmd::FLAT_OUTSIDE, "Flat to Outside", true));
-            v.push(button(cmd::WALL_MEMBER_DELETE, "Delete Framing Member(s)", true));
+            v.push(button(
+                cmd::WALL_MEMBER_DELETE,
+                "Delete Framing Member(s)",
+                true,
+            ));
         }
         return v;
     }
@@ -127,7 +135,11 @@ pub fn edit_actions(cx: &EditorContext) -> Vec<EditAction> {
     let linear = selected_linear(cx);
     if !selected_ids(cx).is_empty() {
         if !selected::parent_targets(cx).is_empty() {
-            v.push(button(cmd::BUILD_PARENT, "Build Framing for Parent Object(s)", true));
+            v.push(button(
+                cmd::BUILD_PARENT,
+                "Build Framing for Parent Object(s)",
+                true,
+            ));
         }
         let marker = super::reference_marker(&cx.project, cx.floor).is_some();
         if !linear.is_empty() {
@@ -196,7 +208,15 @@ pub fn flat_member(m: &mut Member, wall: &Wall, outside: bool) {
     let shift = want - centre(m);
     m.transform.origin[0] += out[0] * shift;
     m.transform.origin[2] += out[2] * shift;
-    m.label = format!("{} ({})", m.label, if outside { "flat to outside" } else { "flat to inside" });
+    m.label = format!(
+        "{} ({})",
+        m.label,
+        if outside {
+            "flat to outside"
+        } else {
+            "flat to inside"
+        }
+    );
 }
 
 /// Runs a framing Edit toolbar command. False when `id` is not one.
@@ -274,21 +294,32 @@ pub fn run_command(cx: &mut EditorContext, id: &str) -> bool {
             let Some(wall) = details::detail_wall(cx.floor()) else {
                 return true;
             };
-            let Some(w) = details::floor_of_wall(&cx.project, wall)
-                .and_then(|fi| cx.project.floors[fi].walls.iter().find(|w| w.id == wall).cloned())
-            else {
+            let Some(w) = details::floor_of_wall(&cx.project, wall).and_then(|fi| {
+                cx.project.floors[fi]
+                    .walls
+                    .iter()
+                    .find(|w| w.id == wall)
+                    .cloned()
+            }) else {
                 return true;
             };
             let n = selected::edit_wall_members(
                 cx,
-                if outside { "Flat to Outside" } else { "Flat to Inside" },
+                if outside {
+                    "Flat to Outside"
+                } else {
+                    "Flat to Inside"
+                },
                 &pick,
                 |m| {
                     flat_member(m, &w, outside);
                     true
                 },
             );
-            cx.status = format!("Turned {n} member(s) {}", FlatTo::ALL[if outside { 2 } else { 1 }].name());
+            cx.status = format!(
+                "Turned {n} member(s) {}",
+                FlatTo::ALL[if outside { 2 } else { 1 }].name()
+            );
         }
         _ => return false,
     }

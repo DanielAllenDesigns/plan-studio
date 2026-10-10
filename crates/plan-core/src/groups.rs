@@ -308,12 +308,13 @@ impl Project {
                 _ => None,
             })
             .collect();
-        self.floors[floor].repair_pasted_dimensions(&pairs, &|w| {
-            match map.get(&ObjectRef::Wall(w)) {
+        self.floors[floor].repair_pasted_dimensions(
+            &pairs,
+            &|w| match map.get(&ObjectRef::Wall(w)) {
                 Some(ObjectRef::Wall(n)) => Some(*n),
                 _ => None,
-            }
-        });
+            },
+        );
         for g in &clip.groups {
             let members: Vec<ObjectRef> = g.iter().filter_map(|m| map.get(m).copied()).collect();
             if members.len() >= 2 {
@@ -623,7 +624,9 @@ mod tests {
             .unwrap();
         let tied: Vec<Id> = pasted.anchors.iter().flatten().map(|x| x.wall).collect();
         assert_eq!(tied.len(), 2);
-        assert!(tied.iter().all(|w| pasted_walls.contains(w) && *w != a && *w != b));
+        assert!(tied
+            .iter()
+            .all(|w| pasted_walls.contains(w) && *w != a && *w != b));
         // Alone, the copy has nothing to follow.
         let alone = p.copy_objects(0, &[ObjectRef::Dimension(dim)]);
         let new = p.paste(0, &alone, Point::new(0.0, 900.0));

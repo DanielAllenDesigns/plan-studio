@@ -245,13 +245,7 @@ fn tee_extra(style: WallConnection, d: &FramingDefaults) -> u32 {
 /// How much a plate end is shortened (positive) at an angled corner: nothing
 /// when the plates are mitred or the wall frames through, else half the wall
 /// thickness over the sine of the angle between the walls.
-fn plate_trim(
-    wall: &Wall,
-    corner: bool,
-    angle: f64,
-    opts: &DetailOptions,
-    t_other: f64,
-) -> f64 {
+fn plate_trim(wall: &Wall, corner: bool, angle: f64, opts: &DetailOptions, t_other: f64) -> f64 {
     if !corner || angle < 1.0 || (angle - 90.0).abs() < 1.0 || opts.mitre_plate_ends {
         return 0.0;
     }
@@ -283,7 +277,11 @@ pub fn frame_wall_with(
     let t = lumber.thickness;
     let len = wall.length();
     let bearing = bearing && opts.bearing_wall_headers;
-    let top_count = if bearing { d.top_plates.max(2) } else { d.top_plates };
+    let top_count = if bearing {
+        d.top_plates.max(2)
+    } else {
+        d.top_plates
+    };
     let plates_bottom = f64::from(d.bottom_plates) * PLATE;
     let plates_top = f64::from(top_count) * PLATE;
     let stud_len = wall.height - plates_bottom - plates_top;
@@ -293,11 +291,27 @@ pub fn frame_wall_with(
     let mut out = Vec::new();
     // Plate ends: shortened where an angled corner is butted, extended or
     // pulled back in the upper plates when they stagger.
-    let trim_start = plate_trim(wall, joints.start_corner, joints.start_angle, opts, wall.thickness);
-    let trim_end = plate_trim(wall, joints.end_corner, joints.end_angle, opts, wall.thickness);
+    let trim_start = plate_trim(
+        wall,
+        joints.start_corner,
+        joints.start_angle,
+        opts,
+        wall.thickness,
+    );
+    let trim_end = plate_trim(
+        wall,
+        joints.end_corner,
+        joints.end_angle,
+        opts,
+        wall.thickness,
+    );
     let mitred = opts.mitre_plate_ends
-        && ((joints.start_corner && (joints.start_angle - 90.0).abs() >= 1.0 && joints.start_angle >= 1.0)
-            || (joints.end_corner && (joints.end_angle - 90.0).abs() >= 1.0 && joints.end_angle >= 1.0));
+        && ((joints.start_corner
+            && (joints.start_angle - 90.0).abs() >= 1.0
+            && joints.start_angle >= 1.0)
+            || (joints.end_corner
+                && (joints.end_angle - 90.0).abs() >= 1.0
+                && joints.end_angle >= 1.0));
     let plate = |kind: MemberKind, s0: f64, s1: f64, y: f64| {
         let mut m = f.flat(kind, lumber, s0, s1 - s0, y);
         if mitred {
@@ -307,7 +321,12 @@ pub fn frame_wall_with(
     };
     for i in 0..d.bottom_plates {
         let y = floor_elevation + PLATE * (f64::from(i) + 0.5);
-        out.push(plate(MemberKind::BottomPlate, trim_start.max(0.0), len - trim_end.max(0.0), y));
+        out.push(plate(
+            MemberKind::BottomPlate,
+            trim_start.max(0.0),
+            len - trim_end.max(0.0),
+            y,
+        ));
     }
     for i in 0..top_count {
         let y = y_top + PLATE * (f64::from(i) + 0.5);
@@ -398,7 +417,10 @@ pub fn frame_wall_with(
     for &(left, kind) in &studs {
         let mut m = f.vertical(kind, lumber, left, y_bot, stud_len);
         // The studs at a mitred, angled corner turn with the mitre.
-        if opts.rotate_end_studs && opts.mitre_plate_ends && is_end(left) && kind == MemberKind::Stud
+        if opts.rotate_end_studs
+            && opts.mitre_plate_ends
+            && is_end(left)
+            && kind == MemberKind::Stud
         {
             let (corner, angle, sign) = if left <= EPS {
                 (joints.start_corner, joints.start_angle, 1.0)
@@ -443,11 +465,20 @@ pub fn frame_wall_with(
         );
     }
     // Ladder blocking at the corner and tee studs of a Laddered style.
-    let ladder_corner = opts.corner_style == WallConnection::Laddered
-        && (joints.start_corner || joints.end_corner);
+    let ladder_corner =
+        opts.corner_style == WallConnection::Laddered && (joints.start_corner || joints.end_corner);
     let ladder_tee = opts.tee_style == WallConnection::Laddered && !joints.tees.is_empty();
     if ladder_corner || ladder_tee {
-        ladders(&f, lumber, joints, opts, (floor_elevation, y_top), &studs, t, &mut out);
+        ladders(
+            &f,
+            lumber,
+            joints,
+            opts,
+            (floor_elevation, y_top),
+            &studs,
+            t,
+            &mut out,
+        );
     }
     out
 }
@@ -742,6 +773,7 @@ fn grid(step: f64, lo: f64, hi: f64) -> impl Iterator<Item = f64> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::field_reassign_with_default)]
     use super::*;
     use plan_core::{Point, WallKind};
 
@@ -1231,7 +1263,10 @@ mod tests {
         let u = with_opts(&w, &joints, &o);
         let corners = of(&u, MemberKind::CornerStud);
         assert_eq!(corners.len(), 2);
-        assert!(corners[0].transform.axis_y != of(&standard, MemberKind::CornerStud)[0].transform.axis_y);
+        assert!(
+            corners[0].transform.axis_y
+                != of(&standard, MemberKind::CornerStud)[0].transform.axis_y
+        );
     }
 
     #[test]
@@ -1303,7 +1338,9 @@ mod tests {
                 .collect()
         };
         let straight = ys(&plain);
-        assert!(straight.windows(2).all(|p| (p[0] - p[1]).abs() < 1e-9 || p[0] != p[1]));
+        assert!(straight
+            .windows(2)
+            .all(|p| (p[0] - p[1]).abs() < 1e-9 || p[0] != p[1]));
         let staggered = with_opts(
             &w,
             &WallJoints::default(),
@@ -1317,10 +1354,16 @@ mod tests {
         let mut distinct: Vec<i64> = s.iter().map(|y| (y * 100.0).round() as i64).collect();
         distinct.sort_unstable();
         distinct.dedup();
-        let mut plain_distinct: Vec<i64> = straight.iter().map(|y| (y * 100.0).round() as i64).collect();
+        let mut plain_distinct: Vec<i64> = straight
+            .iter()
+            .map(|y| (y * 100.0).round() as i64)
+            .collect();
         plain_distinct.sort_unstable();
         plain_distinct.dedup();
-        assert!(distinct.len() > plain_distinct.len(), "{distinct:?} {plain_distinct:?}");
+        assert!(
+            distinct.len() > plain_distinct.len(),
+            "{distinct:?} {plain_distinct:?}"
+        );
     }
 
     #[test]
@@ -1329,12 +1372,23 @@ mod tests {
         let win = Opening::default_window(2, w.id, 60.0);
         let d = FramingDefaults::default();
         let normal = frame_wall(&w, &[&win], 0.0, &d);
-        assert!(!of(&normal, MemberKind::CrippleStud).iter().all(|c| c.transform.origin[1] < 24.0));
+        assert!(!of(&normal, MemberKind::CrippleStud)
+            .iter()
+            .all(|c| c.transform.origin[1] < 24.0));
         let opts = DetailOptions {
             header_max_depth: 30.0,
             ..DetailOptions::default()
         };
-        let solid = frame_wall_with(&w, &[&win], 0.0, &d, None, &WallJoints::default(), &opts, false);
+        let solid = frame_wall_with(
+            &w,
+            &[&win],
+            0.0,
+            &d,
+            None,
+            &WallJoints::default(),
+            &opts,
+            false,
+        );
         let headers = of(&solid, MemberKind::Header);
         assert_eq!(headers.len(), 2);
         // The header fills the space between the opening and the top plates.
@@ -1376,7 +1430,9 @@ mod tests {
             ..WallJoints::default()
         };
         let mitre = with_opts(&w, &joints, &DetailOptions::default());
-        assert!(of(&mitre, MemberKind::BottomPlate)[0].label.contains("mitre"));
+        assert!(of(&mitre, MemberKind::BottomPlate)[0]
+            .label
+            .contains("mitre"));
         assert_eq!(of(&mitre, MemberKind::BottomPlate)[0].length, 120.0);
         // Butted: the wall that does not frame through is shortened. The wall
         // runs along plan X, so it frames through when "Horizontal Frame Through" is on.

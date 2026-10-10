@@ -30,7 +30,86 @@ No version has been tagged yet; the first tagged release (`v0.1.0`) will fold al
 - **Walls**: radius-to and lock on the wall tool, Reverse Layers.
 - **Layout**: page templates, bent leaders, the revision table, XLSX schedule export and the print preview modes.
 
-### Round 14 - integration pass (working tree; the commit is not made yet)
+### Rounds 14, 15 and 16 (this merge)
+
+Rounds 14-16 ran as 60+ parallel builder briefs against two audits: a menu/toolbar/dialog
+coverage audit (`docs/chief-feature-coverage.md`, 1,099 features) and a seven-part audit of
+Chief's Reference Manual and Tutorial Guide (`docs/chief-manual-coverage/`, 3,296 features
+and 1,169 tutorial steps, ~1,500 new parity rows, 215 deduplicated gaps, 62 decision
+corrections, a 35-brief Round 16 plan). Headlines, by area:
+
+- **Walls**: 3+ wall junctions, Through Wall At Start/End, Structure, Foundation and Wall Cap
+  tabs, multi-wall Open Object, Roof tab on interior walls, bearing and retain-framing flags,
+  Wall Covering, Newels/Balusters, Rails, Materials, Components, Object Information and
+  Schedule tabs; shared opening-placement rules in `plan-core`.
+- **Doors and windows**: placement ghost and alignment snaps, 2 in junction clearance,
+  thresholds, sill lines, both swing arcs, jambs and opening indicators in plan, Schedule tab
+  and Renumber, Rough Opening, Framing, Energy, Object Information, Shape, Treatments and
+  Materials tabs, double-door swing options, curved-wall casing modes, bay/box/bow roof options.
+- **Rooms, floors, foundations**: Build Foundation types (footings, piers, monolithic slab),
+  basements and crawl spaces, attic floor, finish thicknesses in 3D, per-room moldings and
+  surface materials, Room Types, decks with framing and planking, fireplaces and chimneys
+  (3-2-10 rule, roof cut, chase), split-level floors, tray and coffered ceilings, layered
+  floor/ceiling/roof assemblies with a Material Layers Definition dialog, Elevation Reference.
+- **Roofs**: style presets, half hip, per-wall roof buttons, wings at different plate heights,
+  Extend Slope Downward, Edit All Roof Planes, Structure > Define, polygon holes, dormer
+  tools, roof trim (rafter tails, ridge caps, gutters, frieze, shadow boards, boxed/flush
+  soffits), Gable/Roof Line objects, skylight shapes and Edit Skylight Shape.
+- **Cabinets and stairs**: all 14 Cabinet Specification tabs, push/bump, library door styles,
+  face item and shelf specifications, special cabinet types, custom countertops, automatic
+  fillers, module lines and Chief-style labels (3DB24), multi-cabinet Open Object; stair
+  handrail sides, bullnose, dashed treads through the stairwell, Stair Schedule, spiral stairs.
+- **Framing**: Build Framing dialog, ceiling joists, bearing lines, retain flags, span checks,
+  Framing Overview, dimensioned wall details, tray-ceiling framing.
+- **Electrical**: 3-way and 4-way switch promotion, WP and dedicated outlets, default heights,
+  exterior outlets in Auto Place, schedule rows.
+- **Dimensions, text, CAD**: text boxes with alignment, border and fill, Text Style
+  Management, per-dimension Format and Arrow overrides, multi-point strings, Add/Delete
+  Extension Line, links kept on paste, typeable CAD temporary dimensions, every Chief dimension
+  tool with per-tool Locate defaults, callouts (ten shapes, cross-section lines, linked
+  callouts), markers, notes and note schedules, the rich text edit bar, construction lines and
+  the full Reference Display, custom line styles, the fill style system with poché, Boolean
+  polylines, drawing groups (CAD default 21), Multiple Copy, Trim and Extend, DXF export
+  options, Plan Footprint from outer faces.
+- **Layout and print**: multiple layout files, Page Specification, program-wide sheet sizes,
+  true Print Preview, 3D scenes in elevation boxes, schedules in DXF and the construction set,
+  multi-sheet XLSX, site and metric scale lists to 1" = 100', watermark, sheet setup per view,
+  revision tables per page (partial), page numbering with # prefixes (partial).
+- **3D and cameras**: four-tab Camera Specification, Floor and Glass House cameras, backdrop
+  images from Chief's folder at run time, wedge and tilt handles, Lighting dialog and light
+  sets, Save Camera, key-frame walkthroughs recorded to PNG sequences or Motion-JPEG video,
+  360 panorama with a self-contained HTML viewer, Vector View and Technical Illustration
+  pictures, progressive Final View, Undo Zoom in 3D.
+- **Materials**: Material Specification (Pattern, Texture, Properties, Materials List),
+  painter modes with scope, Materials Defaults per object class, by-surface take-off,
+  Lightbeans PBR material packages (zip import, normal/roughness/metallic/AO/opacity maps in
+  the viewport and ray tracer, a Lightbeans folder in the Library Browser, a Downloads watch).
+- **Library**: Chief's catalog tree with Trash, filters and previews, Library Object
+  Specification, Convert to Symbol, Replace From Library, JSON export of user items; 3D symbol
+  import from STL, 3DS and COLLADA; Export Picture of any view.
+- **Terrain**: feature kinds, road markings, stepped retaining walls, plant forms and chooser,
+  survey import from DXF, GPX and XYZ, cut-and-fill report, Terrain Specification parity,
+  import assistants.
+- **Checks and code**: 22 IRC 2021 rules with a Georgia preset and rule groups, 31 NKBA
+  kitchen and bath guidelines with a report, header/joist/rafter/stair/deck calculators, and
+  code minimums wired into the tools (code-legal defaults, inline "Set to code" notices, live
+  check while drawing).
+- **Data and files**: Property Manager with custom properties on every object, Excel export
+  for editing and import with a review dialog, DXF import (ASCII and binary, every entity) with
+  the Import Drawing Assistant, Chief `.plan` import stage 3 (catalog GUIDs, roof edge flags,
+  stair heights, connections), data-safety fixes QA-20 to QA-29 (unknown keys preserved, id
+  repair, NaN sanitising, undo grouping, foreign records kept), Windows and Linux packaging
+  with a tagged-release workflow, README and contributor docs, the manual through chapter 20.
+- **Preferences and defaults**: 15 Preferences pages, grouped hotkeys with conflict
+  resolution and Chief XML export, toolbar customisation, the full 29-group Default Settings
+  tree, saved defaults and saved plan views (partial), window commands (tiling, swap, zoom,
+  Reverse Plan, Rotate Plan View), Layer and Object Painters, spell check.
+
+Known gaps are tracked in `docs/integration-queue.md`; tests of half-built Round 16 features
+are tagged `#[ignore = "R16-xx in progress"]`, and `plan-app` carries a temporary crate-level
+`allow(dead_code)` until the Round 16 gate.
+
+#### Round 14 integration pass
 
 #### Added
 

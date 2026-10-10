@@ -198,10 +198,11 @@ impl Form {
                 return Some("The firebox is moved past the jamb of the body".into());
             }
         }
-        if fp.kind.has_firebox() {
-            if fp.chimney.enabled && (fp.chimney.width > w || fp.chimney.depth > d) {
-                return Some("The chimney is larger than the body".into());
-            }
+        if fp.kind.has_firebox()
+            && fp.chimney.enabled
+            && (fp.chimney.width > w || fp.chimney.depth > d)
+        {
+            return Some("The chimney is larger than the body".into());
         }
         if fp.chimney.enabled && fp.chimney.flue_width + 4.0 > fp.chimney.width.min(w) {
             return Some("The flue does not fit in the chimney".into());

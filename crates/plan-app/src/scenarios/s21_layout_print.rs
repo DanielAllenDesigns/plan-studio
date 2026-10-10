@@ -108,7 +108,10 @@ fn new_layout_makes_a_template_page_and_page_one_and_a_second_one_reopens_it() {
         "{}",
         sim.app.cx.status
     );
-    assert!(lw::is_active() && lw::dialog_open(), "the name dialog is up");
+    assert!(
+        lw::is_active() && lw::dialog_open(),
+        "the name dialog is up"
+    );
     assert_eq!(lw::load(&sim.app.cx.project).unwrap().pages.len(), 2);
     assert!(sim.app.cx.project.layout_files.is_empty());
     // Plan edits and layout edits share one undo stack: the layout step undoes.
@@ -525,7 +528,11 @@ fn page_information_sets_label_title_flags_and_a_sheet_of_its_own() {
     let mut d = v.page_info_dialog(&sim.app.cx.project).expect("a dialog");
     assert_eq!(d.selected(), at);
     assert_eq!(d.entries()[at].info.title, "Page 1");
-    assert_eq!(d.entries()[at].sheet.sheet, None, "the page follows the layout's sheet");
+    assert_eq!(
+        d.entries()[at].sheet.sheet,
+        None,
+        "the page follows the layout's sheet"
+    );
     d.info_mut().unwrap().title = "Presentation Plan".into();
     d.info_mut().unwrap().label = "S-#".into();
     d.sheet_mut().unwrap().sheet = Some(SheetChoice::Standard(SheetSize::ArchD));

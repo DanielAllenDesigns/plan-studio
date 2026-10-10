@@ -848,7 +848,16 @@ mod tests {
         let d = FramingDefaults::default();
         let dir = along_x();
         let run = |splice| {
-            frame_floor_supported(&rect(), 0.0, &d, Some(&dir), &[wall_line()], None, splice, 1)
+            frame_floor_supported(
+                &rect(),
+                0.0,
+                &d,
+                Some(&dir),
+                &[wall_line()],
+                None,
+                splice,
+                1,
+            )
         };
         let plain = frame_floor_directed(&rect(), 0.0, &d, Some(&dir), &[], None, 1);
         let lines = joists(&plain).len();
@@ -876,9 +885,8 @@ mod tests {
         // Side by side: the second joist of a line stands one thickness over.
         for a in lapped.iter().filter(|j| (hi(j) - 124.0).abs() < 1e-9) {
             assert!(
-                lapped
-                    .iter()
-                    .any(|b| (lo(b) - 116.0).abs() < 1e-9 && ((b.start.y - a.start.y).abs() - 1.5).abs() < 1e-9),
+                lapped.iter().any(|b| (lo(b) - 116.0).abs() < 1e-9
+                    && ((b.start.y - a.start.y).abs() - 1.5).abs() < 1e-9),
                 "{a:?}"
             );
         }
@@ -894,7 +902,16 @@ mod tests {
             true,
         );
         let m = frame_floor_supported(&rect(), 0.0, &d, Some(&dir), &[hung], None, Splice::Lap, 1);
-        let lines = joists(&frame_floor_directed(&rect(), 0.0, &d, Some(&dir), &[], None, 1)).len();
+        let lines = joists(&frame_floor_directed(
+            &rect(),
+            0.0,
+            &d,
+            Some(&dir),
+            &[],
+            None,
+            1,
+        ))
+        .len();
         // The joists stop 1 3/4" short of the beam's centre line, no lap, no new beam.
         assert!((total(&joists(&m)) - (240.0 - 3.5) * lines as f64).abs() < 1e-6);
         assert!(!m.iter().any(|x| x.kind == K::FloorCeilingBeam));
@@ -904,7 +921,16 @@ mod tests {
             3.5,
             false,
         );
-        let m = frame_floor_supported(&rect(), 0.0, &d, Some(&dir), &[bears], None, Splice::Butt, 1);
+        let m = frame_floor_supported(
+            &rect(),
+            0.0,
+            &d,
+            Some(&dir),
+            &[bears],
+            None,
+            Splice::Butt,
+            1,
+        );
         assert!((total(&joists(&m)) - 240.0 * lines as f64).abs() < 1e-6);
     }
 
@@ -918,11 +944,26 @@ mod tests {
         let m = frame_floor_directed(&rect(), 0.0, &d, Some(&dir), &[], None, 1);
         let j = joists(&m);
         assert!(j.iter().all(|x| x.lumber.name() == "4x12"));
-        assert!(j.len() < joists(&frame_floor_directed(&rect(), 0.0, &d, Some(&along_x()), &[], None, 1)).len());
+        assert!(
+            j.len()
+                < joists(&frame_floor_directed(
+                    &rect(),
+                    0.0,
+                    &d,
+                    Some(&along_x()),
+                    &[],
+                    None,
+                    1
+                ))
+                .len()
+        );
         // Old plans have none of the new fields.
         let old = r#"{"line":[{"x":0.0,"y":0.0},{"x":0.0,"y":50.0}],"spacing":16.0,"angle":90.0}"#;
         let back: JoistDirection = serde_json::from_str(old).unwrap();
-        assert_eq!((back.depth, back.width, back.construction.as_str()), (0.0, 0.0, ""));
+        assert_eq!(
+            (back.depth, back.width, back.construction.as_str()),
+            (0.0, 0.0, "")
+        );
         let bl: BearingLine =
             serde_json::from_str(r#"{"line":[{"x":0.0,"y":0.0},{"x":1.0,"y":0.0}]}"#).unwrap();
         assert!(!bl.existing && bl.hang == 0.0);

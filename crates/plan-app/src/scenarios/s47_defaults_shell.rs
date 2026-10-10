@@ -195,7 +195,7 @@ fn every_leaf_of_the_tree_opens_its_window_and_a_page_saves_one_field() {
                 sim.app.open_defaults_entry(e);
                 sim.dialog_frame(false);
                 assert!(
-                    sim.app.has_dialog() || sim.app.cx.status.len() > 0,
+                    sim.app.has_dialog() || !sim.app.cx.status.is_empty(),
                     "{what}: nothing opened"
                 );
                 sim.cancel();

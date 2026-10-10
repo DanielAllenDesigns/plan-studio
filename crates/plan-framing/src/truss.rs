@@ -708,11 +708,7 @@ fn build(spec: &TrussSpec) -> Vec<TrussMember2> {
 
 /// End Truss: the webbing is replaced by verticals at the wall stud spacing
 /// and the bottom chord runs in one piece.
-fn end_truss_webbing(
-    spec: &TrussSpec,
-    out: &mut Vec<TrussMember2>,
-    top_at: &dyn Fn(f64) -> f64,
-) {
+fn end_truss_webbing(spec: &TrussSpec, out: &mut Vec<TrussMember2>, top_at: &dyn Fn(f64) -> f64) {
     let (w, bc) = (spec.span, spec.bottom_lumber().depth / 2.0);
     out.retain(|t| t.role == TrussRole::TopChord);
     out.push(seg(
@@ -731,11 +727,7 @@ fn end_truss_webbing(
 
 /// Horizontal members between the verticals of an End Truss (or any truss with
 /// verticals), every `block_spacing` up from the rollout offset.
-fn horizontal_blocking(
-    spec: &TrussSpec,
-    out: &mut Vec<TrussMember2>,
-    top_at: &dyn Fn(f64) -> f64,
-) {
+fn horizontal_blocking(spec: &TrussSpec, out: &mut Vec<TrussMember2>, top_at: &dyn Fn(f64) -> f64) {
     let mut xs: Vec<f64> = out
         .iter()
         .filter(|t| {
@@ -854,10 +846,13 @@ pub struct TrussConfig {
 impl TrussConfig {
     /// Overall width of the diagram, inches (the span plus overhangs).
     pub fn overall_width(&self) -> f64 {
-        let (lo, hi) = self.members.iter().flat_map(|m| [m.a.x, m.b.x]).fold(
-            (f64::INFINITY, f64::NEG_INFINITY),
-            |(lo, hi), x| (lo.min(x), hi.max(x)),
-        );
+        let (lo, hi) = self
+            .members
+            .iter()
+            .flat_map(|m| [m.a.x, m.b.x])
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), x| {
+                (lo.min(x), hi.max(x))
+            });
         if lo.is_finite() {
             hi - lo
         } else {
@@ -949,6 +944,7 @@ fn diagram_key(d: &[TrussMember2]) -> Vec<(u8, i64, i64, i64, i64)> {
 /// (`auto`, grouped by the truss number tagged on their labels). Roof and
 /// girder trusses are `TR-n`, floor and ceiling trusses `FTR-n`, each
 /// numbered from 1. Trusses that share a configuration share a label.
+#[allow(clippy::type_complexity)]
 pub fn truss_configs(manual: &[FramingMember], auto: &[Member]) -> Vec<TrussConfig> {
     let mut out: Vec<TrussConfig> = Vec::new();
     let mut keys: Vec<(bool, Option<TrussSpec>, Vec<(u8, i64, i64, i64, i64)>)> = Vec::new();
@@ -1266,10 +1262,9 @@ mod tests {
         f.require_kingpost = true;
         let t = Truss::generate(&f);
         assert_eq!(t.members.len(), before + 1);
-        assert!(t
-            .members
-            .iter()
-            .any(|m| m.role == TrussRole::Web && (m.a.x - 144.0).abs() < 1e-6 && (m.b.x - 144.0).abs() < 1e-6));
+        assert!(t.members.iter().any(|m| m.role == TrussRole::Web
+            && (m.a.x - 144.0).abs() < 1e-6
+            && (m.b.x - 144.0).abs() < 1e-6));
         let mut k = TrussSpec::new(TrussType::KingPost, 288.0, 6.0);
         let kp = Truss::generate(&k).members.len();
         k.require_kingpost = true;
@@ -1306,10 +1301,9 @@ mod tests {
         spec.rollout_auto = false;
         spec.rollout_offset = 10.0;
         let offset = Truss::generate(&spec);
-        assert!(offset
-            .members
-            .iter()
-            .any(|m| m.role == TrussRole::Web && (m.a.y - 10.0).abs() < 1e-9 && (m.a.y - m.b.y).abs() < 1e-9));
+        assert!(offset.members.iter().any(|m| m.role == TrussRole::Web
+            && (m.a.y - 10.0).abs() < 1e-9
+            && (m.a.y - m.b.y).abs() < 1e-9));
     }
 
     #[test]
@@ -1357,7 +1351,11 @@ mod tests {
             .find(|m| m.role == TrussRole::BottomChord)
             .unwrap();
         assert!((bottom.lumber.depth - 5.5).abs() < 1e-9);
-        let top = t.members.iter().find(|m| m.role == TrussRole::TopChord).unwrap();
+        let top = t
+            .members
+            .iter()
+            .find(|m| m.role == TrussRole::TopChord)
+            .unwrap();
         assert!((top.lumber.depth - 3.5).abs() < 1e-9);
     }
 

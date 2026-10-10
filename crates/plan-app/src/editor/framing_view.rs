@@ -43,19 +43,25 @@ pub mod details;
 pub mod selected;
 pub mod trusses;
 
-pub use commands::{cmd, edit_actions, flat_member, run_command};
+pub use commands::{edit_actions, run_command};
 pub use details::{
-    configs as truss_configs_of, detail_wall, find_config, find_trusses, floor_of_wall,
-    in_truss_detail,
-    in_wall_detail, load_map, open_truss_detail, open_wall_detail, refresh_details,
-    refresh_details_in, selected_wall_members, truss_detail_floor, wall_detail_floor,
-    wall_details, wall_label, ConfigLink, DetailMap,
+    configs as truss_configs_of, detail_wall, find_config, open_truss_detail, refresh_details,
+    wall_details,
 };
-pub use selected::{
-    add_break, build_parents, build_selected, build_targets, join_ends, move_to_reference,
-    parent_targets, selected_targets, set_planes_retained, set_room_retained_in, Outcome, Target,
+pub use selected::{build_parents, build_selected, Outcome};
+pub use trusses::{LAYER_FLOOR_TRUSS_LABELS, LAYER_ROOF_TRUSS_LABELS};
+// Used by the framing scenarios only (Round 16 brief 30 still wires the UI side).
+#[cfg(test)]
+pub use commands::cmd;
+#[cfg(test)]
+pub use details::{
+    in_truss_detail, in_wall_detail, load_map, open_wall_detail, truss_detail_floor,
+    wall_detail_floor,
 };
-pub use trusses::{label_of, truss_labels, LAYER_FLOOR_TRUSS_LABELS, LAYER_ROOF_TRUSS_LABELS};
+#[cfg(test)]
+pub use selected::{build_targets, set_planes_retained, Target};
+#[cfg(test)]
+pub use trusses::truss_labels;
 
 use super::{Camera, EditorContext, ObjectRef};
 use crate::editor::roof_view;
@@ -420,11 +426,13 @@ pub fn reference_marker(project: &Project, fi: usize) -> Option<ReferenceMarker>
             _ => None,
         })
     };
-    project
-        .floors
-        .get(fi)
-        .and_then(first)
-        .or_else(|| project.floors.first().filter(|f| !f.is_cad_detail()).and_then(first))
+    project.floors.get(fi).and_then(first).or_else(|| {
+        project
+            .floors
+            .first()
+            .filter(|f| !f.is_cad_detail())
+            .and_then(first)
+    })
 }
 
 /// The marker floor `fi`'s layout starts from, or `None` when its Use Framing
@@ -634,12 +642,7 @@ pub fn frame_floor_all_with(
                 if dir.is_none() {
                     if let Some(b) = bearing
                         .iter()
-                        .max_by(|a, b| {
-                            a.line
-                                .0
-                                .dist(a.line.1)
-                                .total_cmp(&b.line.0.dist(b.line.1))
-                        })
+                        .max_by(|a, b| a.line.0.dist(a.line.1).total_cmp(&b.line.0.dist(b.line.1)))
                     {
                         dir = Some(JoistDirectionLine::new(b.line, 0.0));
                     }
@@ -859,7 +862,12 @@ fn truss_layout(
     spec.overhang = tr.overhang;
     // The Roof Truss Direction's Specification sizes the trusses it covers.
     let thickness = spec.chord.thickness;
-    let depth = |v: f64| (v > 0.0).then_some(plan_framing::Lumber { thickness, depth: v });
+    let depth = |v: f64| {
+        (v > 0.0).then_some(plan_framing::Lumber {
+            thickness,
+            depth: v,
+        })
+    };
     if let Some(l) = depth(dir.top_chord_depth) {
         spec.chord = l;
     }
@@ -945,7 +953,14 @@ fn apply_floor_build(
             !is_protected(group_of_manual(m.kind), at, &fb.protected)
         })
         .collect();
-    store_auto(&mut project.floors[fi], &members, built, opts, only, &fb.protected);
+    store_auto(
+        &mut project.floors[fi],
+        &members,
+        built,
+        opts,
+        only,
+        &fb.protected,
+    );
     restamp(project, fi);
     layers
 }
@@ -1421,15 +1436,12 @@ pub fn plan_style(m: &Member) -> PlanStyle {
     };
     let vertical = m.transform.axis_x[1].abs() > 0.99;
     match m.kind {
-        K::Stud
-        | K::KingStud
-        | K::TrimmerStud
-        | K::CrippleStud
-        | K::CornerStud
-        | K::TeeStud => PlanStyle {
-            cross: vertical,
-            ..solid(70, 0.75)
-        },
+        K::Stud | K::KingStud | K::TrimmerStud | K::CrippleStud | K::CornerStud | K::TeeStud => {
+            PlanStyle {
+                cross: vertical,
+                ..solid(70, 0.75)
+            }
+        }
         K::TopPlate | K::BottomPlate | K::Header | K::Sill => solid(70, 0.75),
         K::Blocking if m.wall_id.is_some() => solid(35, 0.5),
         K::Blocking | K::Joist | K::RimJoist | K::TrimmerJoist | K::HeaderJoist | K::Ledger => {
@@ -1519,12 +1531,7 @@ fn built_hulls(cx: &EditorContext) -> Rc<Vec<Hull>> {
                 }
                 let mut style = plan_style(m);
                 style.cross &= show_cross;
-                Hull {
-                    pts,
-                    lo,
-                    hi,
-                    style,
-                }
+                Hull { pts, lo, hi, style }
             })
             .collect(),
     );
@@ -2051,7 +2058,11 @@ pub fn new_member_in(
     if plan_framing::catalog::project_has_catalog(&cx.project) {
         let catalog = plan_framing::catalog::of_project(&cx.project);
         catalog.manual.apply_new(&mut m);
-        if let Some(def) = catalog.manual.section_for(m.kind).map(|s| s.construction.clone()) {
+        if let Some(def) = catalog
+            .manual
+            .section_for(m.kind)
+            .map(|s| s.construction.clone())
+        {
             catalog.apply_def_to_manual(&def, &mut m);
         }
     }
@@ -2295,7 +2306,11 @@ pub fn label_text(m: &FramingMember) -> String {
         return String::new();
     }
     let fmt = |v: f64| plan_framing::format_inches(v);
-    let size = format!("{} x {}", fmt(m.width / f64::from(m.plies.max(1))), fmt(m.depth));
+    let size = format!(
+        "{} x {}",
+        fmt(m.width / f64::from(m.plies.max(1))),
+        fmt(m.depth)
+    );
     let mut out = m.custom_label.clone();
     for (name, value) in [
         ("nominal_size", m.lumber.name()),
@@ -2867,7 +2882,8 @@ pub fn draw_manual(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
 
 /// Whether a selected member shows the S and E marks at its ends (the Start
 /// and End Indicators of Preferences > Edit).
-static START_END_INDICATORS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+static START_END_INDICATORS: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(true);
 
 /// Turns the Start and End Indicators on or off (Preferences > Edit).
 pub fn set_start_end_indicators(on: bool) {

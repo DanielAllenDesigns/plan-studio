@@ -3370,7 +3370,7 @@ impl Tool for DimensionTool {
                     if let Some(d) = self.angular_dimension(cx, self.cursor) {
                         let c = d.curve().copied();
                         if let Some(c) = c {
-                            let r = (c.radius.min(60.0)).max(12.0);
+                            let r = c.radius.clamp(12.0, 60.0);
                             return self.commit_angular(cx, c.center.add(Point::new(r, 0.0)));
                         }
                     }

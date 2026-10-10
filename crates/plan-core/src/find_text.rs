@@ -695,6 +695,7 @@ fn macro_flags(text: &str, n: usize) -> Vec<bool> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::field_reassign_with_default)]
     use super::*;
     use crate::cad::CadItem;
     use crate::geometry::Point;

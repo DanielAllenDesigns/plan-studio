@@ -54,9 +54,9 @@ pub use layers::{
 pub use model::{
     perspective_pixels, BoxSource, CustomSheetSize, Layout, LayoutBox, LayoutPage, ScaleExt,
     ScheduleKind, SheetChoice, TextAlign, DANIEL_SIZES, DEFAULT_PERSPECTIVE_DPI,
-    DEFAULT_PERSPECTIVE_SAMPLES, LABEL_GAP_IN, LAYOUT_EDGE_WEIGHT, MAX_PERSPECTIVE_PIXELS,
-    MAX_PERSPECTIVE_SIDE_PX, MAX_SHEET_SIDE_IN, MAX_SNAP_UNIT_IN, MIN_SHEET_SIDE_IN,
-    MIN_SNAP_UNIT_IN, DEFAULT_SNAP_UNIT_IN,
+    DEFAULT_PERSPECTIVE_SAMPLES, DEFAULT_SNAP_UNIT_IN, LABEL_GAP_IN, LAYOUT_EDGE_WEIGHT,
+    MAX_PERSPECTIVE_PIXELS, MAX_PERSPECTIVE_SIDE_PX, MAX_SHEET_SIDE_IN, MAX_SNAP_UNIT_IN,
+    MIN_SHEET_SIDE_IN, MIN_SNAP_UNIT_IN,
 };
 pub use pages::{
     resolve_labels, revision_rows, PageInfo, PageNumbers, PageRevision, PAGE_TABLE_COLUMNS,
@@ -79,10 +79,10 @@ pub use render::{
     PerspectiveRequest, PictureFn, SceneBuilderFn,
 };
 pub use send::{
-    add_materials_page, append_construction_set, append_construction_set_in,
-    default_construction_set, default_construction_set_with, fit_largest_scale, plan_label,
-    check_send, fit_warning, send_camera_to_layout, send_to_layout, send_to_layout_auto, send_to_layout_sized,
-    send_as_image, send_view, SendRequest, SendScale, Sent, AUTO_SCALE_CEILING,
+    add_materials_page, append_construction_set, append_construction_set_in, check_send,
+    default_construction_set, default_construction_set_with, fit_largest_scale, fit_warning,
+    plan_label, send_as_image, send_camera_to_layout, send_to_layout, send_to_layout_auto,
+    send_to_layout_sized, send_view, SendRequest, SendScale, Sent, AUTO_SCALE_CEILING,
 };
 pub use template::{template_file_stem, LayoutTemplate, TEMPLATE_EXTENSION, TEMPLATE_VERSION};
 pub use textfit::{fit_text_box, wrap_lines, FittedText, TextFit, MIN_SHRINK_PT};
@@ -102,9 +102,9 @@ pub use boxview::{
     LineType, PlotFill, PlotLine, PlotOptions, ScaleMode, Tier, UpdateKind, ViewArt,
 };
 pub use extent::{box_table, source_size_in, view_frame_in, view_size_in};
+pub use overlay::{OverlayShape, PlanOverlayFn, PlanOverlayItem};
 pub use plotlines::{art_from_drawing, effective_pen, LineSpec, PlotPen};
 pub use updates::{set_camera_link, update_box, update_views, UpdateReport, UpdateScope};
-pub use overlay::{OverlayShape, PlanOverlayFn, PlanOverlayItem};
 
 #[cfg(test)]
 mod boxview_tests;

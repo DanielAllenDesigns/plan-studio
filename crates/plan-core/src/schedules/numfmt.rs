@@ -79,6 +79,7 @@ impl NumUnit {
     }
 
     /// Inches to this unit (not for feet-inches).
+    #[allow(clippy::wrong_self_convention)]
     fn from_inches(self, v: f64) -> f64 {
         match self {
             NumUnit::FeetInches | NumUnit::Inches => v,
@@ -307,7 +308,7 @@ pub fn group_thousands(int_digits: &str, sep: Option<char>) -> String {
     let digits: Vec<char> = int_digits.chars().collect();
     let mut out = String::new();
     for (i, c) in digits.iter().enumerate() {
-        if i > 0 && (digits.len() - i) % 3 == 0 {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
             out.push(sep);
         }
         out.push(*c);
@@ -479,6 +480,7 @@ pub fn format_value(v: f64, kind: NumKind, f: &NumFormat) -> String {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::field_reassign_with_default)]
     use super::*;
     use crate::units::fmt_ft_in;
 

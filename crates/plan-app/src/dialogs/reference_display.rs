@@ -608,7 +608,7 @@ impl ReferenceDisplayDialog {
                     r.layer_set = self.default_layer_set.clone();
                 }
                 if let ReferenceSource::File(_) = &r.source {
-                    ui.selectable_label(true, r.source.label());
+                    let _ = ui.selectable_label(true, r.source.label());
                 }
                 if ui
                     .selectable_label(false, "Choose Existing Plan\u{2026}")

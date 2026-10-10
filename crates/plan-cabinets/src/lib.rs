@@ -38,8 +38,8 @@ pub use cabinet::{
     auto_label, expand_label, run_along_wall, type_code, ApplianceBay, Backsplash, BlindSide,
     BlindSpec, Cabinet, CabinetKind, CabinetPreset, CornerSpec, CornerStyle, Countertop,
     DoorProfile, DoorStyle, DrawerStyle, FaceSide, HandleStyle, HingeStyle, MaterialChoice,
-    Molding, MoldingKind, Overlay, PartMaterials, SideFace, SideKind, Stiles, ToeKick,
-    ToeOptions, FULL_HEIGHT_TO,
+    Molding, MoldingKind, Overlay, PartMaterials, SideFace, SideKind, Stiles, ToeKick, ToeOptions,
+    FULL_HEIGHT_TO,
 };
 pub use dress::{
     components, fmt_in, shelf_count, Accessories, Component, FillPattern, FootStyle, ObjectInfo,
@@ -49,23 +49,23 @@ pub use face::{
     Divider, DividerHandle, DoorPlan, FaceCell, FaceItem, FaceLayout, ItemKind, ResolvedFace,
     AUTO_DOOR_THRESHOLD, MIN_ITEM,
 };
-pub use item::{
-    HardwareSize, InsertOrder, ItemProps, Shelf, ShelfDepth, ShelfPlacement, ShelfSpec,
-    SHELF_THICKNESS,
-};
 pub use filler::{
     auto_fillers, fit_between, fit_to_gap, run_bounds, run_class, run_mates, same_height,
     wall_polygon, FillerOptions, RunClass, AUTO_FILLER_REACH, MAX_FILLER_GAP,
-};
-pub use label::{key_of, label_is_blank};
-pub use options::{
-    AutoOnOff, BoxConstruction, EdgeMolding, Ends, Manufacturer, ShowOpen, TopEdge, TopSpec,
 };
 pub use geom::{
     area as ring_area, bbox as ring_bbox, ccw as ring_ccw, free_span, offset_ring, thicken_path,
     triangulate, union_polygons, InsideObstacle,
 };
+pub use item::{
+    HardwareSize, InsertOrder, ItemProps, Shelf, ShelfDepth, ShelfPlacement, ShelfSpec,
+    SHELF_THICKNESS,
+};
+pub use label::{key_of, label_is_blank};
 pub use mesh3d::meshes;
+pub use options::{
+    AutoOnOff, BoxConstruction, EdgeMolding, Ends, Manufacturer, ShowOpen, TopEdge, TopSpec,
+};
 pub use push::push_run;
 pub use runs::{
     bottom_over_appliance, cabinet_appliance_tops, link, merge_reach, merge_runs, plan_strokes,

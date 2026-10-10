@@ -139,7 +139,7 @@ impl Env {
     pub fn of(cx: &mut EditorContext) -> Env {
         let mut names = BTreeMap::new();
         for k in SavedKind::ANNOTATION {
-            names.insert(k, cx.project.saved_names(&mut cx.defaults, k));
+            names.insert(k, cx.project.saved_names(&cx.defaults, k));
         }
         Env {
             names,
@@ -686,7 +686,7 @@ fn handle(cx: &mut EditorContext, ev: Ev, sel: &mut Selected) -> Option<String> 
                     // The picks follow the deletion.
                     sel.picks.insert(
                         kind.id().to_string(),
-                        cx.project.saved_active(&mut cx.defaults, kind),
+                        cx.project.saved_active(&cx.defaults, kind),
                     );
                     cx.mark_dirty();
                     Some(format!("Deleted \"{name}\""))
@@ -1070,11 +1070,10 @@ mod tests {
         answer_prompt(&mut cx, "Section Callout").unwrap();
         assert!(cx
             .project
-            .saved_names(&mut cx.defaults, SavedKind::Callouts)
+            .saved_names(&cx.defaults, SavedKind::Callouts)
             .contains(&"Section Callout".to_string()));
         assert_eq!(
-            cx.project
-                .saved_active(&mut cx.defaults, SavedKind::Callouts),
+            cx.project.saved_active(&cx.defaults, SavedKind::Callouts),
             "Section Callout"
         );
         assert!(editor_is_open(), "its defaults dialog opens next");

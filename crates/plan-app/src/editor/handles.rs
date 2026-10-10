@@ -298,18 +298,24 @@ pub fn handles_for(cx: &EditorContext, scale: f64) -> Vec<Handle> {
                         };
                         h(kind, pos, cursor)
                     })
-                    .chain(camera_tool::wedge_handles_of(c).into_iter().map(|(w, pos)| {
-                        use camera_tool::WedgeHandle;
-                        match w {
-                            WedgeHandle::FovLeft => {
-                                h(HandleKind::Reshape(2), pos, CursorIcon::Crosshair)
-                            }
-                            WedgeHandle::FovRight => {
-                                h(HandleKind::Reshape(3), pos, CursorIcon::Crosshair)
-                            }
-                            WedgeHandle::Tilt => h(HandleKind::Reshape(4), pos, CursorIcon::Grab),
-                        }
-                    }))
+                    .chain(
+                        camera_tool::wedge_handles_of(c)
+                            .into_iter()
+                            .map(|(w, pos)| {
+                                use camera_tool::WedgeHandle;
+                                match w {
+                                    WedgeHandle::FovLeft => {
+                                        h(HandleKind::Reshape(2), pos, CursorIcon::Crosshair)
+                                    }
+                                    WedgeHandle::FovRight => {
+                                        h(HandleKind::Reshape(3), pos, CursorIcon::Crosshair)
+                                    }
+                                    WedgeHandle::Tilt => {
+                                        h(HandleKind::Reshape(4), pos, CursorIcon::Grab)
+                                    }
+                                }
+                            }),
+                    )
                     .collect()
             })
             .unwrap_or_default(),
@@ -409,10 +415,9 @@ pub fn handles_for(cx: &EditorContext, scale: f64) -> Vec<Handle> {
                 })
                 .collect()
         }
-        ObjectRef::Room(_)
-        | ObjectRef::Schedule(_)
-        | ObjectRef::Block(_)
-        | ObjectRef::Solid(_) => Vec::new(),
+        ObjectRef::Room(_) | ObjectRef::Schedule(_) | ObjectRef::Block(_) | ObjectRef::Solid(_) => {
+            Vec::new()
+        }
     }
 }
 

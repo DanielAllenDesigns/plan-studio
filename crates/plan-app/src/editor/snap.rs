@@ -895,14 +895,24 @@ pub fn guides_through(anchors: &[Point], origin: Option<Point>, p: Point, eps: f
             .min_by(|a, b| a.dist(p).total_cmp(&b.dist(p)))
             .copied()
     };
-    if let Some(a) = nearest(anchors.iter().filter(|a| (a.x - p.x).abs() <= eps).collect()) {
+    if let Some(a) = nearest(
+        anchors
+            .iter()
+            .filter(|a| (a.x - p.x).abs() <= eps)
+            .collect(),
+    ) {
         out.push(Guide {
             from: a,
             to: p,
             kind: GuideKind::Alignment,
         });
     }
-    if let Some(a) = nearest(anchors.iter().filter(|a| (a.y - p.y).abs() <= eps).collect()) {
+    if let Some(a) = nearest(
+        anchors
+            .iter()
+            .filter(|a| (a.y - p.y).abs() <= eps)
+            .collect(),
+    ) {
         out.push(Guide {
             from: a,
             to: p,
@@ -1536,13 +1546,20 @@ mod tests {
         // The ray meets the vertical through an anchor at 150".
         let anchors = vec![Point::new(150.0, -40.0)];
         let a = align_to_guides(&anchors, Some(o), Point::new(148.0, 146.0), 5.0, 1.0).unwrap();
-        assert!((a.x - 150.0).abs() < 1e-9 && (a.y - 150.0).abs() < 1e-9, "{a:?}");
+        assert!(
+            (a.x - 150.0).abs() < 1e-9 && (a.y - 150.0).abs() < 1e-9,
+            "{a:?}"
+        );
         // Behind a ray's origin is the opposite ray, also 45 degrees.
         let back = align_to_guides(&[], Some(o), Point::new(-100.0, -98.0), 5.0, 1.0).unwrap();
         assert!((back.x - back.y).abs() < 1e-9, "{back:?}");
         let g = guides_through(&anchors, Some(o), Point::new(150.0, 150.0), 0.01);
-        assert!(g.iter().any(|g| g.kind == GuideKind::Alignment && g.from == anchors[0]));
-        assert!(g.iter().any(|g| g.kind == GuideKind::Direction && g.from == o));
+        assert!(g
+            .iter()
+            .any(|g| g.kind == GuideKind::Alignment && g.from == anchors[0]));
+        assert!(g
+            .iter()
+            .any(|g| g.kind == GuideKind::Direction && g.from == o));
     }
 
     #[test]
@@ -1551,7 +1568,11 @@ mod tests {
         let layers = LayerSet::default();
         let a = alignment_anchors(&p.floors[0], &layers, &[]);
         let walls = p.floors[0].walls.len();
-        assert!(a.len() >= walls * 3, "{} anchors for {walls} walls", a.len());
+        assert!(
+            a.len() >= walls * 3,
+            "{} anchors for {walls} walls",
+            a.len()
+        );
         assert!(a.contains(&Point::new(120.0, 0.0)));
         let ids: Vec<Id> = p.floors[0].walls.iter().map(|w| w.id).collect();
         assert!(alignment_anchors(&p.floors[0], &layers, &ids).is_empty());

@@ -6,6 +6,7 @@
 //! defaults work (CB-1..6, CB-10, CB-13, CB-19, CB-21, CB-475, CB-476,
 //! CB-480..483, CB-488, CB-634, CB-635).
 
+#![allow(clippy::field_reassign_with_default)]
 use super::Sim;
 use crate::dialogs::cabinet_defaults;
 use crate::editor::placed::{self, add_cabinet, cabinet_by_id, load_cabinets};

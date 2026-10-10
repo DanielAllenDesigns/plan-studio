@@ -874,7 +874,9 @@ fn layout_pages(ui: &mut egui::Ui, cx: &EditorContext, requests: &mut Vec<DockRe
         let r = ui
             .selectable_label(showing == Some(i), text)
             .interact(Sense::click_and_drag())
-            .on_hover_text("Click to open; drag to another page to move it (the # labels renumber)");
+            .on_hover_text(
+                "Click to open; drag to another page to move it (the # labels renumber)",
+            );
         if r.clicked() {
             run(requests, C::GoToPage(i));
         }
@@ -1695,7 +1697,12 @@ mod tests {
         st.open_hotkey_dialog(&hk);
         st.open_layer_dialog();
         for _ in 0..3 {
-            for dock in [Dock::LayerDisplay, Dock::Project, Dock::Library, Dock::Agent] {
+            for dock in [
+                Dock::LayerDisplay,
+                Dock::Project,
+                Dock::Library,
+                Dock::Agent,
+            ] {
                 let _ = ctx.run(egui::RawInput::default(), |ctx| {
                     egui::SidePanel::right("dock").show(ctx, |ui| show(ui, dock, &mut cx, &mut st));
                     show_dialogs(ctx, &mut cx, &mut st, &mut hk);

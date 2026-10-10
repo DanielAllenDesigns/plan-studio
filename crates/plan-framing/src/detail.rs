@@ -528,7 +528,10 @@ mod tests {
         assert!(list.iter().all(|m| members[m.index].kind == m.kind));
         assert!(list.iter().all(|m| members[m.index].wall_id == Some(7)));
         // The window's rough opening width is between the trimmers.
-        let trimmers: Vec<_> = list.iter().filter(|m| m.kind == MemberKind::TrimmerStud).collect();
+        let trimmers: Vec<_> = list
+            .iter()
+            .filter(|m| m.kind == MemberKind::TrimmerStud)
+            .collect();
         let (a, b) = (trimmers[0], trimmers[1]);
         let gap = (a.min.x.max(b.min.x)) - (a.max.x.min(b.max.x));
         assert!((gap - 36.0).abs() < 1e-6, "{gap}");
@@ -544,7 +547,14 @@ mod tests {
         assert_eq!(block.len(), 2);
         let [s, e] = start_end_marks(Point::new(0.0, 0.0), Point::new(100.0, 0.0), 2.0);
         match (s, e) {
-            (Stroke::Text { pos: p, text: a, .. }, Stroke::Text { pos: q, text: b, .. }) => {
+            (
+                Stroke::Text {
+                    pos: p, text: a, ..
+                },
+                Stroke::Text {
+                    pos: q, text: b, ..
+                },
+            ) => {
                 assert_eq!((a.as_str(), b.as_str()), ("S", "E"));
                 assert!(p.x < 0.0 && q.x > 100.0);
             }

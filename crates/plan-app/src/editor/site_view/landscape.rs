@@ -20,6 +20,7 @@ use plan_terrain::{
 
 /// An element of the terrain that has its own specification dialog.
 #[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 pub enum TerrainObject {
     Feature(Feature),
     Break(TerrainBreak),

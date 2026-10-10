@@ -1233,14 +1233,20 @@ mod tests {
         // A door goes: its number stays free until Renumber Schedule.
         cx.project.floors[0].openings.retain(|o| o.id != ids[2]);
         let m = schedule_marks(&cx, sid);
-        assert_eq!(m, [(ids[1], "D02".to_string()), (ids[0], "D03".to_string())]);
+        assert_eq!(
+            m,
+            [(ids[1], "D02".to_string()), (ids[0], "D03".to_string())]
+        );
         // The Edit toolbar of a selected door offers the command.
         cx.selection.set(ObjectRef::Opening(ids[0]));
         let labels: Vec<_> = edit_actions(&cx).iter().map(|e| e.label).collect();
         assert!(labels.contains(&"Renumber Schedule"), "{labels:?}");
         assert!(run_command(&mut cx, RENUMBER));
         let m = schedule_marks(&cx, sid);
-        assert_eq!(m, [(ids[1], "D01".to_string()), (ids[0], "D02".to_string())]);
+        assert_eq!(
+            m,
+            [(ids[1], "D01".to_string()), (ids[0], "D02".to_string())]
+        );
         assert_eq!(cx.undo_label(), Some("Renumber Schedule"));
         // No mark is written into the openings (DECISIONS 44).
         assert_eq!(mark(&cx, ids[0]), None);

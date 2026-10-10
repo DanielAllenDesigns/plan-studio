@@ -14,9 +14,9 @@ use crate::toolbar::ViewFlag;
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Shape, Stroke, Vec2};
 use plan_core::cad::CadItem;
 use plan_core::geometry::Point;
-use plan_core::{
-    exterior_sign, Dimension, DimensionKind, Opening, Wall, WallClass, WallKind,
-};
+#[cfg(test)]
+use plan_core::DimensionKind;
+use plan_core::{exterior_sign, Dimension, Opening, Wall, WallClass, WallKind};
 use std::collections::HashMap;
 
 /// Runs one stage of [`draw_plan`]. Test builds add the stage's time to
@@ -938,7 +938,10 @@ fn paint_style_fill(
 /// The polygon a closed CAD item fills.
 fn cad_fill_polygon(item: &CadItem) -> Option<Vec<Point>> {
     match item {
-        CadItem::Polyline { points, closed: true } if points.len() >= 3 => Some(points.clone()),
+        CadItem::Polyline {
+            points,
+            closed: true,
+        } if points.len() >= 3 => Some(points.clone()),
         CadItem::Circle { .. } => crate::dialogs::line_style::item_path(item).map(|(p, _)| p),
         _ => None,
     }
@@ -1032,7 +1035,15 @@ fn draw_assigned_fills(cx: &EditorContext, painter: &egui::Painter, cam: &Camera
                     .find(|r| crate::editor::rooms_edit::room_anchor(r).dist(*anchor) < 1.0)
                 {
                     if cx.layers().is_visible("Rooms") {
-                        paint_style_fill(cx, painter, cam, &r.inner_polygon, &r.holes, style, "Rooms");
+                        paint_style_fill(
+                            cx,
+                            painter,
+                            cam,
+                            &r.inner_polygon,
+                            &r.holes,
+                            style,
+                            "Rooms",
+                        );
                     }
                 }
             }
@@ -1043,11 +1054,10 @@ fn draw_assigned_fills(cx: &EditorContext, painter: &egui::Painter, cam: &Camera
 
 /// Is poché on in the view that is showing (View > Poché)?
 pub fn poche_on(cx: &EditorContext) -> bool {
-    let on = cx
-        .project
-        .styles
-        .poche
-        .is_on(&cx.project.active_plan_view, plan_core::fill_styles::PocheView::Plan);
+    let on = cx.project.styles.poche.is_on(
+        &cx.project.active_plan_view,
+        plan_core::fill_styles::PocheView::Plan,
+    );
     crate::dialogs::fill_style::note_poche(on);
     on
 }
@@ -1074,7 +1084,14 @@ fn draw_poche(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
                 .collect();
             if typed.is_empty() || wall.is_curved() {
                 let poly = wall_polygon_at(cx, wall, cam.px_per_in);
-                fill_wall(painter, cam, wall, &poly, fill, Stroke::new(1.0_f32, pal.wall_stroke));
+                fill_wall(
+                    painter,
+                    cam,
+                    wall,
+                    &poly,
+                    fill,
+                    Stroke::new(1.0_f32, pal.wall_stroke),
+                );
                 return;
             }
             for l in typed {
@@ -1619,8 +1636,24 @@ pub fn draw_dimension_look(
         }
     };
     if let (Some(first), Some(last)) = (line.first(), line.last()) {
-        draw_dimension_end(painter, sc(*first), dir_at(*first, fwd_start), 1.0, look, px, stroke);
-        draw_dimension_end(painter, sc(*last), dir_at(*last, fwd_end), -1.0, look, px, stroke);
+        draw_dimension_end(
+            painter,
+            sc(*first),
+            dir_at(*first, fwd_start),
+            1.0,
+            look,
+            px,
+            stroke,
+        );
+        draw_dimension_end(
+            painter,
+            sc(*last),
+            dir_at(*last, fwd_end),
+            -1.0,
+            look,
+            px,
+            stroke,
+        );
     }
     // Centerline marks on the extension lines (Extensions panel).
     for (k, on) in d.look.seg.centerline.iter().enumerate() {
@@ -1630,7 +1663,13 @@ pub fn draw_dimension_look(
         let (m, e) = d.extension_lines()[k];
         let out = e.add(e.sub(m).normalized().scale(look.text_h));
         let font = text_font(painter, (look.text_h as f32 * px * 0.8).clamp(6.0, 120.0));
-        painter.text(sc(out), Align2::CENTER_CENTER, "CL", font, pal.dimension_text);
+        painter.text(
+            sc(out),
+            Align2::CENTER_CENTER,
+            "CL",
+            font,
+            pal.dimension_text,
+        );
     }
 
     // The label.
@@ -1638,13 +1677,22 @@ pub fn draw_dimension_look(
         Some(g) => (g.label_at, g.label_dir, None, f64::INFINITY),
         None => {
             let (p, q) = d.line_points();
-            (Point::lerp(p, q, 0.5), q.sub(p).normalized(), Some((p, q)), p.dist(q))
+            (
+                Point::lerp(p, q, 0.5),
+                q.sub(p).normalized(),
+                Some((p, q)),
+                p.dist(q),
+            )
         }
     };
     let font_px = (look.text_h as f32 * px).clamp(6.0, 200.0);
     let width = |t: &str| {
         painter
-            .layout_no_wrap(t.to_string(), text_font(painter, font_px), pal.dimension_text)
+            .layout_no_wrap(
+                t.to_string(),
+                text_font(painter, font_px),
+                pal.dimension_text,
+            )
             .size()
             .x as f64
             / cam.px_per_in.max(1e-9)

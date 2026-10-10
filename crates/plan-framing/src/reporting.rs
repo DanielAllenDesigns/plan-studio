@@ -208,7 +208,11 @@ impl BoardSpec {
                 return (*name).to_string();
             }
         }
-        format!("{}x{}", format_inches(self.thickness), format_inches(self.depth))
+        format!(
+            "{}x{}",
+            format_inches(self.thickness),
+            format_inches(self.depth)
+        )
     }
 
     fn matches(&self, k: &SizeKey) -> bool {
@@ -263,7 +267,13 @@ impl ReportingDefault {
     /// longer beams.
     pub fn buy_list(name: &str) -> Self {
         let mut boards = Vec::new();
-        for (t, d) in [(1.5, 3.5), (1.5, 5.5), (1.5, 7.25), (1.5, 9.25), (1.5, 11.25)] {
+        for (t, d) in [
+            (1.5, 3.5),
+            (1.5, 5.5),
+            (1.5, 7.25),
+            (1.5, 9.25),
+            (1.5, 11.25),
+        ] {
             for ft in [8.0, 10.0, 12.0, 14.0, 16.0, 18.0, 20.0] {
                 boards.push(BoardSpec::new(t, d, ft));
             }
@@ -398,7 +408,9 @@ impl ReportingSet {
     }
 
     pub fn has_mixed(&self) -> bool {
-        self.defaults.iter().any(|d| d.method == ReportMethod::Mixed)
+        self.defaults
+            .iter()
+            .any(|d| d.method == ReportMethod::Mixed)
     }
 
     fn name_ok(&self, name: &str) -> bool {
@@ -636,7 +648,11 @@ fn mixed_linear(role: Role) -> bool {
 
 /// The pieces of automatic members. `first_source` is the `source` index of
 /// the first member; the others follow.
-pub fn auto_inputs(members: &[Member], catalog: &FramingCatalog, first_source: usize) -> Vec<ReportInput> {
+pub fn auto_inputs(
+    members: &[Member],
+    catalog: &FramingCatalog,
+    first_source: usize,
+) -> Vec<ReportInput> {
     members
         .iter()
         .enumerate()
@@ -680,10 +696,7 @@ pub fn manual_inputs(
         } else {
             catalog.type_for_role(role).name
         };
-        let ty = catalog
-            .type_named(&type_name)
-            .cloned()
-            .unwrap_or_default();
+        let ty = catalog.type_named(&type_name).cloned().unwrap_or_default();
         for p in m.pieces() {
             // Engineered sections keep their own dimensions; dimensional
             // lumber (and truss chords) use the dressed size of the name.
@@ -751,7 +764,11 @@ pub struct Report {
 impl Report {
     /// Pieces counted (`ea` lines).
     pub fn pieces(&self) -> f64 {
-        self.lines.iter().filter(|l| l.unit == "ea").map(|l| l.qty).sum()
+        self.lines
+            .iter()
+            .filter(|l| l.unit == "ea")
+            .map(|l| l.qty)
+            .sum()
     }
 
     /// Feet of lumber the lines stand for: boards times length, cut pieces
@@ -770,7 +787,12 @@ impl Report {
     /// Linear feet by category.
     pub fn linear_feet_in(&self, c: MaterialsCategory) -> f64 {
         Report {
-            lines: self.lines.iter().filter(|l| l.category == c).cloned().collect(),
+            lines: self
+                .lines
+                .iter()
+                .filter(|l| l.category == c)
+                .cloned()
+                .collect(),
         }
         .linear_feet()
     }
@@ -839,7 +861,10 @@ fn size_order(size: &str) -> (u32, u32, String) {
 }
 
 /// Groups pieces by category and size key, keeping the first appearance order.
-fn group<'a>(pieces: &[&'a ReportInput]) -> Vec<((MaterialsCategory, SizeKey, String), Vec<&'a ReportInput>)> {
+#[allow(clippy::type_complexity)]
+fn group<'a>(
+    pieces: &[&'a ReportInput],
+) -> Vec<((MaterialsCategory, SizeKey, String), Vec<&'a ReportInput>)> {
     let mut groups: Vec<((MaterialsCategory, SizeKey, String), Vec<&ReportInput>)> = Vec::new();
     for p in pieces {
         let key = p.key();
@@ -858,7 +883,10 @@ fn cut_list(pieces: Vec<&ReportInput>, d: &ReportingDefault, out: &mut Vec<Repor
     for ((category, _, size), members) in group(&pieces) {
         let mut by_len: BTreeMap<i64, Vec<&ReportInput>> = BTreeMap::new();
         for p in &members {
-            by_len.entry((p.length * 16.0).round() as i64).or_default().push(p);
+            by_len
+                .entry((p.length * 16.0).round() as i64)
+                .or_default()
+                .push(p);
         }
         for (sixteenths, ps) in by_len {
             let len = sixteenths as f64 / 16.0;
@@ -979,8 +1007,10 @@ fn buy_list(inputs: &[ReportInput], d: &ReportingDefault, out: &mut Vec<ReportLi
         for spec in specs {
             let boards: Vec<&Bought> = bought.iter().filter(|b| b.spec == spec).collect();
             let qty = boards.len() as f64;
-            let covered: Vec<&ReportInput> =
-                boards.iter().flat_map(|b| b.pieces.iter().copied()).collect();
+            let covered: Vec<&ReportInput> = boards
+                .iter()
+                .flat_map(|b| b.pieces.iter().copied())
+                .collect();
             let len = d.boards[spec].length;
             out.push(ReportLine {
                 category,
@@ -1010,7 +1040,10 @@ fn buy_list(inputs: &[ReportInput], d: &ReportingDefault, out: &mut Vec<ReportLi
             } else {
                 let mut by_len: BTreeMap<i64, Vec<&ReportInput>> = BTreeMap::new();
                 for p in &other {
-                    by_len.entry((p.length * 16.0).round() as i64).or_default().push(p);
+                    by_len
+                        .entry((p.length * 16.0).round() as i64)
+                        .or_default()
+                        .push(p);
                 }
                 for (sixteenths, ps) in by_len {
                     let len = sixteenths as f64 / 16.0;
@@ -1043,7 +1076,11 @@ pub fn report_members(
 ) -> Report {
     let mut inputs = auto_inputs(auto, catalog, 0);
     inputs.extend(manual_inputs(manual, catalog, auto.len()));
-    report(&inputs, catalog.reporting.active_default(), list_cut_headers)
+    report(
+        &inputs,
+        catalog.reporting.active_default(),
+        list_cut_headers,
+    )
 }
 
 impl ReportingDefault {
@@ -1128,12 +1165,27 @@ mod tests {
         assert_eq!(r.pieces(), 13.0);
         let t = crate::takeoff(&floor());
         let take_lf: f64 = t.linear_feet_by_size.iter().map(|(_, lf)| lf).sum();
-        assert!((r.linear_feet() - take_lf).abs() < 0.01, "{} vs {take_lf}", r.linear_feet());
+        assert!(
+            (r.linear_feet() - take_lf).abs() < 0.01,
+            "{} vs {take_lf}",
+            r.linear_feet()
+        );
         // Studs are 8 pieces of one cut length, categorised Framing; joists
         // fall under Subfloor.
-        let studs = r.lines.iter().find(|l| l.description.contains("stud")).unwrap();
-        assert_eq!((studs.qty, studs.category), (8.0, MaterialsCategory::Framing));
-        let joists = r.lines.iter().find(|l| l.description.contains("joist")).unwrap();
+        let studs = r
+            .lines
+            .iter()
+            .find(|l| l.description.contains("stud"))
+            .unwrap();
+        assert_eq!(
+            (studs.qty, studs.category),
+            (8.0, MaterialsCategory::Framing)
+        );
+        let joists = r
+            .lines
+            .iter()
+            .find(|l| l.description.contains("joist"))
+            .unwrap();
         assert_eq!(joists.category, MaterialsCategory::Subfloor);
     }
 
@@ -1179,7 +1231,14 @@ mod tests {
         let boards: f64 = joist_lines.iter().map(|l| l.qty).sum();
         assert!(boards <= 3.0);
         // Bought footage covers the pieces cut.
-        assert!(r.linear_feet() >= crate::takeoff(&floor()).linear_feet_by_size.iter().map(|(_, f)| f).sum::<f64>());
+        assert!(
+            r.linear_feet()
+                >= crate::takeoff(&floor())
+                    .linear_feet_by_size
+                    .iter()
+                    .map(|(_, f)| f)
+                    .sum::<f64>()
+        );
     }
 
     #[test]
@@ -1253,7 +1312,11 @@ mod tests {
         let mut d = ReportingDefault::buy_list("Mixed");
         d.method = ReportMethod::Mixed;
         let r = report(&auto_inputs(&ms, &c, 0), &d, false);
-        let studs = r.lines.iter().find(|l| l.description.contains("stud")).unwrap();
+        let studs = r
+            .lines
+            .iter()
+            .find(|l| l.description.contains("stud"))
+            .unwrap();
         assert_eq!((studs.unit, studs.qty), ("ea", 8.0));
         let plate = r
             .lines
@@ -1282,15 +1345,23 @@ mod tests {
             s.add("Legacy 2", ReportMethod::Mixed, None),
             Err(ReportingError::SecondMixed)
         );
-        assert_eq!(s.add("Cuts", ReportMethod::CutList, None), Err(ReportingError::BadName));
-        assert_eq!(s.add("cuts", ReportMethod::CutList, None), Ok(()), "names are case-sensitive");
+        assert_eq!(
+            s.add("Cuts", ReportMethod::CutList, None),
+            Err(ReportingError::BadName)
+        );
+        assert_eq!(
+            s.add("cuts", ReportMethod::CutList, None),
+            Ok(()),
+            "names are case-sensitive"
+        );
         s.rename("Cuts", "Job cuts").unwrap();
         s.set_active("Job cuts");
         s.rename("Job cuts", "Cutting").unwrap();
         assert_eq!(s.active, "Cutting");
         s.used_by_lists.push("Legacy".into());
         assert_eq!(s.delete("Legacy"), Err(ReportingError::InUse));
-        s.copy_convert("Buy List", "Linear", ReportMethod::LinearLength).unwrap();
+        s.copy_convert("Buy List", "Linear", ReportMethod::LinearLength)
+            .unwrap();
         let lin = s.get("Linear").unwrap();
         assert!(lin.boards.iter().all(|b| b.length == 0.0));
         s.delete("cuts").unwrap();
@@ -1325,7 +1396,11 @@ mod tests {
             Point::new(50.0, 0.0),
         );
         let inputs = manual_inputs(&[beam, post, line], &c, 0);
-        assert_eq!(inputs.len(), 4, "3 plies + 1 post; the bearing line is layout");
+        assert_eq!(
+            inputs.len(),
+            4,
+            "3 plies + 1 post; the bearing line is layout"
+        );
         assert!(inputs.iter().filter(|i| i.treated).count() == 3);
         assert_eq!(inputs[0].category, MaterialsCategory::Subfloor);
         assert_eq!(inputs[3].category, MaterialsCategory::Framing);
@@ -1361,6 +1436,9 @@ mod tests {
     #[test]
     fn board_spec_names_standard_sizes_and_falls_back_to_actual() {
         assert_eq!(BoardSpec::new(1.5, 9.25, 12.0).size_name(), "2x10");
-        assert_eq!(BoardSpec::new(1.75, 11.875, 24.0).size_name(), "1 3/4x11 7/8");
+        assert_eq!(
+            BoardSpec::new(1.75, 11.875, 24.0).size_name(),
+            "1 3/4x11 7/8"
+        );
     }
 }

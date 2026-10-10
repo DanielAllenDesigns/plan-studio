@@ -37,12 +37,7 @@ impl OpeningForm {
         let mut spec: MulledSpec = if defaults {
             self.extras.mulled.clone()
         } else {
-            self.draft
-                .extras
-                .spec
-                .mulled
-                .clone()
-                .unwrap_or_else(MulledSpec::default)
+            self.draft.extras.spec.mulled.clone().unwrap_or_default()
         };
         let before = spec.clone();
         ui.checkbox(&mut spec.treat_as_door, "Treat as Door")

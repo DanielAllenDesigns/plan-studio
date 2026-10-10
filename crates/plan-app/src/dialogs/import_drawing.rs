@@ -710,7 +710,7 @@ fn plan_layers(cx: &EditorContext) -> Vec<String> {
 fn wall_lines(conv: &Converted, layers: &[String]) -> Vec<(Point, Point)> {
     conv.objects
         .iter()
-        .filter(|o| layers.iter().any(|l| *l == o.source_layer))
+        .filter(|o| layers.contains(&o.source_layer))
         .flat_map(|o| segments_of(&o.item))
         .collect()
 }

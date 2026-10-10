@@ -2679,7 +2679,8 @@ pub(crate) fn baseline_sources(
                 let uppers = upper_footprints(project, fi, fi);
                 let walls = curved_sections(roofing_walls(floor), s);
                 for r in &regions {
-                    let butts = |a: Point, b: Point| edge_butts(project, r, &regions, &uppers, a, b);
+                    let butts =
+                        |a: Point, b: Point| edge_butts(project, r, &regions, &uppers, a, b);
                     out.push(region_source(project, fi, &walls, &r.fp, r.top, s, &butts));
                 }
             }
@@ -2688,7 +2689,9 @@ pub(crate) fn baseline_sources(
                 let fp = footprint_from_walls(&walls, TOL)
                     .ok_or_else(|| "The exterior walls do not enclose an area".to_string())?;
                 let top = walls.iter().map(|w| w.height).fold(0.0, f64::max);
-                out.push(region_source(project, fi, &walls, &fp, top, s, &|_, _| false));
+                out.push(region_source(project, fi, &walls, &fp, top, s, &|_, _| {
+                    false
+                }));
             }
         }
     }
@@ -4005,7 +4008,9 @@ pub fn join_planes_record_locked(
             let run = plan_roof::plane_run(&joined);
             Some(
                 c.after_join(old_run, run, run * pa.pitch / 12.0, lock)
-                    .ok_or("The radius is too short for the joined edge: lock the angle at the ridge")?,
+                    .ok_or(
+                        "The radius is too short for the joined edge: lock the angle at the ridge",
+                    )?,
             )
         }
         None => pa.curved,
@@ -4310,10 +4315,9 @@ pub fn draw_roofs(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
     // Show All Ridges off: the hips between the sections of a curved wall's
     // roof are left out (RF-82).
     let hidden = match &set.settings {
-        Some(s) if !s.switches.show_all_ridges => crate::tools::roof_baseline::facet_hips(
-            &set.planes,
-            s.switches.segment_angle_clamped(),
-        ),
+        Some(s) if !s.switches.show_all_ridges => {
+            crate::tools::roof_baseline::facet_hips(&set.planes, s.switches.segment_angle_clamped())
+        }
         _ => Vec::new(),
     };
     let edges: Vec<Vec<(Point, Point)>> = set
@@ -4395,7 +4399,15 @@ pub fn draw_roofs(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
                 .filter(|(o, _)| *o != k)
                 .map(|(_, e)| e.clone())
                 .collect();
-            draw_plane_outline(painter, cam, &pl.plan_polygon(), &heights, &others, color, &[]);
+            draw_plane_outline(
+                painter,
+                cam,
+                &pl.plan_polygon(),
+                &heights,
+                &others,
+                color,
+                &[],
+            );
         }
         let w = &g.front_wall;
         painter.line_segment(

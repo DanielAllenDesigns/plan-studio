@@ -511,11 +511,12 @@ mod tests {
             height: 84.0,
         };
         assert_eq!(
-            room_ceiling_height_at(false, 96.0, &cath, &[shelf.clone()], at),
+            room_ceiling_height_at(false, 96.0, &cath, std::slice::from_ref(&shelf), at),
             84.0
         );
         // The vault has a hole where the shelf is.
-        let shelved = cathedral_ceiling_planes(false, &room, &[shelf.clone()], &roof, 9.0);
+        let shelved =
+            cathedral_ceiling_planes(false, &room, std::slice::from_ref(&shelf), &roof, 9.0);
         let area: f64 = shelved.iter().map(CeilingPlane::plan_area).sum();
         assert!(
             (area - (480.0 * 360.0 - 80.0 * 50.0)).abs() < 1e-3,

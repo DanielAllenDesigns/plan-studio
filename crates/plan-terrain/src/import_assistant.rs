@@ -625,8 +625,10 @@ pub fn import_gps(
     tr: &GpsTransform,
 ) -> Result<GpsResult, String> {
     let pts = parse_gpx_points(text)?;
-    let mut out = GpsResult::default();
-    out.route_ignored = pts.iter().filter(|p| p.kind == GpsKind::Route).count();
+    let mut out = GpsResult {
+        route_ignored: pts.iter().filter(|p| p.kind == GpsKind::Route).count(),
+        ..GpsResult::default()
+    };
     let origin = tr
         .origin
         .or_else(|| {

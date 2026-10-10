@@ -24,9 +24,7 @@
 
 use super::{dis_combo, fmt_short, on, row, section, Fields, Tab};
 use eframe::egui::{self, Ui};
-use plan_framing::{
-    FramingMember, Lumber, ManualMemberKind, Truss, TrussSpec, TrussType,
-};
+use plan_framing::{FramingMember, Lumber, ManualMemberKind, Truss, TrussSpec, TrussType};
 
 /// Tabs of a Roof or Girder Truss.
 pub const ROOF_TABS: &[Tab] = &[
@@ -140,17 +138,33 @@ pub fn general(m: &mut FramingMember, sw: &mut Switches, fields: &mut Fields, ui
         row(ui, "Top Chord", |ui| depth_combo(ui, "tr_top", &mut top));
         spec.chord = lumber(top, spec.chord);
         let mut bottom = spec.bottom_lumber().depth;
-        row(ui, "Bottom Chord", |ui| depth_combo(ui, "tr_bot", &mut bottom));
-        spec.bottom_chord_depth = if (bottom - top).abs() < 1e-9 { 0.0 } else { bottom };
+        row(ui, "Bottom Chord", |ui| {
+            depth_combo(ui, "tr_bot", &mut bottom)
+        });
+        spec.bottom_chord_depth = if (bottom - top).abs() < 1e-9 {
+            0.0
+        } else {
+            bottom
+        };
         let mut web = spec.web.depth;
         row(ui, "Webbing", |ui| depth_combo(ui, "tr_web", &mut web));
         spec.web = lumber(web, spec.web);
         section(ui, "Thickness");
-        fields.length_row(ui, "Overall Thickness", "tr_overall", &mut spec.chord.thickness);
+        fields.length_row(
+            ui,
+            "Overall Thickness",
+            "tr_overall",
+            &mut spec.chord.thickness,
+        );
         fields.length_row(ui, "Webbing", "tr_web_t", &mut spec.web_thickness);
         fields.length_row(ui, "Overall Depth", "tr_depth", &mut spec.flat_depth);
         section(ui, "Maximum Span");
-        fields.length_row(ui, "Top and Bottom Chord", "tr_span", &mut spec.max_span_bottom);
+        fields.length_row(
+            ui,
+            "Top and Bottom Chord",
+            "tr_span",
+            &mut spec.max_span_bottom,
+        );
         spec.max_span_top = spec.max_span_bottom;
     } else {
         section(ui, "Member Sizing");
@@ -158,8 +172,14 @@ pub fn general(m: &mut FramingMember, sw: &mut Switches, fields: &mut Fields, ui
         row(ui, "Top Chord", |ui| depth_combo(ui, "tr_top", &mut top));
         spec.chord = lumber(top, spec.chord);
         let mut bottom = spec.bottom_lumber().depth;
-        row(ui, "Bottom Chord", |ui| depth_combo(ui, "tr_bot", &mut bottom));
-        spec.bottom_chord_depth = if (bottom - top).abs() < 1e-9 { 0.0 } else { bottom };
+        row(ui, "Bottom Chord", |ui| {
+            depth_combo(ui, "tr_bot", &mut bottom)
+        });
+        spec.bottom_chord_depth = if (bottom - top).abs() < 1e-9 {
+            0.0
+        } else {
+            bottom
+        };
         let mut web = spec.web.depth;
         row(ui, "Webbing", |ui| depth_combo(ui, "tr_web", &mut web));
         spec.web = lumber(web, spec.web);
@@ -172,7 +192,9 @@ pub fn general(m: &mut FramingMember, sw: &mut Switches, fields: &mut Fields, ui
             row(ui, "Ply Thickness", |ui| {
                 ui.label(fmt_short(spec.chord.thickness))
             });
-            row(ui, "Total Thickness", |ui| ui.label(fmt_short(spec.thickness())));
+            row(ui, "Total Thickness", |ui| {
+                ui.label(fmt_short(spec.thickness()))
+            });
         }
         section(ui, "Maximum Horizontal Span");
         fields.length_row(ui, "Top Chord", "tr_span_top", &mut spec.max_span_top);
@@ -206,7 +228,11 @@ pub fn general(m: &mut FramingMember, sw: &mut Switches, fields: &mut Fields, ui
         ui.checkbox(&mut spec.reduced_gable, "Reduced Gable");
         let mut attic = spec.kind == TrussType::Attic;
         if ui.checkbox(&mut attic, "Attic Truss").changed() {
-            spec.kind = if attic { TrussType::Attic } else { TrussType::Fink };
+            spec.kind = if attic {
+                TrussType::Attic
+            } else {
+                TrussType::Fink
+            };
         }
         ui.checkbox(&mut spec.sloping_flat, "Sloping Flat Truss");
         ui.add_enabled_ui(spec.sloping_flat, |ui| {
@@ -251,7 +277,9 @@ pub fn member_count(m: &FramingMember) -> usize {
 pub fn line_style(ui: &mut Ui) {
     section(ui, "Line Style");
     row(ui, "Line style", |ui| dis_combo(ui, "truss_ls", "By layer"));
-    row(ui, "Line weight", |ui| dis_combo(ui, "truss_lw", "By layer"));
+    row(ui, "Line weight", |ui| {
+        dis_combo(ui, "truss_lw", "By layer")
+    });
     ui.add_space(6.0);
     ui.weak("Line style and weight follow the truss's layer.");
 }

@@ -603,11 +603,18 @@ mod tests {
                 .collect()
         };
         let plain = run(None);
-        assert!(xs(&plain).iter().all(|x| (x % 16.0).abs() < 1e-9 || (16.0 - x % 16.0) < 1e-9));
+        assert!(xs(&plain)
+            .iter()
+            .all(|x| (x % 16.0).abs() < 1e-9 || (16.0 - x % 16.0) < 1e-9));
         let anchored = run(Some(Point::new(8.0, 3.0)));
         let ax = xs(&anchored);
         assert!(!ax.is_empty());
-        assert!(ax.iter().all(|x| ((x - 8.0).rem_euclid(16.0)).min(16.0 - (x - 8.0).rem_euclid(16.0)) < 1e-9), "{ax:?}");
+        assert!(
+            ax.iter().all(
+                |x| ((x - 8.0).rem_euclid(16.0)).min(16.0 - (x - 8.0).rem_euclid(16.0)) < 1e-9
+            ),
+            "{ax:?}"
+        );
         // The rest of the deck is unchanged.
         assert_eq!(anchored.ledgers(), plain.ledgers());
         assert_eq!(anchored.rims(), plain.rims());

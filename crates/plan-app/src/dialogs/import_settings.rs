@@ -755,7 +755,7 @@ mod tests {
         assert_eq!(cx.undo_label(), Some("Import Settings"));
         assert!(cx
             .project
-            .saved_names(&mut cx.defaults, SavedKind::RichText)
+            .saved_names(&cx.defaults, SavedKind::RichText)
             .contains(&"Plot".to_string()));
         assert!(
             cx.project.note_types.get("Roof Note").is_none(),

@@ -7,6 +7,9 @@
 //! (shared services, [`EditorContext`]) and `tools/` (one module per Chief
 //! tool behind the [`Tool`] trait); see `docs/architecture-tools.md`.
 
+// Round 16 landed partially (see docs/integration-queue.md); several dialogs and
+// commands are built but not yet reachable from the UI. Remove at the Round 16 gate.
+#![allow(dead_code)]
 mod chief_link;
 mod dialogs;
 mod editor;
@@ -279,9 +282,8 @@ impl PlanApp {
     /// touches opens its own step, and the group folds them together.
     fn apply(&mut self, action: Action) {
         self.cx.begin_undo_group();
-        let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.apply_command(action)
-        }));
+        let run =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.apply_command(action)));
         self.cx.end_undo_group();
         if let Err(e) = run {
             std::panic::resume_unwind(e);

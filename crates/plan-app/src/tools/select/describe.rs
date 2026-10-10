@@ -36,7 +36,7 @@ const SUMMARY_NAMES_MAX: usize = 64;
 pub fn noun(cx: &EditorContext, o: ObjectRef) -> String {
     let f = cx.floor();
     match o {
-        ObjectRef::Wall(id) => f.wall(id).map_or_else(|| "Wall".into(), |w| wall_noun(w)),
+        ObjectRef::Wall(id) => f.wall(id).map_or_else(|| "Wall".into(), wall_noun),
         ObjectRef::Opening(id) => f
             .openings
             .iter()

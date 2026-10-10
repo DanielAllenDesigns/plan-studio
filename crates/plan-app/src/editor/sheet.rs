@@ -65,7 +65,7 @@ impl SheetSetup {
         match self.paper_cin {
             Some((size, (w, h))) if size == self.size => {
                 let side = |v: u32| {
-                    if v % 100 == 0 {
+                    if v.is_multiple_of(100) {
                         format!("{}", v / 100)
                     } else {
                         format!("{}", f64::from(v) / 100.0)

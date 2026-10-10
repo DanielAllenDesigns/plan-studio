@@ -139,10 +139,11 @@ pub fn detail_wall(floor: &Floor) -> Option<Id> {
 
 /// The Truss Detail floor.
 pub fn truss_detail_floor(project: &Project) -> Option<usize> {
-    project
-        .floors
-        .iter()
-        .position(|f| f.detail.as_ref().is_some_and(|d| d.source == DetailSource::TrussDetail))
+    project.floors.iter().position(|f| {
+        f.detail
+            .as_ref()
+            .is_some_and(|d| d.source == DetailSource::TrussDetail)
+    })
 }
 
 /// Every Wall Detail as `(detail floor, building floor, wall id, label)`, in
@@ -205,7 +206,7 @@ fn dimension_pieces(d: &DetailDim, flip: &dyn Fn(Point) -> Point) -> Vec<Piece> 
     let (a, b) = (flip(d.a), flip(d.b));
     let horizontal = (a.y - b.y).abs() < 1e-6;
     let (a2, b2, tick) = if horizontal {
-        let dy = if d.offset >= 0.0 { d.offset } else { d.offset };
+        let dy = d.offset;
         (
             Point::new(a.x, a.y + dy),
             Point::new(b.x, b.y + dy),
@@ -243,12 +244,7 @@ fn dimension_pieces(d: &DetailDim, flip: &dyn Fn(Point) -> Point) -> Vec<Piece> 
 /// The pieces of the drawing of `wall` from its members `members` (the
 /// automatic members of the wall's floor), seen from the exterior or the
 /// interior.
-fn wall_pieces(
-    floor: &Floor,
-    wall: &Wall,
-    members: &[Member],
-    st: &FramingSettings,
-) -> Vec<Piece> {
+fn wall_pieces(floor: &Floor, wall: &Wall, members: &[Member], st: &FramingSettings) -> Vec<Piece> {
     let len = wall.length();
     // Seen from outside, the wall's start is on the viewer's left when the
     // exterior is on the right of start-to-end.
@@ -262,11 +258,12 @@ fn wall_pieces(
         }
     };
     let fill = st.build.detail.wall_detail_fill.as_ref().and_then(|f| {
-        f.solid_rgba([140, 95, 50], [255, 255, 255]).map(|c| FillAttr {
-            color: [c[0], c[1], c[2]],
-            opacity: c[3],
-            ..FillAttr::default()
-        })
+        f.solid_rgba([140, 95, 50], [255, 255, 255])
+            .map(|c| FillAttr {
+                color: [c[0], c[1], c[2]],
+                opacity: c[3],
+                ..FillAttr::default()
+            })
     });
     let list = wall_detail_members(wall, members);
     let mut rects = list.iter();
@@ -283,12 +280,7 @@ fn wall_pieces(
                 out.push(Piece {
                     layer: DETAIL_FRAMING_LAYER,
                     item: CadItem::Polyline {
-                        points: vec![
-                            lo,
-                            Point::new(hi.x, lo.y),
-                            hi,
-                            Point::new(lo.x, hi.y),
-                        ],
+                        points: vec![lo, Point::new(hi.x, lo.y), hi, Point::new(lo.x, hi.y)],
                         closed: true,
                     },
                     member: rects.next().map(|m| m.index),
@@ -296,8 +288,16 @@ fn wall_pieces(
                 });
             }
             Stroke::Text {
-                pos, text: t, height, ..
-            } => out.push(text(DETAIL_NOTES_LAYER, flip(pos), t, height.max(TEXT * 0.6))),
+                pos,
+                text: t,
+                height,
+                ..
+            } => out.push(text(
+                DETAIL_NOTES_LAYER,
+                flip(pos),
+                t,
+                height.max(TEXT * 0.6),
+            )),
         }
     }
     for d in wall_detail_dims(wall, members) {
@@ -360,7 +360,10 @@ fn replace_generated(
     // Truss Detail: which of the made objects belong to which configuration.
     for (ci, range) in configs {
         if let Some(link) = map.configs.get_mut(ci) {
-            link.cad = range.into_iter().filter_map(|i| made.get(i).copied()).collect();
+            link.cad = range
+                .into_iter()
+                .filter_map(|i| made.get(i).copied())
+                .collect();
         }
     }
     store_map(&mut project.floors[idx], &map);
@@ -398,10 +401,7 @@ pub fn refresh_wall_detail(project: &mut Project, fi: usize, wall: Id) -> Option
     {
         let unique = project.unique_floor_name(&label, Some(idx));
         if let Some(old) = Some(project.floors[idx].name.clone()) {
-            let (old_tab, new_tab) = (
-                tab_name(&old),
-                tab_name(&unique),
-            );
+            let (old_tab, new_tab) = (tab_name(&old), tab_name(&unique));
             if let Some(v) = project.plan_views.iter_mut().find(|v| v.name == old_tab) {
                 v.name = new_tab.clone();
             }
@@ -470,7 +470,10 @@ pub fn refresh_details_in(project: &mut Project) {
 /// How many CAD objects of a detail floor the user drew (not the program).
 fn user_objects(f: &Floor) -> usize {
     let map = load_map(f);
-    f.cad.iter().filter(|o| !map.generated.contains(&o.id)).count()
+    f.cad
+        .iter()
+        .filter(|o| !map.generated.contains(&o.id))
+        .count()
 }
 
 /// Opens the Wall Detail of `wall` in its own tab. The detail exists once the
@@ -487,7 +490,8 @@ pub fn open_wall_detail(cx: &mut EditorContext, wall: Id) -> bool {
                 .iter()
                 .any(|m| m.wall_id == Some(wall))
             {
-                cx.status = "Build the wall's framing first: a Wall Detail shows its members".into();
+                cx.status =
+                    "Build the wall's framing first: a Wall Detail shows its members".into();
                 return false;
             }
             cx.begin_change("Open Wall Detail");
@@ -688,9 +692,11 @@ pub fn find_trusses(cx: &mut EditorContext) -> usize {
         cx.status = "Select a truss drawing to find its trusses".into();
         return 0;
     }
-    let Some(fi) = cx.project.floors.iter().position(|f| {
-        !f.is_cad_detail() && load_records(f).iter().any(|r| ids.contains(&r.id()))
-    }) else {
+    let Some(fi) =
+        cx.project.floors.iter().position(|f| {
+            !f.is_cad_detail() && load_records(f).iter().any(|r| ids.contains(&r.id()))
+        })
+    else {
         return 0;
     };
     let on_floor: Vec<Id> = load_records(&cx.project.floors[fi])
@@ -717,7 +723,8 @@ pub fn find_config(cx: &mut EditorContext, label: &str) -> usize {
     let Some(fi) = cx.project.floors.iter().position(|f| {
         !f.is_cad_detail() && load_records(f).iter().any(|r| c.ids.contains(&r.id()))
     }) else {
-        cx.status = format!("{label}: the trusses came from the roof framing; see the Framing Overview");
+        cx.status =
+            format!("{label}: the trusses came from the roof framing; see the Framing Overview");
         return 0;
     };
     let on_floor: Vec<Id> = load_records(&cx.project.floors[fi])
@@ -741,5 +748,8 @@ pub fn in_wall_detail(cx: &EditorContext) -> bool {
 
 /// Whether the active floor is the Truss Detail.
 pub fn in_truss_detail(cx: &EditorContext) -> bool {
-    cx.floor().detail.as_ref().is_some_and(|d| d.source == DetailSource::TrussDetail)
+    cx.floor()
+        .detail
+        .as_ref()
+        .is_some_and(|d| d.source == DetailSource::TrussDetail)
 }

@@ -102,10 +102,7 @@ pub fn bar(
                 ),
                 ("Make Cabinet Molding Polyline", mold::MAKE_CABINET_POLYLINE),
                 ("Reverse Direction", mold::REVERSE_DIRECTION),
-                (
-                    "Remove Molding from Selected Edge",
-                    mold::REMOVE_EDGE,
-                ),
+                ("Remove Molding from Selected Edge", mold::REMOVE_EDGE),
                 ("Add Molding to Selected Edge", mold::ADD_EDGE),
                 ("Select Next Edge", mold::NEXT_EDGE),
                 ("-", ""),
@@ -295,9 +292,18 @@ fn file_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
         );
         ui.separator();
         for (label, id) in [
-            ("New Plan from Template\u{2026}", crate::dialogs::template_chooser::NEW_PLAN),
-            ("New Layout from Template\u{2026}", crate::dialogs::template_chooser::NEW_LAYOUT),
-            ("Save as Template\u{2026}", crate::dialogs::template_chooser::SAVE_AS),
+            (
+                "New Plan from Template\u{2026}",
+                crate::dialogs::template_chooser::NEW_PLAN,
+            ),
+            (
+                "New Layout from Template\u{2026}",
+                crate::dialogs::template_chooser::NEW_LAYOUT,
+            ),
+            (
+                "Save as Template\u{2026}",
+                crate::dialogs::template_chooser::SAVE_AS,
+            ),
         ] {
             live(ui, label, "", false, Action::Custom(id), out);
         }
@@ -1660,14 +1666,35 @@ fn cad_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
         ui.separator();
         // Custom patterns (CAD-79..CAD-81) and fill styles (CAD-73).
         for (label, cmd) in [
-            ("Create New Pattern\u{2026}", crate::dialogs::pattern_editor::CREATE),
+            (
+                "Create New Pattern\u{2026}",
+                crate::dialogs::pattern_editor::CREATE,
+            ),
             ("Edit Pattern\u{2026}", crate::dialogs::pattern_editor::EDIT),
-            ("Add Pattern to Library", crate::dialogs::pattern_editor::ADD_TO_LIBRARY),
-            ("Next Pattern Tile Group", crate::dialogs::pattern_editor::NEXT_GROUP),
-            ("Previous Pattern Tile Group", crate::dialogs::pattern_editor::PREVIOUS_GROUP),
-            ("Add Pattern Tile Group", crate::dialogs::pattern_editor::ADD_GROUP),
-            ("Delete Pattern Tile Group", crate::dialogs::pattern_editor::DELETE_GROUP),
-            ("Infinite Pattern Line", crate::dialogs::pattern_editor::INFINITE_LINE),
+            (
+                "Add Pattern to Library",
+                crate::dialogs::pattern_editor::ADD_TO_LIBRARY,
+            ),
+            (
+                "Next Pattern Tile Group",
+                crate::dialogs::pattern_editor::NEXT_GROUP,
+            ),
+            (
+                "Previous Pattern Tile Group",
+                crate::dialogs::pattern_editor::PREVIOUS_GROUP,
+            ),
+            (
+                "Add Pattern Tile Group",
+                crate::dialogs::pattern_editor::ADD_GROUP,
+            ),
+            (
+                "Delete Pattern Tile Group",
+                crate::dialogs::pattern_editor::DELETE_GROUP,
+            ),
+            (
+                "Infinite Pattern Line",
+                crate::dialogs::pattern_editor::INFINITE_LINE,
+            ),
         ] {
             live(ui, label, "", false, Action::Custom(cmd), out);
         }
@@ -2699,7 +2726,12 @@ fn layout_menu(ui: &mut egui::Ui, out: &mut Vec<Action>) {
     ui.menu_button("Update Layout Views", |ui| {
         row(ui, "Update All Views", C::UpdateViews, out);
         row(ui, "Update All Live Views", C::UpdateLiveViews, out);
-        row(ui, "Update All Plot Line Views", C::UpdatePlotLineViews, out);
+        row(
+            ui,
+            "Update All Plot Line Views",
+            C::UpdatePlotLineViews,
+            out,
+        );
         row(ui, "Update Selected View", C::UpdateView, out);
     });
     row(ui, "Send All Views to Layout\u{2026}", C::SendAllViews, out);
@@ -2746,8 +2778,18 @@ fn layout_menu(ui: &mut egui::Ui, out: &mut Vec<Action>) {
     row(ui, "Page Information\u{2026}", C::PageInformation, out);
     row(ui, "Layout Revision Table", C::RevisionTable, out);
     row(ui, "Add Layout Revision\u{2026}", C::AddLayoutRevision, out);
-    row(ui, "Copy Drawings to Page\u{2026}", C::CopyDrawingsToPage, out);
-    row(ui, "General Layout Defaults\u{2026}", C::LayoutDefaults, out);
+    row(
+        ui,
+        "Copy Drawings to Page\u{2026}",
+        C::CopyDrawingsToPage,
+        out,
+    );
+    row(
+        ui,
+        "General Layout Defaults\u{2026}",
+        C::LayoutDefaults,
+        out,
+    );
     ui.separator();
     row(ui, "Page Setup\u{2026}", C::PageSetup, out);
     row(

@@ -6,7 +6,7 @@
 use super::selection::ObjectRef;
 use plan_core::cad::CadItem;
 use plan_core::geometry::{dist_to_segment, project_on_segment, Point};
-use plan_core::{Id, Opening, Project, Wall, WallEnd, WallKind};
+use plan_core::{Id, Project, Wall, WallEnd, WallKind};
 
 /// Two wall ends closer than this are connected (same as room detection).
 pub const JOIN_TOL: f64 = 0.5;

@@ -112,7 +112,10 @@ pub fn draw_rect(cx: &mut EditorContext, a: Point, b: Point) -> Option<Id> {
     let outline = [lo, Point::new(hi.x, lo.y), hi, Point::new(lo.x, hi.y)];
     cx.begin_change("Tray Ceiling Polyline");
     let fl = cx.floor;
-    match cx.project.add_tray(fl, &outline, cx.defaults.tray_default()) {
+    match cx
+        .project
+        .add_tray(fl, &outline, cx.defaults.tray_default())
+    {
         Some(id) => {
             cx.mark_dirty();
             cx.refresh();

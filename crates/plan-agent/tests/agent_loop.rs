@@ -28,6 +28,7 @@ struct Log {
     /// The parsed JSON body of every request.
     bodies: Arc<Mutex<Vec<Value>>>,
     /// The headers of every request.
+    #[allow(clippy::type_complexity)]
     headers: Arc<Mutex<Vec<Vec<(String, String)>>>>,
     /// The backoff sleeps.
     sleeps: Arc<Mutex<Vec<Duration>>>,

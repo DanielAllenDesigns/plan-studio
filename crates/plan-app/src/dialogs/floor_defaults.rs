@@ -323,73 +323,74 @@ impl FloorDefaultsDialog {
                 });
                 ui.separator();
                 if self.panel == FloorPanel::Structure {
-                section(ui, "Heights");
-                self.fields.length_row(
-                    ui,
-                    "Ceiling Height",
-                    "fd_ceiling",
-                    &mut self.ceiling_height,
-                );
-                row(ui, "Floor Height", |ui| {
-                    ui.label(fmt_ft_in(self.settings.floor_height(self.ceiling_height)));
-                });
-                ui.weak(
+                    section(ui, "Heights");
+                    self.fields.length_row(
+                        ui,
+                        "Ceiling Height",
+                        "fd_ceiling",
+                        &mut self.ceiling_height,
+                    );
+                    row(ui, "Floor Height", |ui| {
+                        ui.label(fmt_ft_in(self.settings.floor_height(self.ceiling_height)));
+                    });
+                    ui.weak(
                     "Floors above move with the platforms; walls at the old ceiling height follow.",
                 );
 
-                section(ui, "Floor and Ceiling Platforms");
-                let cx = RowContext {
-                    allow_default: true,
-                    inherited: floor_inherited(&self.library, &self.settings),
-                    legacy: floor_legacy(&self.settings),
-                    library: &self.library,
-                };
-                let before = self.settings.platform.clone();
-                let mut slots = before.clone();
-                self.editor.rows(ui, &mut slots, &cx);
-                if slots != before {
-                    self.settings.platform = slots;
-                    self.settings.sync_thicknesses(&self.library);
-                }
-                // A platform nobody has laid out in layers keeps the single
-                // thickness an older plan stored.
-                for (kind, label, key) in [
-                    (
-                        AssemblyKind::FloorStructure,
-                        "Floor Structure Thickness",
-                        "fd_floor_struct",
-                    ),
-                    (
-                        AssemblyKind::CeilingStructure,
-                        "Ceiling Structure Thickness",
-                        "fd_ceil_struct",
-                    ),
-                    (
-                        AssemblyKind::FloorFinish,
-                        "Floor Finish Thickness",
-                        "fd_floor_fin",
-                    ),
-                    (
-                        AssemblyKind::CeilingFinish,
-                        "Ceiling Finish Thickness",
-                        "fd_ceil_fin",
-                    ),
-                ] {
-                    if self.settings.platform.slot(kind).is_legacy() {
-                        let field = match kind {
-                            AssemblyKind::FloorStructure => {
-                                &mut self.settings.floor_structure_thickness
-                            }
-                            AssemblyKind::CeilingStructure => {
-                                &mut self.settings.ceiling_structure_thickness
-                            }
-                            AssemblyKind::FloorFinish => &mut self.settings.floor_finish_thickness,
-                            _ => &mut self.settings.ceiling_finish_thickness,
-                        };
-                        self.fields.length_row(ui, label, key, field);
+                    section(ui, "Floor and Ceiling Platforms");
+                    let cx = RowContext {
+                        allow_default: true,
+                        inherited: floor_inherited(&self.library, &self.settings),
+                        legacy: floor_legacy(&self.settings),
+                        library: &self.library,
+                    };
+                    let before = self.settings.platform.clone();
+                    let mut slots = before.clone();
+                    self.editor.rows(ui, &mut slots, &cx);
+                    if slots != before {
+                        self.settings.platform = slots;
+                        self.settings.sync_thicknesses(&self.library);
                     }
-                }
-
+                    // A platform nobody has laid out in layers keeps the single
+                    // thickness an older plan stored.
+                    for (kind, label, key) in [
+                        (
+                            AssemblyKind::FloorStructure,
+                            "Floor Structure Thickness",
+                            "fd_floor_struct",
+                        ),
+                        (
+                            AssemblyKind::CeilingStructure,
+                            "Ceiling Structure Thickness",
+                            "fd_ceil_struct",
+                        ),
+                        (
+                            AssemblyKind::FloorFinish,
+                            "Floor Finish Thickness",
+                            "fd_floor_fin",
+                        ),
+                        (
+                            AssemblyKind::CeilingFinish,
+                            "Ceiling Finish Thickness",
+                            "fd_ceil_fin",
+                        ),
+                    ] {
+                        if self.settings.platform.slot(kind).is_legacy() {
+                            let field = match kind {
+                                AssemblyKind::FloorStructure => {
+                                    &mut self.settings.floor_structure_thickness
+                                }
+                                AssemblyKind::CeilingStructure => {
+                                    &mut self.settings.ceiling_structure_thickness
+                                }
+                                AssemblyKind::FloorFinish => {
+                                    &mut self.settings.floor_finish_thickness
+                                }
+                                _ => &mut self.settings.ceiling_finish_thickness,
+                            };
+                            self.fields.length_row(ui, label, key, field);
+                        }
+                    }
                 }
                 match self.panel {
                     FloorPanel::Moldings => self.moldings_panel(ui),
@@ -397,49 +398,49 @@ impl FloorDefaultsDialog {
                     _ => {}
                 }
                 if self.panel == FloorPanel::Materials {
-                section(ui, "New Rooms");
-                row(ui, "Default Room Type", |ui| {
-                    let shown = if self.settings.default_room_type.is_empty() {
-                        "(first in the list)".to_string()
-                    } else {
-                        self.settings.default_room_type.clone()
-                    };
-                    egui::ComboBox::from_id_salt("fd_room_type")
-                        .width(200.0)
-                        .selected_text(shown)
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(
-                                &mut self.settings.default_room_type,
-                                String::new(),
-                                "(first in the list)",
-                            );
-                            for t in &self.types {
+                    section(ui, "New Rooms");
+                    row(ui, "Default Room Type", |ui| {
+                        let shown = if self.settings.default_room_type.is_empty() {
+                            "(first in the list)".to_string()
+                        } else {
+                            self.settings.default_room_type.clone()
+                        };
+                        egui::ComboBox::from_id_salt("fd_room_type")
+                            .width(200.0)
+                            .selected_text(shown)
+                            .show_ui(ui, |ui| {
                                 ui.selectable_value(
                                     &mut self.settings.default_room_type,
-                                    t.clone(),
-                                    t,
+                                    String::new(),
+                                    "(first in the list)",
                                 );
-                            }
-                        });
-                });
-                row(ui, "Floor Material", |ui| {
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.settings.floor_material)
-                            .desired_width(200.0),
-                    );
-                });
-                row(ui, "Ceiling Material", |ui| {
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.settings.ceiling_material)
-                            .desired_width(200.0),
-                    );
-                });
-                row(ui, "Wall Material", |ui| {
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.settings.wall_material)
-                            .desired_width(200.0),
-                    );
-                });
+                                for t in &self.types {
+                                    ui.selectable_value(
+                                        &mut self.settings.default_room_type,
+                                        t.clone(),
+                                        t,
+                                    );
+                                }
+                            });
+                    });
+                    row(ui, "Floor Material", |ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.settings.floor_material)
+                                .desired_width(200.0),
+                        );
+                    });
+                    row(ui, "Ceiling Material", |ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.settings.ceiling_material)
+                                .desired_width(200.0),
+                        );
+                    });
+                    row(ui, "Wall Material", |ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.settings.wall_material)
+                                .desired_width(200.0),
+                        );
+                    });
                 }
                 if matches!(self.target, FloorDefaultsTarget::ThisFloor(_)) {
                     ui.add_space(4.0);

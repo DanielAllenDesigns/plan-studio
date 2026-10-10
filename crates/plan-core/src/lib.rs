@@ -38,9 +38,9 @@ pub mod camera;
 pub mod camera_view;
 pub mod clip;
 pub mod construction;
+pub mod deck;
 pub mod defaults;
 pub mod details;
-pub mod deck;
 pub mod dim_assoc;
 pub mod dimension;
 pub mod distribution;
@@ -50,8 +50,8 @@ pub mod elevation_ref;
 pub mod export;
 pub mod extras;
 pub mod fill_styles;
-pub mod fireplace;
 pub mod find_text;
+pub mod fireplace;
 pub mod floors;
 pub mod foreign;
 pub mod foundation;
@@ -63,9 +63,9 @@ pub mod io;
 pub mod joins;
 pub mod layer_sets;
 pub mod layers;
+pub mod line_styles;
 pub mod living;
 pub mod macros;
-pub mod line_styles;
 pub mod material_region;
 pub mod materials_data;
 pub mod model;
@@ -94,7 +94,8 @@ pub mod watermark;
 pub use cad::{CadItem, CadObject};
 pub use camera::{CameraKind, CameraObject};
 pub use defaults::{
-    CodeDefaults, DimensionDefaultSet, EditingDefaults, PlanDefaults, WallConnectDefaults, WallLayer, WallTypeDef,
+    CodeDefaults, DimensionDefaultSet, EditingDefaults, PlanDefaults, WallConnectDefaults,
+    WallLayer, WallTypeDef,
 };
 pub use dimension::{
     align_dimensions, auto_exterior_dimensions, auto_exterior_set, auto_nkba_dimensions,

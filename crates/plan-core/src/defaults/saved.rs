@@ -1006,11 +1006,11 @@ mod tests {
 
     #[test]
     fn a_kind_starts_with_one_saved_default_named_after_the_active_one() {
-        let (mut p, mut d) = fresh();
-        assert_eq!(p.saved_names(&mut d, SavedKind::Callouts), vec!["Default"]);
-        assert_eq!(p.saved_active(&mut d, SavedKind::Callouts), "Default");
+        let (p, d) = fresh();
+        assert_eq!(p.saved_names(&d, SavedKind::Callouts), vec!["Default"]);
+        assert_eq!(p.saved_active(&d, SavedKind::Callouts), "Default");
         assert_eq!(
-            p.saved_names(&mut d, SavedKind::ManualDimensions).len(),
+            p.saved_names(&d, SavedKind::ManualDimensions).len(),
             d.dimension_sets.len()
         );
     }
@@ -1062,7 +1062,7 @@ mod tests {
             Some("Default")
         );
         p.saved_rename(&mut d, kind, "Default", "Plain").unwrap();
-        assert_eq!(p.saved_active(&mut d, kind), "Plain");
+        assert_eq!(p.saved_active(&d, kind), "Plain");
         assert_eq!(
             p.saved_defaults.set("Set A").unwrap().member(kind),
             Some("Plain")
@@ -1093,13 +1093,13 @@ mod tests {
             .contains("used by 1"));
         p.saved_defaults.prune_uses(&|_| false);
         p.saved_delete(&mut d, kind, "Other").unwrap();
-        assert_eq!(p.saved_names(&mut d, kind), vec!["Default"]);
+        assert_eq!(p.saved_names(&d, kind), vec!["Default"]);
         // Deleting a set frees its members.
         p.saved_copy(&mut d, kind, "Default", "Third").unwrap();
         p.default_set_delete("Set A").unwrap();
         p.saved_activate(&mut d, kind, "Third");
         p.saved_delete(&mut d, kind, "Default").unwrap();
-        assert_eq!(p.saved_active(&mut d, kind), "Third");
+        assert_eq!(p.saved_active(&d, kind), "Third");
     }
 
     #[test]
@@ -1159,7 +1159,7 @@ mod tests {
         // Back to the first.
         assert!(p.default_set_activate(&mut d, "Quarter"));
         assert_eq!(d.active_dimension_set, "1/4\" Scale");
-        assert_eq!(p.saved_active(&mut d, SavedKind::Text), "Default");
+        assert_eq!(p.saved_active(&d, SavedKind::Text), "Default");
         assert_eq!(p.shown_layer_set(), "Default Set");
         assert_eq!(Project::current_cad_layer(&d), DEFAULT_CAD_LAYER_NAME);
         // And on to the second: the edit made while Big was active is kept.
@@ -1204,7 +1204,7 @@ mod tests {
         p.saved_activate(&mut d, SavedKind::RichText, "Default");
         d.set_active_dimension_set("1/4\" Scale");
         p.view_apply_defaults(&mut d, &name);
-        assert_eq!(p.saved_active(&mut d, SavedKind::RichText), "Plot");
+        assert_eq!(p.saved_active(&d, SavedKind::RichText), "Plot");
         assert_eq!(d.active_dimension_set, "Plot Plan");
         // A view saved with a Default Set activates the set.
         p.default_set_save_new(&mut d, "Plot Set").unwrap();
@@ -1212,7 +1212,7 @@ mod tests {
         assert_eq!(p.plan_views[0].spec.default_set, "Plot Set");
         p.saved_activate(&mut d, SavedKind::RichText, "Default");
         p.view_apply_defaults(&mut d, &name);
-        assert_eq!(p.saved_active(&mut d, SavedKind::RichText), "Plot");
+        assert_eq!(p.saved_active(&d, SavedKind::RichText), "Plot");
         assert_eq!(p.saved_defaults.active_set, "Plot Set");
     }
 
@@ -1230,7 +1230,7 @@ mod tests {
         // Replace keeps one.
         let c = p.saved_store(&mut d, kind, "Pasted", SavedValue::Values(m), true);
         assert_eq!(c, "Pasted");
-        assert_eq!(p.saved_names(&mut d, kind).len(), 3);
+        assert_eq!(p.saved_names(&d, kind).len(), 3);
     }
 
     #[test]

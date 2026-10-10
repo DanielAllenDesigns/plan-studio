@@ -95,9 +95,7 @@ impl CategoryChoice {
 
 /// What a framing member is for. A member's Role starts as its actual purpose
 /// and position and can be changed; it only changes how the member is listed.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Role {
     Stud,
     KingStud,
@@ -243,9 +241,9 @@ impl Role {
             ManualKind::Blocking | ManualKind::JoistBlocking => Role::JoistBlocking,
             ManualKind::Joist => Role::FloorJoist,
             ManualKind::FloorCeilingBeam => Role::FloorBeam,
-            ManualKind::FloorCeilingTruss
-            | ManualKind::RoofTruss
-            | ManualKind::GirderTruss => Role::Truss,
+            ManualKind::FloorCeilingTruss | ManualKind::RoofTruss | ManualKind::GirderTruss => {
+                Role::Truss
+            }
             ManualKind::Rafter => Role::Rafter,
             ManualKind::RoofBeam => Role::RoofBeam,
             ManualKind::RoofBlocking => Role::RoofBlocking,
@@ -513,9 +511,21 @@ pub fn default_types() -> Vec<FramingType> {
         FramingType::new("Steel I", Composition::Steel, FramingShape::SteelI),
         FramingType::new("Steel Box", Composition::Steel, FramingShape::SteelBox),
         steel_c,
-        FramingType::new("Steel U Channel", Composition::Steel, FramingShape::UChannel),
-        FramingType::new("Solid Concrete", Composition::Concrete, FramingShape::Rectangular),
-        FramingType::new("Round Concrete", Composition::Concrete, FramingShape::Circular),
+        FramingType::new(
+            "Steel U Channel",
+            Composition::Steel,
+            FramingShape::UChannel,
+        ),
+        FramingType::new(
+            "Solid Concrete",
+            Composition::Concrete,
+            FramingShape::Rectangular,
+        ),
+        FramingType::new(
+            "Round Concrete",
+            Composition::Concrete,
+            FramingShape::Circular,
+        ),
     ]
 }
 
@@ -1142,7 +1152,10 @@ impl FramingCatalog {
 
     /// Copy: a new type based on `name`, called `<name> 2` (3, ...).
     pub fn copy_type(&mut self, name: &str) -> Result<String, CatalogError> {
-        let src = self.type_named(name).cloned().ok_or(CatalogError::Missing)?;
+        let src = self
+            .type_named(name)
+            .cloned()
+            .ok_or(CatalogError::Missing)?;
         let new = unique(&src.name, |n| self.type_named(n).is_some());
         let mut t = src;
         t.name = new.clone();
@@ -1304,7 +1317,11 @@ impl FramingCatalog {
     }
 
     /// Replace the definition called `name` with `edited`.
-    pub fn edit_def(&mut self, name: &str, mut edited: FramingMemberDef) -> Result<(), CatalogError> {
+    pub fn edit_def(
+        &mut self,
+        name: &str,
+        mut edited: FramingMemberDef,
+    ) -> Result<(), CatalogError> {
         edited.name = edited.name.trim().to_string();
         if edited.name != name {
             self.rename_def(name, &edited.name.clone())?;
@@ -1567,7 +1584,9 @@ mod tests {
     #[test]
     fn the_default_catalog_has_the_chief_types_and_every_role_has_a_definition() {
         let c = FramingCatalog::default();
-        for name in ["Lumber", "I-Joist", "Glulam", "LVL", "PSL", "VSL", "Steel I", "Steel C"] {
+        for name in [
+            "Lumber", "I-Joist", "Glulam", "LVL", "PSL", "VSL", "Steel I", "Steel C",
+        ] {
             assert!(c.type_named(name).is_some(), "{name}");
         }
         for r in Role::ALL {
@@ -1684,7 +1703,10 @@ mod tests {
         let copy = c.copy_type("VSL").unwrap();
         c.delete_type(&copy).unwrap();
         // Steel U Channel is the Supporting Type of Steel C.
-        assert!(matches!(c.delete_type("Steel U Channel"), Err(CatalogError::InUse(_))));
+        assert!(matches!(
+            c.delete_type("Steel U Channel"),
+            Err(CatalogError::InUse(_))
+        ));
         c.rename_type("Steel U Channel", "U Plates").unwrap();
         assert_eq!(
             c.type_named("Steel C").unwrap().supporting_type.as_deref(),
@@ -1704,7 +1726,10 @@ mod tests {
     #[test]
     fn size_text_follows_nominal_and_name_flags() {
         let c = FramingCatalog::default();
-        assert_eq!(c.size_text(c.type_named("Lumber").unwrap(), &TWO_BY_TEN), "2x10");
+        assert_eq!(
+            c.size_text(c.type_named("Lumber").unwrap(), &TWO_BY_TEN),
+            "2x10"
+        );
         assert_eq!(
             c.size_text(c.type_named("I-Joist").unwrap(), &TWO_BY_TEN),
             "I-Joist 1 1/2x9 1/4"

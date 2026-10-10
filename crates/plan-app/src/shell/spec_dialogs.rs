@@ -340,8 +340,9 @@ impl SpecDialogs {
                 ))),
                 // The Joist and Roof Truss Direction Lines have a Specification;
                 // markers, Bearing Lines and Truss Bases have none.
-                Some(r) => FramingMemberDialog::for_direction(&r)
-                    .map(|d| Active::Framing(Box::new(d))),
+                Some(r) => {
+                    FramingMemberDialog::for_direction(&r).map(|d| Active::Framing(Box::new(d)))
+                }
                 None => None,
             },
             ObjectRef::Device(id) => {

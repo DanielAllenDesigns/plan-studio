@@ -40,11 +40,11 @@ struct Dialog {
 }
 
 thread_local! {
-    static DIALOG: RefCell<Dialog> = RefCell::new(Dialog {
+    static DIALOG: RefCell<Dialog> = const { RefCell::new(Dialog {
         open: false,
         group_walls: true,
         group_openings: true,
-    });
+    }) };
 }
 
 /// What the export reads besides the plan: the room types (which rooms are

@@ -191,6 +191,7 @@ pub struct Frame {
 }
 
 impl Frame {
+    #[allow(clippy::wrong_self_convention)]
     pub fn to_plan(&self, x: f64, y: f64) -> Point {
         let p = Point::new(self.origin.x + x, self.origin.y - y);
         let (dx, dy) = (p.x - self.centre.x, p.y - self.centre.y);
@@ -200,6 +201,7 @@ impl Frame {
         )
     }
 
+    #[allow(clippy::wrong_self_convention)]
     pub fn to_local(&self, p: Point) -> (f64, f64) {
         let (dx, dy) = (p.x - self.centre.x, p.y - self.centre.y);
         let (ux, uy) = (

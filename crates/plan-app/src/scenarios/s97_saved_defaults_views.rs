@@ -202,7 +202,7 @@ fn switching_the_default_set_gives_new_dimensions_the_one_eighth_scale_settings(
     let mut d = cx.defaults.clone();
     assert_eq!(p.using_default_set(&mut d), Some("1/8\" Scale".to_string()));
     // The Rich Text default follows with the set.
-    assert_eq!(p.saved_active(&mut d, SavedKind::RichText), "1/8\" Scale");
+    assert_eq!(p.saved_active(&d, SavedKind::RichText), "1/8\" Scale");
     // And back to a quarter-inch set.
     default_sets::request_pick(Pick::DefaultSet("1/4\" Scale".into()));
     custom(&mut sim, default_sets::PICK);
@@ -276,8 +276,7 @@ fn saved_defaults_dialog_adds_renames_and_refuses_to_delete_what_a_set_uses() {
     sim.dialog_frame(false);
     let names = {
         let cx = &mut sim.app.cx;
-        cx.project
-            .saved_names(&mut cx.defaults, SavedKind::Callouts)
+        cx.project.saved_names(&cx.defaults, SavedKind::Callouts)
     };
     assert_eq!(names, vec!["Default", "Section Callout"]);
     // A Default Set that uses "Default" blocks its deletion.
@@ -299,8 +298,7 @@ fn saved_defaults_dialog_adds_renames_and_refuses_to_delete_what_a_set_uses() {
     let cx = &mut sim.app.cx;
     assert_eq!(saved_defaults::open_kind(), None);
     assert_eq!(
-        cx.project
-            .saved_names(&mut cx.defaults, SavedKind::Callouts),
+        cx.project.saved_names(&cx.defaults, SavedKind::Callouts),
         vec!["Default"]
     );
     assert!(cx.project.saved_defaults.set("Plan Set").is_none());
@@ -311,13 +309,13 @@ fn each_kind_has_its_own_saved_defaults_and_double_click_opens_the_active_one() 
     let mut sim = Sim::new();
     for kind in SavedKind::ALL {
         let cx = &mut sim.app.cx;
-        let n = cx.project.saved_names(&mut cx.defaults, kind);
+        let n = cx.project.saved_names(&cx.defaults, kind);
         assert!(!n.is_empty(), "{kind:?}");
         cx.project
             .saved_copy(&mut cx.defaults, kind, &n[0], "Second")
             .unwrap();
         assert!(cx.project.saved_activate(&mut cx.defaults, kind, "Second"));
-        assert_eq!(cx.project.saved_active(&mut cx.defaults, kind), "Second");
+        assert_eq!(cx.project.saved_active(&cx.defaults, kind), "Second");
     }
     // The tools that have them: a double-click on the button.
     saved_defaults::set_edit_active_on_double_click(true);
@@ -355,7 +353,7 @@ fn pasting_an_object_into_another_file_recreates_its_saved_default() {
     let o = &mut other.app.cx;
     assert!(!o
         .project
-        .saved_names(&mut o.defaults, SavedKind::Markers)
+        .saved_names(&o.defaults, SavedKind::Markers)
         .contains(&"Elevation".to_string()));
     o.project.saved_store(
         &mut o.defaults,
@@ -373,7 +371,7 @@ fn pasting_an_object_into_another_file_recreates_its_saved_default() {
     );
     assert_eq!(
         o.project
-            .saved_names(&mut o.defaults, SavedKind::Markers)
+            .saved_names(&o.defaults, SavedKind::Markers)
             .iter()
             .filter(|n| *n == "Elevation")
             .count(),
@@ -490,6 +488,7 @@ fn walls_on_the_default_follow_a_changed_wall_default_and_edited_walls_keep_thei
         default_height + 12.0,
         "the edited wall keeps its height"
     );
+    #[allow(clippy::needless_range_loop)]
     for i in 1..ids.len() {
         assert_eq!(
             h(&sim, i),
@@ -539,9 +538,9 @@ fn set_as_default_copies_the_selected_walls_spec_and_the_others_follow() {
         sim.app.cx.status
     );
     // The walls on the default follow it; the next frame must not redo it.
-    for i in 1..ids.len() {
+    for (i, id) in ids.iter().enumerate().skip(1) {
         assert_eq!(
-            sim.app.cx.floor().wall(ids[i]).unwrap().height,
+            sim.app.cx.floor().wall(*id).unwrap().height,
             120.0,
             "wall {i}"
         );
@@ -845,8 +844,7 @@ fn save_as_template_purges_sets_the_default_and_new_plan_starts_from_it_or_asks(
     assert_eq!(sim.app.cx.project.name, "Untitled");
     let names = {
         let cx = &mut sim.app.cx;
-        cx.project
-            .saved_names(&mut cx.defaults, SavedKind::RichText)
+        cx.project.saved_names(&cx.defaults, SavedKind::RichText)
     };
     assert!(names.contains(&"Plot".to_string()));
     // The default template goes missing: New Plan asks instead of guessing.
@@ -855,7 +853,7 @@ fn save_as_template_purges_sets_the_default_and_new_plan_starts_from_it_or_asks(
     sim.app.new_project();
     assert!(template_chooser::missing_open());
     assert!(
-        sim.app.cx.floor().walls.len() > 0,
+        !sim.app.cx.floor().walls.is_empty(),
         "nothing was replaced yet"
     );
     // Load Installed starts a plan from the installed defaults.

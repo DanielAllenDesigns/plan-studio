@@ -51,6 +51,7 @@ use std::time::{Instant, SystemTime};
 /// A copied element of the terrain (the perimeter is the whole terrain and
 /// is not copied).
 #[derive(Clone, Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum TerrainElem {
     Point(ElevationPoint),
     Line(ElevationLine),

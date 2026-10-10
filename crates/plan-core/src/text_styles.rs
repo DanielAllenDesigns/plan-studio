@@ -1374,5 +1374,4 @@ mod tests {
         assert_eq!(lay.lines[0].plain(), "SITE and more");
         assert_eq!(runs_plain(&runs), "site and more");
     }
-
 }

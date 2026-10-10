@@ -10,28 +10,28 @@ There are 765 parity ids: W 105, S 112, DW 110, R 71, RF 60, DIM 45, TXT 19, CAD
 
 Old = the table of the previous audit (hand-adjusted by the round builders). New = counted from the detail rows after this pass. Columns are Works / Partial / Missing / Differs.
 
-| Area | Ids | Old W/P/M/D | New W/P/M/D | Works % | Works+Partial % |
+| Area | Ids | Round 13 W/P/M/D | Now W/P/M/D | Works % | Works+Partial % |
 |---|---|---|---|---|---|
-| Walls | 105 | 74/23/6/2 | 79/19/5/2 | 75% | 93% |
-| Select | 112 | 76/28/7/1 | 87/18/6/1 | 78% | 94% |
-| Doors/Windows | 110 | 76/20/13/1 | 82/15/12/1 | 75% | 88% |
-| Rooms/Floors | 71 | 48/21/2/0 | 48/21/2/0 | 68% | 97% |
-| Roofs | 60 | 36/19/5/0 | 42/15/3/0 | 70% | 95% |
-| Dimensions | 45 | 35/9/0/1 | 36/8/0/1 | 80% | 98% |
-| Text | 19 | 10/8/1/0 | 10/9/0/0 | 53% | 100% |
-| CAD | 42 | 24/16/2/0 | 29/11/2/0 | 69% | 95% |
-| Layers | 15 | 13/2/0/0 | 15/0/0/0 | 100% | 100% |
-| 3D/Cameras | 71 | 32/27/12/0 | 40/26/5/0 | 56% | 93% |
-| Cabinets | 21 | 15/6/0/0 | 16/5/0/0 | 76% | 100% |
-| Stairs | 13 | 8/5/0/0 | 8/5/0/0 | 62% | 100% |
-| Framing | 8 | 4/3/1/0 | 4/3/1/0 | 50% | 88% |
-| Terrain | 10 | 7/3/0/0 | 8/2/0/0 | 80% | 100% |
+| Walls | 105 | 79/19/5/2 | 84/18/1/2 | 80% | 97% |
+| Select | 112 | 87/18/6/1 | 86/21/4/1 | 77% | 96% |
+| Doors/Windows | 110 | 82/15/12/1 | 95/10/4/1 | 86% | 95% |
+| Rooms/Floors | 71 | 48/21/2/0 | 56/15/0/0 | 79% | 100% |
+| Roofs | 60 | 42/15/3/0 | 51/9/0/0 | 85% | 100% |
+| Dimensions | 45 | 36/8/0/1 | 39/5/0/1 | 87% | 98% |
+| Text | 19 | 10/9/0/0 | 14/5/0/0 | 74% | 100% |
+| CAD | 42 | 29/11/2/0 | 30/10/2/0 | 71% | 95% |
+| Layers | 15 | 15/0/0/0 | 15/0/0/0 | 100% | 100% |
+| 3D/Cameras | 71 | 40/26/5/0 | 41/27/3/0 | 58% | 96% |
+| Cabinets | 21 | 16/5/0/0 | 16/5/0/0 | 76% | 100% |
+| Stairs | 13 | 8/5/0/0 | 7/6/0/0 | 54% | 100% |
+| Framing | 8 | 4/3/1/0 | 4/4/0/0 | 50% | 100% |
+| Terrain | 10 | 8/2/0/0 | 9/1/0/0 | 90% | 100% |
 | Library | 9 | 7/1/0/1 | 7/1/0/1 | 78% | 89% |
 | Electrical | 7 | 7/0/0/0 | 7/0/0/0 | 100% | 100% |
-| Layout/Docs | 47 | 17/24/5/1 | 22/21/3/1 | 47% | 91% |
-| **Overall** | 765 | 489/215/54/7 | 540/179/39/7 | 71% | 94% |
+| Layout/Docs | 47 | 22/21/3/1 | 34/12/0/1 | 72% | 98% |
+| **Overall** | 765 | 540/179/39/7 | 595/149/14/7 | 78% | 97% |
 
-Weighted view: Works plus Partial covers 719 of 765 ids (94%); 39 ids are Missing and 7 are Differs-by-design.
+Weighted view: Works plus Partial covers 744 of 765 ids (97%); 14 ids are Missing and 7 are Differs-by-design. These totals cover the original 765 ids only; the ~1,500 rows added by the Chief manual audit (2026-10-08, series APP/PR/DS/TB/HK/CM/LB/XL/E/BC and the extended W/R/RF/CB/L/C/S/TXT/DIM/CAD/LAY/DW ranges) are listed below and summarised in docs/chief-manual-coverage/README.md and master-gaps.md.
 
 What the recount found. The previous area table already matched its rows except Cabinets (it said 15 Works and 6 Partial; the rows were 14 and 7), so the overall line was off by one (489 Works against 488 counted). The per-area headings inside the detail section and the Status line at the top of each `docs/parity/*.md` were the unreliable numbers (for example Doors/Windows said 70 Works and 16 Missing, Rooms said 45 Works, 3D said 31 Works and 14 Missing); both are rewritten from the rows. This pass then moved 51 rows (listed under "Changes in this pass" below): 47 up to Works (38 from Partial, 9 from Missing), 4 from Missing to Partial, none down. No Works row lost its evidence: the cited files and tests still exist; four rows cited names that had been renamed and now cite the current ones (W-88, DW-98, R-16, RF-16).
 

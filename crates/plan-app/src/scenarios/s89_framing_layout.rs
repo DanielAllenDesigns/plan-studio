@@ -102,8 +102,16 @@ fn build_framing_once_builds_the_floor_framing_of_floor_two_only() {
     let before = steps(&sim);
     build_dialog_ok(&mut sim, false);
     assert!(count(&sim, 1, MemberKind::Joist) > 5, "floor 2 has joists");
-    assert_eq!(count(&sim, 0, MemberKind::Joist), 0, "floor 1 was not built");
-    assert_eq!(count(&sim, 1, MemberKind::Stud), 0, "the walls were not asked for");
+    assert_eq!(
+        count(&sim, 0, MemberKind::Joist),
+        0,
+        "floor 1 was not built"
+    );
+    assert_eq!(
+        count(&sim, 1, MemberKind::Stud),
+        0,
+        "the walls were not asked for"
+    );
     assert_eq!(steps(&sim), before + 1);
     assert_eq!(sim.app.cx.undo_label(), Some("Build Framing"));
     sim.undo();
@@ -160,10 +168,21 @@ fn build_framing_for_selected_rebuilds_a_wall_and_a_roof_plane_apart() {
     assert!(l.contains(&"Open Wall Detail"));
     let before = steps(&sim);
     sim.app.cx.run_custom(cmd::BUILD_SELECTED);
-    assert_eq!(count(&sim, 0, MemberKind::Stud), studs0, "the wall is whole again");
-    assert_eq!(count(&sim, 0, MemberKind::Joist), joists0, "the floor was left alone");
+    assert_eq!(
+        count(&sim, 0, MemberKind::Stud),
+        studs0,
+        "the wall is whole again"
+    );
+    assert_eq!(
+        count(&sim, 0, MemberKind::Joist),
+        joists0,
+        "the floor was left alone"
+    );
     assert_eq!(steps(&sim), before + 1);
-    assert_eq!(sim.app.cx.undo_label(), Some("Build Framing for Selected Object(s)"));
+    assert_eq!(
+        sim.app.cx.undo_label(),
+        Some("Build Framing for Selected Object(s)")
+    );
     sim.undo();
     assert_eq!(count(&sim, 0, MemberKind::Stud), studs0 - 1);
     // A retained wall refuses the button.
@@ -184,7 +203,9 @@ fn build_framing_for_selected_rebuilds_a_wall_and_a_roof_plane_apart() {
 #[test]
 fn a_roof_plane_builds_its_own_framing() {
     let mut sim = house();
-    sim.tool(crate::tools::ToolId::RoofVariant(crate::tools::roof::RoofMode::Build));
+    sim.tool(crate::tools::ToolId::RoofVariant(
+        crate::tools::roof::RoofMode::Build,
+    ));
     sim.click(240.0, 180.0);
     sim.ok();
     sim.tool(crate::tools::ToolId::Select);
@@ -326,7 +347,10 @@ fn the_wall_detail_opens_from_the_edit_button_and_is_listed_in_the_project_brows
     sim.app.cx.reset_view_state();
     sim.action(Action::Framing(FramingCommand::Build));
     let di = framing_view::wall_detail_floor(&sim.app.cx.project, wall).unwrap();
-    assert!(sim.app.cx.project.floors[di].cad.iter().any(|o| o.id == note));
+    assert!(sim.app.cx.project.floors[di]
+        .cad
+        .iter()
+        .any(|o| o.id == note));
     // Deleting a member from the detail takes it out of the wall's framing.
     framing_view::open_wall_detail(sim.cx(), wall);
     let map = framing_view::load_map(sim.app.cx.floor());
@@ -369,15 +393,27 @@ fn a_framing_group_separates_platforms_and_the_question_is_asked() {
         .count();
     assert_eq!(ends_at_partition, 0);
     // Selecting a room next to a room of its own group asks the question.
-    let room = sim.app.cx.rooms.iter().position(|r| r.centroid.x < 240.0).unwrap();
+    let room = sim
+        .app
+        .cx
+        .rooms
+        .iter()
+        .position(|r| r.centroid.x < 240.0)
+        .unwrap();
     sim.app.cx.selection.set(ObjectRef::Room(room));
     let before = steps(&sim);
     let out = framing_view::build_selected(sim.cx(), None);
-    assert!(matches!(out, framing_view::Outcome::AskGroup { .. }), "{out:?}");
+    assert!(
+        matches!(out, framing_view::Outcome::AskGroup { .. }),
+        "{out:?}"
+    );
     assert_eq!(steps(&sim), before, "asking changes nothing");
     // Yes: the room becomes a group of its own and the platforms are separate.
     let out = framing_view::build_selected(sim.cx(), Some(true));
-    assert!(matches!(out, framing_view::Outcome::Built(n) if n > 0), "{out:?}");
+    assert!(
+        matches!(out, framing_view::Outcome::Built(n) if n > 0),
+        "{out:?}"
+    );
     let names = &sim.app.cx.project.floors[0].room_names;
     assert!(names.iter().any(|n| n.options.framing_group == 1));
     sim.action(Action::Framing(FramingCommand::Build));
@@ -440,13 +476,21 @@ fn a_bearing_wall_and_a_bearing_beam_lap_or_butt_the_joists_over_them() {
         .collect();
     let total_lap: f64 = lap.iter().map(|m| m.plan_length()).sum();
     assert_eq!(lap.len(), butt.len());
-    assert!(total_lap > total_butt + 8.0 * (lap.len() as f64 / 2.0 - 1.0), "{total_lap} {total_butt}");
+    assert!(
+        total_lap > total_butt + 8.0 * (lap.len() as f64 / 2.0 - 1.0),
+        "{total_lap} {total_butt}"
+    );
 }
 
 #[test]
 fn the_framing_reference_marker_anchors_a_floor_and_move_to_framing_ref_snaps_to_it() {
     let mut sim = house();
-    change(&mut sim, |st| st.build.build = GroupFlags { floor: true, ..GroupFlags::NONE });
+    change(&mut sim, |st| {
+        st.build.build = GroupFlags {
+            floor: true,
+            ..GroupFlags::NONE
+        }
+    });
     framing_view::add_record(sim.cx(), "Marker", |id| Record::Marker {
         id,
         marker: ReferenceMarker {
@@ -460,7 +504,11 @@ fn the_framing_reference_marker_anchors_a_floor_and_move_to_framing_ref_snaps_to
         framing_view::load(sim.app.cx.floor())
             .iter()
             .filter(|m| m.kind == MemberKind::Joist)
-            .filter(|m| ((m.transform.origin[0] - 100.0).rem_euclid(16.0)).min(16.0 - (m.transform.origin[0] - 100.0).rem_euclid(16.0)) < 0.01)
+            .filter(|m| {
+                ((m.transform.origin[0] - 100.0).rem_euclid(16.0))
+                    .min(16.0 - (m.transform.origin[0] - 100.0).rem_euclid(16.0))
+                    < 0.01
+            })
             .count()
     };
     assert!(on_grid(&sim) > 20, "{}", on_grid(&sim));
@@ -486,7 +534,15 @@ fn the_framing_reference_marker_anchors_a_floor_and_move_to_framing_ref_snaps_to
     let Some(Record::Manual(j)) = framing_view::find(sim.app.cx.floor(), id) else {
         panic!("gone");
     };
-    assert!((j.start.x - 100.0).abs() < 1e-6 || (j.start.x - 100.0).rem_euclid(16.0).min(16.0 - (j.start.x - 100.0).rem_euclid(16.0)) < 1e-6, "{}", j.start.x);
+    assert!(
+        (j.start.x - 100.0).abs() < 1e-6
+            || (j.start.x - 100.0)
+                .rem_euclid(16.0)
+                .min(16.0 - (j.start.x - 100.0).rem_euclid(16.0))
+                < 1e-6,
+        "{}",
+        j.start.x
+    );
 }
 
 #[test]
@@ -568,7 +624,12 @@ fn identical_trusses_share_a_label_the_truss_detail_draws_each_once_and_the_sche
     truss(&mut sim, 88.0, 288.0);
     let d = truss(&mut sim, 112.0, 240.0);
     let labels_now = framing_view::truss_labels(&sim.app.cx.project);
-    let label = |id: Id| labels_now.iter().find(|(i, _)| *i == id).map(|(_, l)| l.clone());
+    let label = |id: Id| {
+        labels_now
+            .iter()
+            .find(|(i, _)| *i == id)
+            .map(|(_, l)| l.clone())
+    };
     assert_eq!(label(a).as_deref(), Some("TR-1"));
     assert_eq!(label(d).as_deref(), Some("TR-2"));
     assert_eq!(labels_now.iter().filter(|(_, l)| l == "TR-1").count(), 3);
@@ -595,7 +656,8 @@ fn identical_trusses_share_a_label_the_truss_detail_draws_each_once_and_the_sche
     assert_eq!(sim.app.cx.floor, 0);
     assert_eq!(framing_view::selected(&sim.app.cx).len(), 3);
     // The schedule rows.
-    let rows = plan_framing::truss_schedule(&framing_view::all_manual_in_plan(&sim.app.cx.project), &[]);
+    let rows =
+        plan_framing::truss_schedule(&framing_view::all_manual_in_plan(&sim.app.cx.project), &[]);
     assert_eq!(rows.len(), 2);
     assert_eq!((rows[0].label.as_str(), rows[0].quantity), ("TR-1", 3));
     // Deleting the trusses removes the Truss Detail with them.
@@ -612,7 +674,9 @@ fn identical_trusses_share_a_label_the_truss_detail_draws_each_once_and_the_sche
 #[test]
 fn the_trusses_of_a_gable_roof_share_one_label_and_a_locked_truss_keeps_its_shape() {
     let mut sim = house();
-    sim.tool(crate::tools::ToolId::RoofVariant(crate::tools::roof::RoofMode::Build));
+    sim.tool(crate::tools::ToolId::RoofVariant(
+        crate::tools::roof::RoofMode::Build,
+    ));
     sim.click(240.0, 180.0);
     sim.ok();
     sim.tool(crate::tools::ToolId::Select);
@@ -662,6 +726,9 @@ fn the_trusses_of_a_gable_roof_share_one_label_and_a_locked_truss_keeps_its_shap
         Some(Record::Manual(m)) => m.truss.unwrap().pitch,
         _ => panic!(),
     };
-    assert!(pitch(&sim, a) != 3.0, "the roof truss took the roof's pitch");
+    assert!(
+        pitch(&sim, a) != 3.0,
+        "the roof truss took the roof's pitch"
+    );
     assert_eq!(pitch(&sim, b), 3.0, "the locked one kept its shape");
 }

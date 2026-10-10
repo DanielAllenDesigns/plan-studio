@@ -124,7 +124,7 @@ pub struct ScheduleSpecDialog {
     form: Form,
 }
 
-pub(self) struct Form {
+struct Form {
     pub(self) mode: Mode,
     /// Floor the schedule is placed on.
     pub(self) floor: usize,
@@ -246,12 +246,7 @@ impl ScheduleSpecDialog {
     }
 }
 
-pub(self) fn combo<T: PartialEq + Copy>(
-    ui: &mut Ui,
-    salt: &str,
-    value: &mut T,
-    options: &[(T, &str)],
-) {
+fn combo<T: PartialEq + Copy>(ui: &mut Ui, salt: &str, value: &mut T, options: &[(T, &str)]) {
     let current = options
         .iter()
         .find(|(v, _)| v == value)
@@ -649,7 +644,7 @@ pub fn sync_new_categories(project: &mut plan_core::Project, def: &mut Schedule,
     // A tick of a category the plan lost (deleted meanwhile) is dropped.
     def.categories.retain(|k, _| {
         k.strip_prefix("Custom/")
-            .map_or(true, |n| project.schedule_setup.category(n).is_some())
+            .is_none_or(|n| project.schedule_setup.category(n).is_some())
     });
 }
 

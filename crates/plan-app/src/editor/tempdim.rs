@@ -468,22 +468,56 @@ fn faces_near(floor: &Floor, skip: u64) -> Vec<Face> {
         if (a.y - b.y).abs() < 1e-6 {
             let (from, to) = (a.x.min(b.x), a.x.max(b.x));
             for off in [-h, h] {
-                v.push(Face { vertical: false, at: a.y + off, from, to });
+                v.push(Face {
+                    vertical: false,
+                    at: a.y + off,
+                    from,
+                    to,
+                });
             }
         } else if (a.x - b.x).abs() < 1e-6 {
             let (from, to) = (a.y.min(b.y), a.y.max(b.y));
             for off in [-h, h] {
-                v.push(Face { vertical: true, at: a.x + off, from, to });
+                v.push(Face {
+                    vertical: true,
+                    at: a.x + off,
+                    from,
+                    to,
+                });
             }
         }
     }
     for c in floor.cad.iter().filter(|c| c.id != skip) {
-        if let CadItem::Polyline { points, closed: true } = &c.item {
+        if let CadItem::Polyline {
+            points,
+            closed: true,
+        } = &c.item
+        {
             if let Some((lo, hi)) = box_bounds(points) {
-                v.push(Face { vertical: true, at: lo.x, from: lo.y, to: hi.y });
-                v.push(Face { vertical: true, at: hi.x, from: lo.y, to: hi.y });
-                v.push(Face { vertical: false, at: lo.y, from: lo.x, to: hi.x });
-                v.push(Face { vertical: false, at: hi.y, from: lo.x, to: hi.x });
+                v.push(Face {
+                    vertical: true,
+                    at: lo.x,
+                    from: lo.y,
+                    to: hi.y,
+                });
+                v.push(Face {
+                    vertical: true,
+                    at: hi.x,
+                    from: lo.y,
+                    to: hi.y,
+                });
+                v.push(Face {
+                    vertical: false,
+                    at: lo.y,
+                    from: lo.x,
+                    to: hi.x,
+                });
+                v.push(Face {
+                    vertical: false,
+                    at: hi.y,
+                    from: lo.x,
+                    to: hi.x,
+                });
             }
         }
     }

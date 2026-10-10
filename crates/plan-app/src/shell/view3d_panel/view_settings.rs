@@ -247,6 +247,7 @@ pub fn settings_for(quality: ViewQuality, exposure: f32, shadows: bool) -> ViewS
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::field_reassign_with_default)]
     use super::*;
     use plan_core::camera_view::FloorsDisplayed;
     use plan_core::geometry::Point;

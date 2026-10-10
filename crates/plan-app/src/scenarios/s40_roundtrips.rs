@@ -556,14 +556,14 @@ fn add_direct(sim: &mut Sim) {
             if let Some(id) = p.add_opening(0, long, at, kind) {
                 if let Some(o) = p.floors[0].openings.iter_mut().find(|o| o.id == id) {
                     o.style = *style;
-                    o.swing_flipped = n % 2 == 0;
-                    o.hinge_at_end = n % 3 == 0;
-                    o.label_override = (n % 4 == 0).then(|| format!("L{n}"));
+                    o.swing_flipped = n.is_multiple_of(2);
+                    o.hinge_at_end = n.is_multiple_of(3);
+                    o.label_override = n.is_multiple_of(4).then(|| format!("L{n}"));
                     o.schedule_number = Some(format!("S{n}"));
                     o.lites = (n % 3 + 1, n % 2 + 1);
-                    o.egress = n % 5 == 0;
+                    o.egress = n.is_multiple_of(5);
                     o.tempered = n % 2 == 1;
-                    o.mull_group = (n % 6 == 0).then_some(9000 + u64::from(n));
+                    o.mull_group = n.is_multiple_of(6).then_some(9000 + u64::from(n));
                 }
                 n += 1;
             }
@@ -721,7 +721,7 @@ fn add_direct(sim: &mut Sim) {
     {
         use crate::editor::site_view;
         use plan_terrain::{ElevationLine, ElevationRegion, RoadKind, RoadStrip};
-        let mut rec = site_view::load_terrain(p).unwrap_or_else(site_view::TerrainRecord::new);
+        let mut rec = site_view::load_terrain(p).unwrap_or_default();
         for (i, kind) in [
             RoadKind::Road,
             RoadKind::Driveway,
@@ -1395,7 +1395,7 @@ fn every_tool_gesture_is_one_undo_step_and_undoes_cleanly() {
             problems.extend(guarded(&mut sim, &mut s0, &label, |s, over| {
                 s.tool(id);
                 perform_counting(s, *g, over);
-                event(s, "dialog", over, |s| settle(s));
+                event(s, "dialog", over, settle);
             }));
         }
     }

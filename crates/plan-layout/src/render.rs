@@ -1577,10 +1577,10 @@ pub(crate) fn caution_prims(b: &LayoutBox, cx: &LayoutRenderContext) -> Vec<Prim
                 return Vec::new();
             }
         }
-        BoxSource::Perspective { .. } => {
-            if cx.perspective_render.is_none() && cx.perspective_image.is_none() {
-                return Vec::new();
-            }
+        BoxSource::Perspective { .. }
+            if cx.perspective_render.is_none() && cx.perspective_image.is_none() =>
+        {
+            return Vec::new();
         }
         _ => {}
     }

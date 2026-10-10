@@ -743,7 +743,13 @@ pub fn apply(
     draft: &TrayCeiling,
     look: &Look,
 ) -> Option<Id> {
-    if matches!(target, Target::Edit { floor: DEFAULTS_FLOOR, .. }) {
+    if matches!(
+        target,
+        Target::Edit {
+            floor: DEFAULTS_FLOOR,
+            ..
+        }
+    ) {
         let mut spec = draft.clone();
         spec.id = 0;
         cx.defaults.tray_ceiling = (spec != TrayCeiling::default()).then_some(spec);

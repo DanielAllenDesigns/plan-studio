@@ -24,7 +24,11 @@ pub fn pitch_over(roof: &Roof, at: Point) -> Option<f64> {
     roof.planes
         .iter()
         .find(|p| {
-            let poly: Vec<Point> = p.polygon3d.iter().map(|v| Point::new(v[0], -v[2])).collect();
+            let poly: Vec<Point> = p
+                .polygon3d
+                .iter()
+                .map(|v| Point::new(v[0], -v[2]))
+                .collect();
             point_in_polygon(at, &poly)
         })
         .map(|p| p.pitch_in_12)

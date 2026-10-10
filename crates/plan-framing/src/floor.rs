@@ -145,7 +145,16 @@ pub fn frame_floor_opts(
     opts: &DetailOptions,
     ceiling: bool,
 ) -> Vec<Member> {
-    frame_floor_ref(room, floor_elevation, d, direction, holes, opts, ceiling, None)
+    frame_floor_ref(
+        room,
+        floor_elevation,
+        d,
+        direction,
+        holes,
+        opts,
+        ceiling,
+        None,
+    )
 }
 
 /// [`frame_floor_opts`] with the joist layout anchored at a Framing Reference
@@ -363,7 +372,7 @@ pub fn frame_floor_ref(
                     Connection::Flush => (0.0, 0.0),
                     Connection::Stagger if ply == 0 => (0.0, 0.0),
                     Connection::Stagger => {
-                        if (i + ply as usize) % 2 == 0 {
+                        if (i + ply as usize).is_multiple_of(2) {
                             (rim_width, 0.0)
                         } else {
                             (0.0, rim_width)
@@ -380,7 +389,13 @@ pub fn frame_floor_ref(
                         axis_x: [dir.x, 0.0, -dir.y],
                         axis_y: up,
                     };
-                    out.push(Member::new(MemberKind::RimJoist, rim_lumber, piece, tf, None));
+                    out.push(Member::new(
+                        MemberKind::RimJoist,
+                        rim_lumber,
+                        piece,
+                        tf,
+                        None,
+                    ));
                 }
             }
         }
@@ -441,7 +456,8 @@ pub fn frame_floor_ref(
                                 axis_y: span_dir,
                             };
                             let mut m = Member::new(MemberKind::Blocking, bridge, len, tf, None);
-                            m.label = format!("cross bridging x {}", crate::lumber::format_inches(len));
+                            m.label =
+                                format!("cross bridging x {}", crate::lumber::format_inches(len));
                             out.push(m);
                         }
                         continue;
@@ -959,7 +975,9 @@ mod tests {
         };
         let m = frame_floor_opts(&rect(), 0.0, &d, JoistDirection::Auto, &[], &wide, false);
         // Two doubled rims of 2" boards take 8" of every joist.
-        assert!(of(&m, MemberKind::Joist).iter().all(|j| (j.length - 112.0).abs() < 1e-9));
+        assert!(of(&m, MemberKind::Joist)
+            .iter()
+            .all(|j| (j.length - 112.0).abs() < 1e-9));
         let rims = of(&m, MemberKind::RimJoist);
         assert_eq!(rims.len(), 4);
         assert!(rims.iter().all(|r| (r.lumber.thickness - 2.0).abs() < 1e-9));
@@ -972,7 +990,9 @@ mod tests {
             ..wide.clone()
         };
         let m = frame_floor_opts(&rect(), 0.0, &d, JoistDirection::Auto, &[], &flush, false);
-        assert!(of(&m, MemberKind::RimJoist).iter().all(|r| r.length == 240.0));
+        assert!(of(&m, MemberKind::RimJoist)
+            .iter()
+            .all(|r| r.length == 240.0));
     }
 
     #[test]

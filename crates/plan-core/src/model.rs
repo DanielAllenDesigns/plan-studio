@@ -415,7 +415,10 @@ pub struct Floor {
     #[serde(default, skip_serializing_if = "crate::callout::Annots::is_empty")]
     pub annots: crate::callout::Annots,
     /// Architectural blocks (see [`crate::arch_block`]).
-    #[serde(default, skip_serializing_if = "crate::arch_block::BlockLayer::is_empty")]
+    #[serde(
+        default,
+        skip_serializing_if = "crate::arch_block::BlockLayer::is_empty"
+    )]
     pub blocks: crate::arch_block::BlockLayer,
     /// Extra 3D solid spec fields and compound solids (see [`crate::solids`]).
     #[serde(default, skip_serializing_if = "crate::solids::SolidLayer::is_empty")]
@@ -425,7 +428,10 @@ pub struct Floor {
     pub region_layers: Vec<crate::material_region::RegionStructure>,
     /// Construction line records, keyed by the id of their CAD line (see
     /// [`crate::construction`]).
-    #[serde(default, skip_serializing_if = "crate::construction::ConstructionLayer::is_empty")]
+    #[serde(
+        default,
+        skip_serializing_if = "crate::construction::ConstructionLayer::is_empty"
+    )]
     pub construction: crate::construction::ConstructionLayer,
     /// Center Sheet (File > Print): where the middle of this floor's Drawing
     /// Sheet sits on the plan. `None` centers the sheet on the walls. Moves
@@ -565,7 +571,10 @@ pub struct Project {
     pub annot_defaults: crate::callout::AnnotDefaults,
     /// The lists of Multiple Saved Defaults, the Default Sets and the Use
     /// Default state of objects; see [`crate::defaults::saved`].
-    #[serde(default, skip_serializing_if = "crate::defaults::saved::SavedDefaults::is_empty")]
+    #[serde(
+        default,
+        skip_serializing_if = "crate::defaults::saved::SavedDefaults::is_empty"
+    )]
     pub saved_defaults: crate::defaults::saved::SavedDefaults,
     /// Material overrides of single objects (Material Painter, Adjust
     /// Materials); see [`crate::object_materials`].
@@ -598,11 +607,17 @@ pub struct Project {
     /// Materials List data: object information and component changes, the
     /// saved lists and the Materials List Polylines; see
     /// [`crate::materials_data`].
-    #[serde(default, skip_serializing_if = "crate::materials_data::MaterialsData::is_empty")]
+    #[serde(
+        default,
+        skip_serializing_if = "crate::materials_data::MaterialsData::is_empty"
+    )]
     pub materials: crate::materials_data::MaterialsData,
     /// Drawing Sheet Setup of each kind of view and the Watermark (File >
     /// Print, View > Watermark); see [`crate::drawing_sheet`].
-    #[serde(default, skip_serializing_if = "crate::drawing_sheet::PrintSetup::is_default")]
+    #[serde(
+        default,
+        skip_serializing_if = "crate::drawing_sheet::PrintSetup::is_default"
+    )]
     pub print_setup: crate::drawing_sheet::PrintSetup,
     /// Construction Line Defaults and the order rule sets (Construction
     /// Line Order Management); see [`crate::construction`].
@@ -620,11 +635,17 @@ pub struct Project {
     pub reference_table: crate::construction::ReferenceTable,
     /// Library line styles, fill styles, custom patterns, the User Catalog
     /// entries and the Poché switch; see [`crate::fill_styles`].
-    #[serde(default, skip_serializing_if = "crate::fill_styles::StyleBook::is_default")]
+    #[serde(
+        default,
+        skip_serializing_if = "crate::fill_styles::StyleBook::is_default"
+    )]
     pub styles: crate::fill_styles::StyleBook,
     /// Schedule Defaults per kind of schedule and the custom schedule
     /// categories; see [`crate::schedules::ScheduleSetup`].
-    #[serde(default, skip_serializing_if = "crate::schedules::ScheduleSetup::is_default")]
+    #[serde(
+        default,
+        skip_serializing_if = "crate::schedules::ScheduleSetup::is_default"
+    )]
     pub schedule_setup: crate::schedules::ScheduleSetup,
     /// Layered floor, ceiling and roof definitions: the plan-wide Floor/Ceiling
     /// Platform Defaults, the Backsplash and the saved named definitions; see
@@ -949,8 +970,18 @@ impl Project {
         }
         for f in &self.floors {
             dupes(&mut out, "wall", &f.name, f.walls.iter().map(|w| w.id));
-            dupes(&mut out, "opening", &f.name, f.openings.iter().map(|o| o.id));
-            dupes(&mut out, "dimension", &f.name, f.dimensions.iter().map(|d| d.id));
+            dupes(
+                &mut out,
+                "opening",
+                &f.name,
+                f.openings.iter().map(|o| o.id),
+            );
+            dupes(
+                &mut out,
+                "dimension",
+                &f.name,
+                f.dimensions.iter().map(|d| d.id),
+            );
             dupes(&mut out, "CAD object", &f.name, f.cad.iter().map(|c| c.id));
         }
         out

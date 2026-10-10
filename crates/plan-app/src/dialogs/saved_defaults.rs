@@ -107,7 +107,7 @@ struct Window {
 /// Opens the Saved Defaults dialog of `kind`.
 pub fn open(cx: &mut EditorContext, kind: SavedKind) {
     let snapshot = Snapshot::take(cx);
-    let active = cx.project.saved_active(&mut cx.defaults, kind);
+    let active = cx.project.saved_active(&cx.defaults, kind);
     let mut selected = BTreeSet::new();
     selected.insert(active.clone());
     WINDOW.with(|w| {
@@ -165,7 +165,7 @@ pub fn double_click(cx: &mut EditorContext, action: Action) -> bool {
         return false;
     };
     if edit_active_on_double_click() {
-        let name = cx.project.saved_active(&mut cx.defaults, kind);
+        let name = cx.project.saved_active(&cx.defaults, kind);
         default_sets::edit_saved(cx, kind, &name);
     } else {
         open(cx, kind);
@@ -178,10 +178,10 @@ pub fn show(ctx: &egui::Context, cx: &mut EditorContext) {
     let Some(mut w) = WINDOW.with(|w| w.borrow_mut().take()) else {
         return;
     };
-    let names = cx.project.saved_names(&mut cx.defaults, w.kind);
+    let names = cx.project.saved_names(&cx.defaults, w.kind);
     w.selected.retain(|n| names.contains(n));
     if !names.contains(&w.active) {
-        w.active = cx.project.saved_active(&mut cx.defaults, w.kind);
+        w.active = cx.project.saved_active(&cx.defaults, w.kind);
     }
     let mut ok = false;
     let mut cancel = false;
@@ -323,7 +323,7 @@ pub fn show(ctx: &egui::Context, cx: &mut EditorContext) {
                     for n in w.selected.clone() {
                         let name = format!("{n} 2");
                         let unique =
-                            unique_name(&name, &cx.project.saved_names(&mut cx.defaults, w.kind));
+                            unique_name(&name, &cx.project.saved_names(&cx.defaults, w.kind));
                         if cx
                             .project
                             .saved_copy(&mut cx.defaults, w.kind, &n, &unique)
@@ -354,7 +354,7 @@ pub fn show(ctx: &egui::Context, cx: &mut EditorContext) {
                         Err(e) => msgs.push(e),
                     }
                 }
-                w.active = cx.project.saved_active(&mut cx.defaults, w.kind);
+                w.active = cx.project.saved_active(&cx.defaults, w.kind);
                 w.message = msgs.join("; ");
             }
         }
@@ -371,7 +371,7 @@ pub fn show(ctx: &egui::Context, cx: &mut EditorContext) {
         cx.status = format!(
             "{} defaults: \"{}\" is active",
             w.kind.label(),
-            cx.project.saved_active(&mut cx.defaults, w.kind)
+            cx.project.saved_active(&cx.defaults, w.kind)
         );
     } else if cancel || !open {
         w.snapshot.restore(cx);
@@ -448,8 +448,7 @@ mod tests {
         let _ = ctx.run(input, |ctx| show(ctx, &mut cx));
         assert_eq!(open_kind(), None);
         assert_eq!(
-            cx.project
-                .saved_names(&mut cx.defaults, SavedKind::Callouts),
+            cx.project.saved_names(&cx.defaults, SavedKind::Callouts),
             vec!["Default"]
         );
         assert_eq!(cx.project.annot_defaults.callout.pose_idx, 0);

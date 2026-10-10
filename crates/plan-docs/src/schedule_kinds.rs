@@ -2242,6 +2242,7 @@ fn display_rows(
         .iter()
         .any(|f| f.id == def.group_by && !def.group_by.is_empty());
     // (objects of the row)
+    #[allow(clippy::type_complexity)]
     let mut body: Vec<(
         Vec<String>,
         Vec<RowTarget>,

@@ -108,6 +108,7 @@ pub fn narrow<'a>(
         })
         .collect();
     if ranked {
+        #[allow(clippy::unnecessary_sort_by)]
         scored.sort_by(|a, b| b.0.cmp(&a.0));
     }
     scored.into_iter().map(|(_, i)| i).collect()

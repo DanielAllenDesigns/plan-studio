@@ -121,7 +121,7 @@ pub fn handles(s: &Schedule, l: &Layout) -> Vec<Handle> {
             // Move Row handles, centred in the first column.
             let mut y = top + piece.title_h;
             for (r, rh) in piece.row_h.iter().enumerate() {
-                if r >= piece.head_rows && piece.col_w.first().is_some() {
+                if r >= piece.head_rows && !piece.col_w.is_empty() {
                     let obj = piece.first + r - piece.head_rows;
                     // Totals and padding rows have no object behind them.
                     if l.previews.get(obj).is_some_and(Option::is_some)

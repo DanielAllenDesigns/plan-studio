@@ -63,6 +63,7 @@ impl RoofChoice {
 }
 
 /// Which floor dialog is open and its draft.
+#[allow(clippy::large_enum_variant)]
 pub enum FloorDialog {
     /// Build New Floor or Insert New Floor (R-59, R-121): what to derive
     /// from the current floor, where to put the new one, its heights, the

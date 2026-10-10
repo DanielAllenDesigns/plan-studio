@@ -2,8 +2,8 @@
 
 use crate::annot::{PageLeader, RevisionCloud};
 use crate::layers::{LayoutLayers, LAYER_CAD, LAYER_TEXT};
-use crate::textfit::TextFit;
 use crate::pages::{PageNumbers, PageRevision};
+use crate::textfit::TextFit;
 use crate::titleblock::{TitleBlockStyle, TitleBlockTemplate};
 use plan_core::{CadItem, CadObject, Id, Point};
 use plan_docs::{Scale, SheetSize};

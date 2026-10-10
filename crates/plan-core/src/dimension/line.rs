@@ -274,13 +274,10 @@ impl Floor {
     /// extension line? Such a line cannot be moved by hand.
     pub fn line_is_fixed(&self, id: Id) -> bool {
         self.string_members(id).iter().any(|m| {
-            self.dimensions.iter().find(|d| d.id == *m).is_some_and(|d| {
-                d.look
-                    .seg
-                    .ext
-                    .iter()
-                    .any(|e| e.fixed_proximity.is_some())
-            })
+            self.dimensions
+                .iter()
+                .find(|d| d.id == *m)
+                .is_some_and(|d| d.look.seg.ext.iter().any(|e| e.fixed_proximity.is_some()))
         })
     }
 
@@ -293,7 +290,8 @@ impl Floor {
             let t = Targets::of(self);
             let mut seen: Vec<Id> = Vec::new();
             for d in &self.dimensions {
-                if seen.contains(&d.id) || !d.look.seg.ext.iter().any(|e| e.fixed_proximity.is_some())
+                if seen.contains(&d.id)
+                    || !d.look.seg.ext.iter().any(|e| e.fixed_proximity.is_some())
                 {
                     continue;
                 }
@@ -429,9 +427,9 @@ impl Floor {
         // The new place on the measuring line.
         let t_old = ext.point.dot(line.dir);
         let t_new = to.sub(ext.point).dot(line.dir) + t_old;
-        let lo = number
-            .checked_sub(2)
-            .map_or(f64::NEG_INFINITY, |k| line.extensions[k].point.dot(line.dir) + MIN_SEG_LEN);
+        let lo = number.checked_sub(2).map_or(f64::NEG_INFINITY, |k| {
+            line.extensions[k].point.dot(line.dir) + MIN_SEG_LEN
+        });
         let hi = line
             .extensions
             .get(number)
@@ -709,7 +707,14 @@ mod tests {
         p.floors[0].dimensions[2].look.seg.trailing = " TYP".into();
         let before: Vec<f64> = ids
             .iter()
-            .map(|i| p.floors[0].dimensions.iter().find(|d| d.id == *i).unwrap().length())
+            .map(|i| {
+                p.floors[0]
+                    .dimensions
+                    .iter()
+                    .find(|d| d.id == *i)
+                    .unwrap()
+                    .length()
+            })
             .collect();
         let new = p
             .insert_dimension_extension(0, ids[1], Point::new(180.0, 7.0), None)
@@ -729,11 +734,25 @@ mod tests {
         assert_eq!(len(ids[0]), before[0]);
         assert_eq!(len(ids[2]), before[2]);
         assert_eq!(
-            p.floors[0].dimensions.iter().find(|d| d.id == ids[0]).unwrap().look.seg.leading,
+            p.floors[0]
+                .dimensions
+                .iter()
+                .find(|d| d.id == ids[0])
+                .unwrap()
+                .look
+                .seg
+                .leading,
             "("
         );
         assert_eq!(
-            p.floors[0].dimensions.iter().find(|d| d.id == ids[2]).unwrap().look.seg.trailing,
+            p.floors[0]
+                .dimensions
+                .iter()
+                .find(|d| d.id == ids[2])
+                .unwrap()
+                .look
+                .seg
+                .trailing,
             " TYP"
         );
         // The split segment's halves add up to its old value.
@@ -782,7 +801,14 @@ mod tests {
         let lens: Vec<f64> = line
             .segments
             .iter()
-            .map(|i| p.floors[0].dimensions.iter().find(|d| d.id == *i).unwrap().length())
+            .map(|i| {
+                p.floors[0]
+                    .dimensions
+                    .iter()
+                    .find(|d| d.id == *i)
+                    .unwrap()
+                    .length()
+            })
             .collect();
         assert_eq!(lens, vec![160.0, 90.0, 150.0]);
         // Past a neighbour is refused and nothing moves.
@@ -790,7 +816,9 @@ mod tests {
             .move_extension(ids[0], 2, Point::new(300.0, 0.0), None)
             .is_err());
         assert_eq!(
-            p.floors[0].dimension_line(ids[0]).unwrap().extensions[1].point.x,
+            p.floors[0].dimension_line(ids[0]).unwrap().extensions[1]
+                .point
+                .x,
             160.0
         );
         // The end extension line moves too.
@@ -798,7 +826,9 @@ mod tests {
             .move_extension(ids[0], 4, Point::new(450.0, 0.0), None)
             .unwrap();
         assert_eq!(
-            p.floors[0].dimension_line(ids[0]).unwrap().extensions[3].point.x,
+            p.floors[0].dimension_line(ids[0]).unwrap().extensions[3]
+                .point
+                .x,
             450.0
         );
     }
@@ -840,8 +870,16 @@ mod tests {
         assert!(line.extensions[1].centerline);
         assert_eq!(line.extensions[1].props, props);
         // Both segments that meet there carry it.
-        let a = p.floors[0].dimensions.iter().find(|d| d.id == ids[0]).unwrap();
-        let b = p.floors[0].dimensions.iter().find(|d| d.id == ids[1]).unwrap();
+        let a = p.floors[0]
+            .dimensions
+            .iter()
+            .find(|d| d.id == ids[0])
+            .unwrap();
+        let b = p.floors[0]
+            .dimensions
+            .iter()
+            .find(|d| d.id == ids[1])
+            .unwrap();
         assert!(a.look.seg.centerline[1] && b.look.seg.centerline[0]);
         assert!(p.floors[0].line_is_fixed(ids[2]));
         assert!(!p.floors[0].set_extension(ids[1], 9, None, None, None));
@@ -873,7 +911,10 @@ mod tests {
         // Idempotent, and a segment taken out on purpose is left alone.
         assert!(!migrate_dimension_strings(&mut p));
         p.floors[0].leave_string(run[1]);
-        p.floors[0].dimensions.iter_mut().for_each(|d| d.look.seg.separate = true);
+        p.floors[0]
+            .dimensions
+            .iter_mut()
+            .for_each(|d| d.look.seg.separate = true);
         assert!(!migrate_dimension_strings(&mut p));
         assert_eq!(p.floors[0].string_members(run[0]), vec![run[0]]);
     }

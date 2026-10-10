@@ -233,8 +233,7 @@ fn write_cad(
 ) {
     let layer = c.layer.as_str();
     if let (CadItem::Text { height, .. }, Some(a)) = (&c.item, attrs) {
-        if a.text_box.needs_layout() && write_text_box(d, c, a, text_height(c, *height)).is_some()
-        {
+        if a.text_box.needs_layout() && write_text_box(d, c, a, text_height(c, *height)).is_some() {
             return;
         }
     }

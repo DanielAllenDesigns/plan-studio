@@ -1,3 +1,4 @@
+#![allow(clippy::field_reassign_with_default)]
 use super::*;
 use plan_core::{detect_rooms, Floor, Id, Opening, Point, Room, Wall, WallKind};
 use std::f64::consts::FRAC_PI_2;
@@ -1312,7 +1313,7 @@ fn library_objects_connection_and_rope_defaults_round_trip() {
     assert_eq!(back, d);
     // Every tool slot lists its own kind among its choices.
     for s in TOOL_SLOTS {
-        assert!(s.choices.iter().any(|c| *c == s.builtin), "{}", s.key);
+        assert!(s.choices.contains(&s.builtin), "{}", s.key);
         assert!(slot_of(s.builtin).is_some());
     }
     assert!(slot_of(K::OutletWp).is_none() && slot_of(K::Switch3Way).is_none());

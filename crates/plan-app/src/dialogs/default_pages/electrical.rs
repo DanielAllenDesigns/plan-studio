@@ -77,7 +77,7 @@ impl ElectricalPage {
     /// The Library button: chooses `kind` for the tool named `key`.
     pub fn choose_object(&mut self, key: &str, kind: DeviceKind) -> bool {
         match TOOL_SLOTS.iter().find(|s| s.key == key) {
-            Some(slot) if slot.choices.iter().any(|c| *c == kind) => {
+            Some(slot) if slot.choices.contains(&kind) => {
                 self.defaults.set_object(slot.key, slot.builtin, kind);
                 true
             }

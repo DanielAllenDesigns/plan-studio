@@ -466,16 +466,22 @@ fn frame_roof_inner(
 /// plane (a rake), boards across the rafters in the plane of the roof,
 /// `d.lookout_spacing` apart from the first at `d.lookout_offset` from the
 /// eave, reaching out over the overhang and back across the first rafter.
-fn lookouts(planes: &[&RoofPlane], shared: &[Shared], d: &RoofFramingDefaults, out: &mut Vec<Member>) {
+fn lookouts(
+    planes: &[&RoofPlane],
+    shared: &[Shared],
+    d: &RoofFramingDefaults,
+    out: &mut Vec<Member>,
+) {
     for (i, pl) in planes.iter().enumerate() {
         let f = eave(pl);
         let n3 = pl.normal();
         let poly = &pl.polygon3d;
         for k in 1..poly.len() {
             let (p0, p1) = (poly[k], poly[(k + 1) % poly.len()]);
-            let is_shared = shared
-                .iter()
-                .any(|e| (e.a == i || e.b == i) && ((same(e.p0, p0) && same(e.p1, p1)) || (same(e.p0, p1) && same(e.p1, p0))));
+            let is_shared = shared.iter().any(|e| {
+                (e.a == i || e.b == i)
+                    && ((same(e.p0, p0) && same(e.p1, p1)) || (same(e.p0, p1) && same(e.p1, p0)))
+            });
             if is_shared || (p0[1] - p1[1]).abs() < 0.5 {
                 continue;
             }
@@ -509,7 +515,11 @@ fn lookouts(planes: &[&RoofPlane], shared: &[Shared], d: &RoofFramingDefaults, o
                     axis_y: n3,
                 };
                 let mut m = Member::new(MemberKind::Rafter, d.lookout, reach, tf, None);
-                m.label = format!("{} lookout x {}", d.lookout.nominal_name(), crate::lumber::format_inches(reach));
+                m.label = format!(
+                    "{} lookout x {}",
+                    d.lookout.nominal_name(),
+                    crate::lumber::format_inches(reach)
+                );
                 out.push(m);
                 s += d.lookout_spacing.max(6.0);
             }
@@ -532,7 +542,9 @@ fn shoe_plates(planes: &[&RoofPlane], d: &RoofFramingDefaults, out: &mut Vec<Mem
             if !plan_core::geometry::point_in_polygon(mid, &poly) {
                 continue;
             }
-            let (Some(ya), Some(yb), Some(ym)) = (low.height_at(a), low.height_at(b), low.height_at(mid)) else {
+            let (Some(ya), Some(yb), Some(ym)) =
+                (low.height_at(a), low.height_at(b), low.height_at(mid))
+            else {
                 continue;
             };
             // Built over: the upper plane's eave stands on or above the lower one.
@@ -546,10 +558,27 @@ fn shoe_plates(planes: &[&RoofPlane], d: &RoofFramingDefaults, out: &mut Vec<Mem
             let w = cross3(n3, axis_x);
             let w = if w[1] < 0.0 { scale(w, -1.0) } else { w };
             let axis_y = scale(w, 1.0 / norm3(w).max(1e-9));
-            let origin = add(a3, scale(n3, d.shoe_plate.thickness / 2.0 - d.overframe_layer.drop()));
-            let tf = Transform3 { origin, axis_x, axis_y };
-            let mut m = Member::new(MemberKind::Ledger, d.shoe_plate, norm3(sub3(b3, a3)), tf, None);
-            m.label = format!("{} shoe plate x {}", d.shoe_plate.nominal_name(), crate::lumber::format_inches(m.length));
+            let origin = add(
+                a3,
+                scale(n3, d.shoe_plate.thickness / 2.0 - d.overframe_layer.drop()),
+            );
+            let tf = Transform3 {
+                origin,
+                axis_x,
+                axis_y,
+            };
+            let mut m = Member::new(
+                MemberKind::Ledger,
+                d.shoe_plate,
+                norm3(sub3(b3, a3)),
+                tf,
+                None,
+            );
+            m.label = format!(
+                "{} shoe plate x {}",
+                d.shoe_plate.nominal_name(),
+                crate::lumber::format_inches(m.length)
+            );
             out.push(m);
             break;
         }
@@ -1398,7 +1427,11 @@ mod tests {
             m.iter()
                 .filter(|m| m.kind == MemberKind::Rafter)
                 .filter(|m| m.transform.axis_x[2].abs() > m.transform.axis_x[0].abs())
-                .filter(|m| ((m.transform.origin[0] - off).rem_euclid(16.0)).min(16.0 - (m.transform.origin[0] - off).rem_euclid(16.0)) < 1e-6)
+                .filter(|m| {
+                    ((m.transform.origin[0] - off).rem_euclid(16.0))
+                        .min(16.0 - (m.transform.origin[0] - off).rem_euclid(16.0))
+                        < 1e-6
+                })
                 .count()
         };
         let plain = frame_roof(&gable(), &RoofFramingDefaults::default());
@@ -1409,7 +1442,11 @@ mod tests {
         };
         let anchored = frame_roof(&gable(), &d);
         // 31 stations a side, all but the two edge rafters on the marker's grid.
-        assert!(on_grid(&anchored, 8.0) >= 2 * 29, "{}", on_grid(&anchored, 8.0));
+        assert!(
+            on_grid(&anchored, 8.0) >= 2 * 29,
+            "{}",
+            on_grid(&anchored, 8.0)
+        );
         all_sane(&anchored);
     }
 
@@ -1444,7 +1481,13 @@ mod tests {
     #[test]
     fn trim_to_soffits_marks_the_rafters_that_reach_the_eave() {
         let roof = hip(16.0);
-        let eaves = vec![EaveSpec { overhang: 16.0, cut: None }; 4];
+        let eaves = vec![
+            EaveSpec {
+                overhang: 16.0,
+                cut: None
+            };
+            4
+        ];
         let off = frame_roof_eaves(&roof, &RoofFramingDefaults::default(), &eaves);
         assert!(off.iter().all(|m| !m.label.contains("trimmed")));
         let d = RoofFramingDefaults {
@@ -1452,16 +1495,26 @@ mod tests {
             ..RoofFramingDefaults::default()
         };
         let on = frame_roof_eaves(&roof, &d, &eaves);
-        let trimmed = on.iter().filter(|m| m.label.contains("trimmed to soffit")).count();
+        let trimmed = on
+            .iter()
+            .filter(|m| m.label.contains("trimmed to soffit"))
+            .count();
         assert!(trimmed >= 100, "{trimmed}");
         assert_eq!(on.len(), off.len());
     }
 
-    fn plane(poly: &[(f64, f64, f64)], pitch: f64, base: ((f64, f64), (f64, f64))) -> plan_roof::RoofPlane {
+    fn plane(
+        poly: &[(f64, f64, f64)],
+        pitch: f64,
+        base: ((f64, f64), (f64, f64)),
+    ) -> plan_roof::RoofPlane {
         plan_roof::RoofPlane {
             polygon3d: poly.iter().map(|&(x, y, z)| [x, y, -z]).collect(),
             pitch_in_12: pitch,
-            baseline: (Point::new(base.0 .0, base.0 .1), Point::new(base.1 .0, base.1 .1)),
+            baseline: (
+                Point::new(base.0 .0, base.0 .1),
+                Point::new(base.1 .0, base.1 .1),
+            ),
             source_edge: 0,
         }
     }
@@ -1470,12 +1523,22 @@ mod tests {
     fn roof_overframing_puts_a_shoe_plate_where_a_plane_is_built_over_another() {
         // A 4:12 roof, and a 8:12 plane whose eave stands on it at plan y = 60.
         let low = plane(
-            &[(0.0, 100.0, 0.0), (240.0, 100.0, 0.0), (240.0, 140.0, 120.0), (0.0, 140.0, 120.0)],
+            &[
+                (0.0, 100.0, 0.0),
+                (240.0, 100.0, 0.0),
+                (240.0, 140.0, 120.0),
+                (0.0, 140.0, 120.0),
+            ],
             4.0,
             ((0.0, 0.0), (240.0, 0.0)),
         );
         let high = plane(
-            &[(60.0, 120.0, 60.0), (180.0, 120.0, 60.0), (180.0, 146.7, 100.0), (60.0, 146.7, 100.0)],
+            &[
+                (60.0, 120.0, 60.0),
+                (180.0, 120.0, 60.0),
+                (180.0, 146.7, 100.0),
+                (60.0, 146.7, 100.0),
+            ],
             8.0,
             ((60.0, 60.0), (180.0, 60.0)),
         );
@@ -1501,7 +1564,11 @@ mod tests {
         assert_eq!(p[0].kind, MemberKind::Ledger);
         assert!((p[0].length - 120.0).abs() < 1e-6);
         // It lies on the lower plane: 40" over 120" is 1/3 per inch, y = 60 -> 20".
-        assert!((p[0].transform.origin[1] - 120.0).abs() < 2.0, "{}", p[0].transform.origin[1]);
+        assert!(
+            (p[0].transform.origin[1] - 120.0).abs() < 2.0,
+            "{}",
+            p[0].transform.origin[1]
+        );
         // Sheathing sits lower than the finish.
         let sheathing = RoofFramingDefaults {
             overframe_layer: OverframeLayer::Sheathing,

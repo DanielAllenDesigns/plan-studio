@@ -118,7 +118,11 @@ impl EditorContext {
                     .selection
                     .single()
                     .or_else(|| self.selection.all_walls().then(|| self.selection.items[0]))
-                    .or_else(|| self.selection.all_cabinets().then(|| self.selection.items[0]))
+                    .or_else(|| {
+                        self.selection
+                            .all_cabinets()
+                            .then(|| self.selection.items[0])
+                    })
                     .or_else(|| {
                         crate::tools::text::selected_annot(self).map(|(_, id)| ObjectRef::Cad(id))
                     })

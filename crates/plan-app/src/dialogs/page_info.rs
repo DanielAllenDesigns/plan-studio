@@ -288,24 +288,30 @@ impl PageInfoDialog {
                 selected: sel_field,
                 ..
             } = self;
-            frame(ctx, "Layout Page Information", 520.0, error.as_deref(), |ui| {
-                if let Some(e) = entries.get_mut(*sel_field) {
-                    body(
-                        ui,
-                        e,
-                        BodyCtx {
-                            names: &names,
-                            templates: &templates,
-                            assigned,
-                            choices,
-                            layout_sheet,
-                        },
-                        &mut selected,
-                        rev_sel,
-                        &mut action,
-                    );
-                }
-            })
+            frame(
+                ctx,
+                "Layout Page Information",
+                520.0,
+                error.as_deref(),
+                |ui| {
+                    if let Some(e) = entries.get_mut(*sel_field) {
+                        body(
+                            ui,
+                            e,
+                            BodyCtx {
+                                names: &names,
+                                templates: &templates,
+                                assigned,
+                                choices,
+                                layout_sheet,
+                            },
+                            &mut selected,
+                            rev_sel,
+                            &mut action,
+                        );
+                    }
+                },
+            )
         };
         if selected != self.selected {
             self.select(selected);
@@ -525,7 +531,10 @@ mod tests {
         assert_eq!(d.entries()[2].info.title, "Plans");
         assert_eq!(d.labels(), ["A-0", "A-1", "A-2", "A-3"]);
         assert_eq!(d.error(), None);
-        assert!(d.is_assigned(0), "the default template is used by the pages");
+        assert!(
+            d.is_assigned(0),
+            "the default template is used by the pages"
+        );
     }
 
     #[test]
@@ -556,7 +565,10 @@ mod tests {
         d.new_revision();
         let (_, dialog) = d.editor.take().expect("the Revision Specification opens");
         let r = dialog.revision();
-        assert_eq!((r.date.as_str(), r.revised_by.as_str()), ("2026-10-08", "DAD"));
+        assert_eq!(
+            (r.date.as_str(), r.revised_by.as_str()),
+            ("2026-10-08", "DAD")
+        );
         d.finish_revision(None, PageRevision::new("1", "2026-10-08", "DAD", "First"));
         d.finish_revision(None, PageRevision::new("2", "2026-10-09", "DAD", "Second"));
         assert_eq!(d.rev_sel, Some(1));
@@ -574,7 +586,10 @@ mod tests {
             Some(0),
             PageRevision::new("2", "2026-10-09", "DAD", "Second, revised"),
         );
-        assert_eq!(d.entries()[1].info.revisions[0].description, "Second, revised");
+        assert_eq!(
+            d.entries()[1].info.revisions[0].description,
+            "Second, revised"
+        );
         d.delete_revision();
         assert_eq!(d.entries()[1].info.revisions.len(), 1);
     }

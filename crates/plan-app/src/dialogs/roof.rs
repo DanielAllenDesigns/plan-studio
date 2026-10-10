@@ -209,7 +209,9 @@ impl SpecPages for BuildPages {
         let sw = &self.s.switches;
         if self.fields.any_invalid() {
             Some("Enter a valid length".into())
-        } else if sw.pitch_in_degrees && (self.s.pitch < MIN_PITCH || self.s.pitch > 12.0 * 89f64.to_radians().tan()) {
+        } else if sw.pitch_in_degrees
+            && (self.s.pitch < MIN_PITCH || self.s.pitch > 12.0 * 89f64.to_radians().tan())
+        {
             Some("Pitch must be between 1 and 89 degrees".into())
         } else if !sw.pitch_in_degrees && (self.s.pitch < MIN_PITCH || self.s.pitch > MAX_PITCH) {
             Some("Pitch must be between 0.5 and 24 in 12".into())
@@ -409,8 +411,13 @@ impl BuildPages {
                 );
         });
         ui.add_enabled_ui(planes, |ui| {
-            ui.checkbox(&mut sw.use_existing_baselines, "Use Existing Roof Baselines")
-                .on_hover_text("Build the planes from the roof baseline polylines instead of the walls");
+            ui.checkbox(
+                &mut sw.use_existing_baselines,
+                "Use Existing Roof Baselines",
+            )
+            .on_hover_text(
+                "Build the planes from the roof baseline polylines instead of the walls",
+            );
         });
     }
 }

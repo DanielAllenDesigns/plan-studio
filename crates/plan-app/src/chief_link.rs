@@ -281,7 +281,10 @@ mod tests {
             Index::build(l)
         })
         .unwrap();
-        assert!(!Rc::ptr_eq(&first, &other), "a new library builds a new index");
+        assert!(
+            !Rc::ptr_eq(&first, &other),
+            "a new library builds a new index"
+        );
         assert_eq!(builds, 2);
         forget();
     }

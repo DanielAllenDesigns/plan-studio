@@ -661,4 +661,3 @@ fn categories_scope_and_numbers_survive_a_save() {
     assert!(!s.numbers.is_empty());
     assert!(back.schedule_setup.category("Glazing").is_some());
 }
-

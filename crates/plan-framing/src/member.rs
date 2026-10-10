@@ -282,8 +282,7 @@ impl SectionShape {
 
     /// The wall thickness of the hollow tube; `None` for the other shapes.
     pub fn tube(&self, thickness: f64, depth: f64) -> Option<f64> {
-        (*self == SectionShape::SteelBox)
-            .then(|| (thickness.min(depth) * 0.1).clamp(0.06, 0.25))
+        (*self == SectionShape::SteelBox).then(|| (thickness.min(depth) * 0.1).clamp(0.06, 0.25))
     }
 
     pub fn name(&self) -> &'static str {
@@ -519,8 +518,18 @@ impl Member {
                 let j = (i + 1) % 4;
                 for along in [0.0, self.length] {
                     let n = scale(t.axis_x, if along == 0.0 { -1.0 } else { 1.0 });
-                    push_tri(at(outer[i], along), at(outer[j], along), at(inner[j], along), n);
-                    push_tri(at(outer[i], along), at(inner[j], along), at(inner[i], along), n);
+                    push_tri(
+                        at(outer[i], along),
+                        at(outer[j], along),
+                        at(inner[j], along),
+                        n,
+                    );
+                    push_tri(
+                        at(outer[i], along),
+                        at(inner[j], along),
+                        at(inner[i], along),
+                        n,
+                    );
                 }
             }
             rings.push(outer);
@@ -529,7 +538,12 @@ impl Member {
         } else if let Some(outline) = self.shape.outline(th, dp) {
             for tri in ear_clip(&outline) {
                 let p = |k: usize| outline[tri[k]];
-                push_tri(at(p(0), 0.0), at(p(1), 0.0), at(p(2), 0.0), scale(t.axis_x, -1.0));
+                push_tri(
+                    at(p(0), 0.0),
+                    at(p(1), 0.0),
+                    at(p(2), 0.0),
+                    scale(t.axis_x, -1.0),
+                );
                 push_tri(
                     at(p(0), self.length),
                     at(p(1), self.length),

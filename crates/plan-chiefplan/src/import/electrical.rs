@@ -551,7 +551,10 @@ pub(crate) mod tests {
             kind_of("220V Outlet", &t("Outlets"), Mount::Wall),
             Some("Outlet220")
         );
-        assert_eq!(kind_of("Duplex", &t("110V"), Mount::Wall), Some("Outlet110"));
+        assert_eq!(
+            kind_of("Duplex", &t("110V"), Mount::Wall),
+            Some("Outlet110")
+        );
         assert!(kind_is_wall_mounted("OutletWp") && kind_is_wall_mounted("OutletDedicated"));
         assert_eq!(default_height("OutletWp", 109.0), 18.0);
         assert_eq!(kind_of("Mystery", &[], Mount::Other), None);

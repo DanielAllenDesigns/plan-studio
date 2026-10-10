@@ -496,9 +496,12 @@ fn add_wall(
             .openings_on(wall.id)
             .filter_map(|o| wall::hole_for(wall, o))
             .collect();
-        scene
-            .meshes
-            .extend(wall::covering_meshes(floor, wall, floor.elevation, &class_holes));
+        scene.meshes.extend(wall::covering_meshes(
+            floor,
+            wall,
+            floor.elevation,
+            &class_holes,
+        ));
         return;
     }
     if wall.flags.railing {
@@ -573,9 +576,12 @@ fn add_wall(
         types.main_center(wall),
     ));
     // The Wall Covering tab's bands (W-115).
-    scene
-        .meshes
-        .extend(wall::covering_meshes(floor, &drawn, floor.elevation, &holes));
+    scene.meshes.extend(wall::covering_meshes(
+        floor,
+        &drawn,
+        floor.elevation,
+        &holes,
+    ));
     for (opening, hole) in &hosted {
         // The wall's other openings, so a mulled unit shares one frame post
         // and one casing (DW-51, DW-52).

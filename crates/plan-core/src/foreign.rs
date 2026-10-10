@@ -77,7 +77,7 @@ impl Foreign {
     }
 }
 
-fn unique_name<'a>(items: &'a [Value], name: &str) -> bool {
+fn unique_name(items: &[Value], name: &str) -> bool {
     items
         .iter()
         .filter(|x| x.get("name").and_then(Value::as_str) == Some(name))

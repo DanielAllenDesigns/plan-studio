@@ -169,7 +169,7 @@ pub fn apply_spec(cx: &mut EditorContext, original: &str, spec: &Spec) -> Result
         };
         if !cx
             .project
-            .saved_names(&mut cx.defaults, kind)
+            .saved_names(&cx.defaults, kind)
             .iter()
             .any(|n| n == saved)
         {
@@ -1254,8 +1254,7 @@ mod tests {
         crate::shell::view_commands::take_pending_rotation();
         cx.show_plan_view(DEFAULT_PLAN_VIEW_NAME).unwrap();
         assert_eq!(
-            cx.project
-                .saved_active(&mut cx.defaults, SavedKind::RichText),
+            cx.project.saved_active(&cx.defaults, SavedKind::RichText),
             "Plot"
         );
         assert!(!cx.view_flags.contains(&ViewFlag::Color));

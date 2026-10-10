@@ -606,7 +606,15 @@ pub fn draw_cabinet_parts(
     merged_tops: bool,
     labels: bool,
 ) {
-    draw_cabinet_strokes(painter, cam, cab, plan_symbol(cab), color, merged_tops, labels);
+    draw_cabinet_strokes(
+        painter,
+        cam,
+        cab,
+        plan_symbol(cab),
+        color,
+        merged_tops,
+        labels,
+    );
 }
 
 /// [`draw_cabinet_parts`] for the given strokes (the plan symbol with the
@@ -759,7 +767,10 @@ pub fn draw_placed(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
             pal.text
         };
         draw_cabinet_fill(painter, cam, c);
-        let hidden = display.hidden_edges.get(&c.id).map_or(&[][..], Vec::as_slice);
+        let hidden = display
+            .hidden_edges
+            .get(&c.id)
+            .map_or(&[][..], Vec::as_slice);
         let strokes = plan_cabinets::plan_strokes(c, hidden, &plan_options);
         draw_cabinet_strokes(painter, cam, c, strokes, color, true, labels_visible);
     }

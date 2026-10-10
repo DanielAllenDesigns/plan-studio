@@ -672,7 +672,7 @@ impl DefaultSetsFile {
             if kind == SavedKind::ManualDimensions {
                 continue;
             }
-            for n in p.saved_names(&mut dd, kind) {
+            for n in p.saved_names(&dd, kind) {
                 if let Some(v) = p.saved_value(&mut dd, kind, &n) {
                     saved.push((kind.id().to_string(), n, v));
                 }
@@ -985,10 +985,10 @@ mod tests {
         assert_eq!(p.layer_sets.sets.len(), before_sets + 3);
         assert!(p.layer_sets.get("Default Set 2").is_some());
         assert!(p
-            .saved_names(&mut d, SavedKind::RichText)
+            .saved_names(&d, SavedKind::RichText)
             .contains(&"Plot Rich".to_string()));
         assert!(p
-            .saved_names(&mut d, SavedKind::Arrows)
+            .saved_names(&d, SavedKind::Arrows)
             .contains(&"Big Arrow".to_string()));
         assert!(p.saved_defaults.set("Plot").is_some());
         assert!(p.note_types.get("Roof Note").is_some());
@@ -1093,14 +1093,14 @@ mod tests {
         let r = p.import_default_sets_file(&mut d, &back, false, Clash::Rename);
         assert!(r.added >= 3, "{r:?}");
         assert!(p
-            .saved_names(&mut d, SavedKind::RichText)
+            .saved_names(&d, SavedKind::RichText)
             .contains(&"Plot Rich".to_string()));
         assert!(p.saved_defaults.set("Plot").is_some());
         // Not overwriting keeps the originals and renames the duplicates.
         let r = p.import_default_sets_file(&mut d, &back, false, Clash::Rename);
         assert!(r.renamed >= 3, "{r:?}");
         assert!(p
-            .saved_names(&mut d, SavedKind::RichText)
+            .saved_names(&d, SavedKind::RichText)
             .contains(&"Plot Rich 2".to_string()));
         // Overwrite replaces the lists: what the file lacks goes (unless held).
         p.saved_copy(&mut d, SavedKind::Arrows, "Default", "Extra")
@@ -1108,7 +1108,7 @@ mod tests {
         let r = p.import_default_sets_file(&mut d, &back, true, Clash::Replace);
         assert!(r.replaced >= 1);
         assert!(!p
-            .saved_names(&mut d, SavedKind::Arrows)
+            .saved_names(&d, SavedKind::Arrows)
             .contains(&"Extra".to_string()));
         // With a dimension drawn, the saved dimension defaults are not overwritten.
         let n = d.dimension_sets.len();

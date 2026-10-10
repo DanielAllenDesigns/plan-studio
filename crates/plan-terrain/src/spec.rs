@@ -390,9 +390,7 @@ impl Terrain {
             let Ok(n) = num.parse::<usize>() else {
                 continue;
             };
-            if kk != kind || !SIDE_KINDS.contains(&kk) {
-                self.side_extras.insert(k, v);
-            } else if n < index {
+            if kk != kind || !SIDE_KINDS.contains(&kk) || n < index {
                 self.side_extras.insert(k, v);
             } else if n > index {
                 self.side_extras.insert(format!("{kind}:{}", n - 1), v);

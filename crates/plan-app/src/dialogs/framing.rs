@@ -285,22 +285,26 @@ impl FramingMemberDialog {
     pub fn apply(&self, cx: &mut crate::editor::EditorContext) -> bool {
         use crate::editor::framing_view as fv;
         match (&self.subject, &self.direction) {
-            (Subject::JoistDirection(id), Some(DirectionForm::Joist(dir))) => fv::apply_record_edit(
-                cx,
-                "Joist Direction Specification",
-                fv::Record::JoistDirection {
-                    id: *id,
-                    dir: dir.clone(),
-                },
-            ),
-            (Subject::TrussDirection(id), Some(DirectionForm::Truss(dir))) => fv::apply_record_edit(
-                cx,
-                "Roof Truss Direction Specification",
-                fv::Record::TrussDirection {
-                    id: *id,
-                    dir: dir.clone(),
-                },
-            ),
+            (Subject::JoistDirection(id), Some(DirectionForm::Joist(dir))) => {
+                fv::apply_record_edit(
+                    cx,
+                    "Joist Direction Specification",
+                    fv::Record::JoistDirection {
+                        id: *id,
+                        dir: dir.clone(),
+                    },
+                )
+            }
+            (Subject::TrussDirection(id), Some(DirectionForm::Truss(dir))) => {
+                fv::apply_record_edit(
+                    cx,
+                    "Roof Truss Direction Specification",
+                    fv::Record::TrussDirection {
+                        id: *id,
+                        dir: dir.clone(),
+                    },
+                )
+            }
             _ => {
                 // A truss that was laid out stays laid out while its
                 // Automatically Generated Truss box is checked.
@@ -440,7 +444,11 @@ impl SpecPages for DirectionForm {
                             d.construction.as_str()
                         })
                         .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut d.construction, String::new(), "Platform default");
+                            ui.selectable_value(
+                                &mut d.construction,
+                                String::new(),
+                                "Platform default",
+                            );
                             for c in CONSTRUCTIONS {
                                 ui.selectable_value(&mut d.construction, c.to_string(), c);
                             }
@@ -449,13 +457,25 @@ impl SpecPages for DirectionForm {
                         .on_hover_text("The Framing Member Defaults Management dialog");
                 });
                 row(ui, "Depth (0 = platform's)", |ui| {
-                    ui.add(egui::DragValue::new(&mut d.depth).range(0.0..=24.0).suffix(" in"))
+                    ui.add(
+                        egui::DragValue::new(&mut d.depth)
+                            .range(0.0..=24.0)
+                            .suffix(" in"),
+                    )
                 });
                 row(ui, "Width (0 = platform's)", |ui| {
-                    ui.add(egui::DragValue::new(&mut d.width).range(0.0..=12.0).suffix(" in"))
+                    ui.add(
+                        egui::DragValue::new(&mut d.width)
+                            .range(0.0..=12.0)
+                            .suffix(" in"),
+                    )
                 });
                 row(ui, "Spacing (0 = platform's)", |ui| {
-                    ui.add(egui::DragValue::new(&mut d.spacing).range(0.0..=96.0).suffix(" in"))
+                    ui.add(
+                        egui::DragValue::new(&mut d.spacing)
+                            .range(0.0..=96.0)
+                            .suffix(" in"),
+                    )
                 });
                 ui.add_space(6.0);
                 ui.weak("These override the Room Specification's joists for the platform the line is drawn in. They apply the next time the framing is built.");
@@ -463,11 +483,18 @@ impl SpecPages for DirectionForm {
             ("Roof Trusses", DirectionForm::Truss(d)) => {
                 section(ui, "Roof Trusses");
                 row(ui, "Truss Spacing", |ui| {
-                    ui.add(egui::DragValue::new(&mut d.spacing).range(0.0..=120.0).suffix(" in"))
+                    ui.add(
+                        egui::DragValue::new(&mut d.spacing)
+                            .range(0.0..=120.0)
+                            .suffix(" in"),
+                    )
                 });
                 for (label, v) in [
                     ("Top Chord depth (0 = default)", &mut d.top_chord_depth),
-                    ("Bottom Chord depth (0 = top chord's)", &mut d.bottom_chord_depth),
+                    (
+                        "Bottom Chord depth (0 = top chord's)",
+                        &mut d.bottom_chord_depth,
+                    ),
                     ("Webbing depth (0 = top chord's)", &mut d.web_depth),
                     ("Maximum Horizontal Span (0 = none)", &mut d.max_span),
                 ] {
@@ -484,7 +511,9 @@ impl SpecPages for DirectionForm {
             }
             ("Arrow", _) => {
                 section(ui, "Arrow");
-                row(ui, "Arrowheads", |ui| dis_combo(ui, "dir_arrow", "Both ends"));
+                row(ui, "Arrowheads", |ui| {
+                    dis_combo(ui, "dir_arrow", "Both ends")
+                });
                 ui.weak("Joist and Roof Truss Direction Lines do not use Attach or Auto Position.");
             }
             _ => {}
@@ -718,8 +747,10 @@ impl Form {
                 .on_hover_text("Draws the post as a cross box in plan view");
         });
         ui.add_enabled_ui(
-            matches!(kind, K::Post | K::PostWithFooting | K::FloorCeilingBeam | K::RoofBeam)
-                && self.draft.plies > 1,
+            matches!(
+                kind,
+                K::Post | K::PostWithFooting | K::FloorCeilingBeam | K::RoofBeam
+            ) && self.draft.plies > 1,
             |ui| {
                 ui.checkbox(&mut self.draft.show_ply_lines, "Show Multi-Ply Lines");
             },
@@ -778,7 +809,10 @@ impl Form {
                 &mut self.draft.fill
             };
             let mut custom = slot.is_some();
-            if ui.checkbox(&mut custom, "Custom fill for this member").changed() {
+            if ui
+                .checkbox(&mut custom, "Custom fill for this member")
+                .changed()
+            {
                 *slot = custom.then(FillStyle::default);
             }
             if let Some(style) = slot.as_mut() {
@@ -1206,8 +1240,14 @@ impl DefaultsForm {
             &mut o.details_from_exterior,
             "Build Wall Framing Details from Exterior",
         );
-        ui.checkbox(&mut o.show_cross, "Draw studs and posts as cross boxes in plan");
-        ui.checkbox(&mut o.bearing_wall_headers, "Bearing walls: double plates and headers");
+        ui.checkbox(
+            &mut o.show_cross,
+            "Draw studs and posts as cross boxes in plan",
+        );
+        ui.checkbox(
+            &mut o.bearing_wall_headers,
+            "Bearing walls: double plates and headers",
+        );
     }
 
     fn headers(&mut self, ui: &mut Ui) {
@@ -1327,7 +1367,9 @@ impl DefaultsForm {
         ui.weak("Trimmers run beside the hole, headers across its ends.");
         let o = &mut self.draft.build.detail;
         section(ui, "Joists over bearing walls and beams");
-        row(ui, "Floor joists", |ui| splice_combo(ui, "fd_splice", &mut o.splice));
+        row(ui, "Floor joists", |ui| {
+            splice_combo(ui, "fd_splice", &mut o.splice)
+        });
         row(ui, "Ceiling joists", |ui| {
             splice_combo(ui, "fd_csplice", &mut o.ceiling_splice)
         });
@@ -1360,7 +1402,10 @@ impl DefaultsForm {
         for (i, name) in names.iter().enumerate() {
             let mut on_ = build.uses_reference(i);
             if ui
-                .checkbox(&mut on_, format!("{name}: start the joist layout at the Framing Reference Marker"))
+                .checkbox(
+                    &mut on_,
+                    format!("{name}: start the joist layout at the Framing Reference Marker"),
+                )
                 .changed()
             {
                 build.set_reference(i, on_);
@@ -1423,8 +1468,13 @@ impl DefaultsForm {
             &mut r.use_trusses_over_span,
         );
         section(ui, "Layout");
-        ui.checkbox(&mut self.draft.build.roof_reference, "Use Framing Reference")
-            .on_hover_text("Rafters and trusses start at the Framing Reference Marker (useful for gable roofs)");
+        ui.checkbox(
+            &mut self.draft.build.roof_reference,
+            "Use Framing Reference",
+        )
+        .on_hover_text(
+            "Rafters and trusses start at the Framing Reference Marker (useful for gable roofs)",
+        );
         ui.checkbox(&mut r.trim_to_soffits, "Trim Framing To Soffits");
         section(ui, "Roof Lookouts");
         ui.checkbox(&mut r.lookouts, "Lookouts under gable overhangs");
@@ -1644,7 +1694,10 @@ impl DefaultsForm {
         let label = |p: FloorPick| match p {
             FloorPick::Same => "Current Floor".to_string(),
             FloorPick::All => "All Floors".to_string(),
-            FloorPick::Floor(i) => names.get(i).cloned().unwrap_or_else(|| format!("Floor {i}")),
+            FloorPick::Floor(i) => names
+                .get(i)
+                .cloned()
+                .unwrap_or_else(|| format!("Floor {i}")),
         };
         egui::ComboBox::from_id_salt(salt)
             .selected_text(label(*pick))
@@ -1667,9 +1720,24 @@ impl DefaultsForm {
         }
         section(ui, "Automatically Rebuild Framing");
         self.auto_row(ui, Group::Floor, "Floor", "Rebuilds the floor framing when the walls, rooms or layout lines it is made from change.");
-        self.auto_row(ui, Group::Ceiling, "Ceiling", "Rebuilds the ceiling framing when its rooms or walls change.");
-        self.auto_row(ui, Group::Wall, "Wall", "Rebuilds the wall framing when the walls or their openings change.");
-        self.auto_row(ui, Group::Roof, "Roof", "Rebuilds the roof framing when the roof planes change.");
+        self.auto_row(
+            ui,
+            Group::Ceiling,
+            "Ceiling",
+            "Rebuilds the ceiling framing when its rooms or walls change.",
+        );
+        self.auto_row(
+            ui,
+            Group::Wall,
+            "Wall",
+            "Rebuilds the wall framing when the walls or their openings change.",
+        );
+        self.auto_row(
+            ui,
+            Group::Roof,
+            "Roof",
+            "Rebuilds the roof framing when the roof planes change.",
+        );
         section(ui, "Build Framing Once");
         let names = self.draft.floor_names.clone();
         for (g, label, salt) in [
@@ -1721,7 +1789,9 @@ impl DefaultsForm {
             ui.label(format!("{nw} wall(s)"));
             if ui
                 .add_enabled(nw > 0, egui::Button::new("Clear"))
-                .on_hover_text("Walls marked Retain Wall Framing keep their framing through a build.")
+                .on_hover_text(
+                    "Walls marked Retain Wall Framing keep their framing through a build.",
+                )
                 .clicked()
             {
                 self.draft.build.retain_walls.clear();
@@ -1909,6 +1979,7 @@ pub fn host_frame(cx: &mut crate::editor::EditorContext, ctx: &egui::Context) {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::field_reassign_with_default)]
     use super::*;
 
     fn joist() -> FramingMember {
@@ -2165,7 +2236,14 @@ mod tests {
         let names: Vec<&str> = DEFAULTS_TABS.iter().map(|t| t.name).collect();
         assert_eq!(
             names,
-            ["Floor Levels", "Wall", "Openings", "Roof", "Trusses", "Posts"]
+            [
+                "Floor Levels",
+                "Wall",
+                "Openings",
+                "Roof",
+                "Trusses",
+                "Posts"
+            ]
         );
         // Each page draws without panicking.
         for tab in 0..DEFAULTS_TABS.len() {

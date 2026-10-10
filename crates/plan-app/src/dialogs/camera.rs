@@ -707,7 +707,7 @@ impl CameraDialog {
                     egui::ComboBox::from_id_salt(("camera_floor_pick", label))
                         .selected_text(name(*v))
                         .show_ui(ui, |ui| {
-                            for i in 0..names.len().max(1).min(255) {
+                            for i in 0..names.len().clamp(1, 255) {
                                 ui.selectable_value(v, i as u8, name(i as u8));
                             }
                         })

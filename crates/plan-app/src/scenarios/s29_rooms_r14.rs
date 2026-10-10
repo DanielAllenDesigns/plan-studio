@@ -205,7 +205,9 @@ fn grade_beams_on_piers_put_piers_at_the_corners_and_along_the_walls() {
         .all(|w| w.bottom_offset == 24.0 && w.height == 18.0));
     // The platform bears on the grade beams, so Floor 0 is a platform taller
     // than pier plus beam (DECISIONS FF1).
-    let platform = sim.app.cx.project.floors[1].settings.floor_structure_thickness;
+    let platform = sim.app.cx.project.floors[1]
+        .settings
+        .floor_structure_thickness;
     assert_eq!(f.elevation, -(42.0 + platform));
 }
 

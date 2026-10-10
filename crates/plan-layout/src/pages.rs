@@ -860,6 +860,10 @@ mod tests {
         let l = Layout::new("t", SheetSize::ArchC);
         assert!(l.snap_grid);
         assert!((l.snap_unit_in - DEFAULT_SNAP_UNIT_IN).abs() < 1e-12);
-        assert!(MIN_SNAP_UNIT_IN < DEFAULT_SNAP_UNIT_IN && DEFAULT_SNAP_UNIT_IN < MAX_SNAP_UNIT_IN);
+        const {
+            assert!(
+                MIN_SNAP_UNIT_IN < DEFAULT_SNAP_UNIT_IN && DEFAULT_SNAP_UNIT_IN < MAX_SNAP_UNIT_IN
+            )
+        };
     }
 }

@@ -1941,7 +1941,8 @@ impl Tool for SelectTool {
             if self.cancel_drag(cx) {
                 return ToolResult::consumed();
             }
-            if rooms_edit::selected_room(cx).is_some() || rooms_edit::selected_exterior(cx).is_some()
+            if rooms_edit::selected_room(cx).is_some()
+                || rooms_edit::selected_exterior(cx).is_some()
             {
                 rooms_edit::clear_room_selection();
                 return ToolResult::consumed();
@@ -1964,7 +1965,8 @@ impl Tool for SelectTool {
                 rooms_edit::request_room_dialog(cx, room);
                 return ToolResult::consumed();
             }
-            if let (true, Some(ext)) = (cx.selection.is_empty(), rooms_edit::selected_exterior(cx)) {
+            if let (true, Some(ext)) = (cx.selection.is_empty(), rooms_edit::selected_exterior(cx))
+            {
                 rooms_edit::request_exterior_dialog(cx, ext);
                 return ToolResult::consumed();
             }

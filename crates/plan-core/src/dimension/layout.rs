@@ -107,7 +107,15 @@ impl Dimension {
         line_len: f64,
         p: &LabelParams,
     ) -> LabelLayout {
-        self.label_layout_with(fmt, anchor, dir, run, line_len, p, &LeaderDefaults::default())
+        self.label_layout_with(
+            fmt,
+            anchor,
+            dir,
+            run,
+            line_len,
+            p,
+            &LeaderDefaults::default(),
+        )
     }
 
     /// [`Dimension::label_layout`] with the leader defaults of the
@@ -182,7 +190,10 @@ impl Dimension {
                 let corner = at.add(up.scale(m.y));
                 let end = center.sub(edge(m.x));
                 let two = seg.leader_second_segment.unwrap_or(lead.second_segment);
-                let second = seg.leader_second_length.unwrap_or(lead.second_length).max(0.0);
+                let second = seg
+                    .leader_second_length
+                    .unwrap_or(lead.second_length)
+                    .max(0.0);
                 let side = if m.x >= 0.0 { 1.0 } else { -1.0 };
                 leader = match style {
                     LeaderStyle::None => Vec::new(),

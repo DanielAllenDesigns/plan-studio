@@ -6,6 +6,7 @@
 //! lines are edited, and each of those is one undo step (L-145, L-150, L-155,
 //! L-156, L-161, L-199..L-207, L-229, L-231, L-232).
 
+#![allow(clippy::field_reassign_with_default)]
 use super::s21_layout_print::isolate_home;
 use super::{draw_shell, Sim};
 use crate::dialogs::layout::{PageChoice, Placement, SendSource, SendSpec};

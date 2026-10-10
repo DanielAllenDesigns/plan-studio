@@ -1362,10 +1362,19 @@ mod tests {
     fn join_and_lap_butts_the_first_member_against_the_second() {
         let mut a = joist(1, 100.0);
         // The second member crosses the first's end at x = 98 and is long enough.
-        let mut b = FramingMember::new(2, MemberKind::Joist, Point::new(98.0, -50.0), Point::new(98.0, 50.0));
+        let mut b = FramingMember::new(
+            2,
+            MemberKind::Joist,
+            Point::new(98.0, -50.0),
+            Point::new(98.0, 50.0),
+        );
         assert!(a.join_lap(&mut b));
         // `a` stops at b's near face (half its width short of the crossing).
-        assert!((a.end.x - (98.0 - b.width / 2.0)).abs() < 1e-9, "{}", a.end.x);
+        assert!(
+            (a.end.x - (98.0 - b.width / 2.0)).abs() < 1e-9,
+            "{}",
+            a.end.x
+        );
         assert_eq!(a.joint[1], JoinKind::Butt);
         // `b` laps over the end of `a` and keeps its length: it already covers it.
         assert!(b.joint.contains(&JoinKind::Lap));
@@ -1381,8 +1390,18 @@ mod tests {
 
     #[test]
     fn join_and_mitre_brings_both_ends_to_the_crossing() {
-        let mut a = FramingMember::new(1, MemberKind::GeneralFraming, Point::new(0.0, 0.0), Point::new(90.0, 0.0));
-        let mut b = FramingMember::new(2, MemberKind::GeneralFraming, Point::new(100.0, 10.0), Point::new(100.0, 90.0));
+        let mut a = FramingMember::new(
+            1,
+            MemberKind::GeneralFraming,
+            Point::new(0.0, 0.0),
+            Point::new(90.0, 0.0),
+        );
+        let mut b = FramingMember::new(
+            2,
+            MemberKind::GeneralFraming,
+            Point::new(100.0, 10.0),
+            Point::new(100.0, 90.0),
+        );
         assert!(a.join_mitre(&mut b));
         assert!((a.end.x - 100.0).abs() < 1e-9 && a.end.y.abs() < 1e-9);
         assert!((b.start.y).abs() < 1e-9 && (b.start.x - 100.0).abs() < 1e-9);

@@ -15,7 +15,10 @@ impl Cabinet {
         if self.kind != CabinetKind::CustomCountertop {
             return None;
         }
-        self.custom.as_ref().filter(|c| c.closed).map(|c| &c.outline[..])
+        self.custom
+            .as_ref()
+            .filter(|c| c.closed)
+            .map(|c| &c.outline[..])
     }
 
     /// Number of lines in the outline of a custom countertop (Polyline
@@ -46,7 +49,9 @@ impl Cabinet {
 
     /// Perimeter of the outline (Polyline panel, Perimeter), inches.
     pub fn top_perimeter(&self) -> f64 {
-        (0..self.top_edge_count()).map(|i| self.top_edge_length(i)).sum()
+        (0..self.top_edge_count())
+            .map(|i| self.top_edge_length(i))
+            .sum()
     }
 
     /// Area of the top less its holes, square inches (Polyline panel).
@@ -112,7 +117,9 @@ impl Cabinet {
     /// bounding box origin and size follow, and holes and waterfall flags
     /// stay in place.
     fn refit_top(&mut self) {
-        let Some(c) = self.custom.as_mut() else { return };
+        let Some(c) = self.custom.as_mut() else {
+            return;
+        };
         let Some((lo, hi)) = geom::bbox(&c.outline) else {
             return;
         };
@@ -291,7 +298,13 @@ mod tests {
         assert!((t.top_edge_angle(1) - 90.0).abs() < 1e-9);
         // A hole comes off the area.
         let mut holed = t.clone();
-        holed.cutouts.push(Cutout::rect(CutoutKind::Custom, "Opening", Point::new(24.0, 24.0), 10.0, 10.0));
+        holed.cutouts.push(Cutout::rect(
+            CutoutKind::Custom,
+            "Opening",
+            Point::new(24.0, 24.0),
+            10.0,
+            10.0,
+        ));
         assert!((holed.top_area() - 2204.0).abs() < 1e-6);
         assert_eq!(Cabinet::base(24.0).top_edge_count(), 0);
     }
@@ -322,9 +335,16 @@ mod tests {
         // Automatic height: down to the floor from the bottom of the top.
         assert!((drop - 34.5).abs() < 1e-9, "{drop}");
         // The panel is as thick as the top and sits inside the edge.
-        let w = geom::bbox(&ring).map(|(lo, hi)| (hi.x - lo.x, hi.y - lo.y)).unwrap();
-        assert!((w.0 - 1.5).abs() < 1e-9 && (w.1 - 48.0).abs() < 1e-9, "{w:?}");
-        assert!(ring.iter().all(|p| p.x <= 48.0 + 1e-9 && p.x >= 46.5 - 1e-9));
+        let w = geom::bbox(&ring)
+            .map(|(lo, hi)| (hi.x - lo.x, hi.y - lo.y))
+            .unwrap();
+        assert!(
+            (w.0 - 1.5).abs() < 1e-9 && (w.1 - 48.0).abs() < 1e-9,
+            "{w:?}"
+        );
+        assert!(ring
+            .iter()
+            .all(|p| p.x <= 48.0 + 1e-9 && p.x >= 46.5 - 1e-9));
         t.top_spec.waterfall_auto_height = false;
         t.top_spec.waterfall_height = 20.0;
         assert!((t.waterfall_slab(1).unwrap().1 - 20.0).abs() < 1e-9);

@@ -274,7 +274,7 @@ fn floor_zero_cannot_be_deleted_while_auto_rebuild_foundation_is_on() {
     let mut sim = house();
     build(&mut sim, |s| s.settings.auto_rebuild = true);
     assert!(
-        foundation_view::auto_rebuild(sim.cx()) == false,
+        !foundation_view::auto_rebuild(sim.cx()),
         "nothing changed since the build"
     );
     assert!(!rooms_edit::delete_foundation(sim.cx()));

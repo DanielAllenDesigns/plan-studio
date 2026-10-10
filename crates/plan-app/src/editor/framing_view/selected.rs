@@ -17,8 +17,8 @@ use super::{
 use plan_core::geometry::{dist_to_segment, point_in_polygon, Point};
 use plan_core::{Floor, Id, Project, Room, RoomName};
 use plan_framing::{
-    BearingMode, BuildOptions, FramingMember, Group, GroupFlags, Member, MemberKind,
-    ManualMemberKind, TRAY_MEMBER_FLAG,
+    BearingMode, BuildOptions, FramingMember, Group, GroupFlags, ManualMemberKind, Member,
+    MemberKind, TRAY_MEMBER_FLAG,
 };
 use serde_json::Value;
 
@@ -84,7 +84,13 @@ fn store_all(floor: &mut Floor, members: &[Member], built: Vec<FramingMember>) {
         .filter_map(|m| serde_json::to_value(m).ok())
         .collect();
     values.extend(records.iter().filter_map(|r| serde_json::to_value(r).ok()));
-    values.extend(floor.framing.iter().filter(|v| super::is_settings(v)).cloned());
+    values.extend(
+        floor
+            .framing
+            .iter()
+            .filter(|v| super::is_settings(v))
+            .cloned(),
+    );
     values.extend(
         floor
             .framing
@@ -119,7 +125,10 @@ fn rebuild_region(
     }
     let n = fresh.len() + built.len();
     let floor = &project.floors[fi];
-    let mut members: Vec<Member> = load(floor).into_iter().filter(|m| !replace_old(m)).collect();
+    let mut members: Vec<Member> = load(floor)
+        .into_iter()
+        .filter(|m| !replace_old(m))
+        .collect();
     members.extend(fresh);
     let mut all_built: Vec<FramingMember> = load_records(floor)
         .into_iter()
@@ -143,9 +152,16 @@ fn wall_is_retained(st: &FramingSettings, wall: Id) -> bool {
 
 fn build_wall(project: &mut Project, fi: usize, wall: Id, st: &FramingSettings) -> Outcome {
     if wall_is_retained(st, wall) {
-        return Outcome::Refused("The wall retains its framing: turn Retain Wall Framing off first".into());
+        return Outcome::Refused(
+            "The wall retains its framing: turn Retain Wall Framing off first".into(),
+        );
     }
-    let Some(w) = project.floors[fi].walls.iter().find(|w| w.id == wall).cloned() else {
+    let Some(w) = project.floors[fi]
+        .walls
+        .iter()
+        .find(|w| w.id == wall)
+        .cloned()
+    else {
         return Outcome::Refused("That wall is gone".into());
     };
     if w.flags.invisible || w.flags.room_divider || w.flags.railing {
@@ -223,8 +239,10 @@ fn assign_new_group(project: &mut Project, fi: usize, anchor: Point) -> u32 {
     match at {
         Some(i) => floor.room_names[i].options.framing_group = group,
         None => {
-            let mut n = RoomName::default();
-            n.anchor = anchor;
+            let mut n = RoomName {
+                anchor,
+                ..RoomName::default()
+            };
             n.options.framing_group = group;
             floor.room_names.push(n);
         }
@@ -248,7 +266,9 @@ fn build_room(
         .name_entry(&floor.room_names)
         .is_some_and(|n| n.options.retain_framing)
     {
-        return Outcome::Refused("The room retains its framing: turn Retain Floor/Ceiling Framing off first".into());
+        return Outcome::Refused(
+            "The room retains its framing: turn Retain Floor/Ceiling Framing off first".into(),
+        );
     }
     if needs_group_question(project, fi, st, anchor) {
         match new_group {
@@ -282,10 +302,11 @@ fn build_room(
             && within(&poly, member_center(m))
     };
     let in_built = |m: &FramingMember| {
-        matches!(
-            group_of_manual(m.kind),
-            Group::Floor | Group::Ceiling
-        ) && matches!(m.kind, ManualMemberKind::Joist | ManualMemberKind::FloorCeilingBeam)
+        matches!(group_of_manual(m.kind), Group::Floor | Group::Ceiling)
+            && matches!(
+                m.kind,
+                ManualMemberKind::Joist | ManualMemberKind::FloorCeilingBeam
+            )
             && within(&poly, Point::lerp(m.start, m.end, 0.5))
     };
     let n = rebuild_region(
@@ -302,7 +323,11 @@ fn build_plane(project: &mut Project, fi: usize, plane: Id, st: &FramingSettings
     let Some(p) = set.planes.iter().find(|p| p.id == plane) else {
         return Outcome::Refused("That is not a roof plane".into());
     };
-    let poly: Vec<Point> = p.polygon3d.iter().map(|v| Point::new(v[0], -v[2])).collect();
+    let poly: Vec<Point> = p
+        .polygon3d
+        .iter()
+        .map(|v| Point::new(v[0], -v[2]))
+        .collect();
     let opts = only(st, &[Group::Roof]);
     let roof_old = |m: &Member| group_of(m) == Group::Roof && within(&poly, member_center(m));
     let roof_built = |m: &FramingMember| {
@@ -314,7 +339,14 @@ fn build_plane(project: &mut Project, fi: usize, plane: Id, st: &FramingSettings
         return Outcome::Refused("The floor has no roof".into());
     }
     let n = rebuild_region(
-        project, fi, st, &opts, &roof_old, &roof_built, &roof_old, &roof_built,
+        project,
+        fi,
+        st,
+        &opts,
+        &roof_old,
+        &roof_built,
+        &roof_old,
+        &roof_built,
     );
     Outcome::Built(n)
 }
@@ -331,7 +363,9 @@ fn build_tray(project: &mut Project, fi: usize, tray: Id, st: &FramingSettings) 
         .into_iter()
         .find(|g| g.id == tray);
     let Some(g) = geom.filter(plan_core::tray::TrayGeom::ok) else {
-        return Outcome::Refused("The tray ceiling has a caution: its shape or position is not supported".into());
+        return Outcome::Refused(
+            "The tray ceiling has a caution: its shape or position is not supported".into(),
+        );
     };
     let opts = only(st, &[Group::Ceiling]);
     let tag = TRAY_MEMBER_FLAG | tray;
@@ -388,13 +422,12 @@ pub fn selected_targets(cx: &EditorContext) -> Vec<Target> {
             {
                 out.push(Target::RoofPlane(*id))
             }
-            ObjectRef::Framing(id) => {
+            ObjectRef::Framing(id)
                 if find(cx.floor(), *id)
                     .and_then(|r| r.member().map(|m| m.kind.is_truss()))
-                    .unwrap_or(false)
-                {
-                    out.push(Target::Truss(*id));
-                }
+                    .unwrap_or(false) =>
+            {
+                out.push(Target::Truss(*id));
             }
             _ => {}
         }
@@ -435,11 +468,18 @@ pub fn parent_targets(cx: &EditorContext) -> Vec<Target> {
             }
         }
         if group_of_manual(m.kind) == Group::Roof && !m.kind.is_truss() {
-            if let Some(p) = crate::editor::roof_view::load(floor).planes.iter().find(|p| {
-                let poly: Vec<Point> =
-                    p.polygon3d.iter().map(|v| Point::new(v[0], -v[2])).collect();
-                point_in_polygon(mid, &poly)
-            }) {
+            if let Some(p) = crate::editor::roof_view::load(floor)
+                .planes
+                .iter()
+                .find(|p| {
+                    let poly: Vec<Point> = p
+                        .polygon3d
+                        .iter()
+                        .map(|v| Point::new(v[0], -v[2]))
+                        .collect();
+                    point_in_polygon(mid, &poly)
+                })
+            {
                 out.push(Target::RoofPlane(p.id));
             }
         }
@@ -556,7 +596,12 @@ pub fn set_planes_retained(cx: &mut EditorContext, ids: &[Id], retained: bool) -
 
 /// Retain Floor/Ceiling Framing on the room at `anchor` (or off), no undo
 /// step of its own (the Room Specification calls it inside its own step).
-pub fn set_room_retained_in(project: &mut Project, fi: usize, anchor: Point, retained: bool) -> bool {
+pub fn set_room_retained_in(
+    project: &mut Project,
+    fi: usize,
+    anchor: Point,
+    retained: bool,
+) -> bool {
     let rooms = plan_core::detect_rooms(&project.floors[fi].walls, 0.5);
     let floor = &mut project.floors[fi];
     let Some(i) = rooms
@@ -609,9 +654,9 @@ pub fn add_break(cx: &mut EditorContext, id: Id, at: Point) -> Option<Id> {
 pub fn join_ends(cx: &mut EditorContext, first: Id, second: Id, mitre: bool) -> bool {
     let mut records = load_records(cx.floor());
     let get = |records: &[Record], id: Id| {
-        records.iter().position(|r| {
-            r.id() == id && matches!(r, Record::Manual(_) | Record::Built(_))
-        })
+        records
+            .iter()
+            .position(|r| r.id() == id && matches!(r, Record::Manual(_) | Record::Built(_)))
     };
     let (Some(i), Some(j)) = (get(&records, first), get(&records, second)) else {
         return false;
@@ -628,7 +673,11 @@ pub fn join_ends(cx: &mut EditorContext, first: Id, second: Id, mitre: bool) -> 
     if !ok {
         return false;
     }
-    cx.begin_change(if mitre { "Join and Mitre Ends" } else { "Join and Lap Ends" });
+    cx.begin_change(if mitre {
+        "Join and Mitre Ends"
+    } else {
+        "Join and Lap Ends"
+    });
     records[i] = Record::Manual(a);
     records[j] = Record::Manual(b);
     store_records(cx.floor_mut(), &records);

@@ -1367,30 +1367,46 @@ pub struct TrimLine {
     pub length: f64,
     /// How many pieces (quoin blocks) when the item is counted.
     pub count: usize,
+    /// The owners behind the line: (floor, key, length in inches).
+    pub sources: Vec<(usize, String, f64)>,
 }
 
-fn add_trim(
-    out: &mut Vec<TrimLine>,
+struct TrimAdd<'a> {
     category: &'static str,
-    item: &str,
-    material: &str,
+    item: &'a str,
+    material: &'a str,
     length: f64,
     count: usize,
-) {
+    owner: (usize, &'a str),
+}
+
+fn add_trim(out: &mut Vec<TrimLine>, a: TrimAdd) {
+    let (floor, key) = a.owner;
+    let source = |l: &mut TrimLine| {
+        if let Some(s) = l.sources.iter_mut().find(|s| s.0 == floor && s.1 == key) {
+            s.2 += a.length;
+        } else {
+            l.sources.push((floor, key.to_string(), a.length));
+        }
+    };
     if let Some(l) = out
         .iter_mut()
-        .find(|l| l.category == category && l.item == item && l.material == material)
+        .find(|l| l.category == a.category && l.item == a.item && l.material == a.material)
     {
-        l.length += length;
-        l.count += count;
+        l.length += a.length;
+        l.count += a.count;
+        source(l);
     } else {
-        out.push(TrimLine {
-            category,
-            item: item.to_string(),
-            material: material.to_string(),
-            length,
-            count,
-        });
+        let mut l = TrimLine {
+            category: a.category,
+            item: a.item.to_string(),
+            material: a.material.to_string(),
+            length: a.length,
+            count: a.count,
+            sources: Vec::new(),
+        };
+        source(&mut l);
+        out.push(l);
     }
 }
 
@@ -1399,50 +1415,109 @@ fn add_trim(
 /// and the room moldings the Moldings tabs generate, under Interior Trim and
 /// Exterior Trim (corner boards and quoins are exterior).
 pub fn trim_takeoff(project: &Project) -> Vec<TrimLine> {
+    let floors: Vec<usize> = (0..project.floors.len()).collect();
+    trim_takeoff_for(project, &floors, |_, _, _| true)
+}
+
+/// [`trim_takeoff`] for some floors and some owners. `keep(floor, key,
+/// centre)` is asked for every molding (`molding:<id>`), corner board
+/// (`corner_board:<id>`), quoin set (`quoin:<id>`) and room (the key
+/// [`room_trim_key`] makes, for its generated moldings); `centre` is a point
+/// of the owner. Each line lists its owners in `sources`.
+pub fn trim_takeoff_for(
+    project: &Project,
+    floors: &[usize],
+    mut keep: impl FnMut(usize, &str, Point) -> bool,
+) -> Vec<TrimLine> {
     let mut out: Vec<TrimLine> = Vec::new();
-    for floor in &project.floors {
+    for (fi, floor) in project.floors.iter().enumerate() {
+        if !floors.contains(&fi) {
+            continue;
+        }
         let layer = DetailsLayer::load(floor);
         for m in layer.moldings.iter().filter(|m| m.edge_lengths_on() > 0.0) {
+            let key = format!("molding:{}", m.id);
+            let centre = m.polyline.first().copied().unwrap_or_default();
+            if !keep(fi, &key, centre) {
+                continue;
+            }
             for (name, material, category, length) in m.takeoff_rows() {
-                add_trim(&mut out, category, &name, &material, length, 0);
+                let owner = (fi, key.as_str());
+                add_trim(
+                    &mut out,
+                    TrimAdd {
+                        category,
+                        item: &name,
+                        material: &material,
+                        length,
+                        count: 0,
+                        owner,
+                    },
+                );
             }
         }
         for b in &layer.corner_boards {
-            add_trim(
-                &mut out,
-                EXTERIOR_TRIM,
-                "Corner Board",
-                &b.material,
-                b.height * 2.0,
-                0,
-            );
+            let key = format!("corner_board:{}", b.id);
+            if keep(fi, &key, b.wall_corner) {
+                let a = TrimAdd {
+                    category: EXTERIOR_TRIM,
+                    item: "Corner Board",
+                    material: &b.material,
+                    length: b.height * 2.0,
+                    count: 0,
+                    owner: (fi, &key),
+                };
+                add_trim(&mut out, a);
+            }
         }
         for q in &layer.quoins {
-            add_trim(
-                &mut out,
-                EXTERIOR_TRIM,
-                "Quoin",
-                &q.material,
-                q.total_height,
-                q.block_count(),
-            );
+            let key = format!("quoin:{}", q.id);
+            if keep(fi, &key, q.corner) {
+                let a = TrimAdd {
+                    category: EXTERIOR_TRIM,
+                    item: "Quoin",
+                    material: &q.material,
+                    length: q.total_height,
+                    count: q.block_count(),
+                    owner: (fi, &key),
+                };
+                add_trim(&mut out, a);
+            }
         }
         // Room moldings the tabs generate.
         let rooms = crate::rooms::detect_rooms(&floor.walls, 0.5);
         for room in &rooms {
+            let key = room_trim_key(fi, room);
+            if !keep(fi, &key, room.centroid) {
+                continue;
+            }
             let ceiling = room
                 .name_entry(&floor.room_names)
                 .and_then(|n| n.ceiling_height)
                 .unwrap_or(floor.ceiling_height);
             for line in generated_room_lines(floor, &layer, room, ceiling, 0.0) {
                 for (name, material, category, length) in line.takeoff_rows() {
-                    add_trim(&mut out, category, &name, &material, length, 0);
+                    let a = TrimAdd {
+                        category,
+                        item: &name,
+                        material: &material,
+                        length,
+                        count: 0,
+                        owner: (fi, &key),
+                    };
+                    add_trim(&mut out, a);
                 }
             }
         }
     }
     out.sort_by(|a, b| (a.category, &a.item).cmp(&(b.category, &b.item)));
     out
+}
+
+/// The owner key of a room's generated moldings: the same text as the
+/// Materials List key of the room (`room:<floor>:<x>,<y>` in whole inches).
+pub fn room_trim_key(floor: usize, room: &Room) -> String {
+    crate::props::PropKey::room(floor, room.centroid).0
 }
 
 /// The lines the new Moldings panel generates for `room`: its own table,

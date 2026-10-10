@@ -196,3 +196,119 @@ fn the_framing_dialogs_open_from_their_commands() {
     sim.dialog_frame(false);
     assert_eq!(steps(&sim), steps0);
 }
+
+/// Round 17 brief 04: the Materials List reads the framing rows from
+/// Structural Member Reporting and lists trim under Interior and Exterior Trim.
+#[test]
+fn the_materials_list_lists_reported_framing_and_trim_by_category() {
+    use plan_core::details::{DetailsLayer, MoldingLine};
+    use plan_core::moldings::{builtin_profiles, MoldingType};
+    use plan_docs::{materials_report, materials_to_csv, MasterList, MaterialsScope};
+
+    let mut sim = house();
+    // Switch to a Cut List default so the catalogue is stored in the plan.
+    let mut cat = framing_defaults::catalog_of(&sim.app.cx);
+    let cut = ReportingDefault::buy_list("Buy").converted("Cuts", ReportMethod::CutList);
+    cat.reporting.defaults.push(cut);
+    assert!(cat.reporting.set_active("Cuts"));
+    framing_defaults::set_catalog(&mut sim.app.cx, &cat, "Structural Member Reporting");
+    assert!(plan_framing::catalog::project_has_catalog(
+        &sim.app.cx.project
+    ));
+
+    // A kitchen crown (a hand-drawn molding of 200 + 100 inches) and the
+    // corner boards of the shell.
+    {
+        let floor = &mut sim.app.cx.project.floors[0];
+        let crown = builtin_profiles()
+            .into_iter()
+            .find(|x| x.kind == MoldingType::Crown)
+            .unwrap();
+        let mut layer = DetailsLayer::load(floor);
+        layer.moldings.push(MoldingLine::with_profile(
+            9001,
+            vec![
+                Point::new(60.0, 60.0),
+                Point::new(260.0, 60.0),
+                Point::new(260.0, 160.0),
+            ],
+            crown,
+            30.0,
+        ));
+        let rooms = plan_core::rooms::detect_rooms(&floor.walls, 0.5);
+        let snapshot = floor.clone();
+        let mut next = 9100;
+        let mut alloc = || {
+            next += 1;
+            next
+        };
+        layer.auto_corner_boards(&snapshot, &rooms, &mut alloc);
+        layer.store(floor);
+    }
+    let list = |sim: &Sim| {
+        materials_report(
+            &sim.app.cx.project,
+            MaterialsScope::AllFloors,
+            None,
+            &MasterList::without_waste(),
+        )
+    };
+    let lines = list(&sim);
+    // Framing rows are the dialog's report lines, category by category.
+    let report = member_reporting::active_report(&sim.app.cx);
+    assert!(!report.lines.is_empty());
+    for cat in plan_framing::catalog::MaterialsCategory::ALL {
+        let want: f64 = report
+            .lines
+            .iter()
+            .filter(|l| l.category == cat && l.unit == "ea")
+            .map(|l| l.qty)
+            .sum();
+        let got: f64 = lines
+            .iter()
+            .filter(|l| l.category == cat.name() && l.unit == "ea")
+            .map(|l| l.quantity)
+            .sum();
+        assert!((want - got).abs() < 1e-6, "{}: {want} vs {got}", cat.name());
+    }
+    assert!(
+        lines.iter().any(|l| l.category == "Subfloor"),
+        "floor joists"
+    );
+    assert!(lines.iter().any(|l| l.category == "Framing"));
+    assert!(!lines
+        .iter()
+        .any(|l| l.item.ends_with("lumber, linear feet")));
+    // Trim: 300 inches of crown is 25 feet, plus the corner boards.
+    let crown_ft: f64 = lines
+        .iter()
+        .filter(|l| l.category == "Interior Trim" && l.unit == "lf")
+        .map(|l| l.net)
+        .sum();
+    assert!(crown_ft >= 25.0, "{crown_ft}");
+    let boards = lines
+        .iter()
+        .find(|l| l.category == "Exterior Trim" && l.item.starts_with("Corner Board"))
+        .expect("corner boards");
+    let board_in: f64 = plan_core::moldings::trim_takeoff(&sim.app.cx.project)
+        .iter()
+        .filter(|l| l.item == "Corner Board")
+        .map(|l| l.length)
+        .sum();
+    assert!(board_in > 0.0);
+    assert_eq!(
+        boards.net,
+        (board_in / 12.0 - 1e-9).ceil(),
+        "{}",
+        boards.net
+    );
+    // CSV keeps the categories.
+    let csv = materials_to_csv(&lines);
+    for c in ["Subfloor", "Interior Trim", "Exterior Trim"] {
+        assert!(csv.contains(c), "{c} in the CSV");
+    }
+    // A plan with no catalogue keeps the old row names.
+    let old = house();
+    let old_lines = list(&old);
+    assert!(old_lines.iter().any(|l| l.item.contains("' lumber")));
+}

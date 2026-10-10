@@ -484,6 +484,23 @@ impl Project {
     pub fn add_camera(&mut self, mut camera: CameraObject) -> Id {
         let id = self.alloc_id();
         camera.id = id;
+        // A section or elevation starts from the layer set chosen for it in
+        // Layer Set Defaults (LAY-70); with none chosen it follows the active
+        // set.
+        let kind = match camera.kind {
+            CameraKind::CrossSection { .. } | CameraKind::WallElevation => {
+                Some(crate::layer_sets::ViewKind::Section)
+            }
+            CameraKind::Elevation => Some(crate::layer_sets::ViewKind::Elevation),
+            _ => None,
+        };
+        if let (Some(kind), None) = (kind, &camera.view.layer_set) {
+            camera.view.layer_set = self
+                .layer_set_defaults
+                .choice(kind)
+                .filter(|n| self.layer_sets.get(n).is_some())
+                .map(str::to_string);
+        }
         self.cameras.push(camera);
         id
     }
@@ -1214,5 +1231,30 @@ mod tests {
         assert!(Project::new("e")
             .auto_interior_elevations(0, Point::ZERO)
             .is_none());
+    }
+
+    #[test]
+    fn new_sections_and_elevations_start_from_layer_set_defaults() {
+        use crate::layer_sets::ViewKind;
+        let mut p = Project::new("defaults");
+        assert!(p.layer_sets.copy_set("Default Set", "Elev Set"));
+        p.layer_set_defaults
+            .set(ViewKind::Elevation, Some("Elev Set"));
+        let cam = |k| CameraObject::new(k, Point::ZERO, 0.0, "c", 0);
+        let e = p.add_camera(cam(CameraKind::Elevation));
+        let s = p.add_camera(cam(CameraKind::CrossSection { back_clip: None }));
+        let f = p.add_camera(cam(CameraKind::FullCamera));
+        let get = |p: &Project, id| {
+            p.cameras
+                .iter()
+                .find(|c| c.id == id)
+                .unwrap()
+                .view
+                .layer_set
+                .clone()
+        };
+        assert_eq!(get(&p, e).as_deref(), Some("Elev Set"));
+        assert_eq!(get(&p, s), None);
+        assert_eq!(get(&p, f), None);
     }
 }

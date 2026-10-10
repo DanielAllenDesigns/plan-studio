@@ -42,14 +42,15 @@ pub use device::{
 };
 pub use layer::{
     connect, connect_drawn, connect_in, connect_with, disconnect, normalize_switch_kinds, Arrow,
-    ConnEnd, Connection, ElectricalLayer,
+    ConnEnd, Connection, ElectricalLayer, GANG_REACH,
 };
 pub use mesh3d::{electrical_meshes, finish_material, meshes};
 pub use options::{DeviceOptions, HeightTo, Mount, Recess};
 pub use place::{
     auto_place_exterior_outlets, auto_place_outlets, auto_place_outlets_by_rules,
     auto_place_room_light, auto_place_switch, face_is_exterior, kind_for_setting, place_free,
-    place_on_wall, AutoOutletOptions, RoomFunction, WallSide,
+    place_on_wall, wall_takes_devices, ApplianceKind, ApplianceSpot, AutoOutletOptions,
+    RoomFunction, WallSide,
 };
 pub use rope::{light_positions, RopeLightPath, RopeReference, RopeSpec};
 pub use symbol::Stroke;

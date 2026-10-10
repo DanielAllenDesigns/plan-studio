@@ -1930,3 +1930,136 @@ fn a_bath_gets_gfci_over_the_vanity_and_no_standard_outlets() {
         .iter()
         .all(|d| d.kind == DeviceKind::Gfci && d.height == 12.0));
 }
+
+fn spot(kind: ApplianceKind, x: f64, y: f64) -> ApplianceSpot {
+    ApplianceSpot {
+        kind,
+        center: Point::new(x, y),
+        depth: 30.0,
+    }
+}
+
+#[test]
+fn appliances_get_110_and_220_volt_outlets_behind_them_and_sinks_a_light() {
+    let (floor, rooms) = room_20x12();
+    let label = rooms[0].label.clone();
+    let types = vec![(label.clone(), RoomFunction::Kitchen)];
+    let opts = AutoOutletOptions {
+        appliances: vec![
+            spot(ApplianceKind::Range, 60.0, 15.0),
+            spot(ApplianceKind::Dryer, 120.0, 15.0),
+            spot(ApplianceKind::Refrigerator, 200.0, 15.0),
+            spot(ApplianceKind::Dishwasher, 150.0, 129.0),
+            // Outside the room: no outlet.
+            spot(ApplianceKind::Range, 600.0, 15.0),
+            // In the middle of the room, nowhere near a wall: none either.
+            spot(ApplianceKind::Dryer, 120.0, 70.0),
+        ],
+        sinks: vec![Point::new(150.0, 132.0), Point::new(900.0, 900.0)],
+        ..AutoOutletOptions::default()
+    };
+    let placed = auto_place_outlets(&floor, &rooms, &types, &opts);
+    let near = |kind: DeviceKind, x: f64| {
+        placed
+            .iter()
+            .filter(|d| d.kind == kind)
+            .any(|d| (offset_on(&floor, d) - x).abs() < 1.0 || (d.position.x - x).abs() < 1.0)
+    };
+    assert!(near(DeviceKind::Outlet220, 60.0), "range");
+    assert!(near(DeviceKind::Outlet220, 120.0), "dryer");
+    let behind: Vec<_> = placed
+        .iter()
+        .filter(|d| d.kind == DeviceKind::Outlet220)
+        .collect();
+    assert_eq!(behind.len(), 2, "no 220 V outlet outside or mid-room");
+    assert!(behind.iter().all(|d| d.wall_id == Some(1)));
+    assert!(near(DeviceKind::Outlet110, 200.0), "refrigerator");
+    let dw = placed.iter().find(|d| {
+        d.kind == DeviceKind::Outlet110
+            && d.wall_id == Some(3)
+            && (d.position.x - 150.0).abs() < 1.0
+    });
+    assert!(dw.is_some(), "dishwasher outlet on the south wall");
+    let lights: Vec<_> = placed
+        .iter()
+        .filter(|d| d.kind == DeviceKind::RecessedCan)
+        .collect();
+    assert_eq!(lights.len(), 1, "one light over the sink inside the room");
+    assert_eq!(lights[0].position, Point::new(150.0, 132.0));
+}
+
+#[test]
+fn railings_and_invisible_walls_get_no_outlets() {
+    let (mut floor, rooms) = room_20x12();
+    let label = rooms[0].label.clone();
+    let types = vec![(label, RoomFunction::Other)];
+    let opts = AutoOutletOptions {
+        appliances: vec![spot(ApplianceKind::Range, 60.0, 15.0)],
+        ..AutoOutletOptions::default()
+    };
+    let all = auto_place_outlets(&floor, &rooms, &types, &opts);
+    assert!(all.iter().any(|d| d.wall_id == Some(1)));
+    floor.walls[0].flags.invisible = true;
+    floor.walls[1].flags.railing = true;
+    floor.walls[2].class = plan_core::walls::WallClass::DeckRailing;
+    let some = auto_place_outlets(&floor, &rooms, &types, &opts);
+    assert!(
+        some.iter().all(|d| d.wall_id == Some(4)),
+        "only the plain wall"
+    );
+    assert!(!some.is_empty());
+    assert!(!wall_takes_devices(&floor.walls[0]) && wall_takes_devices(&floor.walls[3]));
+}
+
+#[test]
+fn appliance_catalog_ids_are_classified() {
+    assert_eq!(
+        ApplianceKind::from_catalog("core.appliances.dishwasher_24"),
+        Some(ApplianceKind::Dishwasher)
+    );
+    assert_eq!(
+        ApplianceKind::from_catalog("x.Dryer_27"),
+        Some(ApplianceKind::Dryer)
+    );
+    assert_eq!(ApplianceKind::from_catalog("x.sofa"), None);
+}
+
+fn switch_at(layer: &mut ElectricalLayer, wall: &Wall, t: f64, height: f64) -> Id {
+    let mut d = place_on_wall(DeviceKind::Switch, wall, t, WallSide::Left);
+    d.height = height;
+    layer.add(d)
+}
+
+#[test]
+fn same_height_neighbours_gang_and_explode() {
+    let (floor, _) = room_20x12();
+    let wall = &floor.walls[0];
+    let mut layer = ElectricalLayer::default();
+    let a = switch_at(&mut layer, wall, 60.0, 48.0);
+    let b = switch_at(&mut layer, wall, 75.0, 48.0);
+    let c = switch_at(&mut layer, wall, 90.0, 48.0);
+    let far = switch_at(&mut layer, wall, 200.0, 48.0);
+    let high = switch_at(&mut layer, wall, 105.0, 60.0);
+    assert_eq!(layer.make_gang(&[a, b, c]), Ok(a));
+    assert_eq!(layer.gang_members(c), vec![a, b, c]);
+    assert!(layer.make_gang(&[a, far]).is_err(), "already ganged");
+    assert_eq!(layer.explode_gang(b), 3);
+    assert_eq!(layer.gang_members(b), vec![b]);
+    assert_eq!(layer.explode_gang(b), 0, "nothing to explode");
+    assert!(layer.options.is_empty(), "defaults store nothing");
+    assert!(layer.make_gang(&[a, far]).is_err(), "more than 36 in apart");
+    assert!(layer.make_gang(&[a, high]).is_err(), "different heights");
+    assert!(layer.make_gang(&[a]).is_err(), "one device is no block");
+}
+
+#[test]
+fn a_ganged_block_survives_a_save() {
+    let (floor, _) = room_20x12();
+    let mut layer = ElectricalLayer::default();
+    let a = switch_at(&mut layer, &floor.walls[0], 60.0, 48.0);
+    let b = switch_at(&mut layer, &floor.walls[0], 75.0, 48.0);
+    layer.make_gang(&[a, b]).unwrap();
+    let json = serde_json::to_string(&layer).unwrap();
+    let back: ElectricalLayer = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.gang_members(a), vec![a, b]);
+}

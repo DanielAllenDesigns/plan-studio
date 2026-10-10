@@ -1278,6 +1278,9 @@ impl SelectTool {
             Op::DeviceMove(id) => {
                 let unit = unit(cx);
                 let mut layer = site_view::load_electrical(&a.original.floors[fl]);
+                // A ganged block moves as one object (E-25, CB-428).
+                let gang = layer.gang_members(id);
+                let before = layer.device(id).map(|d| d.position);
                 if let Some(d) = layer.device_mut(id) {
                     match d.wall_id.and_then(|w| cx.floor().wall(w)).cloned() {
                         Some(w) => site_view::slide_on_wall(d, &w, p.world, unit),
@@ -1286,6 +1289,14 @@ impl SelectTool {
                                 snap_unit_round(d.position.x + total.x, unit),
                                 snap_unit_round(d.position.y + total.y, unit),
                             );
+                        }
+                    }
+                }
+                if let (Some(b), Some(now)) = (before, layer.device(id).map(|d| d.position)) {
+                    let (dx, dy) = (now.x - b.x, now.y - b.y);
+                    for m in gang.iter().filter(|m| **m != id) {
+                        if let Some(o) = layer.device_mut(*m) {
+                            o.position = Point::new(o.position.x + dx, o.position.y + dy);
                         }
                     }
                 }

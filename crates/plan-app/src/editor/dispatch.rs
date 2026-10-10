@@ -346,6 +346,18 @@ impl EditorContext {
                 let kind = site_view::electrical_layer(self.floor, self.floor())
                     .device(id)
                     .map(|d| d.kind);
+                let ganged = site_view::electrical_layer(self.floor, self.floor())
+                    .gang_members(id)
+                    .len()
+                    > 1;
+                if ganged {
+                    v.push(custom(
+                        crate::tools::electrical::cmd::EXPLODE_GANG,
+                        "Explode Ganged Electrical Block",
+                        "",
+                        true,
+                    ));
+                }
                 match kind {
                     Some(plan_electrical::DeviceKind::Outlet110) => v.push(custom(
                         crate::tools::electrical::cmd::TO_GFCI,

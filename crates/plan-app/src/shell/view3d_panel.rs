@@ -673,8 +673,15 @@ pub fn build_view_scene(project: &Project, scope: &ViewScope) -> Scene {
     // ... (Elevation Reference) stand where that puts them.
     let referenced = crate::dialogs::elevation_ref::effective_project(proj);
     let proj = referenced.as_ref().unwrap_or(proj);
+    // Library doors (DW-126): the symbol stands in the opening where the
+    // catalog can draw it; the built-in panel door stays where it cannot.
+    let library_doors = crate::tools::library::door_library::scene_doors(proj);
+    let proj = library_doors.as_ref().map_or(proj, |(p, _)| p);
     // The plan's own opening display: casing, jambs and sills, doors open.
     let mut scene = build_scene_with(proj, &SceneOptions::for_project(proj));
+    if let Some((_, meshes)) = &library_doors {
+        scene.meshes.extend(meshes.iter().cloned());
+    }
     // Walls already follow the roof (`build_scene` reads the roof records);
     // the planes themselves and their eave detail come on top.
     scene

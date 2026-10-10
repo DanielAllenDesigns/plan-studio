@@ -12,7 +12,18 @@
 //! The rendering technique is stored by its menu name (plan-core has no
 //! dependency on `plan-materials`); the app maps the name back.
 
+pub mod annot;
+pub mod clip;
+pub mod facing;
+pub mod spec;
+
+pub use annot::{AnnotKind, DrawSurface, ViewAnnotation};
+pub use clip::{ClipVolume, SectionClip, StepPlane};
 use serde::{Deserialize, Serialize};
+pub use spec::{
+    BelowGrade, BelowGradeLimit, CalloutArrow, CalloutPlacement, CameraOptions, CrossSectionSlider,
+    DepthCue, PlanDisplay, SliderPlane, SliderSide, SuperResolution, ViewDefaults, ViewLayer,
+};
 
 /// Preview draws fast (no shadows, low quality); Final View is the full look:
 /// shadows, occlusion and anti-aliasing (Chief's "Final View" button).
@@ -256,6 +267,13 @@ impl LightSet {
 pub struct ViewPose {
     pub eye: [f64; 3],
     pub target: [f64; 3],
+    /// The camera's plan symbol places the eye and the target in plan (its
+    /// position, direction and clip distance), so moving, aiming or copying
+    /// the symbol moves the view; the pose keeps the two heights. Overviews
+    /// saved before the symbol was editable read as `false` and keep the
+    /// pose as it is.
+    #[serde(default)]
+    pub symbol: bool,
 }
 
 fn yes() -> bool {
@@ -298,6 +316,45 @@ pub struct CameraView {
     pub light_set: Option<String>,
     /// A saved orthographic view (an elevation or the plan overhead).
     pub ortho: Option<OrthoView>,
+    /// Scene Clipping of a section or elevation (C-136..C-138, C-152, C-157).
+    pub clip: SectionClip,
+    /// Text, dimensions and CAD drawn on the view, saved with it (C-129).
+    pub annotations: Vec<ViewAnnotation>,
+    /// Incremental Move Distance of this camera, inches: one pan, dolly or
+    /// keyboard move step (C-121, DECISIONS 41).
+    #[serde(default = "default_move_step")]
+    pub move_step: f64,
+    /// Incremental Rotate Angle of this camera, degrees: one orbit, turn,
+    /// tilt (a third of it) or side-dolly step.
+    #[serde(default = "default_rotate_step")]
+    pub rotate_step: f64,
+    /// Depth Cue of a section or elevation (C-140).
+    pub depth_cue: DepthCue,
+    /// The Cross Section Slider planes, saved with the camera (C-141).
+    pub slider: CrossSectionSlider,
+    /// Below Grade line overrides (C-153).
+    pub below_grade: BelowGrade,
+    /// Selected Defaults of the view's annotations (C-139).
+    pub selected: ViewDefaults,
+    /// Plan Display of the camera symbol (C-158).
+    pub plan: PlanDisplay,
+    /// The Layer panel (C-156).
+    pub layer: ViewLayer,
+    /// The rendering options of the Camera panel (C-146 to C-151).
+    pub options: CameraOptions,
+}
+
+/// Incremental Move Distance of a new camera, inches (DECISIONS 41).
+pub const DEFAULT_MOVE_STEP: f64 = 24.0;
+/// Incremental Rotate Angle of a new camera, degrees (DECISIONS 41).
+pub const DEFAULT_ROTATE_STEP: f64 = 15.0;
+
+fn default_move_step() -> f64 {
+    DEFAULT_MOVE_STEP
+}
+
+fn default_rotate_step() -> f64 {
+    DEFAULT_ROTATE_STEP
 }
 
 /// Which orthographic view a saved camera restores.
@@ -358,6 +415,17 @@ impl Default for CameraView {
             walk: WalkRecord::default(),
             light_set: None,
             ortho: None,
+            clip: SectionClip::legacy(),
+            annotations: Vec::new(),
+            move_step: DEFAULT_MOVE_STEP,
+            rotate_step: DEFAULT_ROTATE_STEP,
+            depth_cue: DepthCue::default(),
+            slider: CrossSectionSlider::default(),
+            below_grade: BelowGrade::default(),
+            selected: ViewDefaults::default(),
+            plan: PlanDisplay::default(),
+            layer: ViewLayer::default(),
+            options: CameraOptions::default(),
         }
     }
 }
@@ -654,6 +722,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn clip_annotations_and_steps_round_trip_and_old_files_read_with_defaults() {
+        let mut v = CameraView::default();
+        v.clip.clip_elevation = true;
+        v.clip.plane.add_break(10.0).unwrap();
+        v.clip.plane.set_offset(1, 18.0);
+        v.move_step = 6.0;
+        v.rotate_step = 30.0;
+        v.annotations.push(ViewAnnotation {
+            id: 1,
+            kind: AnnotKind::Line {
+                a: [0.0, 0.0],
+                b: [10.0, 0.0],
+            },
+            surface: DrawSurface::drawing(),
+            layer: "CAD".into(),
+            weight: None,
+        });
+        let back: CameraView = serde_json::from_str(&serde_json::to_string(&v).unwrap()).unwrap();
+        assert_eq!(back, v);
+        // A view saved before these fields existed keeps clipping at its
+        // line and starts with the usual steps.
+        let old: CameraView = serde_json::from_str(r#"{"tilt_deg":0.0}"#).unwrap();
+        assert!(old.clip.clip_sides && old.clip.poche);
+        assert!(old.annotations.is_empty());
+        assert_eq!((old.move_step, old.rotate_step), (24.0, 15.0));
+    }
+
+    #[test]
     fn old_files_without_the_view_load_with_defaults() {
         let v: CameraView = serde_json::from_str("{}").unwrap();
         assert_eq!(v, CameraView::default());
@@ -677,6 +773,7 @@ mod tests {
         v.pose = Some(ViewPose {
             eye: [1.0, 2.0, 3.0],
             target: [4.0, 5.0, 6.0],
+            symbol: true,
         });
         let back: CameraView = serde_json::from_str(&serde_json::to_string(&v).unwrap()).unwrap();
         assert_eq!(back, v);

@@ -18,7 +18,7 @@ impl OpeningForm {
     /// The Mulled Unit panel of an opening that is a component of a unit, or
     /// of the Window Defaults (the Mulled Unit Defaults).
     pub(super) fn mulled_unit_section(&mut self, ui: &mut Ui) {
-        let defaults = matches!(self.target, super::OpeningTarget::DefaultWindow);
+        let defaults = self.target.is_window_defaults();
         let in_unit = self.draft.mull_group.is_some();
         if !in_unit && !defaults {
             return;

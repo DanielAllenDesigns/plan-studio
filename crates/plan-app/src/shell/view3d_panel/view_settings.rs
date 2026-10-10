@@ -6,7 +6,9 @@
 //! tested without a window; the panel calls them every frame.
 
 use plan_3d::{Mesh, Scene};
-use plan_core::camera_view::{BackdropKind, CameraView, Lighting, ViewQuality};
+use plan_core::camera_view::{
+    BackdropKind, CameraView, CrossSectionSlider, Lighting, SliderSide, ViewQuality,
+};
 use plan_core::{CameraKind, CameraObject, Project};
 use plan_materials::RenderingTechnique;
 use plan_view3d::ViewSettings;
@@ -219,6 +221,8 @@ pub fn rig(
     }
     let base = plan_view3d::Lighting::default();
     let (ambient, sun) = match view {
+        // Use Sunlight off (C-150): the sun light source is off in the view.
+        Some(v) if !v.options.use_sunlight => (v.ambient_in(plan), 0.0),
         Some(v) => (v.ambient_in(plan), v.sun_in(plan)),
         None => (
             plan.ambient.clamp(0.0, 1.0),
@@ -233,6 +237,38 @@ pub fn rig(
     }
 }
 
+/// The scale a camera's Ambient Occlusion amount puts on the look's own
+/// strength: the slider's middle (0.5) keeps it, 0 turns it off, 1 doubles it.
+pub fn ao_scale(view: Option<&CameraView>) -> f32 {
+    view.map_or(1.0, |v| {
+        (v.options.ambient_occlusion * 2.0).clamp(0.0, 2.0) as f32
+    })
+}
+
+/// The lens a camera's Depth of Field settings give the ray tracer:
+/// `(aperture, focus distance)` in inches, or `None` when it is off. The
+/// aperture opening is 24 inches over the F-Stop, so f/5.6 blurs about as much
+/// as the Ray Trace window's own default lens (4 in).
+pub fn dof_lens(view: &CameraView) -> Option<(f32, f32)> {
+    let o = &view.options;
+    o.dof_on.then(|| {
+        (
+            (24.0 / o.f_stop.max(1.0)) as f32,
+            o.focus_distance.max(1.0) as f32,
+        )
+    })
+}
+
+/// The near clip a camera's Clip Surfaces Within asks for: always for an
+/// eye-level view, and for an overview only once changed from the default
+/// (an overview's own near plane grows with its distance).
+pub fn near_of(view: Option<&CameraView>, eye_level: bool) -> Option<f32> {
+    use plan_core::camera_view::spec::DEFAULT_CLIP_WITHIN;
+    let v = view?;
+    let within = v.options.clip_surfaces_within;
+    (eye_level || (within - DEFAULT_CLIP_WITHIN).abs() > 1e-9).then_some(within as f32)
+}
+
 /// The view settings for Preview or Final View, keeping the user's exposure;
 /// a camera with shadows off keeps them off in Final View too.
 pub fn settings_for(quality: ViewQuality, exposure: f32, shadows: bool) -> ViewSettings {
@@ -243,6 +279,139 @@ pub fn settings_for(quality: ViewQuality, exposure: f32, shadows: bool) -> ViewS
     s.exposure = exposure;
     s.shadows &= shadows;
     s
+}
+
+// ----- Cross Section Slider, Hide Camera-Facing Walls, Clip Within -----
+
+/// The planes of a camera's Cross Section Slider as a small copyable value
+/// for [`super::ViewScope`]: the position of each plane in
+/// [`SliderSide::ALL`] order, `None` when its box is unchecked.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct SliderClip {
+    planes: [Option<f64>; 6],
+}
+
+impl SliderClip {
+    pub fn of(s: &CrossSectionSlider) -> Self {
+        let mut planes = [None; 6];
+        for p in s.planes.iter().filter(|p| p.on) {
+            if let Some(i) = SliderSide::ALL.iter().position(|x| *x == p.side) {
+                planes[i] = Some(p.position);
+            }
+        }
+        Self { planes }
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.planes.iter().any(Option::is_some)
+    }
+
+    fn as_slider(&self) -> CrossSectionSlider {
+        let mut s = CrossSectionSlider::default();
+        for (side, pos) in SliderSide::ALL.iter().zip(self.planes) {
+            if let Some(pos) = pos {
+                s.set_on(*side, true);
+                s.set_position(*side, pos);
+            }
+        }
+        s
+    }
+
+    pub fn hash_into(&self, h: &mut impl std::hash::Hasher) {
+        use std::hash::Hash;
+        for p in self.planes {
+            p.map(f64::to_bits).hash(h);
+        }
+    }
+
+    /// Drops the triangles (by centroid) that the planes cut away. A plane
+    /// is measured from the edge of the model it cuts first, so the bounds
+    /// come from `scene` itself.
+    pub fn apply(&self, scene: &Scene) -> Scene {
+        let Some((lo, hi)) = scene.bounds() else {
+            return scene.clone();
+        };
+        // Scene (x, up, -plan y) to the slider's (plan x, plan y, up).
+        let to_plan = |p: [f32; 3]| [f64::from(p[0]), -f64::from(p[2]), f64::from(p[1])];
+        let (lo, hi) = (
+            [f64::from(lo[0]), -f64::from(hi[2]), f64::from(lo[1])],
+            [f64::from(hi[0]), -f64::from(lo[2]), f64::from(hi[1])],
+        );
+        let slider = self.as_slider();
+        let mut out = Scene::default();
+        for m in &scene.meshes {
+            let mut indices = Vec::with_capacity(m.indices.len());
+            for tri in m.indices.as_chunks::<3>().0 {
+                let mut c = [0.0_f32; 3];
+                for &i in tri {
+                    let p = m.vertices[i as usize].position;
+                    for k in 0..3 {
+                        c[k] += p[k] / 3.0;
+                    }
+                }
+                if !slider.removes(to_plan(c), lo, hi) {
+                    indices.extend_from_slice(tri);
+                }
+            }
+            if !indices.is_empty() {
+                out.meshes.push(Mesh {
+                    vertices: m.vertices.clone(),
+                    indices,
+                    material: m.material,
+                    object_id: m.object_id,
+                    color: m.color,
+                });
+            }
+        }
+        out
+    }
+}
+
+/// Show Color off (C-146): every mesh drawn in the grey of its own colour.
+pub fn gray_scene(scene: &mut Scene) {
+    for m in &mut scene.meshes {
+        let lin = m.color_linear().unwrap_or_else(|| {
+            let c = m.material.color();
+            [c[0], c[1], c[2]]
+        });
+        let y = 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2];
+        let g = (y.clamp(0.0, 1.0).powf(1.0 / 2.2) * 255.0).round() as u8;
+        m.color = Some([g, g, g]);
+    }
+}
+
+/// `scene` without the meshes of the objects in `hidden`.
+pub fn without_objects(scene: &Scene, hidden: &std::collections::HashSet<plan_core::Id>) -> Scene {
+    Scene {
+        meshes: scene
+            .meshes
+            .iter()
+            .filter(|m| m.object_id.is_none_or(|id| !hidden.contains(&id)))
+            .cloned()
+            .collect(),
+    }
+}
+
+/// The plan point Hide Camera-Facing Exterior Walls looks from: an eye-level
+/// camera's position, an overview's saved eye. `None` when the option is off.
+pub fn hide_facing_from(c: &CameraObject) -> Option<plan_core::geometry::Point> {
+    use plan_core::geometry::Point;
+    if !c.view.options.hide_facing_walls {
+        return None;
+    }
+    if c.kind.is_eye_level() {
+        Some(c.position)
+    } else if c.kind.is_overview() {
+        c.overview_pose().map(|p| Point::new(p.eye[0], -p.eye[2]))
+    } else {
+        None
+    }
+}
+
+/// What a camera adds to the scope beyond floors: its slider planes and the
+/// plan position to hide camera-facing walls from.
+pub fn extra_scope_of(c: &CameraObject) -> (SliderClip, Option<plan_core::geometry::Point>) {
+    (SliderClip::of(&c.view.slider), hide_facing_from(c))
 }
 
 #[cfg(test)]
@@ -481,5 +650,122 @@ mod tests {
                 t.label()
             );
         }
+    }
+
+    fn box_house() -> (Project, Vec<plan_core::Id>) {
+        let mut p = Project::new("box");
+        let pts = [
+            Point::new(0.0, 0.0),
+            Point::new(240.0, 0.0),
+            Point::new(240.0, 180.0),
+            Point::new(0.0, 180.0),
+        ];
+        let mut ids = Vec::new();
+        for i in 0..4 {
+            let id = p.add_wall(0, pts[i], pts[(i + 1) % 4], 6.0, 96.0, WallKind::Exterior);
+            if let Some(w) = p.floors[0].walls.iter_mut().find(|w| w.id == id) {
+                w.exterior_side = plan_core::walls::Side::Right;
+            }
+            ids.push(id);
+        }
+        (p, ids)
+    }
+
+    #[test]
+    fn slider_planes_cut_the_scene_from_the_edge_of_the_model() {
+        let (p, _) = box_house();
+        let all = super::super::build_view_scene(&p, &super::super::ViewScope::default());
+        let mut s = CrossSectionSlider::default();
+        assert!(!SliderClip::of(&s).is_active());
+        s.set_on(SliderSide::Left, true);
+        s.set_position(SliderSide::Left, 120.0);
+        let half = SliderClip::of(&s).apply(&all);
+        assert!(half.triangle_count() > 0 && half.triangle_count() < all.triangle_count());
+        // A second plane from above cuts more.
+        s.set_on(SliderSide::Top, true);
+        s.set_position(SliderSide::Top, 200.0);
+        let less = SliderClip::of(&s).apply(&all);
+        assert!(less.triangle_count() < half.triangle_count());
+        // The scope applies the same planes when a view is built.
+        let scope = super::super::ViewScope {
+            slider: SliderClip::of(&s),
+            ..super::super::ViewScope::default()
+        };
+        assert_eq!(
+            super::super::build_view_scene(&p, &scope).triangle_count(),
+            less.triangle_count()
+        );
+    }
+
+    #[test]
+    fn walls_facing_an_outside_camera_leave_the_scene() {
+        let (p, ids) = box_house();
+        let has = |scene: &Scene, id| scene.meshes.iter().any(|m| m.object_id == Some(id));
+        let all = super::super::build_view_scene(&p, &super::super::ViewScope::default());
+        assert!(ids.iter().all(|id| has(&all, *id)));
+        let scope = super::super::ViewScope {
+            hide_from: Some(Point::new(120.0, -400.0)),
+            ..super::super::ViewScope::default()
+        };
+        let seen = super::super::build_view_scene(&p, &scope);
+        assert!(!has(&seen, ids[0]), "the wall toward the camera is gone");
+        assert!(has(&seen, ids[2]), "the far wall stays");
+        // A camera inside the house hides nothing.
+        let inside = super::super::ViewScope {
+            hide_from: Some(Point::new(120.0, 90.0)),
+            ..super::super::ViewScope::default()
+        };
+        assert!(has(&super::super::build_view_scene(&p, &inside), ids[0]));
+        // The option reads the camera: eye-level position, off by default.
+        let mut c = CameraObject::new(CameraKind::FullCamera, Point::new(5.0, 6.0), 0.0, "c", 0);
+        assert_eq!(hide_facing_from(&c), None);
+        c.view.options.hide_facing_walls = true;
+        assert_eq!(hide_facing_from(&c), Some(Point::new(5.0, 6.0)));
+    }
+
+    #[test]
+    fn show_color_off_draws_every_mesh_in_grey() {
+        let (p, _) = box_house();
+        let mut scene = super::super::build_view_scene(&p, &super::super::ViewScope::default());
+        gray_scene(&mut scene);
+        assert!(scene
+            .meshes
+            .iter()
+            .all(|m| m.color.is_some_and(|c| c[0] == c[1] && c[1] == c[2])));
+    }
+
+    #[test]
+    fn camera_options_reach_the_light_the_occlusion_and_the_near_plane() {
+        let plan = Lighting::default();
+        let mut v = CameraView::default();
+        let sun_on = rig(&plan, Some(&v), None, false);
+        assert!(sun_on.key > 0.0);
+        v.options.use_sunlight = false;
+        assert_eq!(rig(&plan, Some(&v), None, false).key, 0.0);
+        // The slider's middle keeps the look's occlusion.
+        assert_eq!(ao_scale(Some(&CameraView::default())), 1.0);
+        v.options.ambient_occlusion = 0.0;
+        assert_eq!(ao_scale(Some(&v)), 0.0);
+        assert_eq!(ao_scale(None), 1.0);
+        // An eye-level camera always sets its near plane; an overview only
+        // once it differs from the default.
+        v.options.clip_surfaces_within = 2.0;
+        assert_eq!(near_of(Some(&v), true), Some(2.0));
+        assert_eq!(near_of(Some(&v), false), None);
+        v.options.clip_surfaces_within = 12.0;
+        assert_eq!(near_of(Some(&v), false), Some(12.0));
+        assert_eq!(near_of(None, true), None);
+    }
+
+    #[test]
+    fn depth_of_field_gives_the_ray_tracer_a_lens() {
+        let mut v = CameraView::default();
+        assert_eq!(dof_lens(&v), None);
+        v.options.dof_on = true;
+        v.options.f_stop = 8.0;
+        v.options.focus_distance = 144.0;
+        assert_eq!(dof_lens(&v), Some((3.0, 144.0)));
+        v.options.f_stop = 2.0;
+        assert!(dof_lens(&v).unwrap().0 > 3.0, "a lower F-Stop blurs more");
     }
 }

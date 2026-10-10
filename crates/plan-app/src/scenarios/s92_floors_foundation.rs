@@ -37,8 +37,8 @@ fn house() -> Sim {
     let cx = sim.cx();
     cx.project.add_wall(
         0,
-        Point::new(240.0, 1.0),
-        Point::new(240.0, H),
+        Point::new(240.0, 0.0),
+        Point::new(240.0, H + 1.0),
         4.5,
         109.125,
         WallKind::Interior,
@@ -76,7 +76,6 @@ fn one_step(sim: &mut Sim, act: impl FnOnce(&mut Sim)) {
 // ----- floor options -----
 
 #[test]
-#[ignore = "R16-17 in progress"]
 fn build_new_floor_steps_its_elevations_to_the_floor_below_in_one_undo_step() {
     let mut sim = house();
     // A vaulted den on the first floor.
@@ -89,12 +88,8 @@ fn build_new_floor_steps_its_elevations_to_the_floor_below_in_one_undo_step() {
     }
     one_step(&mut sim, |sim| d.apply(sim.cx()));
     let cx = &sim.app.cx;
-    assert_eq!(
-        cx.project.floors.len(),
-        3,
-        "the 2nd floor and the attic floor stay"
-    );
-    let up = &cx.project.floors[cx.floor];
+    assert_eq!(cx.project.floors.len(), 2, "the 1st and the new 2nd floor");
+    let up = &cx.project.floors[1];
     assert_eq!(up.name, "2nd Floor");
     let stepped: Vec<_> = up
         .room_names
@@ -106,7 +101,6 @@ fn build_new_floor_steps_its_elevations_to_the_floor_below_in_one_undo_step() {
 }
 
 #[test]
-#[ignore = "R16-17 in progress"]
 fn insert_new_floor_goes_below_the_current_floor_derived_from_its_walls() {
     let mut sim = house();
     let walls = sim.app.cx.floor().walls.len();
@@ -121,7 +115,11 @@ fn insert_new_floor_goes_below_the_current_floor_derived_from_its_walls() {
     }
     one_step(&mut sim, |sim| d.apply(sim.cx()));
     let p = &sim.app.cx.project;
-    assert_eq!(p.floors.len(), 3);
+    assert_eq!(
+        p.floors.len(),
+        2,
+        "the new 1st floor and the old one, now 2nd"
+    );
     assert_eq!(
         p.floors[0].walls.len(),
         walls,
@@ -159,7 +157,6 @@ fn build(sim: &mut Sim, f: impl FnOnce(&mut FoundationSpec)) {
 }
 
 #[test]
-#[ignore = "R16-17 in progress"]
 fn a_foundation_on_a_sloped_terrain_steps_with_s_markers_and_sits_under_the_terrain() {
     let mut sim = house();
     // The den's floor is raised 24 in: a stepped foundation.
@@ -211,7 +208,6 @@ fn a_foundation_on_a_sloped_terrain_steps_with_s_markers_and_sits_under_the_terr
 }
 
 #[test]
-#[ignore = "R16-17 in progress"]
 fn a_garage_door_leaves_a_curb_cutout_as_wide_as_its_rough_opening_and_concrete_cutout() {
     let mut sim = house();
     let right_wall = sim

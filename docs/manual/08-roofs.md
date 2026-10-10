@@ -248,9 +248,21 @@ Opened from the Build Roof mode. Four tabs.
 | Tab | Fields |
 |---|---|
 | Roof | **Roof Styles** (Round 14): Hip, Gable, Shed, Gambrel, Dutch Gable and Half Hip. Pick one (click it again to clear it) and OK writes the roof directives of the exterior walls before it builds, in the same undo step as the build: Hip makes every wall a Hip Wall; Gable makes the walls across the ridge Full Gable Walls; Shed makes one long wall the High Shed/Gable Wall and the ends Full Gable Walls; Gambrel gives the gable ends and a steep lower and a shallow upper pitch on the long walls; Dutch Gable makes the walls across the ridge Dutch Gable Walls; Half Hip makes gable ends whose peak is clipped by a small hip (Starts at Height). With no style the roof follows each wall's own Roof tab. The preview draws the style. **Roof**: Build Roof Planes, Auto Rebuild Roofs, Ignore Top Floor (build over the floor below the top one), **Build ceiling planes for vaulted rooms** (Build Roof makes the ceiling planes of 8.2). **Defaults for walls without their own roof settings**: Pitch, Overhang, Raise Roof Off Plate. A note says which floor the roof goes over. |
-| Options | **Framing**: Build Framing (stored; the Build > Framing commands frame the stored roof planes whatever it says, 11.11), Rafters (disabled, on), Trusses (disabled, off). |
+| Options | **Framing**: Build Framing (stored; the Build > Framing commands frame the stored roof planes whatever it says, 11.11), Framing Method Rafters or Trusses (Round 16: picks which Roof Height fields apply). |
 | Materials | **Roofing**: Material (Asphalt Shingles, Concrete Tile, Standing Seam Metal, Wood Shakes, Slate). |
 | Detail | The Roof Defaults form (8.4a), for this roof: it is copied into the roof settings of the floor when Build Roof runs. |
+
+**Roof Height group (Round 16, brief 18)** on the Roof tab, below Raise Roof Off Plate. With Rafters:
+Automatic Birdsmouth Cut (on by default; with it off, Raise Off Plate / Birdsmouth Cut is typed, a
+positive value lifts the roof for attic knee walls and a negative value sinks it into a birdsmouth, and
+the Birdsmouth Seat read-out follows from the pitch). With Trusses: Heel Height, which lifts the roof off
+the plates. Vertical Structure Depth is a read-out. Three eave switches follow. **Same Roof Height at
+Exterior Walls** (on by default) keeps the bearing walls at one height and changes the overhang of each
+plane whose pitch differs from the default so its fascia drops as far as the default plane's; the wall
+overhangs are ignored, and a plane that meets no plane of another pitch keeps its own overhang.
+**Same Height Eaves** puts every eave at the height of a plane with the default pitch and overhang and
+honors the wall overhangs; with both on, independent planes also take the adjusted overhang. **Allow Low
+Roof Planes** is stored (see DECISIONS RH4). The group is kept with the roof's settings.
 
 OK is refused with "Pitch must be between 0.5 and 24 in 12" for an out-of-range pitch. The
 preview draws a hip outline with the pitch label.

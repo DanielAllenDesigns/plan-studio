@@ -394,7 +394,9 @@ and Sliding doors, and one each for Doorway, Pocket, Bifold, Garage, Barn, Showe
 each window type. The Door Defaults and Window Defaults dialogs are the Specification dialogs, and the
 Window Defaults also hold **Minimum Separation**, **Ignore Casing for Opening Resize** and the **Mulled Unit
 Defaults** on the General and Options panels. To make a default from an opening that is already the way
-you want it, select it and click **Set as Default** on the Edit toolbar.
+you want it, select it and click **Set as Default** on the Edit toolbar. Double-click a Door or Window
+Tools button to open the Defaults dialog of its type, or find it in Edit > Default Settings under Doors and
+Windows (a leaf for each type).
 
 **Use Default.** A door or window you place follows its default in these groups: the Window Type (or Door
 Style), Casing, Lintel, Sash, Frame (Jamb for doors), Hardware, Treatments, Framing, Rough Opening and
@@ -421,7 +423,8 @@ parallel edges, and run in one direction; to build a complex unit, block each ro
 then block the blocks. Nothing moves. The unit has a Mulled Unit Specification: **Treat as Door** (on when
 a door is a component), **Single Wall Hole**, **Mullion Depth** inside and outside, and its label mode (one
 label for the unit, the components' labels, or none). The settings are on the Options panel of any
-component. **Select Next Object** steps through the openings stacked at a place, level 0 first;
+component. **Select Next Object** (and Tab) steps through the openings stacked at a place, level 0 first; with
+**Single Wall Hole** one hole is cut around the whole unit;
 **Explode Mulled Unit** separates the unit.
 
 **Window levels.** Stacked openings can be given a **Window Level** on the General panel. Level 0 draws
@@ -436,5 +439,9 @@ Ceiling** and a **Raised Floor** (a bench seat; a raised unit has no foundation)
 **Roof** choices (Use Existing Roof, Extend Existing Roof Over, Rectangular Roof Over, and None, Flat, Shed
 or Hip with pitch and overhang), the width and radius **Dimensions**, and the **Components** (component
 windows, trimmers, framing between them, connected outer casing, recessed components). On the first floor
-a foundation is built under the unit. **Explode Bay/Bow Window** turns it into walls, one window in each,
+a foundation is built under the unit (Build Foundation lays a wall along each section). Select the unit
+and drag the diamond **depth handle** on its outer face to change how far it projects. With **Extend
+Existing Roof Over** the main roof comes down over the unit and follows its shape (the rectangle with
+**Rectangular Roof Over**), unless the ceiling is lowered; build the roof again after changing a roof
+option. **Explode Bay/Bow Window** turns it into walls, one window in each,
 a pass-through in the main wall and, when the ceiling is lowered or the floor raised, a room of its own.

@@ -123,7 +123,11 @@ impl TypesDialog {
 
     /// Edit: opens the Framing Type dialog on the selected type.
     pub fn edit_selected(&mut self) -> bool {
-        let Some(t) = self.selected.as_deref().and_then(|n| self.draft.type_named(n)) else {
+        let Some(t) = self
+            .selected
+            .as_deref()
+            .and_then(|n| self.draft.type_named(n))
+        else {
             return false;
         };
         self.editor = Some(TypeEditor {
@@ -253,7 +257,12 @@ impl TypesDialog {
                                 ""
                             };
                             if ui
-                                .add(egui::Button::new(egui::RichText::new(format!("{label}{arrow}")).strong()).frame(false))
+                                .add(
+                                    egui::Button::new(
+                                        egui::RichText::new(format!("{label}{arrow}")).strong(),
+                                    )
+                                    .frame(false),
+                                )
                                 .clicked()
                             {
                                 sort = Some(c);
@@ -271,7 +280,11 @@ impl TypesDialog {
                             }
                             ui.label(t.composition.name());
                             ui.label(t.shape.name());
-                            ui.label(if self.draft.type_in_use(&t.name) { "\u{2713}" } else { "" });
+                            ui.label(if self.draft.type_in_use(&t.name) {
+                                "\u{2713}"
+                            } else {
+                                ""
+                            });
                             ui.end_row();
                         }
                     });
@@ -304,7 +317,10 @@ impl TypesDialog {
                 self.message.clear();
                 self.copy_selected();
             }
-            if ui.add_enabled(some, egui::Button::new("Rename...")).clicked() {
+            if ui
+                .add_enabled(some, egui::Button::new("Rename..."))
+                .clicked()
+            {
                 self.message.clear();
                 self.prompt = self.selected.clone();
             }
@@ -473,7 +489,10 @@ mod tests {
         let ed = d.editor.as_mut().unwrap();
         ed.ty.shape = FramingShape::IJoist;
         d.editor_ok().unwrap();
-        assert_eq!(d.draft.type_named("Lumber").unwrap().shape, FramingShape::IJoist);
+        assert_eq!(
+            d.draft.type_named("Lumber").unwrap().shape,
+            FramingShape::IJoist
+        );
         // A steel composition cannot keep a wood shape.
         d.edit_selected();
         let ed = d.editor.as_mut().unwrap();
@@ -481,7 +500,10 @@ mod tests {
         ed.ty.normalize();
         assert_eq!(ed.ty.shape, FramingShape::SteelI);
         d.editor_ok().unwrap();
-        assert_eq!(d.draft.type_named("Lumber").unwrap().composition, Composition::Steel);
+        assert_eq!(
+            d.draft.type_named("Lumber").unwrap().composition,
+            Composition::Steel
+        );
     }
 
     #[test]
@@ -490,14 +512,20 @@ mod tests {
         d.select("Glulam");
         let copy = d.copy_selected().unwrap();
         assert_eq!(copy, "Glulam 2");
-        assert_eq!(d.editor.as_ref().unwrap().target.as_deref(), Some("Glulam 2"));
+        assert_eq!(
+            d.editor.as_ref().unwrap().target.as_deref(),
+            Some("Glulam 2")
+        );
         d.editor_ok().unwrap();
         d.rename_selected("Glulam Heavy").unwrap();
         assert!(d.draft.type_named("Glulam Heavy").is_some());
         // Renaming a type a definition uses renames it there too.
         d.select("Lumber");
         d.rename_selected("Dimension Lumber").unwrap();
-        assert_eq!(d.draft.def_named("Studs").unwrap().framing_type, "Dimension Lumber");
+        assert_eq!(
+            d.draft.def_named("Studs").unwrap().framing_type,
+            "Dimension Lumber"
+        );
     }
 
     #[test]
@@ -518,7 +546,11 @@ mod tests {
         let mut d = dlg();
         d.select("Lumber");
         assert!(matches!(d.delete_selected(), Err(CatalogError::InUse(_))));
-        assert!(d.message.contains("Default Framing Member"), "{}", d.message);
+        assert!(
+            d.message.contains("Default Framing Member"),
+            "{}",
+            d.message
+        );
         d.select("VSL");
         assert!(d.delete_selected().is_ok());
         assert!(d.draft.type_named("VSL").is_none());

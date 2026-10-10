@@ -269,7 +269,9 @@ impl TypeProblem {
                 format!("Layer {} is a main layer: at least 1/16\" thick", i + 1)
             }
             TypeProblem::LayerTooThin(i) => format!("Layer {} needs a thickness", i + 1),
-            TypeProblem::AirGapIsMain(i) => format!("Layer {} is an air gap, not a main layer", i + 1),
+            TypeProblem::AirGapIsMain(i) => {
+                format!("Layer {} is an air gap, not a main layer", i + 1)
+            }
             TypeProblem::Unnamed(i) => format!("Layer {} needs a name", i + 1),
             TypeProblem::ExtensionNotExterior(i) => {
                 format!("Layer {} is not an exterior layer: no extension", i + 1)
@@ -316,7 +318,8 @@ impl WallTypeDef {
     /// Distance from the exterior face to the exterior side of the outermost
     /// Main layer (0 with no Main layer).
     pub fn outer_main_offset(&self) -> f64 {
-        self.main_span().map_or(0.0, |(first, _)| self.depth_to(first))
+        self.main_span()
+            .map_or(0.0, |(first, _)| self.depth_to(first))
     }
 
     /// Distance from the exterior face to the interior side of the innermost
@@ -329,8 +332,9 @@ impl WallTypeDef {
 
     /// Thickness of the whole Main section, inches.
     pub fn main_thickness(&self) -> f64 {
-        self.main_span()
-            .map_or(0.0, |(first, last)| self.depth_to(last + 1) - self.depth_to(first))
+        self.main_span().map_or(0.0, |(first, last)| {
+            self.depth_to(last + 1) - self.depth_to(first)
+        })
     }
 
     /// Total thickness of the layers outside the outermost Main layer.
@@ -424,9 +428,7 @@ impl WallTypeDef {
     pub fn sync_derived(&mut self) {
         let first = self.main_span().map_or(0, |(f, _)| f);
         for (i, l) in self.layers.iter_mut().enumerate() {
-            if i >= first {
-                l.spec.extension = 0.0;
-            } else if l.spec.extension < 0.0 {
+            if i >= first || l.spec.extension < 0.0 {
                 l.spec.extension = 0.0;
             }
         }
@@ -629,8 +631,16 @@ pub fn used_names(project: &Project, defaults: Option<&PlanDefaults>) -> BTreeSe
             used.insert(n.clone());
         }
         let v = &d.wall_variants;
-        for n in v.type_names() {
-            used.insert(n);
+        for n in [
+            &v.pony_upper_type,
+            &v.pony_lower_type,
+            &v.glass_type,
+            &v.railing_type,
+            &v.deck_railing_type,
+            &v.deck_edge_type,
+            &v.fencing_type,
+        ] {
+            used.insert(n.clone());
         }
     }
     used.remove("");
@@ -710,7 +720,7 @@ pub fn migrate_legacy(
 
 /// A wall saved in the Library (manual p. 375): the wall's specification and
 /// its wall type, without its doors, windows or edited heights.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LibraryWall {
     pub name: String,
     pub wall: Wall,
@@ -873,9 +883,7 @@ mod tests {
         t.layers[0].spec.extension = 1.5;
         t.layers[1].spec.extension = 3.0;
         t.layers[3].spec.extension = 9.0;
-        assert!(t
-            .problems()
-            .contains(&TypeProblem::ExtensionNotExterior(3)));
+        assert!(t.problems().contains(&TypeProblem::ExtensionNotExterior(3)));
         t.sync_derived();
         assert_eq!(t.layers[3].spec.extension, 0.0);
         assert_eq!(t.props.brick_ledge_depth, 3.0);
@@ -1000,9 +1008,18 @@ mod tests {
             WallKind::Exterior,
         );
         let ty = stucco();
-        assert_eq!(add_to_library(&mut lib, "Garage Wall", &w, Some(&ty)), "Garage Wall");
-        assert_eq!(add_to_library(&mut lib, "Garage Wall", &w, Some(&ty)), "Garage Wall_2");
-        assert_eq!(add_to_library(&mut lib, "Garage Wall", &w, Some(&ty)), "Garage Wall_3");
+        assert_eq!(
+            add_to_library(&mut lib, "Garage Wall", &w, Some(&ty)),
+            "Garage Wall"
+        );
+        assert_eq!(
+            add_to_library(&mut lib, "Garage Wall", &w, Some(&ty)),
+            "Garage Wall_2"
+        );
+        assert_eq!(
+            add_to_library(&mut lib, "Garage Wall", &w, Some(&ty)),
+            "Garage Wall_3"
+        );
         let drawn = lib[0].draw(9, Point::new(10.0, 10.0), Point::new(10.0, 90.0));
         assert_eq!((drawn.id, drawn.start.y, drawn.end.y), (9, 10.0, 90.0));
         assert_eq!(drawn.thickness, 7.625);
@@ -1019,7 +1036,15 @@ mod tests {
 
     #[test]
     fn legacy_generic_types_become_wall_x() {
-        let t = migrate_legacy(5.5, WallKind::Exterior, "Siding", "Drywall", "Fir Framing", false, false);
+        let t = migrate_legacy(
+            5.5,
+            WallKind::Exterior,
+            "Siding",
+            "Drywall",
+            "Fir Framing",
+            false,
+            false,
+        );
         assert_eq!(t.name, "Wall-6");
         assert_eq!(t.layers.len(), 3);
         assert_eq!(t.main_layer().unwrap().thickness, 5.5);

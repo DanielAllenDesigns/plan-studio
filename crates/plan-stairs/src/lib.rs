@@ -10,12 +10,14 @@
 
 mod deck;
 mod landing;
+mod landing_rules;
 mod layout;
 mod model3d;
 mod options;
 mod plan;
 mod railing;
 mod sections;
+mod spec;
 
 use layout::Layout;
 use plan_core::{Id, Point};
@@ -23,10 +25,15 @@ use serde::{Deserialize, Serialize};
 
 pub use deck::{deck_edge_railing, Deck};
 pub use landing::polygon_slab;
+pub use landing_rules::{
+    adjacent_edges, adjacent_height, are_adjacent, auto_height, auto_thickness, short_edge,
+    ADJACENT_TOLERANCE, FREE_STANDING_THICKNESS, MIN_SHORT_EDGE,
+};
 pub use model3d::{meshes, tagged_meshes, tagged_meshes_skipping, StairPart};
 pub use options::{
     ArrowStyle, BreakStyle, DisplayRule, EdgeRail, Flare, HandrailOptions, PlanOptions,
-    PostProfile, RadiusRef, Runner, Starter, StringerOptions, TopLanding, ViewMode, Walkline,
+    PostProfile, RadiusRef, RampOptions, Runner, Starter, StringerOptions, TopLanding, ViewMode,
+    Walkline,
 };
 pub use plan::{plan_symbol, Stroke};
 pub use railing::{
@@ -37,6 +44,10 @@ pub use railing::{
     MAX_BALUSTER_CLEAR, STAIR_RAIL_HEIGHT,
 };
 pub use sections::{complete_break, disconnect, MIN_BREAK_LANDING};
+pub use spec::{
+    best_fit, fit_status, info, merge, rise_angle, spec_rows, BestFit, FitStatus, Info, LockEnd,
+    MergeError, SpecRow, TreadMode, BEST_FIT_RISER, MERGE_TOLERANCE, SPEC_ROWS,
+};
 
 /// Maximum riser height, IRC R311.7.5.1.
 pub const MAX_RISER: f64 = 7.75;
@@ -333,6 +344,28 @@ pub struct StairParams {
     /// arrow starts at the top and points down, labelled DN instead of UP.
     /// The steps themselves are the same as an upward stair's.
     pub down: bool,
+    /// Ramps: the Options and Tread Surface rows of the Ramp Specification.
+    pub ramp: RampOptions,
+    /// Treads in each subsection of a section made by merging flights
+    /// (empty for a plain section); the counts add up to the section's
+    /// treads.
+    pub subsections: Vec<u32>,
+    /// Landings: Auto Adjust Height (the top follows the sections that
+    /// arrive on it).
+    pub landing_auto_height: bool,
+    /// Landings: Auto Adjust Thickness (one riser plus the floor finish).
+    pub landing_auto_thickness: bool,
+}
+
+/// The shortest run of one stair or ramp section, inches (Chief: 6").
+pub const SECTION_MIN_RUN: f64 = 6.0;
+/// The longest run of one stair or ramp section, inches (Chief: 100'); a
+/// longer climb needs a landing between two sections.
+pub const SECTION_MAX_RUN: f64 = 1200.0;
+
+/// A dragged run held between the shortest and longest a section may be.
+pub fn clamp_section_run(run: f64) -> f64 {
+    run.clamp(SECTION_MIN_RUN, SECTION_MAX_RUN)
 }
 
 impl Default for StairParams {
@@ -382,6 +415,10 @@ impl Default for StairParams {
             allow_wrap: false,
             edge_rails: Vec::new(),
             down: false,
+            ramp: RampOptions::default(),
+            subsections: Vec::new(),
+            landing_auto_height: true,
+            landing_auto_thickness: true,
         }
     }
 }
@@ -811,3 +848,6 @@ mod tests;
 mod tests_r15;
 #[cfg(test)]
 mod tests_sections;
+
+#[cfg(test)]
+mod tests_engine;

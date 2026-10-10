@@ -301,6 +301,46 @@ pub fn default_panorama_path(camera_name: &str) -> String {
         .map_or(file.clone(), |p| p.display().to_string())
 }
 
+/// The plan's watermark laid over a view whose camera has Show Watermark on
+/// (C-146): the text tiled `marks_per_row` by `marks_per_column`, turned by
+/// the watermark's angle. A picture watermark is drawn on printed sheets
+/// only.
+pub fn paint_watermark(
+    painter: &eframe::egui::Painter,
+    rect: eframe::egui::Rect,
+    spec: &plan_core::watermark::WatermarkSpec,
+) {
+    use eframe::egui;
+    use plan_core::watermark::WatermarkKind;
+    if spec.kind != WatermarkKind::Text || !spec.has_content() {
+        return;
+    }
+    let alpha = (spec.alpha() * 255.0).round() as u8;
+    let color =
+        egui::Color32::from_rgba_unmultiplied(spec.color[0], spec.color[1], spec.color[2], alpha);
+    let size = (rect.height() / 12.0).clamp(14.0, 90.0);
+    let (cols, rows) = (spec.marks_per_row.max(1), spec.marks_per_column.max(1));
+    let painter = painter.with_clip_rect(rect);
+    for r in 0..rows {
+        for c in 0..cols {
+            let at = egui::pos2(
+                rect.left() + rect.width() * (c as f32 + 0.5) / cols as f32,
+                rect.top() + rect.height() * (r as f32 + 0.5) / rows as f32,
+            );
+            let galley =
+                painter.layout_no_wrap(spec.text.clone(), egui::FontId::proportional(size), color);
+            let half = galley.size() * 0.5;
+            // Turn about the centre of the mark; the angle is counter-clockwise.
+            let (sin, cos) = (-(spec.angle_deg as f32).to_radians()).sin_cos();
+            let corner = at - egui::vec2(half.x * cos - half.y * sin, half.x * sin + half.y * cos);
+            painter.add(
+                egui::epaint::TextShape::new(corner, galley, color)
+                    .with_angle(-(spec.angle_deg as f32).to_radians()),
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

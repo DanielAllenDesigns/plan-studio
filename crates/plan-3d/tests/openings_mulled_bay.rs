@@ -207,3 +207,64 @@ fn a_mulled_pair_draws_the_head_casing_once_across_both() {
     // The second window draws no head, only its own end leg and jambs.
     assert!(head_width(b) < head_width(a) - 30.0);
 }
+
+/// How many wall triangles cover the middle of the stretch between two
+/// windows (x = 84, y = 54), seen from the front: the wall standing between
+/// them has some, a single hole around both has none.
+fn wall_faces_between(single_hole: bool) -> usize {
+    let (mut p, wall) = wall_project();
+    let ids: Vec<Id> = [60.0, 108.0]
+        .iter()
+        .map(|c| {
+            p.add_opening(0, wall, *c, OpeningKind::Window)
+                .expect("window")
+        })
+        .collect();
+    for id in &ids {
+        let o = p.floors[0]
+            .openings
+            .iter_mut()
+            .find(|o| o.id == *id)
+            .unwrap();
+        o.width = 36.0;
+        o.height = 48.0;
+        o.sill_height = 30.0;
+    }
+    let spec = plan_core::openings::mull::MulledSpec {
+        single_hole,
+        ..Default::default()
+    };
+    p.make_mulled_unit(0, &ids, &spec).expect("mulled unit");
+    let scene = build_scene(&p);
+    let at = (84.0_f64, 54.0_f64);
+    let side =
+        |a: (f64, f64), b: (f64, f64)| (b.0 - a.0) * (at.1 - a.1) - (b.1 - a.1) * (at.0 - a.0);
+    let mut n = 0;
+    for m in scene
+        .meshes
+        .iter()
+        .filter(|m| matches!(m.material, Material::WallInterior | Material::WallExterior))
+    {
+        for t in m.indices.chunks(3) {
+            let v = |i: usize| {
+                let q = m.vertices[t[i] as usize].position;
+                (q[0] as f64, q[1] as f64)
+            };
+            let (a, b, c) = (v(0), v(1), v(2));
+            let (s1, s2, s3) = (side(a, b), side(b, c), side(c, a));
+            if (s1 > 1e-9 && s2 > 1e-9 && s3 > 1e-9) || (s1 < -1e-9 && s2 < -1e-9 && s3 < -1e-9) {
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
+#[test]
+fn a_single_wall_hole_cuts_away_the_pier_between_the_components() {
+    assert!(
+        wall_faces_between(false) > 0,
+        "the wall stands between the windows"
+    );
+    assert_eq!(wall_faces_between(true), 0, "one hole opens the whole unit");
+}

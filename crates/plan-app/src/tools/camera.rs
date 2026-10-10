@@ -172,6 +172,64 @@ pub fn set_next_variant(v: CameraVariant) {
         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(v);
 }
 
+/// One side of the building for the single-side Auto Elevation tools (manual
+/// p. 1151): Front is the bottom of the plan on screen, Back the top, Left and
+/// Right as seen from the front.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum AutoSide {
+    Front,
+    Back,
+    Left,
+    Right,
+}
+
+impl AutoSide {
+    pub const ALL: [AutoSide; 4] = [
+        AutoSide::Front,
+        AutoSide::Back,
+        AutoSide::Left,
+        AutoSide::Right,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            AutoSide::Front => "Front Elevation",
+            AutoSide::Back => "Back Elevation",
+            AutoSide::Left => "Left Elevation",
+            AutoSide::Right => "Right Elevation",
+        }
+    }
+
+    /// The compass name Auto Elevations give the camera of this side.
+    fn name(self) -> &'static str {
+        match self {
+            AutoSide::Front => "South",
+            AutoSide::Back => "North",
+            AutoSide::Left => "West",
+            AutoSide::Right => "East",
+        }
+    }
+}
+
+/// The side the next activation of the Auto Elevation tool makes (`None`:
+/// all four), read by [`CameraTool::set_variant`].
+static NEXT_AUTO_SIDE: Mutex<Option<AutoSide>> = Mutex::new(None);
+
+/// Chooses the side the Auto Elevation tool makes the next time it is
+/// activated; `None` makes all four.
+pub fn set_next_auto_side(side: Option<AutoSide>) {
+    *NEXT_AUTO_SIDE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = side;
+}
+
+fn take_next_auto_side() -> Option<AutoSide> {
+    NEXT_AUTO_SIDE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()
+}
+
 fn take_next_variant() -> Option<CameraVariant> {
     NEXT_VARIANT
         .lock()
@@ -378,6 +436,16 @@ pub fn auto_elevation_cameras(
     floor: usize,
     backclipped: bool,
 ) -> Option<Vec<CameraObject>> {
+    auto_elevation_cameras_for(project, floor, backclipped, None)
+}
+
+/// [`auto_elevation_cameras`] for one `side` of the building, or all four.
+pub fn auto_elevation_cameras_for(
+    project: &Project,
+    floor: usize,
+    backclipped: bool,
+    side: Option<AutoSide>,
+) -> Option<Vec<CameraObject>> {
     let (lo, hi) = building_bounds(project)?;
     let m = AUTO_ELEVATION_MARGIN;
     let (cx, cy) = ((lo.x + hi.x) * 0.5, (lo.y + hi.y) * 0.5);
@@ -406,6 +474,7 @@ pub fn auto_elevation_cameras(
     Some(
         sides
             .into_iter()
+            .filter(|(name, ..)| side.is_none_or(|s| s.name() == *name))
             .map(|(side, dir, centre, width)| {
                 let (kind, name) = if backclipped {
                     (
@@ -430,7 +499,18 @@ pub fn auto_elevation_cameras(
 /// run made (same name) instead of duplicating them. Returns their ids in
 /// South, North, West, East order; empty without walls.
 pub fn add_auto_elevations(project: &mut Project, floor: usize, backclipped: bool) -> Vec<Id> {
-    let Some(cams) = auto_elevation_cameras(project, floor, backclipped) else {
+    add_auto_elevations_for(project, floor, backclipped, None)
+}
+
+/// [`add_auto_elevations`] for one side of the building (the Front, Back, Left
+/// and Right Elevation tools), or all four.
+pub fn add_auto_elevations_for(
+    project: &mut Project,
+    floor: usize,
+    backclipped: bool,
+    side: Option<AutoSide>,
+) -> Vec<Id> {
+    let Some(cams) = auto_elevation_cameras_for(project, floor, backclipped, side) else {
         return Vec::new();
     };
     ensure_camera_layer(project);
@@ -492,11 +572,25 @@ pub fn add_interior_elevations(project: &mut Project, floor: usize, at: Point) -
         .collect()
 }
 
-fn ensure_camera_layer(project: &mut Project) {
+pub fn ensure_camera_layer(project: &mut Project) {
+    use plan_core::camera_view::clip::{CLIP_LINES_LAYER, CROSS_SECTION_LAYER};
     if project.layers.get(CAMERA_LAYER).is_none() {
         project
             .layers
             .add(Layer::new(CAMERA_LAYER, [0x2F, 0x6C, 0xB3], 25));
+    }
+    // The Cross Section Lines layer is locked and on; the Clip Lines layer is
+    // off until the user turns it on to adjust the clipping in the view
+    // (manual pp. 1167, 1172).
+    if project.layers.get(CROSS_SECTION_LAYER).is_none() {
+        let mut l = Layer::new(CROSS_SECTION_LAYER, [0x7A, 0x2E, 0x2E], 13);
+        l.locked = true;
+        project.layers.add(l);
+    }
+    if project.layers.get(CLIP_LINES_LAYER).is_none() {
+        let mut l = Layer::new(CLIP_LINES_LAYER, [0xD0, 0x70, 0x10], 13);
+        l.display = false;
+        project.layers.add(l);
     }
 }
 
@@ -513,6 +607,34 @@ pub enum CamHandle {
     /// Section line ends: stretch the width.
     EndA,
     EndB,
+    /// The diamond handle of break `i` of a stepped cutting plane: drag it
+    /// along the line to move the step (C-137).
+    Break(usize),
+    /// The handle of piece `i` of a stepped plane: drag it square to the line
+    /// to set how far ahead of the base line the piece stands (C-137).
+    Step(usize),
+}
+
+/// The plan point at `x` along a section's cut line (0 at its centre, toward
+/// the viewer's right) and `depth` ahead of it.
+pub fn plane_point(c: &CameraObject, x: f64, depth: f64) -> Option<Point> {
+    let (centre, t, fwd) = plan_core::camera_view::clip::line_frame(c)?;
+    Some(centre + t * x + fwd * depth)
+}
+
+/// Adds a break to the section `c`'s cutting plane at the plan point `at`
+/// (the Add Break edit tool, manual p. 1171): the point is projected onto the
+/// cut line. Returns false when `c` has no cut line or a break is too near.
+pub fn add_section_break(c: &mut CameraObject, at: Point) -> bool {
+    let Some((centre, t, _)) = plan_core::camera_view::clip::line_frame(c) else {
+        return false;
+    };
+    let half = section_width(c) * 0.5;
+    let x = (at - centre).dot(t);
+    if x.abs() >= half {
+        return false;
+    }
+    c.view.clip.plane.add_break(x).is_some()
 }
 
 /// The handles of a selected camera with their plan positions.
@@ -533,6 +655,7 @@ pub fn handles_of(c: &CameraObject) -> Vec<(CamHandle, Point)> {
         if let Some(bc) = back_clip(c) {
             v.push((CamHandle::Clip, c.position + d * bc));
         }
+        v.extend(step_handles(c));
         v
     } else {
         let len = c.clip_distance.unwrap_or(DEFAULT_CONE_LENGTH);
@@ -542,6 +665,30 @@ pub fn handles_of(c: &CameraObject) -> Vec<(CamHandle, Point)> {
             (CamHandle::Clip, c.position + d * len),
         ]
     }
+}
+
+/// The handles of a stepped cutting plane: a diamond at every break and a
+/// handle in the middle of every piece (manual p. 1172).
+fn step_handles(c: &CameraObject) -> Vec<(CamHandle, Point)> {
+    let mut plane = c.view.clip.plane.clone();
+    plane.normalize();
+    if !plane.is_stepped() {
+        return Vec::new();
+    }
+    let half = section_width(c) * 0.5;
+    let mut v = Vec::new();
+    for (i, x) in plane.breaks.iter().enumerate() {
+        let depth = (plane.offsets[i] + plane.offsets[i + 1]) * 0.5;
+        if let Some(p) = plane_point(c, *x, depth) {
+            v.push((CamHandle::Break(i), p));
+        }
+    }
+    for (i, (x0, x1, off)) in plane.spans(-half, half).into_iter().enumerate() {
+        if let Some(p) = plane_point(c, (x0 + x1) * 0.5, off) {
+            v.push((CamHandle::Step(i), p));
+        }
+    }
+    v
 }
 
 /// The handle of `c` within `tol` of `p`, nearest first (Move wins ties).
@@ -725,6 +872,20 @@ pub fn apply_handle_with(c: &mut CameraObject, h: CamHandle, to: Point, snap_deg
                 set_section_geometry(c, centre, dir, half * 2.0, back);
             }
         }
+        CamHandle::Break(i) => {
+            if let Some((centre, t, _)) = plan_core::camera_view::clip::line_frame(c) {
+                let half = section_width(c) * 0.5;
+                c.view
+                    .clip
+                    .plane
+                    .move_break(i, (to - centre).dot(t), -half, half);
+            }
+        }
+        CamHandle::Step(i) => {
+            if let Some((centre, _, fwd)) = plan_core::camera_view::clip::line_frame(c) {
+                c.view.clip.plane.set_offset(i, (to - centre).dot(fwd));
+            }
+        }
     }
 }
 
@@ -768,6 +929,8 @@ pub struct CameraTool {
     walk: Option<WalkPlacing>,
     selected_light: Option<Id>,
     light_edit: Option<LightEdit>,
+    /// The single side the Auto Elevation tool makes, if not all four.
+    auto_side: Option<AutoSide>,
     /// The selected camera. Kept here because the shared selection only keeps
     /// object kinds the model stores per floor.
     selected: Option<Id>,
@@ -790,6 +953,7 @@ impl CameraTool {
             walk: None,
             selected_light: None,
             light_edit: None,
+            auto_side: None,
             selected: None,
             outbox,
         }
@@ -935,11 +1099,7 @@ impl CameraTool {
 
     fn add_camera(&mut self, cx: &mut EditorContext, cam: CameraObject) -> ToolResult {
         cx.begin_change("Create Camera");
-        if cx.project.layers.get(CAMERA_LAYER).is_none() {
-            cx.project
-                .layers
-                .add(Layer::new(CAMERA_LAYER, [0x2F, 0x6C, 0xB3], 25));
-        }
+        ensure_camera_layer(&mut cx.project);
         let id = cx.project.add_camera(cam);
         self.select(cx, id);
         self.outbox.post(ViewRequest::ShowCamera(id));
@@ -973,20 +1133,22 @@ impl CameraTool {
         if !self.layer_ok(cx) {
             return ToolResult::consumed();
         }
-        cx.begin_change(self.variant.label());
-        let ids = add_auto_elevations(
+        let label = self.auto_side.map_or(self.variant.label(), AutoSide::label);
+        cx.begin_change(label);
+        let ids = add_auto_elevations_for(
             &mut cx.project,
             cx.floor,
             self.variant == CameraVariant::AutoBackclipped,
+            self.auto_side,
         );
         if let Some(first) = ids.first() {
             self.select(cx, *first);
             self.outbox.post(ViewRequest::ShowCamera(*first));
         }
-        cx.status = format!("{}: {} cameras", self.variant.label(), ids.len());
+        cx.status = format!("{label}: {} cameras", ids.len());
         ToolResult {
             switch_to: Some(ToolId::Select),
-            ..ToolResult::committed(self.variant.label())
+            ..ToolResult::committed(label)
         }
     }
 
@@ -1138,7 +1300,10 @@ impl Tool for CameraTool {
             CameraVariant::WallElevation => {
                 "Wall Elevation: click the wall face you want to see".into()
             }
-            v if v.is_auto() => format!("{}: click once to make the four elevations", v.label()),
+            v if v.is_auto() => match self.auto_side {
+                Some(side) => format!("{}: click once to make the elevation", side.label()),
+                None => format!("{}: click once to make the four elevations", v.label()),
+            },
             CameraVariant::AutoInterior => {
                 "Auto Interior Elevations: click inside a room to make its four wall elevations"
                     .into()
@@ -1159,9 +1324,11 @@ impl Tool for CameraTool {
     fn set_variant(&mut self, id: ToolId) {
         if let ToolId::CameraVariant(v) = id {
             self.variant = v;
+            self.auto_side = take_next_auto_side().filter(|_| v.is_auto());
             self.reset_gestures();
         } else if let Some(v) = take_next_variant() {
             self.variant = v;
+            self.auto_side = take_next_auto_side().filter(|_| v.is_auto());
             self.reset_gestures();
         }
     }
@@ -1298,6 +1465,8 @@ impl Tool for CameraTool {
                 (None, CamHandle::Aim) => "Rotate Camera",
                 (None, CamHandle::Clip) => "Change Camera Clip Distance",
                 (None, CamHandle::EndA | CamHandle::EndB) => "Stretch Cross Section",
+                (None, CamHandle::Break(_)) => "Move Cross Section Break",
+                (None, CamHandle::Step(_)) => "Step Cross Section Line",
             });
             ed.began = true;
         }
@@ -1584,6 +1753,11 @@ pub struct Callout {
     pub name: Option<String>,
     /// The stem from the bubble to the cut line.
     pub stem: (Point, Point),
+    /// The Text Below Line the user typed (Plan Display), if any.
+    pub below: Option<String>,
+    /// Arrows on the clip plane line (Left Side, Right Side, Both Sides):
+    /// `(tail, tip, filled)`.
+    pub arrows: Vec<(Point, Point, bool)>,
 }
 
 /// Gap between the cut line and the callout bubble, plan inches.
@@ -1624,33 +1798,68 @@ pub fn camera_sheet_refs(project: &Project) -> HashMap<Id, String> {
     out
 }
 
-/// The callout of camera `c`, if it is a section or elevation camera with its
-/// callout switched on.
-pub fn callout_for(
+/// The callouts of camera `c` (C-158): one bubble at the placement Plan
+/// Display chose (Center, Left Side, Right Side, Both Sides or Custom), with
+/// the camera's label, size, Text Below Line and arrows.
+pub fn callouts_for(
     project: &Project,
     c: &CameraObject,
     sheets: &HashMap<Id, String>,
     style: &CalloutStyle,
-) -> Option<Callout> {
+) -> Vec<Callout> {
+    use plan_core::camera_view::CalloutPlacement as P;
     if !c.kind.is_section_like() || !c.callout.show {
-        return None;
+        return Vec::new();
     }
-    let number = project.callout_number(c.id)?;
+    let Some(number) = project.callout_number(c.id) else {
+        return Vec::new();
+    };
+    let plan = &c.view.plan;
     let (a, b) = section_line(c);
-    let mid = Point::lerp(a, b, 0.5);
+    let half = section_width(c) * 0.5;
     let dir = c.direction();
-    let r = style.radius.max(2.0);
-    let centre = mid - dir * (r + CALLOUT_GAP);
-    Some(Callout {
-        camera: c.id,
-        centre,
-        radius: r,
-        shape: style.shape,
-        number: number.to_string(),
-        sheet: sheets.get(&c.id).cloned(),
-        name: style.show_name.then(|| c.name.clone()),
-        stem: (centre + dir * r, mid),
-    })
+    let r = plan.callout_size.map_or(style.radius, |s| s * 0.5).max(2.0);
+    let xs: Vec<f64> = match plan.placement {
+        P::Center => vec![0.0],
+        P::LeftSide => vec![-half],
+        P::RightSide => vec![half],
+        P::BothSides => vec![-half, half],
+        P::Custom => vec![plan.offset.clamp(-half, half)],
+    };
+    let label = if plan.callout_label.trim().is_empty() {
+        number.to_string()
+    } else {
+        plan.callout_label.trim().to_string()
+    };
+    let arrow_len = match plan.arrow {
+        plan_core::camera_view::CalloutArrow::None => 0.0,
+        plan_core::camera_view::CalloutArrow::Small => ARROW_LEN * 0.25,
+        plan_core::camera_view::CalloutArrow::Large => ARROW_LEN * 0.5,
+    };
+    xs.into_iter()
+        .map(|x| {
+            let on_line = plane_point(c, x, 0.0).unwrap_or_else(|| Point::lerp(a, b, 0.5));
+            let centre = on_line - dir * (r + CALLOUT_GAP);
+            let arrows = if plan.placement.draws_line() && arrow_len > 0.0 {
+                vec![(on_line, on_line + dir * arrow_len, plan.arrow_filled)]
+            } else {
+                Vec::new()
+            };
+            Callout {
+                camera: c.id,
+                centre,
+                radius: r,
+                shape: style.shape,
+                number: label.clone(),
+                sheet: sheets.get(&c.id).cloned(),
+                name: style.show_name.then(|| c.name.clone()),
+                stem: (centre + dir * r, on_line),
+                below: (!plan.text_below_auto && !plan.text_below.trim().is_empty())
+                    .then(|| plan.text_below.trim().to_string()),
+                arrows,
+            }
+        })
+        .collect()
 }
 
 /// The callouts of the cameras placed on `floor`.
@@ -1665,7 +1874,7 @@ pub fn callouts_on(project: &Project, floor: usize, style: &CalloutStyle) -> Vec
     let sheets = camera_sheet_refs(project);
     on_floor
         .into_iter()
-        .filter_map(|c| callout_for(project, c, &sheets, style))
+        .flat_map(|c| callouts_for(project, c, &sheets, style))
         .collect()
 }
 
@@ -1731,6 +1940,28 @@ fn draw_callout(painter: &egui::Painter, cam: &Camera, co: &Callout, selected: b
             );
         }
     }
+    for (tail, tip, filled) in &co.arrows {
+        let (t, h) = (cam.world_to_screen(*tail), cam.world_to_screen(*tip));
+        painter.line_segment([t, h], ink);
+        let v = (h - t).normalized();
+        let n = egui::vec2(-v.y, v.x);
+        let head = [h, h - v * 7.0 + n * 3.5, h - v * 7.0 - n * 3.5];
+        let (fill, edge) = if *filled {
+            (CAMERA_BLUE, ink)
+        } else {
+            (Color32::TRANSPARENT, ink)
+        };
+        painter.add(Shape::convex_polygon(head.to_vec(), fill, edge));
+    }
+    if let Some(below) = &co.below {
+        painter.text(
+            centre + egui::vec2(0.0, r + 3.0),
+            egui::Align2::CENTER_TOP,
+            below,
+            font(0.7),
+            CAMERA_BLUE,
+        );
+    }
     if let Some(name) = &co.name {
         painter.text(
             centre + egui::vec2(r + 4.0, 0.0),
@@ -1780,7 +2011,11 @@ fn draw_one(painter: &egui::Painter, cam: &Camera, c: &CameraObject, selected: b
         return;
     }
     draw_label(painter, cam, c);
-    let line = Stroke::new(if selected { 2.0_f32 } else { 1.2_f32 }, CAMERA_BLUE);
+    let mut line = Stroke::new(if selected { 2.0_f32 } else { 1.2_f32 }, CAMERA_BLUE);
+    if let Some(w) = c.view.plan.line_weight.filter(|_| is_section(c)) {
+        // Cross Section Line Weight (Plan Display), points to screen pixels.
+        line.width = (w as f32 * 2.0).clamp(0.5, 6.0);
+    }
     if c.kind == CameraKind::Walkthrough {
         painter.add(Shape::line(polygon(cam, &c.path), line));
         for n in &c.path {
@@ -1795,7 +2030,33 @@ fn draw_one(painter: &egui::Painter, cam: &Camera, c: &CameraObject, selected: b
     }
     if is_section(c) {
         let (a, b) = section_line(c);
-        painter.line_segment([cam.world_to_screen(a), cam.world_to_screen(b)], line);
+        let half = section_width(c) * 0.5;
+        let mut plane = c.view.clip.plane.clone();
+        plane.normalize();
+        if plane.is_stepped() {
+            let pts: Vec<Point> = plane
+                .path(-half, half)
+                .into_iter()
+                .filter_map(|(x, d)| plane_point(c, x, d))
+                .collect();
+            painter.add(Shape::line(polygon(cam, &pts), line));
+        } else if c
+            .view
+            .plan
+            .line_style
+            .as_deref()
+            .is_some_and(|s| !s.eq_ignore_ascii_case("solid"))
+        {
+            // A dashed Cross Section Line Style (Plan Display).
+            painter.extend(Shape::dashed_line(
+                &[cam.world_to_screen(a), cam.world_to_screen(b)],
+                line,
+                8.0,
+                5.0,
+            ));
+        } else {
+            painter.line_segment([cam.world_to_screen(a), cam.world_to_screen(b)], line);
+        }
         let t = section_tangent(c);
         for end in [a, b] {
             let tick = c.direction() * 6.0;
@@ -1821,18 +2082,50 @@ fn draw_one(painter: &egui::Painter, cam: &Camera, c: &CameraObject, selected: b
         }
         return;
     }
-    let cone = c.cone_points();
-    let fill = CAMERA_BLUE.gamma_multiply(if selected { 0.22 } else { 0.12 });
-    painter.add(Shape::convex_polygon(
-        polygon(cam, &cone),
-        fill,
-        Stroke::new(1.0_f32, CAMERA_BLUE.gamma_multiply(0.8)),
-    ));
+    // Show Field of View Indicators off: the cone only shows while selected.
+    if c.view.plan.show_fov_indicators || selected {
+        let cone = c.cone_points();
+        let fill = CAMERA_BLUE.gamma_multiply(if selected { 0.22 } else { 0.12 });
+        painter.add(Shape::convex_polygon(
+            polygon(cam, &cone),
+            fill,
+            Stroke::new(1.0_f32, CAMERA_BLUE.gamma_multiply(0.8)),
+        ));
+    }
     painter.add(Shape::convex_polygon(
         polygon(cam, &c.triangle_points()),
         CAMERA_BLUE,
         Stroke::new(1.0_f32, Color32::WHITE),
     ));
+}
+
+/// The Clip Lines of a selected section (C-136): the side clip lines run
+/// from the ends of the cut line back to the back clip, and the front clip
+/// plane is the cut line itself. Shown while the "CAD, Clip Lines" layer is
+/// on.
+fn draw_clip_lines(cx: &EditorContext, painter: &egui::Painter, cam: &Camera, c: &CameraObject) {
+    use plan_core::camera_view::clip::CLIP_LINES_LAYER;
+    if !is_section(c) || !c.view.clip.clip_sides {
+        return;
+    }
+    let layer = cx.project.layers.get(CLIP_LINES_LAYER);
+    if !layer.is_some_and(|l| l.display) {
+        return;
+    }
+    let col = layer.map_or([0xD0, 0x70, 0x10], |l| l.color);
+    let stroke = Stroke::new(1.0_f32, Color32::from_rgb(col[0], col[1], col[2]));
+    let half = section_width(c) * 0.5;
+    let reach = back_clip(c).unwrap_or(DEFAULT_BACK_CLIP);
+    for x in [-half, half] {
+        if let (Some(a), Some(b)) = (plane_point(c, x, 0.0), plane_point(c, x, reach)) {
+            painter.extend(Shape::dashed_line(
+                &[cam.world_to_screen(a), cam.world_to_screen(b)],
+                stroke,
+                5.0,
+                3.0,
+            ));
+        }
+    }
 }
 
 /// The plan symbol of a light: a ring with eight rays, grayed when off.
@@ -1869,17 +2162,23 @@ pub fn draw_camera_symbols(
     cam: &Camera,
     selected: Option<Id>,
 ) {
-    if !cx.project.layers.is_visible(CAMERA_LAYER) {
-        return;
-    }
-    for c in cx.project.cameras_on(cx.floor) {
+    // Each camera is on the layer its Layer panel names (C-156).
+    let shown = |c: &CameraObject| cx.project.layers.is_visible(&c.view.layer.layer);
+    for c in cx.project.cameras_on(cx.floor).filter(|c| shown(c)) {
         draw_one(painter, cam, c, selected == Some(c.id));
     }
     for co in callouts_on(&cx.project, cx.floor, &callout_style()) {
-        draw_callout(painter, cam, &co, selected == Some(co.camera));
+        if cx.project.camera(co.camera).is_some_and(shown) {
+            draw_callout(painter, cam, &co, selected == Some(co.camera));
+        }
     }
-    draw_light_symbols(cx, painter, cam);
-    let Some(c) = selected.and_then(|id| cx.project.camera(id)) else {
+    if cx.project.layers.is_visible(CAMERA_LAYER) {
+        draw_light_symbols(cx, painter, cam);
+    }
+    let Some(c) = selected
+        .and_then(|id| cx.project.camera(id))
+        .filter(|c| shown(c))
+    else {
         return;
     };
     if c.floor != cx.floor {
@@ -1888,6 +2187,7 @@ pub fn draw_camera_symbols(
     if !c.view.show_in_plan {
         return;
     }
+    draw_clip_lines(cx, painter, cam, c);
     for (h, at) in handles_of(c) {
         let s = cam.world_to_screen(at);
         let r = egui::Rect::from_center_size(s, egui::Vec2::splat(9.0));
@@ -1982,7 +2282,7 @@ mod tests {
         assert_eq!(c.kind, CameraKind::FullCamera);
         assert_eq!(c.position, Point::new(100.0, 100.0));
         assert!((c.direction_deg - 90.0).abs() < 1e-9);
-        assert_eq!(c.eye_height, 66.0);
+        assert_eq!(c.eye_height, 60.0, "C-5: a new camera starts at 60 in");
         assert_eq!(c.name, "Camera 1");
         assert!(cx.project.layers.get(CAMERA_LAYER).is_some());
         assert_eq!(outbox.take(), vec![ViewRequest::ShowCamera(c.id)]);
@@ -2509,7 +2809,7 @@ mod tests {
         assert_eq!(c.path_nodes.len(), 3);
         assert_eq!(c.path_nodes[0].look_deg, None);
         assert!((c.path_nodes[1].look_deg.unwrap() - 90.0).abs() < 1e-9);
-        assert_eq!(c.path_nodes[2].height, 66.0);
+        assert_eq!(c.path_nodes[2].height, 60.0);
         assert!(c.direction_deg.abs() < 1e-9, "faces the first segment");
         assert_eq!(outbox.take(), vec![ViewRequest::ShowCamera(c.id)]);
     }

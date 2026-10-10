@@ -7,6 +7,8 @@ use crate::editor::EditorContext;
 use crate::templates::{self, SeedCache, TemplateSettings};
 use eframe::egui::{self, Align, Align2, Key, Layout, Modifiers};
 use plan_core::defaults::saved::SavedKind;
+use plan_core::openings::types::DefaultKey;
+use plan_core::{OpeningKind, OpeningStyle};
 use std::cell::RefCell;
 use std::path::PathBuf;
 
@@ -19,6 +21,9 @@ pub enum DefaultsEntry {
     InteriorDoor,
     ExteriorDoor,
     Window,
+    /// The Defaults dialog of one other door or window type (Double Door,
+    /// Pocket Door, Casement Window, Bay Window...: manual pp. 103, 603).
+    OpeningType(DefaultKey),
     /// Opened from the Saved Defaults dialog of Manual Dimensions (its Edit
     /// button), not from a leaf of its own any more.
     #[allow(dead_code)]
@@ -197,6 +202,15 @@ const TREE: &[(&str, &[(&str, Leaf)])] = &[
             ("Interior Door", Leaf::Entry(DefaultsEntry::InteriorDoor)),
             ("Exterior Door", Leaf::Entry(DefaultsEntry::ExteriorDoor)),
             ("Garage Door", Leaf::Page("garage_door")),
+            ("Double Door", door(OpeningStyle::DoubleDoor, false)),
+            ("Doorway", door(OpeningStyle::Doorway, false)),
+            ("Interior Sliding Door", door(OpeningStyle::Sliding, false)),
+            ("Exterior Sliding Door", door(OpeningStyle::Sliding, true)),
+            ("Pocket Door", door(OpeningStyle::Pocket, false)),
+            ("Bifold Door", door(OpeningStyle::Bifold, false)),
+            ("Barn Door", door(OpeningStyle::Barn, false)),
+            ("Fixed Door", door(OpeningStyle::Fixed, false)),
+            ("Shower Door", door(OpeningStyle::Shower, false)),
         ],
     ),
     ("Dormer", &[("Dormer", Leaf::Page("dormer"))]),
@@ -379,8 +393,41 @@ const TREE: &[(&str, &[(&str, Leaf)])] = &[
             ("Attic Wall", Leaf::Page("walls.attic")),
         ],
     ),
-    ("Windows", &[("Window", Leaf::Entry(DefaultsEntry::Window))]),
+    (
+        "Windows",
+        &[
+            ("Window", Leaf::Entry(DefaultsEntry::Window)),
+            ("Casement Window", window(OpeningStyle::Casement)),
+            ("Fixed Window", window(OpeningStyle::Fixed)),
+            ("Sliding Window", window(OpeningStyle::SlidingWindow)),
+            ("Awning Window", window(OpeningStyle::Awning)),
+            ("Hopper Window", window(OpeningStyle::Hopper)),
+            ("Bay Window", window(OpeningStyle::BayWindow)),
+            ("Bow Window", window(OpeningStyle::BowWindow)),
+            ("Box Window", window(OpeningStyle::BoxWindow)),
+            ("Pass-Through", window(OpeningStyle::PassThrough)),
+            ("Wall Niche", window(OpeningStyle::WallNiche)),
+        ],
+    ),
 ];
+
+/// The leaf of a door type's Defaults dialog.
+const fn door(style: OpeningStyle, exterior: bool) -> Leaf {
+    Leaf::Entry(DefaultsEntry::OpeningType(DefaultKey {
+        kind: OpeningKind::Door,
+        style,
+        exterior,
+    }))
+}
+
+/// The leaf of a window type's Defaults dialog.
+const fn window(style: OpeningStyle) -> Leaf {
+    Leaf::Entry(DefaultsEntry::OpeningType(DefaultKey {
+        kind: OpeningKind::Window,
+        style,
+        exterior: false,
+    }))
+}
 
 /// The groups and leaves of the tree, for the tests and the parity checks.
 #[cfg(test)]
@@ -421,6 +468,12 @@ fn describe(leaf: Leaf) -> &'static str {
             "The Door Specification new doors start from."
         }
         Leaf::Entry(DefaultsEntry::Window) => "The Window Specification new windows start from.",
+        Leaf::Entry(DefaultsEntry::OpeningType(k)) if k.kind == OpeningKind::Door => {
+            "The Door Specification doors of this type start from, and the doors using the default follow."
+        }
+        Leaf::Entry(DefaultsEntry::OpeningType(_)) => {
+            "The Window Specification windows of this type start from, and the windows using the default follow."
+        }
         Leaf::Entry(DefaultsEntry::Foundation) => {
             "The Foundation Defaults: footings, stem walls, slabs and piers of new foundations."
         }
@@ -726,7 +779,14 @@ pub fn forget_dialog_edits(cx: &mut EditorContext) {
         OpeningTarget::DefaultDoor,
         OpeningTarget::DefaultExteriorDoor,
         OpeningTarget::DefaultWindow,
-    ] {
+    ]
+    .into_iter()
+    .chain(
+        DefaultKey::doors()
+            .into_iter()
+            .chain(DefaultKey::windows())
+            .map(OpeningTarget::DefaultType),
+    ) {
         cx.extras.openings.remove(&target.key());
     }
 }

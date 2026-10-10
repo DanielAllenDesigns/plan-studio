@@ -248,7 +248,9 @@ impl Default for DimSetup {
             temp_reach: 48.0,
             temp_walls: TempWalls::Surfaces,
             temp_exterior_primary: yes(),
-            temp_exterior_secondary: false,
+            // Both faces: a gap runs to the nearer one, the inner face of an
+            // exterior wall seen from a room (DECISIONS DM20).
+            temp_exterior_secondary: yes(),
             temp_interior_primary: yes(),
             temp_interior_secondary: yes(),
             temp_interior_centers: false,
@@ -301,8 +303,58 @@ pub struct PoleSetup {
     pub between_markers: bool,
     pub primary_ridges_only: bool,
     pub primary_heights_only: bool,
-    /// Marks the pole locates: the names of the Locate Elevations panel.
+    /// Every mark of the Locate Elevations panel, one entry per kind (in
+    /// `MarkKind::ALL` order); `PoleMark::included` says whether the pole
+    /// locates it. Presence in the list is not inclusion (DECISIONS QA-32).
+    #[serde(deserialize_with = "de_marks")]
     pub marks: Vec<PoleMark>,
+}
+
+impl PoleSetup {
+    /// The entry of `kind` when the pole locates it.
+    pub fn located(&self, kind: MarkKind) -> Option<&PoleMark> {
+        self.marks.iter().find(|m| m.kind == kind && m.included)
+    }
+
+    /// Whether the pole locates `kind`.
+    pub fn locates(&self, kind: MarkKind) -> bool {
+        self.located(kind).is_some()
+    }
+
+    /// The entry of `kind`, added (not located) when the list lacks it.
+    pub fn entry_mut(&mut self, kind: MarkKind) -> &mut PoleMark {
+        if let Some(i) = self.marks.iter().position(|m| m.kind == kind) {
+            return &mut self.marks[i];
+        }
+        let mut m = PoleMark::new(kind, false);
+        m.included = false;
+        self.marks.push(m);
+        self.marks.sort_by_key(|m| m.kind);
+        let i = self.marks.iter().position(|m| m.kind == kind).unwrap();
+        &mut self.marks[i]
+    }
+}
+
+/// Reads the mark list and completes it: a list saved before inclusion was a
+/// flag carries only the located kinds, so every other kind is added as not
+/// located; duplicates keep the first entry.
+fn de_marks<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<PoleMark>, D::Error> {
+    let mut read = Vec::<PoleMark>::deserialize(d)?;
+    let mut out: Vec<PoleMark> = Vec::new();
+    for m in read.drain(..) {
+        if !out.iter().any(|o| o.kind == m.kind) {
+            out.push(m);
+        }
+    }
+    for kind in MarkKind::ALL {
+        if !out.iter().any(|o| o.kind == kind) {
+            let mut m = PoleMark::new(kind, false);
+            m.included = false;
+            out.push(m);
+        }
+    }
+    out.sort_by_key(|m| m.kind);
+    Ok(out)
 }
 
 impl Default for PoleSetup {
@@ -331,14 +383,32 @@ pub struct PoleMark {
     /// The name shown beside the mark; empty is the kind's own.
     pub name: String,
     pub outer: bool,
+    /// Whether the pole locates this kind (the Locate check box). Lists
+    /// saved before this flag existed hold only located kinds.
+    #[serde(default = "located_by_default")]
+    pub included: bool,
+}
+
+fn located_by_default() -> bool {
+    true
 }
 
 impl PoleMark {
+    /// A located mark.
     pub fn new(kind: MarkKind, outer: bool) -> Self {
         Self {
             kind,
             name: String::new(),
             outer,
+            included: true,
+        }
+    }
+
+    /// A mark the pole does not locate.
+    pub fn off(kind: MarkKind) -> Self {
+        Self {
+            included: false,
+            ..Self::new(kind, false)
         }
     }
 
@@ -353,11 +423,14 @@ impl PoleMark {
     /// Chief's default list: the marks story poles start with.
     pub fn default_marks() -> Vec<PoleMark> {
         vec![
+            PoleMark::off(MarkKind::Grade),
             PoleMark::new(MarkKind::TopOfSubfloor, true),
             PoleMark::new(MarkKind::TopOfPlate, true),
             PoleMark::new(MarkKind::Ceiling, false),
             PoleMark::new(MarkKind::Eave, false),
             PoleMark::new(MarkKind::Ridge, true),
+            PoleMark::off(MarkKind::OpeningSill),
+            PoleMark::off(MarkKind::OpeningHead),
         ]
     }
 }
@@ -928,5 +1001,28 @@ mod tests {
             },
         );
         assert_eq!(strings, vec![AutoString::Openings, AutoString::WallToWall]);
+    }
+    #[test]
+    fn story_pole_marks_are_flags_that_survive_the_template_json() {
+        // Every kind is listed; inclusion is the flag, not presence.
+        let mut p = PoleSetup::default();
+        assert_eq!(p.marks.len(), MarkKind::ALL.len());
+        assert!(p.locates(MarkKind::Ridge) && !p.locates(MarkKind::Grade));
+        p.entry_mut(MarkKind::Ridge).included = false;
+        p.entry_mut(MarkKind::OpeningSill).outer = true;
+        let json = serde_json::to_string(&p).unwrap();
+        let back: PoleSetup = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, p, "nothing re-added on reload");
+        assert!(!back.locates(MarkKind::Ridge));
+        assert!(
+            !back.locates(MarkKind::OpeningSill),
+            "outer alone locates nothing"
+        );
+        // A list saved before the flag held only located kinds.
+        let old = r#"{"marks":[{"kind":"Ceiling","name":"","outer":false}]}"#;
+        let old: PoleSetup = serde_json::from_str(old).unwrap();
+        assert_eq!(old.marks.len(), MarkKind::ALL.len());
+        assert!(old.locates(MarkKind::Ceiling));
+        assert!(!old.locates(MarkKind::Ridge));
     }
 }

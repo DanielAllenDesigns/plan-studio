@@ -1226,30 +1226,30 @@ mod tests {
     fn renumber_closes_the_gaps_of_the_schedule_as_one_undo_step() {
         let (mut cx, ids) = doors_drawn_right_to_left();
         let sid = schedule_view::add(&mut cx, ScheduleKind::Door, Point::new(0.0, -80.0));
-        // A schedule starts with the doors in reading order: the last one
-        // drawn, at the left, is D01.
+        // The doors are alike, so they are numbered in the order they were
+        // placed (p. 715): the first one drawn, at the right, is D01.
         let m = schedule_marks(&cx, sid);
-        assert_eq!(m[0], (ids[2], "D01".to_string()));
+        assert_eq!(m[0], (ids[0], "D01".to_string()));
         // A door goes: its number stays free until Renumber Schedule.
-        cx.project.floors[0].openings.retain(|o| o.id != ids[2]);
+        cx.project.floors[0].openings.retain(|o| o.id != ids[0]);
         let m = schedule_marks(&cx, sid);
         assert_eq!(
             m,
-            [(ids[1], "D02".to_string()), (ids[0], "D03".to_string())]
+            [(ids[1], "D02".to_string()), (ids[2], "D03".to_string())]
         );
         // The Edit toolbar of a selected door offers the command.
-        cx.selection.set(ObjectRef::Opening(ids[0]));
+        cx.selection.set(ObjectRef::Opening(ids[2]));
         let labels: Vec<_> = edit_actions(&cx).iter().map(|e| e.label).collect();
         assert!(labels.contains(&"Renumber Schedule"), "{labels:?}");
         assert!(run_command(&mut cx, RENUMBER));
         let m = schedule_marks(&cx, sid);
         assert_eq!(
             m,
-            [(ids[1], "D01".to_string()), (ids[0], "D02".to_string())]
+            [(ids[1], "D01".to_string()), (ids[2], "D02".to_string())]
         );
         assert_eq!(cx.undo_label(), Some("Renumber Schedule"));
         // No mark is written into the openings (DECISIONS 44).
-        assert_eq!(mark(&cx, ids[0]), None);
+        assert_eq!(mark(&cx, ids[2]), None);
         // Nothing to change the second time: no extra undo step.
         assert!(run_command(&mut cx, RENUMBER_DOORS));
         assert_eq!(cx.undo().as_deref(), Some("Renumber Schedule"));
@@ -1257,7 +1257,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "R16-04 in progress: numbering order change"]
     fn renumber_keeps_to_one_kind_and_skips_what_the_schedule_leaves_out() {
         let (mut cx, ids) = doors_drawn_right_to_left();
         let w = cx.floor().walls[0].id;
@@ -1271,8 +1270,6 @@ mod tests {
             .spec
             .schedule
             .include = false;
-        let door_s = schedule_view::add(&mut cx, ScheduleKind::Door, Point::new(0.0, -80.0));
-        let win_s = schedule_view::add(&mut cx, ScheduleKind::Window, Point::new(0.0, -200.0));
         let win = cx
             .project
             .add_opening(0, w, 30.0, OpeningKind::Window)
@@ -1281,6 +1278,8 @@ mod tests {
             .project
             .add_opening(0, w, 370.0, OpeningKind::Window)
             .unwrap();
+        let door_s = schedule_view::add(&mut cx, ScheduleKind::Door, Point::new(0.0, -80.0));
+        let win_s = schedule_view::add(&mut cx, ScheduleKind::Window, Point::new(0.0, -200.0));
         // Doors: the left-out door has no number. A window goes: a gap.
         let m = schedule_marks(&cx, door_s);
         assert_eq!(m.len(), 2);

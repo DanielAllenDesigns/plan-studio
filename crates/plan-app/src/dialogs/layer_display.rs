@@ -16,11 +16,11 @@
 use crate::dialogs::layer_sets as sets;
 use crate::editor::selection::{all_selectable, layer_of};
 use crate::editor::EditorContext;
-use crate::shell::docks::{
-    add_layer, edit_layers, layer_rows, layer_usage, search_field, tree_node,
-};
+use crate::shell::docks::{add_layer, edit_layers, layer_rows, search_field, tree_node};
 use eframe::egui::{self, Align, Align2, Key, Layout, Modifiers, Vec2};
+use plan_core::fill_styles::{FillStyle, FillTarget};
 use plan_core::layer_sets::LayerEdit;
+use plan_core::layers::{common_props, is_system_layer, LayerCommon, LayerUse, Mixed};
 use plan_core::{Layer, LineStyle};
 use std::collections::BTreeSet;
 
@@ -70,6 +70,22 @@ pub struct LayerPanelState {
     pub copy_targets: BTreeSet<String>,
     /// The last message of a set button or command.
     pub message: String,
+    /// The New button is asking for a layer name.
+    pub naming: bool,
+    /// The text of the New Layer Name box.
+    pub new_name: String,
+    /// Only these layers are listed (Object Layer Properties: the layers of
+    /// the selected objects); `None` lists them all.
+    pub only: Option<Vec<String>>,
+    /// The table's heading, when it is not "Properties for Active Layer Set".
+    pub heading: Option<String>,
+    /// Object Layer Properties: no layer set controls, no management
+    /// buttons.
+    pub compact: bool,
+    /// While objects are selected the dock lists their layers (Object Layer
+    /// Properties, manual p. 211); this shows every layer instead (the Show
+    /// All Layers box).
+    pub show_all_layers: bool,
 }
 
 impl LayerPanelState {
@@ -180,18 +196,39 @@ struct Row {
     name: String,
     layer: Layer,
     used: usize,
+    /// Where the layer is used (the Used column icon and tool tip).
+    info: LayerUse,
+    /// The layer's Fill Style (the Fill column); `None` is no fill.
+    fill: Option<FillStyle>,
 }
 
 /// The rows the filter shows, in the chosen sort order.
 fn table_rows(cx: &EditorContext, st: &LayerPanelState) -> Vec<Row> {
-    let used = layer_usage(&cx.project);
+    let used = cx.project.layer_object_counts();
     let mut rows: Vec<Row> = layer_rows(&cx.project, &st.filter)
         .into_iter()
         .filter_map(|name| {
             let layer = cx.layers().get(&name)?.clone();
             let used = used.get(&name).copied().unwrap_or(0);
-            Some(Row { name, layer, used })
+            let info = LayerUse {
+                objects: used,
+                defaults: cx.project.layer_defaults(&name),
+                system: is_system_layer(&name),
+            };
+            let fill = cx
+                .project
+                .styles
+                .fill_for(&FillTarget::Layer(name.clone()))
+                .cloned();
+            Some(Row {
+                name,
+                layer,
+                used,
+                info,
+                fill,
+            })
         })
+        .filter(|r| st.only.as_ref().is_none_or(|only| only.contains(&r.name)))
         .collect();
     sort_rows(&mut rows, st.sort, st.descending);
     rows
@@ -229,13 +266,45 @@ pub fn layer_panel(
     st: &mut LayerPanelState,
     table_share: f32,
 ) {
-    ui.strong(format!(
-        "Properties for Active Layer Set \u{2013} {}",
+    // With objects selected the table lists the layers they touch, as
+    // Object Layer Properties does, until Show All Layers is ticked.
+    if st.compact || cx.selection.is_empty() {
+        return layer_panel_body(ui, cx, st, table_share);
+    }
+    ui.checkbox(&mut st.show_all_layers, "Show All Layers")
+        .on_hover_text("Off lists only the layers of the selected objects");
+    if st.show_all_layers {
+        return layer_panel_body(ui, cx, st, table_share);
+    }
+    let saved = (st.only.take(), st.heading.take(), st.compact);
+    st.only = Some(crate::dialogs::object_layers::layers_of_selection(cx).all());
+    st.heading = Some(format!(
+        "Properties of Object Layers \u{2013} {}",
         cx.project.shown_layer_set()
     ));
-    set_selector(ui, cx, st);
-    ui.checkbox(&mut st.all_sets, "Modify All Layer Sets")
-        .on_hover_text("Edits below change this layer in every layer set");
+    st.compact = true;
+    layer_panel_body(ui, cx, st, table_share);
+    (st.only, st.heading, st.compact) = saved;
+}
+
+fn layer_panel_body(
+    ui: &mut egui::Ui,
+    cx: &mut EditorContext,
+    st: &mut LayerPanelState,
+    table_share: f32,
+) {
+    match &st.heading {
+        Some(h) => ui.strong(h.clone()),
+        None => ui.strong(format!(
+            "Properties for Active Layer Set \u{2013} {}",
+            cx.project.shown_layer_set()
+        )),
+    };
+    if !st.compact {
+        set_selector(ui, cx, st);
+        ui.checkbox(&mut st.all_sets, "Modify All Layer Sets")
+            .on_hover_text("Edits below change this layer in every layer set");
+    }
     ui.label("Name Filter");
     search_field(ui, &mut st.filter, "Type to filter");
     ui.add_space(2.0);
@@ -279,7 +348,7 @@ pub fn layer_panel(
         .auto_shrink([false, true])
         .show(ui, |ui| {
             egui::Grid::new("layer_grid")
-                .num_columns(9)
+                .num_columns(10)
                 .striped(true)
                 .spacing(Vec2::new(8.0, 3.0))
                 .show(ui, |ui| {
@@ -290,6 +359,7 @@ pub fn layer_panel(
                         ("Lock", Some(SortKey::Lock)),
                         ("Ref", Some(SortKey::Ref)),
                         ("Color", None),
+                        ("Fill", None),
                         ("Weight", Some(SortKey::Weight)),
                         ("Line Style", None),
                         ("Text Style", None),
@@ -372,25 +442,36 @@ pub fn layer_panel(
             ContextAction::Reset => {
                 reset_layers(cx, &sel, st.all_sets);
             }
+            ContextAction::EditFill => {
+                crate::dialogs::fill_style::open_for_layers(cx, &sel);
+            }
+            ContextAction::Find => {
+                crate::dialogs::object_layers::find_objects_on_layers(cx, &sel);
+            }
         }
     }
     for (layers, edit, merged) in pending {
         edit_layers(cx, &layers, edit, st.all_sets, merged);
     }
 
+    if !st.compact {
+        management_buttons(ui, cx, st);
+    }
     ui.separator();
     tree_node(ui, "layer_selected_props", "Selected Layer", true, |ui| {
         selected_layer_properties(ui, cx, st, &text_styles);
     });
-    tree_node(
-        ui,
-        "layer_copy_to_sets",
-        "Copy To Other Sets",
-        false,
-        |ui| {
-            copy_to_sets(ui, cx, st);
-        },
-    );
+    if !st.compact {
+        tree_node(
+            ui,
+            "layer_copy_to_sets",
+            "Copy To Other Sets",
+            false,
+            |ui| {
+                copy_to_sets(ui, cx, st);
+            },
+        );
+    }
     if !st.message.is_empty() {
         ui.weak(&st.message);
     }
@@ -400,6 +481,10 @@ pub fn layer_panel(
 enum ContextAction {
     SelectObjects,
     Reset,
+    /// The Fill cell was clicked: open the Fill Style dialog.
+    EditFill,
+    /// Find Objects on Layer(s) (LAY-62).
+    Find,
 }
 
 /// The text style names a layer may use: the plan's styles plus any name a
@@ -448,13 +533,17 @@ fn draw_row(
             *context = Some((name.clone(), ContextAction::SelectObjects));
             ui.close_menu();
         }
+        if ui.button("Find Objects on Layer(s)\u{2026}").clicked() {
+            *context = Some((name.clone(), ContextAction::Find));
+            ui.close_menu();
+        }
         if ui.button("Reset to Defaults").clicked() {
             *context = Some((name.clone(), ContextAction::Reset));
             ui.close_menu();
         }
     });
     let _ = names;
-    ui.label(row.used.to_string());
+    used_cell(ui, row);
 
     let mut disp = layer.display;
     if ui.checkbox(&mut disp, "").changed() {
@@ -475,6 +564,9 @@ fn draw_row(
     let mut rgb = layer.color;
     if ui.color_edit_button_srgb(&mut rgb).changed() {
         pending.push((targets.clone(), LayerEdit::Color(rgb), true));
+    }
+    if fill_cell(ui, cx, row).clicked() {
+        *context = Some((name.clone(), ContextAction::EditFill));
     }
     let mut mm = layer.line_weight as f64 / 100.0;
     if ui
@@ -510,6 +602,36 @@ fn draw_row(
     text_style_combo(ui, ("lt_text", name), &layer.text_style, text_styles, |t| {
         pending.push((targets.clone(), LayerEdit::TextStyle(t), false));
     });
+}
+
+/// The Fill column: a small swatch of the layer's Fill Style (an empty box
+/// when it has none); a click opens the Fill Style dialog for the layer.
+fn fill_cell(ui: &mut egui::Ui, cx: &EditorContext, row: &Row) -> egui::Response {
+    let size = Vec2::new(30.0, 16.0);
+    match &row.fill {
+        Some(style) => {
+            let patterns = cx.project.styles.all_patterns();
+            crate::dialogs::fill_style::preview_sized(
+                ui,
+                style,
+                &patterns,
+                row.layer.color,
+                24.0,
+                size,
+            )
+            .on_hover_text(format!("Fill: {}. Click to edit", style.summary()))
+        }
+        None => {
+            let (rect, r) = ui.allocate_exact_size(size, egui::Sense::click());
+            ui.painter().rect_stroke(
+                rect,
+                2.0,
+                ui.visuals().widgets.noninteractive.fg_stroke,
+                egui::StrokeKind::Inside,
+            );
+            r.on_hover_text("No fill. Click to choose a Fill Style")
+        }
+    }
 }
 
 fn text_style_combo(
@@ -724,6 +846,7 @@ fn selected_layer_properties(
         return;
     };
     let targets = st.selected_layers(cx);
+    let common = selection_common(cx, &targets, &layer);
     if targets.len() > 1 {
         ui.strong(format!(
             "Properties for {} Selected Layers \u{2013} {name}",
@@ -733,40 +856,56 @@ fn selected_layer_properties(
         ui.strong(format!("Properties for Selected Layer \u{2013} {name}"));
     }
     let mut pending: Vec<Pending> = Vec::new();
+    let mut fill_open = false;
+    let mut fill_clear = false;
     egui::Grid::new("layer_props")
         .num_columns(2)
         .spacing(Vec2::new(8.0, 4.0))
         .show(ui, |ui| {
-            ui.label("Display");
-            let mut on = layer.display;
-            if ui.checkbox(&mut on, "").changed() {
+            ui.label(tagged("Display", &common.display));
+            let mut on = common.display.value().copied().unwrap_or(layer.display);
+            if ui
+                .add(egui::Checkbox::new(&mut on, "").indeterminate(common.display.is_mixed()))
+                .changed()
+            {
                 pending.push((targets.clone(), LayerEdit::Display(on), false));
             }
             ui.end_row();
 
-            ui.label("Lock");
-            let mut on = layer.locked;
-            if ui.checkbox(&mut on, "").changed() {
+            ui.label(tagged("Lock", &common.locked));
+            let mut on = common.locked.value().copied().unwrap_or(layer.locked);
+            if ui
+                .add(egui::Checkbox::new(&mut on, "").indeterminate(common.locked.is_mixed()))
+                .changed()
+            {
                 pending.push((targets.clone(), LayerEdit::Locked(on), false));
             }
             ui.end_row();
 
-            ui.label("Reference");
-            let mut on = layer.reference;
-            if ui.checkbox(&mut on, "").changed() {
+            ui.label(tagged("Reference", &common.reference));
+            let mut on = common.reference.value().copied().unwrap_or(layer.reference);
+            if ui
+                .add(egui::Checkbox::new(&mut on, "").indeterminate(common.reference.is_mixed()))
+                .changed()
+            {
                 pending.push((targets.clone(), LayerEdit::Reference(on), false));
             }
             ui.end_row();
 
-            ui.label("Color");
-            let mut rgb = layer.color;
+            ui.label(tagged("Color", &common.color));
+            let mut rgb = common.color.value().copied().unwrap_or(layer.color);
             if ui.color_edit_button_srgb(&mut rgb).changed() {
                 pending.push((targets.clone(), LayerEdit::Color(rgb), true));
             }
             ui.end_row();
 
-            ui.label("Line Weight");
-            let mut mm = layer.line_weight as f64 / 100.0;
+            ui.label(tagged("Line Weight", &common.line_weight));
+            let mut mm = common
+                .line_weight
+                .value()
+                .copied()
+                .unwrap_or(layer.line_weight) as f64
+                / 100.0;
             if ui
                 .add(
                     egui::DragValue::new(&mut mm)
@@ -785,10 +924,18 @@ fn selected_layer_properties(
             }
             ui.end_row();
 
-            ui.label("Line Style");
-            let mut style = layer.line_style;
+            ui.label(tagged("Line Style", &common.line_style));
+            let mut style = common
+                .line_style
+                .value()
+                .copied()
+                .unwrap_or(layer.line_style);
             egui::ComboBox::from_id_salt("layer_line_style")
-                .selected_text(line_style_label(style))
+                .selected_text(if common.line_style.is_mixed() {
+                    "No Change"
+                } else {
+                    line_style_label(style)
+                })
                 .show_ui(ui, |ui| {
                     for s in LINE_STYLES {
                         if ui
@@ -801,24 +948,383 @@ fn selected_layer_properties(
                 });
             ui.end_row();
 
-            ui.label("Text Style");
-            text_style_combo(
-                ui,
-                "layer_text_style",
-                &layer.text_style,
-                text_styles,
-                |t| {
-                    pending.push((targets.clone(), LayerEdit::TextStyle(t), false));
-                },
-            );
+            ui.label(tagged("Text Style", &common.text_style));
+            let shown_style = if common.text_style.is_mixed() {
+                "No Change".to_string()
+            } else {
+                layer.text_style.clone()
+            };
+            text_style_combo(ui, "layer_text_style", &shown_style, text_styles, |t| {
+                pending.push((targets.clone(), LayerEdit::TextStyle(t), false));
+            });
+            ui.end_row();
+
+            // Fill Style: a preview of the shared fill, "No Change" when the
+            // selected layers differ, and the button that edits it.
+            let fills: Vec<Option<FillStyle>> = targets
+                .iter()
+                .map(|n| {
+                    cx.project
+                        .styles
+                        .fill_for(&FillTarget::Layer(n.clone()))
+                        .cloned()
+                })
+                .collect();
+            let mixed_fill = fills.windows(2).any(|w| w[0] != w[1]);
+            ui.label(if mixed_fill {
+                "Fill Style (No Change)"
+            } else {
+                "Fill Style"
+            });
+            ui.vertical(|ui| {
+                match (&fills[0], mixed_fill) {
+                    (_, true) => {
+                        ui.weak("No Change");
+                    }
+                    (Some(style), false) => {
+                        let patterns = cx.project.styles.all_patterns();
+                        crate::dialogs::fill_style::preview_sized(
+                            ui,
+                            style,
+                            &patterns,
+                            layer.color,
+                            48.0,
+                            Vec2::new(120.0, 60.0),
+                        );
+                        ui.weak(style.summary());
+                    }
+                    (None, false) => {
+                        ui.weak("No fill");
+                    }
+                }
+                ui.horizontal(|ui| {
+                    if ui.button("Fill Style\u{2026}").clicked() {
+                        fill_open = true;
+                    }
+                    if ui
+                        .add_enabled(
+                            fills.iter().any(Option::is_some),
+                            egui::Button::new("Remove Fill"),
+                        )
+                        .clicked()
+                    {
+                        fill_clear = true;
+                    }
+                });
+            });
             ui.end_row();
         });
+    if fill_open {
+        crate::dialogs::fill_style::open_for_layers(cx, &targets);
+    }
+    if fill_clear {
+        clear_layer_fills(cx, &targets);
+    }
     for (layers, edit, merged) in pending {
         edit_layers(cx, &layers, edit, st.all_sets, merged);
     }
 }
 
+/// Remove Fill: the layers go back to no fill style. One undo step.
+pub fn clear_layer_fills(cx: &mut EditorContext, layers: &[String]) -> usize {
+    let had: Vec<&String> = layers
+        .iter()
+        .filter(|n| {
+            cx.project
+                .styles
+                .fill_for(&FillTarget::Layer((*n).clone()))
+                .is_some()
+        })
+        .collect();
+    if had.is_empty() {
+        return 0;
+    }
+    let n = had.len();
+    let doomed: Vec<String> = had.into_iter().cloned().collect();
+    cx.begin_change("Remove Layer Fill");
+    for name in doomed {
+        cx.project.styles.apply_fill(FillTarget::Layer(name), None);
+    }
+    cx.mark_dirty();
+    n
+}
+
 /// The modal window: the same table plus New Layer, Active Layers by Tool and
+/// A property label that says "No Change" when the selected layers differ.
+fn tagged<T>(label: &str, value: &Mixed<T>) -> String {
+    if value.is_mixed() {
+        format!("{label} (No Change)")
+    } else {
+        label.to_string()
+    }
+}
+
+/// The shared properties of the selected layers as the table shows them
+/// (the effective look in the shown layer set).
+fn selection_common(cx: &EditorContext, targets: &[String], first: &Layer) -> LayerCommon {
+    let layers: Vec<Layer> = targets
+        .iter()
+        .filter_map(|n| cx.layers().get(n).cloned())
+        .collect();
+    let refs: Vec<&Layer> = layers.iter().collect();
+    common_props(&refs).unwrap_or_else(|| common_props(&[first]).expect("one layer"))
+}
+
+/// The Used cell: an icon for objects on the layer, for a defaults page that
+/// names it, or for a system layer, with a tool tip saying where.
+fn used_cell(ui: &mut egui::Ui, row: &Row) {
+    let text = if row.info.objects > 0 {
+        format!("\u{25CF} {}", row.info.objects)
+    } else if !row.info.defaults.is_empty() {
+        "\u{25D0}".to_string()
+    } else if row.info.system {
+        "\u{25CB}".to_string()
+    } else {
+        String::new()
+    };
+    let r = ui.label(text);
+    let tip = row.info.tooltip();
+    if !tip.is_empty() {
+        r.on_hover_text(tip);
+    }
+}
+
+// ----- layer management (LAY-67), one undo step each -----
+
+/// New: a layer with a unique name, in every set (hidden in all but the
+/// active one).
+pub fn new_layer_named(cx: &mut EditorContext, name: &str) -> Result<String, String> {
+    cx.begin_change("New Layer");
+    match cx.project.new_layer(name) {
+        Ok(n) => {
+            cx.mark_dirty();
+            cx.status = format!("Added layer {n}");
+            Ok(n)
+        }
+        Err(e) => {
+            cx.cancel_change();
+            Err(e)
+        }
+    }
+}
+
+/// Copy: a copy of `name` below it.
+pub fn copy_layer(cx: &mut EditorContext, name: &str) -> Result<String, String> {
+    cx.begin_change("Copy Layer");
+    match cx.project.copy_layer(name) {
+        Ok(n) => {
+            cx.mark_dirty();
+            cx.status = format!("Copied {name} to {n}");
+            Ok(n)
+        }
+        Err(e) => {
+            cx.cancel_change();
+            Err(e)
+        }
+    }
+}
+
+/// Merge: the first of `layers` (plan order) keeps; the others fold into
+/// it with their objects and defaults. Returns how many objects moved.
+pub fn merge_layers(cx: &mut EditorContext, layers: &[String]) -> Result<usize, String> {
+    let Some((keep, rest)) = layers.split_first() else {
+        return Err("Select two or more layers to merge".into());
+    };
+    cx.begin_change("Merge Layers");
+    match cx.project.merge_layers(keep, rest) {
+        Ok(n) => {
+            cx.mark_dirty();
+            cx.status = format!(
+                "Merged {} layer{} into {keep} ({n} object{} moved)",
+                rest.len(),
+                if rest.len() == 1 { "" } else { "s" },
+                if n == 1 { "" } else { "s" }
+            );
+            Ok(n)
+        }
+        Err(e) => {
+            cx.cancel_change();
+            Err(e)
+        }
+    }
+}
+
+/// Delete: every layer of `layers` or none (a system or used layer stops
+/// the whole delete).
+pub fn delete_layers(cx: &mut EditorContext, layers: &[String]) -> Result<usize, String> {
+    if layers.is_empty() {
+        return Err("Select a layer to delete".into());
+    }
+    for l in layers {
+        if is_system_layer(l) {
+            return Err(format!("{l} is a system layer and cannot be deleted"));
+        }
+        if cx.project.layer_use(l).in_use() {
+            return Err(format!("{l} is in use and cannot be deleted"));
+        }
+    }
+    cx.begin_change("Delete Layers");
+    for l in layers {
+        if let Err(e) = cx.project.delete_layer(l) {
+            cx.cancel_change();
+            return Err(e);
+        }
+    }
+    cx.mark_dirty();
+    cx.status = format!(
+        "Deleted {} layer{}",
+        layers.len(),
+        if layers.len() == 1 { "" } else { "s" }
+    );
+    Ok(layers.len())
+}
+
+/// Delete Unused Layers. Returns how many went (no undo step for none).
+pub fn delete_unused_layers(cx: &mut EditorContext) -> usize {
+    cx.begin_change("Delete Unused Layers");
+    let gone = cx.project.delete_unused_layers();
+    if gone.is_empty() {
+        cx.cancel_change();
+        cx.status = "Every layer is in use".into();
+        return 0;
+    }
+    cx.mark_dirty();
+    cx.status = format!(
+        "Deleted {} unused layer{}",
+        gone.len(),
+        if gone.len() == 1 { "" } else { "s" }
+    );
+    gone.len()
+}
+
+/// Reset Layer Names: brings back missing system layers.
+pub fn reset_layer_names(cx: &mut EditorContext) -> usize {
+    cx.begin_change("Reset Layer Names");
+    let n = cx.project.reset_layer_names();
+    if n == 0 {
+        cx.cancel_change();
+        cx.status = "The system layers are already there".into();
+        return 0;
+    }
+    cx.mark_dirty();
+    cx.status = format!("Restored {n} system layer{}", if n == 1 { "" } else { "s" });
+    n
+}
+
+/// Wall Layers: adds the wall system layers (Walls Layers, Main Layer Only,
+/// Through Wall Lines, Footings, Brick Ledge Lines, No Locate, Attic) the
+/// plan lacks, to every layer set. One undo step; returns how many.
+pub fn add_wall_layers(cx: &mut EditorContext) -> usize {
+    cx.begin_change("Add Wall Layers");
+    let n = cx.project.ensure_wall_system_layers().len();
+    if n == 0 {
+        cx.cancel_change();
+        cx.status = "The wall system layers are already there".into();
+        return 0;
+    }
+    cx.mark_dirty();
+    cx.status = format!(
+        "Added {n} wall system layer{}",
+        if n == 1 { "" } else { "s" }
+    );
+    n
+}
+
+/// The buttons under the table: New, Copy, Merge, Delete, Delete Unused
+/// Layers and Reset Names.
+fn management_buttons(ui: &mut egui::Ui, cx: &mut EditorContext, st: &mut LayerPanelState) {
+    let sel = st.selected_layers(cx);
+    let mut result: Option<Result<String, String>> = None;
+    ui.horizontal_wrapped(|ui| {
+        if ui.small_button("New").clicked() {
+            st.naming = true;
+            st.new_name = cx.project.free_layer_name_for_new();
+        }
+        if ui
+            .add_enabled(sel.len() == 1, egui::Button::new("Copy").small())
+            .on_hover_text("Copy the selected layer below itself")
+            .clicked()
+        {
+            result = Some(copy_layer(cx, &sel[0]).map(|n| {
+                st.select_only(&n);
+                format!("Copied to {n}")
+            }));
+        }
+        if ui
+            .add_enabled(sel.len() > 1, egui::Button::new("Merge").small())
+            .on_hover_text("Fold the other selected layers into the first one")
+            .clicked()
+        {
+            result = Some(merge_layers(cx, &sel).map(|n| {
+                st.select_only(&sel[0]);
+                format!("Merged; {n} objects moved")
+            }));
+        }
+        if ui
+            .add_enabled(!sel.is_empty(), egui::Button::new("Delete").small())
+            .on_hover_text("Delete the selected layers (not system or used layers)")
+            .clicked()
+        {
+            result = Some(delete_layers(cx, &sel).map(|n| {
+                st.select_none();
+                format!("Deleted {n}")
+            }));
+        }
+        if ui
+            .small_button("Delete Unused Layers")
+            .on_hover_text("Remove every layer nothing uses")
+            .clicked()
+        {
+            let n = delete_unused_layers(cx);
+            st.select_none();
+            result = Some(Ok(format!("Deleted {n} unused")));
+        }
+        if ui
+            .small_button("Wall Layers")
+            .on_hover_text("Add the wall display layers: Layers, Main Layer Only, Through Wall Lines, Footings, Brick Ledge Lines, No Locate, Attic")
+            .clicked()
+        {
+            let n = add_wall_layers(cx);
+            result = Some(Ok(format!("Added {n} wall layers")));
+        }
+        if ui
+            .small_button("Reset Names")
+            .on_hover_text("Bring back any missing system layer")
+            .clicked()
+        {
+            let n = reset_layer_names(cx);
+            result = Some(Ok(format!("Restored {n}")));
+        }
+    });
+    if st.naming {
+        ui.horizontal(|ui| {
+            ui.label("New Layer Name");
+            let edit = ui.text_edit_singleline(&mut st.new_name);
+            let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+            if ui.small_button("OK").clicked() || enter {
+                let name = st.new_name.clone();
+                result = Some(new_layer_named(cx, &name).map(|n| {
+                    st.naming = false;
+                    st.filter.clear();
+                    st.select_only(&n);
+                    format!("Added {n}")
+                }));
+            }
+            if ui.small_button("Cancel").clicked() {
+                st.naming = false;
+            }
+        });
+    }
+    match result {
+        Some(Ok(m)) => st.message = m,
+        Some(Err(e)) => {
+            st.message = e.clone();
+            cx.status = e;
+        }
+        None => {}
+    }
+}
+
 /// Layer Set Management.
 #[derive(Default)]
 pub struct LayerDisplayDialog {
@@ -842,9 +1348,16 @@ impl LayerDisplayDialog {
 
     /// Draws the window; returns false once it should close.
     pub fn show(&mut self, ctx: &egui::Context, cx: &mut EditorContext) -> bool {
+        self.show_with_id(ctx, cx, "layer_display_options")
+    }
+
+    /// [`show`](Self::show) with its own window id, so the window the Define
+    /// buttons open can sit beside the one of the Tools menu.
+    fn show_with_id(&mut self, ctx: &egui::Context, cx: &mut EditorContext, id: &str) -> bool {
         let mut open = true;
         let mut close = false;
         egui::Window::new("Layer Display Options")
+            .id(egui::Id::new(id))
             .open(&mut open)
             .collapsible(false)
             .resizable(true)
@@ -877,6 +1390,38 @@ impl LayerDisplayDialog {
             close = true;
         }
         open && !close
+    }
+}
+
+thread_local! {
+    static DEFINE: std::cell::RefCell<Option<LayerDisplayDialog>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The Define button of a Layer panel (the painter bar, Select Layer, the
+/// Layer Set Defaults): opens Layer Display Options to pick, change or add a
+/// layer.
+pub fn open_define() {
+    DEFINE.with(|d| {
+        let mut d = d.borrow_mut();
+        if d.is_none() {
+            *d = Some(LayerDisplayDialog::default());
+        }
+    });
+}
+
+/// Is the Define window open?
+pub fn define_open() -> bool {
+    DEFINE.with(|d| d.borrow().is_some())
+}
+
+/// Draws the Define window while it is open.
+pub fn show_define(ctx: &egui::Context, cx: &mut EditorContext) {
+    let Some(mut d) = DEFINE.with(|d| d.borrow_mut().take()) else {
+        return;
+    };
+    if d.show_with_id(ctx, cx, "layer_display_define") {
+        DEFINE.with(|slot| *slot.borrow_mut() = Some(d));
     }
 }
 

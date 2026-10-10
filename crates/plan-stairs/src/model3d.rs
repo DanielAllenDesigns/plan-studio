@@ -78,7 +78,7 @@ pub fn tagged_meshes_skipping(stair: &Stair, skip: PostSkip) -> Vec<(StairPart, 
     if let Some(c) = &layout.curve {
         ctx.curved(c, p, h);
     } else if let Some(arc) = &layout.ramp_arc {
-        ctx.curved_ramp(arc, thick);
+        ctx.curved_ramp(arc, p);
         if p.handrail {
             ctx.arc_handrails(arc);
         }
@@ -88,7 +88,7 @@ pub fn tagged_meshes_skipping(stair: &Stair, skip: PostSkip) -> Vec<(StairPart, 
         let nflights = layout.flights.len();
         for (i, f) in layout.flights.iter().enumerate() {
             if layout.is_ramp {
-                ctx.ramp(f, thick);
+                ctx.ramp(f, p);
                 if p.handrail {
                     ctx.ramp_handrails(f, p, i == 0, i + 1 == nflights);
                 }
@@ -680,23 +680,101 @@ impl Ctx<'_> {
     }
 
     /// One sloped slab rising over the flight length, on top of `f.base`.
-    fn ramp(&mut self, f: &Flight, thick: f64) {
-        let profile: Vec<V3> = [
-            (0.0, f.base),
-            (f.len, f.base + f.rise),
-            (f.len, f.base + f.rise - thick),
-            (0.0, f.base - thick),
-        ]
-        .iter()
-        .map(|&(s, h)| self.on_flight(f, s, 0.0, h))
-        .collect();
+    /// Closed underneath (Ramp Specification), the slab is filled down to the
+    /// floor, no deeper than the maximum thickness; with a tread surface the
+    /// top of the slab gives way to a separate plate that may overhang.
+    fn ramp(&mut self, f: &Flight, p: &StairParams) {
+        let thick = p.slab_thickness.max(0.1);
+        let o = &p.ramp;
+        let surface = if o.has_surface {
+            o.surface_thickness.clamp(0.0, thick)
+        } else {
+            0.0
+        };
+        let (top0, top1) = (f.base, f.base + f.rise);
+        // The underside: a fixed thickness when open, else the floor or the
+        // cap on the depth, whichever is higher.
+        let under = |h: f64| {
+            if o.open_underneath {
+                h - thick
+            } else {
+                (h - o.depth_cap(thick)).max(0.0)
+            }
+        };
+        // A closed ramp whose surface plate would start below the floor
+        // begins where the plate meets the floor instead (a wedge tip).
+        let tip = !o.open_underneath
+            && top0 - surface < under(top0)
+            && top1 - surface > under(top1)
+            && (top1 - top0).abs() > 1e-9;
+        let mut ring: Vec<(f64, f64)> = Vec::new();
+        if tip {
+            let t = (surface - top0) / (top1 - top0);
+            ring.push((f.len * t, 0.0));
+        } else {
+            ring.push((0.0, top0 - surface));
+        }
+        ring.push((f.len, top1 - surface));
+        ring.push((f.len, under(top1)));
+        if !o.open_underneath && (top1 - top0).abs() > 1e-9 {
+            // Where the cap meets the floor the underside changes slope.
+            let cap = o.depth_cap(thick);
+            let t = (cap - top0) / (top1 - top0);
+            if t > 1e-9 && t < 1.0 - 1e-9 {
+                ring.push((f.len * t, 0.0));
+            }
+        }
+        if !tip {
+            ring.push((0.0, under(top0)));
+        }
+        ring.dedup_by(|a, b| (a.0 - b.0).abs() < 1e-9 && (a.1 - b.1).abs() < 1e-9);
+        if ring.len() > 3 {
+            let (a, z) = (ring[0], ring[ring.len() - 1]);
+            if (a.0 - z.0).abs() < 1e-9 && (a.1 - z.1).abs() < 1e-9 {
+                ring.pop();
+            }
+        }
+        let profile: Vec<V3> = ring
+            .iter()
+            .map(|&(s, h)| self.on_flight(f, s, 0.0, h))
+            .collect();
         let r = f.right();
         let ext = self.vector((r.0 * f.width, r.1 * f.width), 0.0);
         self.push(StairPart::Ramp, Material::WallInterior, &profile, ext);
+        if surface > 1e-9 {
+            // The plate follows the slope past both ends and both sides.
+            let oh = o.surface_overhang.max(0.0);
+            let slope = if f.len > 1e-9 { f.rise / f.len } else { 0.0 };
+            let h_at = |s: f64| top0 + slope * s;
+            let plate: Vec<V3> = [
+                (-oh, h_at(-oh)),
+                (f.len + oh, h_at(f.len + oh)),
+                (f.len + oh, h_at(f.len + oh) - surface),
+                (-oh, h_at(-oh) - surface),
+            ]
+            .iter()
+            .map(|&(s, h)| self.on_flight(f, s, -oh, h))
+            .collect();
+            let w = f.width + 2.0 * oh;
+            let ext = self.vector((r.0 * w, r.1 * w), 0.0);
+            self.push(StairPart::Tread, Material::Floor, &plate, ext);
+        }
     }
 
     /// The sloped runs of a curved ramp, in strips of 5 degrees.
-    fn curved_ramp(&mut self, arc: &RampArc, thick: f64) {
+    fn curved_ramp(&mut self, arc: &RampArc, p: &StairParams) {
+        let thick = p.slab_thickness.max(0.1);
+        let o = &p.ramp;
+        let surface = if o.has_surface {
+            o.surface_thickness.clamp(0.0, thick)
+        } else {
+            0.0
+        };
+        let oh = if o.has_surface {
+            o.surface_overhang.max(0.0)
+        } else {
+            0.0
+        };
         let c = &arc.curve;
         for &(a0, a1, _, rise) in &arc.segs {
             if rise.abs() < 1e-9 {
@@ -709,18 +787,39 @@ impl Ctx<'_> {
                     a0 + (a1 - a0) * (k + 1) as f64 / n as f64,
                 );
                 let (h0, h1) = (arc.height_at(b0), arc.height_at(b1));
+                // Depth under the top of the strip: fixed when open, else
+                // down to the floor within the cap (a stepped approximation).
+                let depth = if o.open_underneath {
+                    thick
+                } else {
+                    (0.5 * (h0 + h1)).min(o.depth_cap(thick)).max(0.25)
+                };
                 let profile = [
-                    self.scene(c.at_lat(b0, 0.0), h0),
-                    self.scene(c.at_lat(b0, c.width), h0),
-                    self.scene(c.at_lat(b1, c.width), h1),
-                    self.scene(c.at_lat(b1, 0.0), h1),
+                    self.scene(c.at_lat(b0, 0.0), h0 - surface),
+                    self.scene(c.at_lat(b0, c.width), h0 - surface),
+                    self.scene(c.at_lat(b1, c.width), h1 - surface),
+                    self.scene(c.at_lat(b1, 0.0), h1 - surface),
                 ];
                 self.push(
                     StairPart::Ramp,
                     Material::WallInterior,
                     &profile,
-                    [0.0, -thick, 0.0],
+                    [0.0, -(depth - surface).max(0.1), 0.0],
                 );
+                if surface > 1e-9 {
+                    let plate = [
+                        self.scene(c.at_lat(b0, -oh), h0),
+                        self.scene(c.at_lat(b0, c.width + oh), h0),
+                        self.scene(c.at_lat(b1, c.width + oh), h1),
+                        self.scene(c.at_lat(b1, -oh), h1),
+                    ];
+                    self.push(
+                        StairPart::Tread,
+                        Material::Floor,
+                        &plate,
+                        [0.0, -surface, 0.0],
+                    );
+                }
             }
         }
     }

@@ -7,7 +7,7 @@
 
 use crate::editor::EditorContext;
 use eframe::egui::{self, Align2, Vec2};
-use plan_core::layer_sets::LayerSets;
+use plan_core::layer_sets::{LayerSets, ViewKind, USE_ACTIVE_LAYER_SET};
 use plan_core::{LayerSet, Project};
 use std::cell::RefCell;
 use std::collections::BTreeSet;
@@ -18,6 +18,8 @@ pub const OPEN: &str = "layers.set_management";
 /// Menu id: Tools > Layer Settings > Active Layers by Tool... (includes the
 /// Current CAD Layer, LAY-6).
 pub const ACTIVE_LAYERS: &str = "layers.active_by_tool";
+/// Menu id: Tools > Layer Settings > Layer Set Defaults... (LAY-70).
+pub const DEFAULTS: &str = "layers.set_defaults";
 
 // ----- operations -----
 
@@ -147,6 +149,7 @@ struct Source {
 struct State {
     open: bool,
     tools_open: bool,
+    defaults_open: bool,
     selected: Option<String>,
     mode: Mode,
     name: String,
@@ -182,6 +185,7 @@ pub fn run_command(_cx: &mut EditorContext, id: &str) -> bool {
     match id {
         OPEN => open(),
         ACTIVE_LAYERS => open_tools(),
+        DEFAULTS => state(|s| s.defaults_open = true),
         _ => return false,
     }
     true
@@ -215,9 +219,100 @@ pub fn reset_tool_layers(cx: &mut EditorContext) -> bool {
     true
 }
 
+/// Layer Set Defaults: chooses the layer set a new view of `kind` starts
+/// with (`None` or "Use Active Layer Set" follows the active set). One undo
+/// step; `false` when nothing changes or the set is unknown.
+pub fn set_view_default(cx: &mut EditorContext, kind: ViewKind, set: Option<&str>) -> bool {
+    let set = set.filter(|s| *s != USE_ACTIVE_LAYER_SET);
+    if set.is_some_and(|s| cx.project.layer_sets.get(s).is_none()) {
+        return false;
+    }
+    if cx.project.layer_set_defaults.choice(kind) == set {
+        return false;
+    }
+    cx.begin_change("Layer Set Defaults");
+    cx.project.layer_set_defaults.set(kind, set);
+    cx.mark_dirty();
+    true
+}
+
+fn show_defaults(ctx: &egui::Context, cx: &mut EditorContext) {
+    if !state(|s| s.defaults_open) {
+        return;
+    }
+    let mut open = true;
+    let names: Vec<String> = cx
+        .project
+        .layer_sets
+        .names()
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    let mut pick: Option<(ViewKind, Option<String>)> = None;
+    let mut define: Option<String> = None;
+    egui::Window::new("Layer Set Defaults")
+        .id(egui::Id::new("layer_set_defaults"))
+        .open(&mut open)
+        .collapsible(false)
+        .resizable(false)
+        .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+        .show(ctx, |ui| {
+            ui.label("The layer set a new view of each kind starts with.");
+            egui::Grid::new("layer_set_defaults_grid")
+                .num_columns(3)
+                .spacing(Vec2::new(10.0, 4.0))
+                .show(ui, |ui| {
+                    for kind in ViewKind::ALL {
+                        ui.label(kind.label());
+                        let current = cx.project.layer_set_defaults.choice(kind);
+                        egui::ComboBox::from_id_salt(("layer_set_default", kind))
+                            .selected_text(current.unwrap_or(USE_ACTIVE_LAYER_SET))
+                            .width(200.0)
+                            .show_ui(ui, |ui| {
+                                if ui
+                                    .selectable_label(current.is_none(), USE_ACTIVE_LAYER_SET)
+                                    .clicked()
+                                {
+                                    pick = Some((kind, None));
+                                }
+                                for n in &names {
+                                    if ui.selectable_label(current == Some(n), n).clicked() {
+                                        pick = Some((kind, Some(n.clone())));
+                                    }
+                                }
+                            });
+                        let target = cx.project.initial_layer_set(kind);
+                        if ui
+                            .small_button("Define\u{2026}")
+                            .on_hover_text("Open the Layer Set Management window on this set")
+                            .clicked()
+                        {
+                            define = Some(target);
+                        }
+                        ui.end_row();
+                    }
+                });
+        });
+    if let Some((kind, set)) = pick {
+        set_view_default(cx, kind, set.as_deref());
+    }
+    if let Some(set) = define {
+        state(|s| {
+            s.selected = Some(set);
+            s.open = true;
+        });
+    }
+    if !open {
+        state(|s| s.defaults_open = false);
+    }
+}
+
 /// Draws the windows that are open.
 pub fn show_all(ctx: &egui::Context, cx: &mut EditorContext) {
     show_tools(ctx, cx);
+    show_defaults(ctx, cx);
+    super::object_layers::show(ctx, cx);
+    super::layer_display::show_define(ctx, cx);
     if !is_open() {
         return;
     }
@@ -360,7 +455,6 @@ fn show_tools(ctx: &egui::Context, cx: &mut EditorContext) {
         .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
         .show(ctx, |ui| {
             ui.label("The layer each tool draws on. New CAD objects go on the Current CAD Layer; walls, doors and windows keep their own layers.");
-            let layers: Vec<String> = cx.project.layers.layers.iter().map(|l| l.name.clone()).collect();
             let mut pick: Option<(&'static str, String)> = None;
             egui::Grid::new("active_layers_grid")
                 .num_columns(2)
@@ -370,16 +464,15 @@ fn show_tools(ctx: &egui::Context, cx: &mut EditorContext) {
                     for info in plan_core::layers::TOOL_LAYERS {
                         ui.label(info.label);
                         let current = cx.project.layers.tool_layer(info.key);
-                        egui::ComboBox::from_id_salt(("tool_layer", info.key))
-                            .selected_text(current.clone())
-                            .width(220.0)
-                            .show_ui(ui, |ui| {
-                                for l in &layers {
-                                    if ui.selectable_label(*l == current, l).clicked() {
-                                        pick = Some((info.key, l.clone()));
-                                    }
-                                }
-                            });
+                        if let Some(l) = super::select_layer::layer_combo(
+                            ui,
+                            cx,
+                            ("tool_layer", info.key),
+                            &current,
+                            220.0,
+                        ) {
+                            pick = Some((info.key, l));
+                        }
                         ui.end_row();
                     }
                 });
@@ -636,12 +729,50 @@ mod tests {
     }
 
     #[test]
+    fn layer_set_defaults_are_one_undo_step_each() {
+        let mut cx = cx();
+        new_set(&mut cx, "Framing Only").unwrap();
+        assert!(set_view_default(
+            &mut cx,
+            ViewKind::FramingPlan,
+            Some("Framing Only")
+        ));
+        assert_eq!(cx.undo_label(), Some("Layer Set Defaults"));
+        assert_eq!(
+            cx.project.initial_layer_set(ViewKind::FramingPlan),
+            "Framing Only"
+        );
+        assert!(!set_view_default(
+            &mut cx,
+            ViewKind::FramingPlan,
+            Some("Framing Only")
+        ));
+        assert!(!set_view_default(
+            &mut cx,
+            ViewKind::RoofPlan,
+            Some("Ghost")
+        ));
+        assert!(set_view_default(
+            &mut cx,
+            ViewKind::FramingPlan,
+            Some(USE_ACTIVE_LAYER_SET)
+        ));
+        assert!(cx.project.layer_set_defaults.is_default());
+        cx.undo();
+        assert_eq!(
+            cx.project.initial_layer_set(ViewKind::FramingPlan),
+            "Framing Only"
+        );
+    }
+
+    #[test]
     fn the_windows_draw_and_the_commands_open_them() {
         let ctx = egui::Context::default();
         let mut cx = cx();
         assert!(!run_command(&mut cx, "nope"));
         assert!(run_command(&mut cx, OPEN));
         assert!(run_command(&mut cx, ACTIVE_LAYERS));
+        assert!(run_command(&mut cx, DEFAULTS));
         assert!(is_open());
         for _ in 0..3 {
             let _ = ctx.run(egui::RawInput::default(), |ctx| show_all(ctx, &mut cx));
@@ -649,6 +780,7 @@ mod tests {
         state(|s| {
             s.open = false;
             s.tools_open = false;
+            s.defaults_open = false;
         });
         assert!(!is_open());
     }

@@ -672,6 +672,32 @@ mod tests {
     }
 
     #[test]
+    fn a_drag_stops_at_the_longest_section_of_100_feet() {
+        let mut cx = new_cx();
+        let mut t = StairsTool::default();
+        drag(&mut t, &mut cx, (0.0, 0.0), (3000.0, 0.0));
+        let run = only_stair(&cx).solution().total_run;
+        assert!(
+            run <= plan_stairs::SECTION_MAX_RUN + 1.0 && run > 1000.0,
+            "run {run}"
+        );
+
+        let mut cx = new_cx();
+        let mut r = StairsTool::new(StairKind::Ramp);
+        drag(&mut r, &mut cx, (0.0, 0.0), (3000.0, 0.0));
+        let o = only_stair(&cx);
+        let StairShape::Ramp { slope_1_in } = o.stair.params.shape else {
+            panic!("a ramp");
+        };
+        let long = slope_1_in * o.stair.params.total_rise;
+        assert!(long <= plan_stairs::SECTION_MAX_RUN + 1.0, "{long}");
+        assert_eq!(
+            plan_stairs::clamp_section_run(1.0),
+            plan_stairs::SECTION_MIN_RUN
+        );
+    }
+
+    #[test]
     fn undo_removes_the_stair() {
         let mut cx = new_cx();
         let mut t = StairsTool::default();

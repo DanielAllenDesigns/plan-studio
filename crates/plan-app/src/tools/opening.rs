@@ -71,6 +71,22 @@ impl OpeningVariant {
     }
 }
 
+/// The Defaults dialog a Door or Window Tools button opens when it is
+/// double-clicked (manual p. 603); the Interior set for a type that has both.
+pub fn defaults_key_for_tool(tool: ToolId) -> Option<plan_core::openings::types::DefaultKey> {
+    use plan_core::openings::types::DefaultKey;
+    match tool {
+        ToolId::Door => Some(DefaultKey::new(
+            OpeningKind::Door,
+            OpeningStyle::Hinged,
+            false,
+        )),
+        ToolId::Window => Some(DefaultKey::main_window()),
+        ToolId::OpeningVariant(v) => Some(DefaultKey::new(v.kind, v.style, false)),
+        _ => None,
+    }
+}
+
 /// Where a click would put the opening.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Hover {
@@ -279,7 +295,7 @@ impl OpeningTool {
             raw,
             cx.snap_unit(),
             cx.pick_tol(),
-            !p.modifiers.alt,
+            !p.overrides(),
             Some(pl.id),
         ) else {
             return false;
@@ -392,7 +408,7 @@ impl Tool for OpeningTool {
         }
         sync_rules(cx);
         self.hover =
-            wall_under(cx, p.world).and_then(|w| self.placement(cx, w, p.world, p.modifiers.alt));
+            wall_under(cx, p.world).and_then(|w| self.placement(cx, w, p.world, p.overrides()));
         self.hover_pointer = p.world;
         ToolResult {
             repaint: true,
@@ -422,7 +438,7 @@ impl Tool for OpeningTool {
         // plan's Minimum Separation is the one of the Window Defaults.
         sync_rules(cx);
         follow_defaults(cx);
-        let Some(hover) = self.placement(cx, &wall, p.world, p.modifiers.alt) else {
+        let Some(hover) = self.placement(cx, &wall, p.world, p.overrides()) else {
             cx.status = if self.style.projects() {
                 "A bay, box or bow window needs a straight wall and at least 2'-6\" of room".into()
             } else {
@@ -1014,7 +1030,7 @@ mod tests {
         // Alt suspends the alignment snaps and the grid (DW-110).
         let (mut cx, w) = setup();
         let mut ev = event(&cx, 123.4, 0.0);
-        ev.modifiers.alt = true;
+        ev.modifiers.ctrl = true;
         t.pointer_move(&mut cx, ev);
         t.pointer_down(&mut cx, ev.with_down(true));
         assert_eq!(

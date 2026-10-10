@@ -32,7 +32,9 @@
 
 pub mod arch_block;
 pub mod assemblies;
+pub mod bearing;
 pub mod cad;
+pub mod calc;
 pub mod callout;
 pub mod camera;
 pub mod camera_view;
@@ -88,6 +90,8 @@ pub mod transform;
 pub mod tray;
 pub mod underlay;
 pub mod units;
+pub mod wall_repair;
+pub mod wall_types;
 pub mod walls;
 pub mod watermark;
 

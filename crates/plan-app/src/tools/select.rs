@@ -67,6 +67,8 @@ enum Op {
     OpeningResize(Id, Jamb),
     /// The label of an opening, moved off its spot (DW-63).
     OpeningLabel(Id),
+    /// The depth handle of a bay, box or bow window (manual p. 626).
+    BayDepth(Id),
     /// Offset of a dimension line.
     DimOffset(Id),
     CadRotate(Id),
@@ -116,6 +118,7 @@ impl Op {
             Op::OpeningSlide(_) | Op::Swing(_) => "Move Opening",
             Op::OpeningResize(..) => "Resize Opening",
             Op::OpeningLabel(_) => "Move Opening Label",
+            Op::BayDepth(_) => "Change Bay Depth",
             Op::DimOffset(_) => "Move Dimension",
             Op::CadRotate(_) => "Rotate",
             Op::CadArcBulge(..) => "Curve Polyline Edge",
@@ -180,6 +183,9 @@ pub struct SelectTool {
     cursor: egui::CursorIcon,
     /// The room under the press when it landed on empty floor (R-16).
     room_click: Option<usize>,
+    /// The marquee under way came from Ctrl/Cmd: it toggles what it covers,
+    /// so a selected object leaves the selection (manual p. 260).
+    marquee_toggle: bool,
 }
 
 impl Default for SelectTool {
@@ -188,6 +194,7 @@ impl Default for SelectTool {
             drag: Drag::None,
             cursor: egui::CursorIcon::Default,
             room_click: None,
+            marquee_toggle: false,
         }
     }
 }
@@ -358,16 +365,37 @@ pub fn run_command(cx: &mut EditorContext, id: &str) -> bool {
 // ----- the move operations (shared by drags and arrow-key nudges) -----
 
 /// Moves a wall by `delta`: perpendicular only, or freely with `free`.
+/// A wall dragged by its move handle: square to itself (Default), at the
+/// allowed angles (Alternate, Move, or the Polar movement method), or
+/// anywhere with Ctrl/Cmd held (`free`, manual p. 237).
 fn move_wall(cx: &mut EditorContext, id: Id, delta: Point, free: bool) {
     let fl = cx.floor;
     let unit = unit(cx);
-    if free {
-        let d = Point::new(
-            snap_unit_round(delta.x, unit),
-            snap_unit_round(delta.y, unit),
-        );
+    let polar = if free {
+        None
+    } else if behaviors::polar_move(cx) {
+        behaviors::polar_delta(cx, delta)
+    } else {
+        None
+    };
+    if free || polar.is_some() {
+        let d = polar.unwrap_or_else(|| {
+            Point::new(
+                snap_unit_round(delta.x, unit),
+                snap_unit_round(delta.y, unit),
+            )
+        });
         ops::translate_walls_with_followers(&mut cx.project, fl, &[id], d);
-    } else if let Some(w) = cx.floor().wall(id) {
+    } else {
+        move_wall_perpendicular(cx, id, delta);
+    }
+}
+
+/// The wall moved square to itself by the part of `delta` along its normal.
+fn move_wall_perpendicular(cx: &mut EditorContext, id: Id, delta: Point) {
+    let fl = cx.floor;
+    let unit = unit(cx);
+    if let Some(w) = cx.floor().wall(id) {
         let s = snap_unit_round(delta.dot(w.normal()), unit);
         if s.abs() > 1e-9 {
             ops::move_wall_perpendicular(&mut cx.project, fl, id, s);
@@ -813,7 +841,7 @@ fn typed_pointer(cx: &EditorContext, a: &Active, p: &PointerEvent) -> Option<Poi
     let mut e = *p;
     e.world = world;
     e.snapped = world;
-    e.modifiers.alt = true;
+    e.modifiers.ctrl = true;
     Some(e)
 }
 
@@ -953,6 +981,7 @@ impl SelectTool {
             (ObjectRef::Opening(id), HandleKind::PerpendicularMove) => Op::OpeningSlide(id),
             (ObjectRef::Opening(id), HandleKind::Swing) => Op::Swing(id),
             (ObjectRef::Opening(id), HandleKind::Label) => Op::OpeningLabel(id),
+            (ObjectRef::Opening(id), HandleKind::BayDepth) => Op::BayDepth(id),
             (ObjectRef::Opening(id), HandleKind::ResizeStart) => Op::OpeningResize(id, Jamb::Start),
             (ObjectRef::Opening(id), HandleKind::ResizeEnd) => Op::OpeningResize(id, Jamb::End),
             (ObjectRef::Dimension(id), HandleKind::PerpendicularMove) => Op::DimOffset(id),
@@ -975,7 +1004,10 @@ impl SelectTool {
         let typed = typed_pointer(cx, a, p0);
         let p = typed.as_ref().unwrap_or(p0);
         typed_readout(cx, a, p.world);
-        let alt = p.modifiers.alt;
+        // Alt (or the right button, or a summon key) picks the behavior for
+        // this drag; Ctrl/Cmd overrides snaps and move restrictions.
+        behaviors::summon(p0);
+        let alt = p.overrides();
         let total = p.world - a.start;
         // Edit Behaviors (S-65) that replace the plain move or reshape.
         let handled = match a.op {
@@ -985,7 +1017,7 @@ impl SelectTool {
             }
             // A text's width and height handles size its box (S-25, TXT-3).
             Op::CadVertex(id, kind) => {
-                behaviors::apply_vertex(cx, id, kind, p.world)
+                behaviors::apply_vertex(cx, id, kind, a.start, p.world)
                     || crate::tools::text::drag_box_handle(cx, id, kind, p.world, alt)
             }
             _ => false,
@@ -1098,6 +1130,9 @@ impl SelectTool {
             Op::OpeningLabel(id) => {
                 opening_view::drag_label(cx, id, p.world);
             }
+            Op::BayDepth(id) => {
+                opening_edit::drag_bay_depth(cx, id, p.world);
+            }
             Op::DimOffset(id) => {
                 let unit = unit(cx);
                 // The whole string moves its line; a curve sets its distance.
@@ -1144,7 +1179,7 @@ impl SelectTool {
             }
             Op::Group => {
                 let items = cx.selection.items.clone();
-                move_group_ex(cx, &items, behaviors::group_delta(cx, total), !a.copy);
+                move_group_ex(cx, &items, behaviors::group_delta(cx, total, alt), !a.copy);
             }
             Op::GroupRotate(center) => {
                 let mut angle = (p.world - center).angle() - (a.start - center).angle();
@@ -1493,6 +1528,14 @@ impl SelectTool {
     }
 
     fn cycle(&mut self, cx: &mut EditorContext, backwards: bool) -> ToolResult {
+        // With one door or window selected and no pointer over the plan, Tab
+        // walks the stack under it like Select Next Object (manual p. 610).
+        if cx.cursor_world.is_none()
+            && matches!(cx.selection.items.as_slice(), [ObjectRef::Opening(_)])
+        {
+            crate::editor::opening_edit::select_next(cx);
+            return ToolResult::consumed();
+        }
         let Some(at) = cx.cursor_world else {
             return ToolResult::ignored();
         };
@@ -1524,7 +1567,7 @@ impl SelectTool {
             cx.begin_change("Nudge");
             let before = cx.floor().walls.clone();
             match cx.selection.single() {
-                Some(ObjectRef::Wall(id)) => move_wall(cx, id, delta, false),
+                Some(ObjectRef::Wall(id)) => move_wall_perpendicular(cx, id, delta),
                 Some(ObjectRef::Opening(id)) => slide_opening_by(cx, id, delta),
                 _ => move_group(cx, &items, delta),
             }
@@ -1591,6 +1634,28 @@ impl SelectTool {
 impl Tool for SelectTool {
     fn id(&self) -> ToolId {
         ToolId::Select
+    }
+
+    /// While a move or a wall end is dragged: where it began, so Tab or
+    /// Enter can ask for the new location (manual p. 197).
+    fn coordinate_origin(&self, cx: &EditorContext) -> Option<Point> {
+        let Drag::Active(a) = &self.drag else {
+            return None;
+        };
+        if !cx.typed_input.is_armed() {
+            return None;
+        }
+        match a.op {
+            Op::WallEnd(id, end) => a.original.floors[cx.floor].wall(id).map(|w| {
+                if end == WallEnd::Start {
+                    w.end
+                } else {
+                    w.start
+                }
+            }),
+            Op::Group | Op::WallMove(_) => Some(a.start),
+            _ => None,
+        }
     }
 
     fn name(&self) -> &'static str {
@@ -1666,6 +1731,17 @@ impl Tool for SelectTool {
         }
         self.room_click = None;
         let tol = cx.pick_tol();
+        // The depth handle of a bay window can stand where the temporary
+        // width reads; the handle of the selected object wins.
+        if let Some(op @ Op::BayDepth(_)) = Self::handle_op(cx, p.world, tol) {
+            cx.temp.cancel();
+            self.drag = Drag::Armed {
+                op,
+                start: p.world,
+                screen: p.screen,
+            };
+            return ToolResult::consumed();
+        }
         // The padlock beside a measured value locks it into a permanent
         // dimension (S-63).
         if let Some(i) = cx.temp.hit_lock(p.world, cx.px_per_in) {
@@ -1704,8 +1780,10 @@ impl Tool for SelectTool {
             .first()
             .copied()
             .filter(|o| !matches!(o, ObjectRef::Room(_)));
-        // Alt on the press marquees from on top of an object (S-30).
-        let top_hit = top_hit.filter(|_| !p.modifiers.alt);
+        // Ctrl/Cmd on the press marquees from on top of an object and toggles
+        // the objects it covers (S-30, manual p. 260).
+        let marquee_over = p.overrides() && !p.modifiers.alt;
+        let top_hit = top_hit.filter(|_| !marquee_over);
         if let Some(top) = top_hit {
             rooms_edit::clear_room_selection();
             // A click on a schedule also picks the row it falls on.
@@ -1739,21 +1817,23 @@ impl Tool for SelectTool {
             };
             return ToolResult::consumed();
         }
-        if !shift {
+        if !shift && !marquee_over {
             cx.selection.clear();
             rooms_edit::clear_room_selection();
         }
+        self.marquee_toggle = marquee_over && !shift;
         self.room_click = rooms_edit::room_index_at(cx, p.world);
         self.drag = Drag::Marquee {
             start: p.world,
             current: p.world,
             screen: p.screen,
-            add: shift,
+            add: shift || marquee_over,
         };
         ToolResult::consumed()
     }
 
     fn pointer_move(&mut self, cx: &mut EditorContext, p: PointerEvent) -> ToolResult {
+        behaviors::summon(&p);
         if area::pointer_move(cx, &p) {
             return ToolResult::consumed();
         }
@@ -1791,7 +1871,9 @@ impl Tool for SelectTool {
                 if items.iter().any(|o| !cx.check_unlocked(*o)) {
                     return ToolResult::consumed();
                 }
-                let copy = p.modifiers.ctrl || p.modifiers.command;
+                // Ctrl/Cmd alone overrides (manual p. 237); with Alt too, the
+                // drag copies (S-94).
+                let copy = p.overrides() && p.modifiers.alt;
                 self.start_drag(cx, op, start, copy);
                 if let Drag::Active(a) = std::mem::replace(&mut self.drag, Drag::None) {
                     self.apply(cx, &a, &p);
@@ -1867,11 +1949,22 @@ impl Tool for SelectTool {
             } => {
                 if (p.screen - screen).length() >= DRAG_THRESHOLD_PX {
                     let found = objects_in_rect(cx, start, p.world);
-                    if !add {
-                        cx.selection.clear();
-                    }
-                    for o in found {
-                        cx.selection.add(o);
+                    if self.marquee_toggle {
+                        // Ctrl/Cmd: what is selected leaves, what is not joins.
+                        for o in found {
+                            if cx.selection.contains(o) {
+                                cx.selection.items.retain(|x| *x != o);
+                            } else {
+                                cx.selection.add(o);
+                            }
+                        }
+                    } else {
+                        if !add {
+                            cx.selection.clear();
+                        }
+                        for o in found {
+                            cx.selection.add(o);
+                        }
                     }
                 } else if let Some(room) = self.room_click.take() {
                     // A plain click on empty floor selects the room.
@@ -2172,7 +2265,7 @@ mod tests {
         t.pointer_up(&mut cx, p);
         // Alt suspends the 15 degree angle snap so the end lands exactly.
         let alt = eframe::egui::Modifiers {
-            alt: true,
+            ctrl: true,
             ..eframe::egui::Modifiers::NONE
         };
         let a = ev(&cx, 120.0, 0.0);

@@ -183,6 +183,42 @@ fn a_garage_takes_ceiling_outlets_and_a_deck_weatherproof_ones() {
     assert_eq!(sw.kind, DeviceKind::SwitchWp);
 }
 
+/// Auto Place Outlets in a house whose only room is named `name` of type
+/// `ty`: the plain (not weatherproof) outlets it places, and the undo label.
+fn auto_outlets_in(name: &str, ty: &str) -> (usize, Option<String>, Sim) {
+    let mut sim = house();
+    let anchor = Point::new(W / 2.0, H / 2.0);
+    sim.app.cx.project.floors[0]
+        .room_names
+        .push(plan_core::model::RoomName::new(anchor, name, ty));
+    sim.app.cx.refresh();
+    et::auto_place_floor_outlets(&mut sim.app.cx);
+    let inside = devices(&sim)
+        .iter()
+        .filter(|d| !d.kind.is_weatherproof())
+        .count();
+    let l = label(&sim);
+    (inside, l, sim)
+}
+
+#[test]
+fn auto_place_outlets_follows_the_room_functions() {
+    let (bedroom, l, mut sim) = auto_outlets_in("Bedroom", "Bedroom");
+    assert!(bedroom > 4, "a bedroom gets outlets all around: {bedroom}");
+    assert_eq!(l.as_deref(), Some("Auto Place Outlets"));
+    // One undo step takes them all away.
+    assert_eq!(sim.undo().as_deref(), Some("Auto Place Outlets"));
+    assert!(devices(&sim).is_empty());
+    // An exterior room gets none; a hybrid room fewer than a bedroom.
+    let (deck, _, _) = auto_outlets_in("Deck", "Deck");
+    assert_eq!(deck, 0, "no Auto Place Outlets in an exterior room");
+    let (garage, _, _) = auto_outlets_in("Garage", "Garage");
+    assert!(
+        garage > 0 && garage < bedroom,
+        "garage {garage} vs {bedroom}"
+    );
+}
+
 /// Opens the Electrical Defaults page on `tool`'s tab, edits it with `edit`
 /// and presses OK.
 fn edit_defaults(

@@ -499,7 +499,7 @@ pub struct TrayCeilingTool {
 
 impl TrayCeilingTool {
     fn snap(&self, cx: &EditorContext, p: &PointerEvent) -> Point {
-        cx.snap_at(p.world, self.anchor, p.modifiers.alt, &[]).point
+        cx.snap_at(p.world, self.anchor, p.overrides(), &[]).point
     }
 }
 

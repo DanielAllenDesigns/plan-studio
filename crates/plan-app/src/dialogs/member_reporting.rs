@@ -241,7 +241,11 @@ impl SavedDialog {
         let Some(d) = self.selected.as_deref().and_then(|n| self.set().get(n)) else {
             return false;
         };
-        self.editor = Some(DefaultEditor::new(&d.name.clone(), d.clone(), self.context.clone()));
+        self.editor = Some(DefaultEditor::new(
+            &d.name.clone(),
+            d.clone(),
+            self.context.clone(),
+        ));
         true
     }
 
@@ -338,11 +342,7 @@ impl SavedDialog {
     pub fn import_text(&mut self, text: &str) -> Result<String, String> {
         let d = ReportingDefault::from_json(text)
             .ok_or_else(|| "That is not a Structural Member Reporting file.".to_string())?;
-        let name = self
-            .draft
-            .reporting
-            .import(d)
-            .map_err(|e| e.to_string())?;
+        let name = self.draft.reporting.import(d).map_err(|e| e.to_string())?;
         self.selected = Some(name.clone());
         Ok(name)
     }
@@ -426,7 +426,11 @@ impl SavedDialog {
                                 edit = true;
                             }
                             ui.label(d.method.name());
-                            ui.label(if self.draft.reporting.active == d.name { "\u{2713}" } else { "" });
+                            ui.label(if self.draft.reporting.active == d.name {
+                                "\u{2713}"
+                            } else {
+                                ""
+                            });
                             ui.end_row();
                         }
                     });
@@ -452,11 +456,17 @@ impl SavedDialog {
                 self.message.clear();
                 self.new_default();
             }
-            if ui.add_enabled(some, egui::Button::new("Copy/Convert...")).clicked() {
+            if ui
+                .add_enabled(some, egui::Button::new("Copy/Convert..."))
+                .clicked()
+            {
                 self.message.clear();
                 self.copy_convert();
             }
-            if ui.add_enabled(some, egui::Button::new("Rename...")).clicked() {
+            if ui
+                .add_enabled(some, egui::Button::new("Rename..."))
+                .clicked()
+            {
                 self.message.clear();
                 self.prompt = self.selected.clone().map(Prompt::Rename);
             }
@@ -466,12 +476,21 @@ impl SavedDialog {
             if ui.button("Import...").clicked() {
                 self.import_file();
             }
-            if ui.add_enabled(some, egui::Button::new("Export...")).clicked() {
+            if ui
+                .add_enabled(some, egui::Button::new("Export..."))
+                .clicked()
+            {
                 self.export_file();
             }
         });
         ui.add_space(6.0);
-        let names: Vec<String> = self.draft.reporting.defaults.iter().map(|d| d.name.clone()).collect();
+        let names: Vec<String> = self
+            .draft
+            .reporting
+            .defaults
+            .iter()
+            .map(|d| d.name.clone())
+            .collect();
         let mut active = self.draft.reporting.active.clone();
         ui.horizontal(|ui| {
             ui.label("Currently Active Default");
@@ -526,7 +545,13 @@ impl SavedDialog {
             .map(|d| d.name.clone())
             .collect();
         let has_mixed = self.draft.reporting.has_mixed();
-        let taken: Vec<String> = self.draft.reporting.defaults.iter().map(|d| d.name.clone()).collect();
+        let taken: Vec<String> = self
+            .draft
+            .reporting
+            .defaults
+            .iter()
+            .map(|d| d.name.clone())
+            .collect();
         let Some(n) = self.new_default.as_mut() else {
             return;
         };
@@ -593,7 +618,13 @@ impl SavedDialog {
 
     fn show_editor(&mut self, ctx: &egui::Context) {
         let types: Vec<String> = self.draft.types.iter().map(|t| t.name.clone()).collect();
-        let taken: Vec<String> = self.draft.reporting.defaults.iter().map(|d| d.name.clone()).collect();
+        let taken: Vec<String> = self
+            .draft
+            .reporting
+            .defaults
+            .iter()
+            .map(|d| d.name.clone())
+            .collect();
         let Some(ed) = self.editor.as_mut() else {
             return;
         };
@@ -659,7 +690,13 @@ fn editor_body(ui: &mut egui::Ui, ed: &mut DefaultEditor) {
     row(ui, "Reporting Method", |ui| ui.label(ed.d.method.name()));
     row(ui, "Length Units", |ui| {
         ui.add_enabled_ui(ed.d.method.has_lengths(), |ui| {
-            enum_combo(ui, "rep_units", &mut ed.d.units, &ReportUnits::ALL, ReportUnits::name)
+            enum_combo(
+                ui,
+                "rep_units",
+                &mut ed.d.units,
+                &ReportUnits::ALL,
+                ReportUnits::name,
+            )
         });
     });
     section(ui, "Board Sizes");
@@ -687,7 +724,11 @@ fn editor_body(ui: &mut egui::Ui, ed: &mut DefaultEditor) {
                         if r.double_clicked() {
                             open_edit = true;
                         }
-                        ui.label(if has_lengths { units.format(b.length) } else { String::new() });
+                        ui.label(if has_lengths {
+                            units.format(b.length)
+                        } else {
+                            String::new()
+                        });
                         ui.label(&b.type_name);
                         ui.label(if b.treated { "\u{2713}" } else { "" });
                         ui.label((i + 1).to_string());
@@ -720,13 +761,18 @@ fn editor_body(ui: &mut egui::Ui, ed: &mut DefaultEditor) {
             ed.increase_priority();
         }
         if ui
-            .add_enabled(sel && i + 1 < ed.d.boards.len(), egui::Button::new("Decrease Priority"))
+            .add_enabled(
+                sel && i + 1 < ed.d.boards.len(),
+                egui::Button::new("Decrease Priority"),
+            )
             .clicked()
         {
             ed.decrease_priority();
         }
     });
-    ui.weak("If a piece could be cut from more than one board, the one higher in the table is used.");
+    ui.weak(
+        "If a piece could be cut from more than one board, the one higher in the table is used.",
+    );
     if matches!(ed.d.method, ReportMethod::BuyList | ReportMethod::CutList) {
         section(ui, "Buy List Cut Board Options");
         row(ui, "Kerf Width", |ui| inches(ui, &mut ed.d.kerf, 0.0, 1.0));
@@ -749,16 +795,18 @@ fn editor_body(ui: &mut egui::Ui, ed: &mut DefaultEditor) {
         report.pieces(),
         report.linear_feet()
     ));
-    egui::CollapsingHeader::new("Lines").default_open(false).show(ui, |ui| {
-        egui::Grid::new("rep_lines").striped(true).show(ui, |ui| {
-            for l in &report.lines {
-                ui.label(l.category.name());
-                ui.label(&l.description);
-                ui.label(format!("{:.1} {}", l.qty, l.unit));
-                ui.end_row();
-            }
+    egui::CollapsingHeader::new("Lines")
+        .default_open(false)
+        .show(ui, |ui| {
+            egui::Grid::new("rep_lines").striped(true).show(ui, |ui| {
+                for l in &report.lines {
+                    ui.label(l.category.name());
+                    ui.label(&l.description);
+                    ui.label(format!("{:.1} {}", l.qty, l.unit));
+                    ui.end_row();
+                }
+            });
         });
-    });
 }
 
 fn show_board(ctx: &egui::Context, ed: &mut DefaultEditor, types: &[String]) {
@@ -778,8 +826,12 @@ fn show_board(ctx: &egui::Context, ed: &mut DefaultEditor, types: &[String]) {
         .pivot(Align2::CENTER_CENTER)
         .default_pos(ctx.screen_rect().center())
         .show(ctx, |ui| {
-            row(ui, "Actual Thickness", |ui| inches(ui, &mut b.board.thickness, 0.25, 48.0));
-            row(ui, "Actual Depth", |ui| inches(ui, &mut b.board.depth, 0.25, 96.0));
+            row(ui, "Actual Thickness", |ui| {
+                inches(ui, &mut b.board.thickness, 0.25, 48.0)
+            });
+            row(ui, "Actual Depth", |ui| {
+                inches(ui, &mut b.board.depth, 0.25, 96.0)
+            });
             if has_lengths {
                 row(ui, "Length", |ui| {
                     let mut v = units.from_inches(b.board.length);
@@ -790,14 +842,21 @@ fn show_board(ctx: &egui::Context, ed: &mut DefaultEditor, types: &[String]) {
                         ReportUnits::Millimeters => " mm",
                     };
                     if ui
-                        .add(egui::DragValue::new(&mut v).speed(0.25).range(0.0..=5000.0).suffix(suffix))
+                        .add(
+                            egui::DragValue::new(&mut v)
+                                .speed(0.25)
+                                .range(0.0..=5000.0)
+                                .suffix(suffix),
+                        )
                         .changed()
                     {
                         b.board.length = units.to_inches(v);
                     }
                 });
             }
-            row(ui, "Type", |ui| name_combo(ui, "rep_board_type", &mut b.board.type_name, types));
+            row(ui, "Type", |ui| {
+                name_combo(ui, "rep_board_type", &mut b.board.type_name, types)
+            });
             ui.checkbox(&mut b.board.treated, "Treated");
             row(ui, "Formula", |ui| {
                 ui.add(egui::TextEdit::singleline(&mut b.board.formula).desired_width(220.0));
@@ -891,7 +950,10 @@ mod tests {
         n.name = "Second".into();
         n.method = ReportMethod::Mixed;
         assert_eq!(d.new_ok(), Err(ReportingError::SecondMixed));
-        assert!(d.new_default.is_some(), "the dialog stays open on the error");
+        assert!(
+            d.new_default.is_some(),
+            "the dialog stays open on the error"
+        );
         assert!(d.message.contains("Mixed"));
     }
 

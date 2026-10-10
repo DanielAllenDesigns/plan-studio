@@ -251,6 +251,18 @@ suggested fix. See chapter 18. A landing has no risers or treads and is skipped.
 R311.7.10.1 instead (risers up to 9 1/2", treads at least 6 3/4" at the walking line, clear width at least 26",
 headroom at least 6'-6"). (The handrail rule does not yet count a stair side set to Handrail; it looks at the Handrail check box and at Railing and Half Wall sides.)
 
+## 7.6a Sections, Best Fit and landings (round 16)
+
+A staircase is the chain of flights and landings joined together; select any flight and the numbers of its
+sections and subsections (1, 2 and 1-1, 1-2) show beside it. The Staircase Specification General tab has
+**Staircase Information** (does it reach the next level, the Best Fit riser height and risers, the rise angle) with
+**Make Best Fit**, **Advanced Options** (Automatic Treads, Lock Tread Depth, Lock Number of Treads, No Change; Lock Top
+or Lock Bottom for which end stays when the length changes) and a **Specifications** table (ten lines at most).
+The Edit toolbar has **Make Best Fit** (every section takes the riser height nearest 6 3/4", the selected section
+adds or removes risers) and **Merge Sections** (two straight, parallel flights that follow each other join into one
+section of two subsections). Landings Auto Adjust Height and Thickness; a landing within 1" of an earlier one
+sits one riser higher and the railing between them goes.
+
 ## 7.7 Differences from Chief
 
 - The **Stair Schedule** (Tools > Schedules > Stair) has Chief's columns (Treads, Risers, Riser height, Tread depth, Total rise, Total run, Width, Headroom); Headroom is the stair's own headroom setting, not a measurement against the floor above. A Handrail side is drawn along the flights, not across landings.
@@ -263,3 +275,5 @@ headroom at least 6'-6"). (The handrail rule does not yet count a stair side set
   inside radius; the flared and bullnose bottom treads are set in the Style tab.
 - Click Stairs places the stair toward the pointer's last movement direction; this is a guess to
   verify against Chief (`DECISIONS.md`, item 6).
+- Merged subsections share one tread depth (the run is spread over all treads); curved sections do not merge (`DECISIONS.md`, ST21-1).
+- Make Best Fit does not extend downward stairs to the terrain.

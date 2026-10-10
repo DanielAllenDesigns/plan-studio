@@ -456,6 +456,7 @@ fn rich_project() -> Project {
         material: "Stucco".into(),
     });
     p.wall_types.push(plan_core::WallTypeDef {
+        props: Default::default(),
         name: "Custom wall".into(),
         layers: vec![
             plan_core::WallLayer::new("Siding", 1.0, false, "Wood"),

@@ -151,6 +151,11 @@ pub fn draw_plan(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
         "fireplaces",
         crate::editor::fireplace_view::draw(cx, painter, cam)
     );
+    // Decking boards and level changes (CB-86, R-86) draw over the walls too.
+    section!(
+        "decks and level changes",
+        crate::editor::fireplace_view::deck::draw(cx, painter, cam)
+    );
     // Wall hatching and wall regions, corner trim and moldings over the walls.
     section!(
         "details over",
@@ -642,7 +647,11 @@ fn draw_curved_layers(
     let thin = Stroke::new(0.75_f32, pal.wall_stroke);
     let heavy = Stroke::new(1.5_f32, pal.wall_stroke);
     let main_fill = crate::theme::scale(fill, 0.78);
+    let main_only = cx.layers().main_layer_only();
     for l in &layers {
+        if main_only && !l.is_main {
+            continue;
+        }
         if l.is_main {
             fill_band(painter, cam, &l.polygon, main_fill);
         }
@@ -796,8 +805,11 @@ fn draw_pony_lower(
 
 fn draw_one_wall(cx: &EditorContext, painter: &egui::Painter, cam: &Camera, wall: &Wall) {
     let pal = &cx.palette;
-    // Below this zoom the layer lines would just turn into a smear.
-    let show_layers = cam.px_per_in >= 1.0;
+    // Below this zoom the layer lines would just turn into a smear. The
+    // "Walls, Layers" layer switches the lines between layers (LAY-76).
+    let show_layers = cam.px_per_in >= 1.0 && cx.layers().wall_layer_lines();
+    // "Walls, Main Layer Only" draws just the main layer of the wall type.
+    let main_only = cx.layers().main_layer_only();
     let mut fill = match wall.kind {
         WallKind::Exterior => pal.wall_fill_exterior,
         WallKind::Interior => pal.wall_fill_interior,
@@ -857,6 +869,9 @@ fn draw_one_wall(cx: &EditorContext, painter: &egui::Painter, cam: &Camera, wall
     let heavy = Stroke::new(1.5_f32, pal.wall_stroke);
     let main_fill = crate::theme::scale(fill, 0.78);
     for l in cx.layer_outlines.iter().filter(|l| l.wall_id == wall.id) {
+        if main_only && !l.is_main {
+            continue;
+        }
         let pts = quad(cam, &l.polygon);
         if l.is_main {
             painter.add(Shape::convex_polygon(pts.clone(), main_fill, Stroke::NONE));
@@ -1794,7 +1809,9 @@ fn draw_dimension_end(
     match look.mark {
         DimArrow::None => {}
         DimArrow::Tick => {
-            let tick = perp * (size * 0.5).clamp(2.5, 14.0);
+            // Chief's architectural tick: a short stroke at 45 degrees to
+            // the dimension line.
+            let tick = (perp + dir).normalized() * (size * 0.5).clamp(2.5, 14.0);
             painter.line_segment([at - tick, at + tick], stroke);
         }
         DimArrow::Slash => {

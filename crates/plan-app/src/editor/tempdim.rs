@@ -36,6 +36,18 @@ use std::collections::HashMap;
 pub struct TempLocate {
     pub walls: WallLocate,
     pub openings: OpeningLocate,
+    /// Setup Temporary, Dimension Row Limit: the most separate gap lines
+    /// shown on each side of a wall (DIM-53).
+    pub row_limit: usize,
+    /// Setup Temporary, Reach: how far past the nearest object a further row
+    /// still locates one, inches (DIM-53; DECISIONS DM20).
+    pub reach: f64,
+    /// Exterior walls: located at their exterior (primary) and interior
+    /// (secondary) faces; neither means they are not located.
+    pub exterior_sides: [bool; 2],
+    /// Interior walls: interior (primary) face, exterior (secondary) face
+    /// and centers; none means they are not located.
+    pub interior_sides: [bool; 3],
     /// Main-layer spans by wall id (only filled for [`WallLocate::MainLayer`]).
     spans: HashMap<u64, (f64, f64)>,
 }
@@ -46,6 +58,10 @@ impl Default for TempLocate {
         Self {
             walls: WallLocate::Surfaces,
             openings: OpeningLocate::Sides,
+            row_limit: 1,
+            reach: f64::INFINITY,
+            exterior_sides: [true, true],
+            interior_sides: [true, true, false],
             spans: HashMap::new(),
         }
     }
@@ -69,11 +85,66 @@ impl TempLocate {
         } else {
             HashMap::new()
         };
+        let st = &cx.defaults.dimensions.setup;
         Self {
             walls: g.walls,
             openings: g.openings,
+            row_limit: st.temp_row_limit.max(1) as usize,
+            reach: st.temp_reach.max(0.0),
+            exterior_sides: [st.temp_exterior_primary, st.temp_exterior_secondary],
+            interior_sides: [
+                st.temp_interior_primary,
+                st.temp_interior_secondary,
+                st.temp_interior_centers,
+            ],
             spans,
         }
+    }
+
+    /// Is `w` located at all (Setup Temporary, Walls options)?
+    fn locates_wall(&self, w: &Wall) -> bool {
+        match w.kind {
+            plan_core::model::WallKind::Exterior => self.exterior_sides.iter().any(|b| *b),
+            plan_core::model::WallKind::Interior => self.interior_sides.iter().any(|b| *b),
+        }
+    }
+
+    /// The span another wall `o` is located at: both faces (as `span`), or
+    /// only the faces its kind's side options name; offsets along `o`'s own
+    /// normal. A single face gives a zero-width span.
+    fn other_span(&self, o: &Wall) -> (f64, f64) {
+        let (lo, hi) = self.span(o);
+        if self.walls == WallLocate::Centers {
+            return (lo, hi);
+        }
+        // Offsets of the exterior and interior faces along `o.normal()`.
+        let ext = o.exterior_side.sign();
+        let (ext_off, int_off) = if ext >= 0.0 { (hi, lo) } else { (lo, hi) };
+        let mut faces: Vec<f64> = Vec::new();
+        match o.kind {
+            plan_core::model::WallKind::Exterior => {
+                if self.exterior_sides[0] {
+                    faces.push(ext_off);
+                }
+                if self.exterior_sides[1] {
+                    faces.push(int_off);
+                }
+            }
+            plan_core::model::WallKind::Interior => {
+                if self.interior_sides[0] {
+                    faces.push(int_off);
+                }
+                if self.interior_sides[1] {
+                    faces.push(ext_off);
+                }
+                if self.interior_sides[2] {
+                    faces.push((lo + hi) * 0.5);
+                }
+            }
+        }
+        let a = faces.iter().copied().fold(f64::INFINITY, f64::min);
+        let b = faces.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        (a, b)
     }
 
     /// The lateral span `(lo, hi)` located on `w`, offsets along its normal.
@@ -707,15 +778,22 @@ pub fn toggle_lock(cx: &mut EditorContext, index: usize) -> Result<&'static str,
     Ok("Lock Dimension")
 }
 
+/// A parallel wall's gap: (gap, overlap midpoint, how far the located
+/// surface of the selected wall lies out, overlap start, overlap end).
+type GapCandidate = (f64, f64, f64, f64, f64);
+
+/// How far apart along the wall further gap rows sit, inches.
+const ROW_SPACING: f64 = 18.0;
+
 fn wall_dims(floor: &Floor, id: u64, out: &mut Vec<TempDim>, loc: &TempLocate) {
     let Some(s) = floor.wall(id) else { return };
     let (u, n, len) = (s.direction(), s.normal(), s.length());
     if len < 1e-6 {
         return;
     }
-    // Nearest parallel wall on each side: (gap, overlap midpoint, how far
-    // the located surface of `s` lies out on that side).
-    let mut best: [Option<(f64, f64, f64)>; 2] = [None, None];
+    // Parallel walls on each side: (gap, overlap midpoint, how far the
+    // located surface of `s` lies out on that side, overlap start, end).
+    let mut found: [Vec<GapCandidate>; 2] = [Vec::new(), Vec::new()];
     // The located span of `s` along its own normal.
     let (s_lo, s_hi) = loc.span(s);
     for o in &floor.walls {
@@ -724,6 +802,7 @@ fn wall_dims(floor: &Floor, id: u64, out: &mut Vec<TempDim>, loc: &TempLocate) {
             || o.length() < 1e-6
             || s.is_curved()
             || o.is_curved()
+            || !loc.locates_wall(o)
             || u.cross(o.direction()).abs() > 0.01
         {
             continue;
@@ -740,7 +819,7 @@ fn wall_dims(floor: &Floor, id: u64, out: &mut Vec<TempDim>, loc: &TempLocate) {
             continue;
         }
         // The other wall's located span in `s`'s normal direction.
-        let (o_lo, o_hi) = loc.span(o);
+        let (o_lo, o_hi) = loc.other_span(o);
         let (o_lo, o_hi) = if o.normal().dot(n) < 0.0 {
             (-o_hi, -o_lo)
         } else {
@@ -756,13 +835,30 @@ fn wall_dims(floor: &Floor, id: u64, out: &mut Vec<TempDim>, loc: &TempLocate) {
         if gap <= 0.01 {
             continue;
         }
-        let slot = &mut best[usize::from(off_a < 0.0)];
-        if slot.is_none_or(|(g, _, _)| gap < g) {
-            *slot = Some((gap, (lo + hi) * 0.5, out_s));
-        }
+        found[usize::from(off_a < 0.0)].push((gap, (lo + hi) * 0.5, out_s, lo, hi));
     }
     for (i, side) in [1.0_f64, -1.0].into_iter().enumerate() {
-        if let Some((gap, mid, out_s)) = best[i] {
+        // The nearest wall always shows; up to `row_limit - 1` further rows
+        // follow when they lie within Reach of the selected wall.
+        found[i].sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut rows: Vec<(f64, f64, f64)> = Vec::new();
+        for (k, &(gap, mid, out_s, lo, hi)) in found[i].iter().enumerate() {
+            if rows.len() >= loc.row_limit || (k > 0 && gap > loc.reach) {
+                break;
+            }
+            // Two rows never share a gap value (a row of the same gap is one
+            // line) and further rows sit apart along the wall.
+            if rows.iter().any(|r| (r.0 - gap).abs() < 0.01) {
+                continue;
+            }
+            let mut at = mid;
+            let r = rows.len() as f64;
+            if r > 0.0 {
+                at = (mid + r * ROW_SPACING).min(hi).max(lo);
+            }
+            rows.push((gap, at, out_s));
+        }
+        for (gap, mid, out_s) in rows {
             let a = s.start + u * mid + n * (side * out_s);
             out.push(TempDim {
                 kind: TempDimKind::WallGap,
@@ -1556,6 +1652,61 @@ mod tests {
         assert!((t.dims[1].value - 95.0).abs() < 1e-9);
         assert_eq!(t.dims[2].value, 240.0);
         assert_eq!(t.dims[3].value, 0.0);
+    }
+
+    /// The gap values on the `up` (+y) or down side of wall `id`.
+    fn gaps(p: &Project, id: u64, loc: &TempLocate, up: bool) -> Vec<f64> {
+        let mut sel = Selection::default();
+        sel.set(ObjectRef::Wall(id));
+        let mut t = TempDims::default();
+        t.compute(&p.floors[0], &sel, loc);
+        t.dims
+            .iter()
+            .filter(|d| d.kind == TempDimKind::WallGap && (d.b.y > d.a.y) == up)
+            .map(|d| d.value)
+            .collect()
+    }
+
+    #[test]
+    fn row_limit_and_reach_decide_how_many_gap_rows_show() {
+        let (mut p, _, mid) = plan();
+        p.add_wall(
+            0,
+            Point::new(0.0, 300.0),
+            Point::new(240.0, 300.0),
+            4.0,
+            100.0,
+            WallKind::Interior,
+        );
+        let mut loc = TempLocate::default();
+        // One row: the nearest wall on each side.
+        assert_eq!(gaps(&p, mid, &loc, true), vec![95.0]);
+        // Two rows reach the wall behind it.
+        loc.row_limit = 2;
+        assert_eq!(gaps(&p, mid, &loc, true), vec![95.0, 196.0]);
+        // The second row must lie within Reach; the nearest always shows.
+        loc.reach = 100.0;
+        assert_eq!(gaps(&p, mid, &loc, true), vec![95.0]);
+        loc.reach = 0.0;
+        assert_eq!(gaps(&p, mid, &loc, true), vec![95.0]);
+        assert_eq!(gaps(&p, mid, &loc, false), vec![95.0]);
+    }
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn the_wall_options_choose_the_faces_other_walls_are_located_at() {
+        let (p, _, mid) = plan();
+        let mut loc = TempLocate::default();
+        // The wall at y = 200 is exterior and its exterior side is +y:
+        // Primary locates the outer face, Secondary the inner one.
+        loc.exterior_sides = [true, false];
+        assert_eq!(gaps(&p, mid, &loc, true), vec![101.0]);
+        loc.exterior_sides = [false, true];
+        assert_eq!(gaps(&p, mid, &loc, true), vec![95.0]);
+        // Neither: exterior walls are not located at all.
+        loc.exterior_sides = [false, false];
+        assert!(gaps(&p, mid, &loc, true).is_empty());
+        assert!(gaps(&p, mid, &loc, false).is_empty());
     }
 
     #[test]

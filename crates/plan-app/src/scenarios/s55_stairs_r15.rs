@@ -106,6 +106,31 @@ fn the_ramp_tool_draws_a_1_to_12_ramp_with_handrails_on_both_sides() {
 }
 
 #[test]
+fn the_ramp_specification_closes_the_underside_and_lays_a_tread_surface_in_one_undo_step() {
+    let mut sim = house();
+    sim.tool(ToolId::StairsVariant(StairKind::Ramp));
+    sim.drag((40.0, 200.0), (400.0, 200.0));
+    let o = only(&sim);
+    let open = tagged_meshes(&o.stair);
+    assert_eq!(count(&open, StairPart::Tread), 0);
+    let mut d = o.clone();
+    d.stair.params.ramp.open_underneath = false;
+    d.stair.params.ramp.has_surface = true;
+    d.stair.params.ramp.surface_overhang = 3.0;
+    assert!(stairs_view::apply_edit(&mut sim.app.cx, &d));
+    let after = only(&sim);
+    let parts = tagged_meshes(&after.stair);
+    assert_eq!(count(&parts, StairPart::Tread), 1);
+    // The slab now stops at the floor instead of hanging under it.
+    assert!(extent(&parts, StairPart::Ramp).0[1] >= extent(&open, StairPart::Ramp).0[1] + 3.0);
+    // The values survive a save and reload of the plan slot.
+    let reloaded = stairs(&sim).pop().unwrap();
+    assert_eq!(reloaded.stair.params.ramp, d.stair.params.ramp);
+    assert_eq!(sim.undo().as_deref(), Some("Stair Specification"));
+    assert_eq!(only(&sim).stair, o.stair);
+}
+
+#[test]
 fn a_ramp_steeper_than_1_to_12_or_taller_than_30_inches_is_flagged_and_split() {
     let mut sim = house();
     sim.tool(ToolId::StairsVariant(StairKind::Ramp));

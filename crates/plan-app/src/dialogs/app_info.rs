@@ -284,6 +284,16 @@ pub fn new_plan_view(cx: &mut EditorContext) -> String {
     cx.begin_change("New Plan View");
     let mut view = base.unwrap_or_else(|| SavedPlanView::new(name.clone(), layer_set));
     view.name = name.clone();
+    // A layer set chosen for floor plans in Layer Set Defaults (LAY-70) is
+    // where a new plan view starts; with none chosen it copies the active view.
+    if let Some(set) = cx
+        .project
+        .layer_set_defaults
+        .choice(plan_core::layer_sets::ViewKind::FloorPlan)
+        .filter(|n| cx.project.layer_sets.get(n).is_some())
+    {
+        view.layer_set = set.to_string();
+    }
     cx.project.plan_views.push(view);
     cx.project.activate_plan_view(&name);
     cx.mark_dirty();

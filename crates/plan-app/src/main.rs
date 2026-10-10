@@ -8,7 +8,8 @@
 //! tool behind the [`Tool`] trait); see `docs/architecture-tools.md`.
 
 // Round 16 landed partially (see docs/integration-queue.md); several dialogs and
-// commands are built but not yet reachable from the UI. Remove at the Round 16 gate.
+// commands are built but not yet reachable from the UI (78 dead-code warnings at
+// the Round 16 gate, 2026-10-10). Remove once the finish passes wire them.
 #![allow(dead_code)]
 mod chief_link;
 mod dialogs;
@@ -114,6 +115,8 @@ impl PlanApp {
         let mut cx = EditorContext::new(defaults);
         // The snap, Edit Type and Replicate defaults saved in Preferences.
         dialogs::preferences::pages::apply_editing(&mut cx.defaults.editing);
+        // Whatever behavior was left active, Default starts (manual p. 252).
+        editor::behaviors::restore_default(&mut cx);
         cx.status = note.unwrap_or_default();
         cx.palette = settings.theme.palette();
         Self {
@@ -224,6 +227,11 @@ impl PlanApp {
     /// Is a specification dialog open (any kind)?
     fn has_dialog(&self) -> bool {
         self.dialog.is_some()
+            || dialogs::enter_coordinates::is_open()
+            || dialogs::number_style::is_open()
+            || dialogs::input_line::is_open()
+            || dialogs::input_arc::is_open()
+            || dialogs::move_point::is_open()
             || self.spec.is_open()
             || self.lists.is_some()
             || shell::layout_window::dialog_open()
@@ -710,11 +718,36 @@ impl PlanApp {
                 EditorRequest::SetTool(t) => self.set_tool(t),
             }
         }
+        // The double-click on a Door or Window Tools button asks for the
+        // Defaults dialog of its type (manual p. 603).
+        if let Some(key) = dialogs::take_type_defaults_request() {
+            use plan_core::openings::types::DefaultKey;
+            use plan_core::{OpeningKind, OpeningStyle};
+            // The plain Door and Window keep the dialogs they always had.
+            let hinged =
+                |exterior| DefaultKey::new(OpeningKind::Door, OpeningStyle::Hinged, exterior);
+            self.open_defaults_entry(if key == DefaultKey::main_window() {
+                DefaultsEntry::Window
+            } else if key == hinged(false) {
+                DefaultsEntry::InteriorDoor
+            } else if key == hinged(true) {
+                DefaultsEntry::ExteriorDoor
+            } else {
+                DefaultsEntry::OpeningType(key)
+            });
+        }
     }
 
     /// Opens the specification dialog of `o` (the one place that maps every
     /// object kind to its dialog).
     fn open_spec(&mut self, o: ObjectRef) {
+        // A temporary point opens Move Point (CAD-112).
+        if let ObjectRef::Cad(id) = o {
+            if let Some(p) = tools::cad::survey::temporary_point_of(&self.cx, id) {
+                dialogs::move_point::open(p);
+                return;
+            }
+        }
         match o {
             ObjectRef::Wall(id) => {
                 // Open Object over a selection of walls: one dialog for all
@@ -760,13 +793,23 @@ impl PlanApp {
             // along the axes as seen from the camera, or walk Full Camera.
             return;
         }
+        // Tab or Enter with nothing typed, while a start location exists:
+        // ask for the new location by number (manual p. 196).
+        let origin = self.tools.active().coordinate_origin(&self.cx);
+        if dialogs::enter_coordinates::try_open(&self.cx, origin, &k) {
+            return;
+        }
         let res = self.tools.active_mut().key(&mut self.cx, k);
         self.finish_tool_call(ctx, &res);
         if !res.consumed {
             if is_esc && self.tools.active_id() != ToolId::Select {
                 self.set_tool(ToolId::Select);
             } else if is_del {
-                self.cx.delete_selection();
+                // With nothing selected, Delete removes the latest temporary
+                // point (the Current Point).
+                if !tools::cad::survey::delete_key(&mut self.cx) {
+                    self.cx.delete_selection();
+                }
             }
         }
     }
@@ -802,6 +845,10 @@ impl PlanApp {
                     ..
                 } => {
                     use egui::Key::*;
+                    // Key 1 clears the extension anchors.
+                    if key == Num1 && !modifiers.any() && !self.cx.typed_input.is_armed() {
+                        editor::snap::clear_anchors();
+                    }
                     let arrow = matches!(key, ArrowLeft | ArrowRight | ArrowUp | ArrowDown);
                     let navigating = chrome_focus && (arrow || matches!(key, Tab | Enter));
                     let wanted = matches!(key, Escape | Delete | Backspace | Tab | Enter) || arrow;
@@ -828,8 +875,33 @@ impl PlanApp {
 
     fn canvas_event(&self, ctx: &egui::Context, pos: Pos2, down: bool) -> PointerEvent {
         let (mods, delta) = ctx.input(|i| (i.modifiers, i.pointer.delta()));
+        // Shift slows the pointer while a click-and-drag drawing is under way
+        // (manual p. 195); Select Objects keeps Shift for its marquee.
+        let slow = mods.shift && down && self.tools.active_id() != ToolId::Select;
+        let pos = editor::snap::slow_pointer(pos, slow);
+        // Keys that change how the pointer is read while they are held:
+        // Shift restricts the angle snaps, S drops the object snaps, and the
+        // summon keys call up an edit behavior (manual pp. 192, 193, 253).
+        let s_key = ctx.input(|i| {
+            i.key_down(egui::Key::S)
+                && !i.modifiers.command
+                && !i.modifiers.ctrl
+                && !i.modifiers.alt
+        });
+        editor::snap::set_held(editor::snap::HeldKeys {
+            shift: mods.shift,
+            s_key,
+        });
+        editor::behaviors::note_held_summon(ctx.input(editor::behaviors::held_summon));
         let world = self.camera.screen_to_world(pos);
-        let snap = self.cx.snap_at(world, None, mods.alt, &[]);
+        let snap = self
+            .cx
+            .snap_at(world, None, editor::snap::overrides(&mods), &[]);
+        if !down {
+            // Resting on an endpoint, midpoint or quadrant sets an extension
+            // anchor.
+            editor::snap::note_hover(&snap, self.cx.defaults.editing.anchor_history as usize);
+        }
         PointerEvent {
             world,
             snapped: snap.point,
@@ -926,6 +998,10 @@ impl PlanApp {
             return;
         };
         let world = self.camera.screen_to_world(pos);
+        // A wall's notification icon opens that wall's menu (W-132).
+        if editor::wall_edit::select_for_icon(&mut self.cx, world) {
+            return;
+        }
         let hits = editor::selection::hit_test_cx(&self.cx, world, self.cx.pick_tol());
         match hits.into_iter().find(|o| !matches!(o, ObjectRef::Room(_))) {
             Some(o) => {
@@ -1339,6 +1415,8 @@ impl PlanApp {
         render::draw_plan(&self.cx, &painter, &self.camera);
         // The Watermark, the printable-area border and the sheet's handles.
         dialogs::drawing_sheet::paint_overlays(&self.cx, &painter, &self.camera);
+        // The Off Angle and unconnected-wall icons (W-132).
+        editor::wall_edit::draw_icons(&self.cx, &painter, &self.camera);
         self.tools
             .active()
             .draw_overlay(&self.cx, &painter, &self.camera);
@@ -1439,6 +1517,11 @@ impl PlanApp {
             self.cx.wall_types().to_vec(),
         );
         dialog.set_framing_retained(&[editor::framing_view::wall_retained(&self.cx.project, id)]);
+        dialog.set_attic_above(editor::roof_view::attic_wall_above(
+            &self.cx.project,
+            self.cx.floor,
+            id,
+        ));
         self.dialog = Some(ActiveDialog::Wall(Box::new(dialog)));
         self.spec.arm_main_props(&self.cx, ObjectRef::Wall(id));
     }
@@ -1528,6 +1611,25 @@ impl PlanApp {
                 plan_defaults::window_template(&self.cx.defaults),
                 self,
             )),
+            DefaultsEntry::OpeningType(key) => {
+                // The opening the type places now: its own default where one
+                // was set, else the plan default sized for the type.
+                let base = if key.kind == plan_core::OpeningKind::Window {
+                    plan_defaults::window_template(&self.cx.defaults)
+                } else {
+                    plan_defaults::door_template(&self.cx.defaults, key.exterior)
+                };
+                let template =
+                    self.cx
+                        .defaults
+                        .opening_variants
+                        .place(&base, key.style, key.exterior);
+                Some(opening_dialog(
+                    OpeningTarget::DefaultType(key),
+                    template,
+                    self,
+                ))
+            }
             DefaultsEntry::Dimensions => {
                 self.lists = Some(dialogs::DefaultsList::dimensions(&self.cx));
                 None
@@ -1753,6 +1855,19 @@ impl PlanApp {
                 self.cx.defaults.opening_labels.window = d.label_settings().clone();
                 d.apply_to_variants(&mut self.cx.defaults.opening_variants);
             }
+            // A type of its own: the default of that type only, and the
+            // openings using it follow (Minimum Separation and the Mulled
+            // Unit Defaults are the plan's, kept with the window defaults).
+            OpeningTarget::DefaultType(key) => {
+                if key.kind == plan_core::OpeningKind::Window {
+                    let base = &self.cx.defaults.window;
+                    let w = d.extras().to_window_defaults(&draft, base);
+                    self.cx.defaults.window.min_separation = w.min_separation;
+                    self.cx.defaults.window.ignore_casing = w.ignore_casing;
+                    self.cx.defaults.window.mulled = w.mulled;
+                }
+                d.apply_to_variants(&mut self.cx.defaults.opening_variants);
+            }
         }
         self.cx
             .extras
@@ -1781,6 +1896,7 @@ impl PlanApp {
 
 impl eframe::App for PlanApp {
     fn on_exit(&mut self, gl: Option<&eframe::glow::Context>) {
+        editor::behaviors::restore_default(&mut self.cx);
         self.files.on_exit(&self.cx);
         if let (Some(gl), Some(vp)) = (gl, self.view3d.viewport.as_mut()) {
             vp.destroy(gl);
@@ -1789,12 +1905,35 @@ impl eframe::App for PlanApp {
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.cx.refresh();
+        // The Enter Coordinates dialog answers as a typed length and angle,
+        // which the tool commits on Enter.
+        if let Some(dialogs::enter_coordinates::Outcome::Ok { length, angle_deg }) =
+            dialogs::enter_coordinates::show(ctx)
+        {
+            dialogs::enter_coordinates::deliver(&mut self.cx, length, angle_deg);
+            self.send_key(ctx, KeyEvent::key(egui::Key::Enter));
+        }
+        // The survey entry dialogs: Number Style, New CAD Line / Arc and Move
+        // Point (`tools::cad::survey`).
+        dialogs::number_style::show(ctx, &mut self.cx);
+        dialogs::input_line::show(ctx, &mut self.cx);
+        dialogs::input_arc::show(ctx, &mut self.cx);
+        dialogs::move_point::show(ctx, &mut self.cx);
         // Preferences > Architectural > Auto Rebuild Roofs is the global switch;
         // each roof also has its own.
         if dialogs::preferences::pages::current()
             .architectural
             .auto_rebuild_roofs
             && editor::roof_view::auto_rebuild(&mut self.cx)
+        {
+            self.cx.refresh();
+        }
+        // Residential-template behaviour (RF-164, off by default): closing the
+        // exterior walls builds the roof.
+        if dialogs::preferences::pages::current()
+            .architectural
+            .build_roof_when_room_closes
+            && editor::roof_view::build_when_room_closes(&mut self.cx)
         {
             self.cx.refresh();
         }

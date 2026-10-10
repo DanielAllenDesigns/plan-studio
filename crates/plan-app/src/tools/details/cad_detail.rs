@@ -694,10 +694,16 @@ pub fn open_detail(cx: &mut EditorContext, idx: usize) -> bool {
         return false;
     };
     let view = tab_name(&f.name);
-    let layer_set = cx
+    // The layer set chosen for CAD details in Layer Set Defaults (LAY-70)
+    // comes first; with none chosen a detail starts with the active view's.
+    let chosen = cx
         .project
-        .current_plan_view()
-        .map(|v| v.layer_set.clone())
+        .layer_set_defaults
+        .choice(plan_core::layer_sets::ViewKind::CadDetail)
+        .filter(|n| cx.project.layer_sets.get(n).is_some())
+        .map(str::to_string);
+    let layer_set = chosen
+        .or_else(|| cx.project.current_plan_view().map(|v| v.layer_set.clone()))
         .or_else(|| cx.project.plan_views.first().map(|v| v.layer_set.clone()))
         .unwrap_or_default();
     match cx.project.plan_views.iter_mut().find(|v| v.name == view) {

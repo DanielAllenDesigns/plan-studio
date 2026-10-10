@@ -34,6 +34,9 @@ pub enum HandleKind {
     Bulge,
     /// The label of a door or window: dragging it moves the label (DW-63).
     Label,
+    /// The diamond on the outer face of a bay, box or bow window: dragging it
+    /// sets how far the unit projects (manual p. 626).
+    BayDepth,
     /// The pitch arrow of a roof plane: dragging it up the slope steepens it
     /// (RF-38).
     Pitch,
@@ -192,6 +195,10 @@ pub fn handles_for(cx: &EditorContext, scale: f64) -> Vec<Handle> {
                 };
                 out.push(h(HandleKind::Swing, pos, CursorIcon::PointingHand));
             }
+            // A bay, box or bow window has a depth handle on its outer face.
+            if let Some(at) = super::opening_edit::bay_depth_handle(cx, id) {
+                out.push(h(HandleKind::BayDepth, at, CursorIcon::Grab));
+            }
             // The label handle sits on the label while it is shown (DW-63).
             if let Some(l) = super::opening_view::opening_labels(cx)
                 .into_iter()
@@ -295,6 +302,11 @@ pub fn handles_for(cx: &EditorContext, scale: f64) -> Vec<Handle> {
                             CamHandle::Clip => (HandleKind::ResizeEnd, CursorIcon::Crosshair),
                             CamHandle::EndA => (HandleKind::ResizeStart, CursorIcon::Crosshair),
                             CamHandle::EndB => (HandleKind::Reshape(1), CursorIcon::Crosshair),
+                            // The diamonds of a stepped cutting plane (C-137);
+                            // the Select tool edits them through
+                            // `camera_tool::hit_handle`.
+                            CamHandle::Break(_) => (HandleKind::Reshape(5), CursorIcon::Grab),
+                            CamHandle::Step(_) => (HandleKind::Reshape(6), CursorIcon::Crosshair),
                         };
                         h(kind, pos, cursor)
                     })
@@ -542,6 +554,20 @@ pub fn draw(handles: &[Handle], painter: &egui::Painter, cam: &Camera, pal: &Pal
                     egui::StrokeKind::Inside,
                 ));
                 painter.circle_filled(c, 1.8, pal.selection);
+            }
+            HandleKind::BayDepth => {
+                // A diamond on the outer face of the unit.
+                let r = 6.0;
+                painter.add(Shape::convex_polygon(
+                    vec![
+                        c + Vec2::new(0.0, -r),
+                        c + Vec2::new(r, 0.0),
+                        c + Vec2::new(0.0, r),
+                        c + Vec2::new(-r, 0.0),
+                    ],
+                    pal.background,
+                    stroke,
+                ));
             }
             HandleKind::Pitch => {
                 // An arrow up the slope.

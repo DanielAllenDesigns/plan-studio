@@ -12,7 +12,7 @@ use plan_core::Point;
 use crate::geom::{dedup_points, offset_polygon, strip_edges};
 use crate::landscape::{
     FillStyle, Landscape, LandscapeKind, ObjectStyle, TerrainBreak, TerrainWall, WallKind,
-    LAYER_BREAKS, LAYER_FEATURES,
+    LAYER_BREAKS, LAYER_FEATURES, LAYER_PERIMETER,
 };
 use crate::model::{Feature, FeatureKind, Terrain};
 
@@ -274,6 +274,7 @@ impl Sink<'_> {
 /// terrain holes (those are part of [`crate::plan_symbols`]).
 pub fn landscape_plan(t: &Terrain) -> Vec<PlanItem> {
     let mut items = Vec::new();
+    perimeter_fill_plan(t, &mut items);
     for f in t.features.iter().filter(|f| f.kind != FeatureKind::Hole) {
         feature_plan(f, &mut items);
     }
@@ -287,6 +288,20 @@ pub fn landscape_plan(t: &Terrain) -> Vec<PlanItem> {
         object_plan(l, &mut items);
     }
     items
+}
+
+/// The Fill Style panel of the Terrain Perimeter: the ground inside the
+/// perimeter filled in plan. The default draws no fill (the outline only).
+fn perimeter_fill_plan(t: &Terrain, items: &mut Vec<PlanItem>) {
+    if t.perimeter.len() < 3 || t.perimeter_extras.style.fill == FillStyle::Default {
+        return;
+    }
+    let style = &t.perimeter_extras.style;
+    let mut s = Sink {
+        layer: style.layer_or(LAYER_PERIMETER),
+        items,
+    };
+    s.fill(&t.perimeter, style, FillStyle::None, GRASS_COLOR);
 }
 
 fn centroid(pts: &[Point]) -> Point {

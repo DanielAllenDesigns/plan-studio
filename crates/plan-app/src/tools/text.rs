@@ -1224,7 +1224,7 @@ impl Tool for TextTool {
     }
 
     fn pointer_move(&mut self, cx: &mut EditorContext, p: PointerEvent) -> ToolResult {
-        let mut s = cx.snap_at(p.world, self.pts.last().copied(), p.modifiers.alt, &[]);
+        let mut s = cx.snap_at(p.world, self.pts.last().copied(), p.overrides(), &[]);
         // Dragging from a new text's anchor sizes its box (TXT-1).
         if let Some((scr, _)) = self.press {
             if p.down
@@ -1240,7 +1240,7 @@ impl Tool for TextTool {
         // text (TXT-10).
         self.align_guide = None;
         if !self.typing()
-            && !p.modifiers.alt
+            && !p.overrides()
             && matches!(self.mode, TextMode::Text | TextMode::RichText)
         {
             if let Some((at, other)) = align_left_edge(cx, &s) {
@@ -1279,7 +1279,7 @@ impl Tool for TextTool {
         match self.mode {
             TextMode::Text | TextMode::RichText => self.start_text(cx, &p),
             TextMode::LeaderLine | TextMode::ArrowLine => {
-                let s = cx.snap_at(p.world, self.pts.last().copied(), p.modifiers.alt, &[]);
+                let s = cx.snap_at(p.world, self.pts.last().copied(), p.overrides(), &[]);
                 if self.pts.last().is_none_or(|l| l.dist(s.point) >= 0.5) {
                     self.pts.push(s.point);
                 }
@@ -1292,7 +1292,7 @@ impl Tool for TextTool {
                     cx.status = format!("The layer \"{layer}\" is locked");
                     return ToolResult::consumed();
                 }
-                let at = if p.modifiers.alt { p.world } else { p.snapped };
+                let at = if p.overrides() { p.world } else { p.snapped };
                 annot::post_new(annot::new_at(cx, mode_kind(self.mode), at));
                 ToolResult::consumed()
             }
@@ -1311,7 +1311,7 @@ impl Tool for TextTool {
         if !self.typing() || self.editing.is_some() {
             return ToolResult::ignored();
         }
-        let b = if p.modifiers.alt {
+        let b = if p.overrides() {
             p.world
         } else {
             cx.snap_at(p.world, None, false, &[]).point
@@ -1526,7 +1526,7 @@ impl TextTool {
             }
         }
         cx.selection.clear();
-        let at = if p.modifiers.alt {
+        let at = if p.overrides() {
             p.snapped
         } else {
             align_left_edge(cx, &p.snap).map_or(p.snapped, |(a, _)| a)
@@ -3124,7 +3124,7 @@ mod tests {
         t.pointer_move(&mut cx, far);
         assert!(t.align_guide.is_none());
         let alt = PointerEvent::at(&cx, Point::new(101.0, 100.0)).with_modifiers(egui::Modifiers {
-            alt: true,
+            ctrl: true,
             ..egui::Modifiers::NONE
         });
         t.pointer_move(&mut cx, alt);

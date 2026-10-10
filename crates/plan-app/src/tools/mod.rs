@@ -206,6 +206,8 @@ impl PointerEvent {
     /// `cx`). Screen position uses `cx.px_per_in` with the origin at (0, 0);
     /// handy for driving tools in tests.
     pub fn at(cx: &EditorContext, world: Point) -> Self {
+        // A fresh event holds no Shift until `with_modifiers` says so.
+        crate::editor::snap::note_modifiers(&Modifiers::NONE);
         let snap = cx.snap_at(world, None, false, &[]);
         let s = cx.px_per_in as f32;
         Self {
@@ -225,8 +227,22 @@ impl PointerEvent {
         self
     }
 
+    /// Ctrl or Cmd is held: snaps, move restrictions and bumping are
+    /// overridden (manual pp. 190, 237; DECISIONS 53, 70, 77).
+    pub fn overrides(&self) -> bool {
+        crate::editor::snap::overrides(&self.modifiers)
+    }
+
+    /// Alt is held, or the right button drives the drag: the tool's
+    /// Alternate edit behavior is summoned (manual p. 253).
+    pub fn alternate(&self) -> bool {
+        crate::editor::snap::alternate(&self.modifiers) || self.button == PointerButton::Secondary
+    }
+
     pub fn with_modifiers(mut self, m: Modifiers) -> Self {
         self.modifiers = m;
+        // Shift restricts the angle snaps of every `snap_at` that follows.
+        crate::editor::snap::note_modifiers(&m);
         self
     }
 }
@@ -347,6 +363,11 @@ pub trait Tool {
     fn edit_toolbar(&self, _cx: &EditorContext) -> Vec<EditAction> {
         Vec::new()
     }
+    /// Where the object being drawn or dragged began, when Tab or Enter may
+    /// open the Enter Coordinates dialog (manual p. 196); `None` otherwise.
+    fn coordinate_origin(&self, _cx: &EditorContext) -> Option<Point> {
+        None
+    }
 }
 
 /// Every tool, one line each.
@@ -420,6 +441,9 @@ impl ToolSet {
         crate::dialogs::tray_ceiling::host_frame(cx, ctx);
         // The Framing Group question and the Truss Detail window.
         crate::dialogs::framing::host_frame(cx, ctx);
+        // Framing Member Defaults, Framing Types, Automatic and Manual Framing
+        // Defaults and Structural Member Reporting.
+        crate::dialogs::framing_defaults::show_all(ctx, cx);
         // The Roof Baseline Specification and Join Curved Roof Plane dialogs.
         crate::dialogs::roof_baseline::host_frame(cx, ctx);
         // The Gable Line Specification.

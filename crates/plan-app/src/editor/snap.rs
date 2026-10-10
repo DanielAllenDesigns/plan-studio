@@ -2,14 +2,210 @@
 //!
 //! Priority when several apply within the snap distance (S-69): Endpoint,
 //! Intersection, Midpoint, Center, Quadrant, Perpendicular, Tangent, On
-//! Object, then Angle (from the pending start) and finally Grid. Alt
-//! suspends every snap (S-74). The switches live in [`SnapSettings`] (Edit >
+//! Object, then Angle (from the pending start) and finally Grid. Ctrl/Cmd
+//! suspends every snap (S-74, DT2), the S key only the object snaps. The switches live in [`SnapSettings`] (Edit >
 //! Snap Settings, mirrored in `PlanDefaults::editing`).
 
 use super::selection::ObjectRef;
 use plan_core::geometry::{dist_to_segment, project_on_segment, segment_intersection, Point};
 use plan_core::{CadItem, EditingDefaults, Floor, Id, LayerSet};
+use std::cell::{Cell, RefCell};
 use std::f64::consts::TAU;
+
+// ----- Modifier roles (manual pp. 190, 192, 193, 253; DECISIONS 53, 70, 77) -----
+
+/// Ctrl or Cmd: overrides the snaps, the move restrictions and bumping.
+pub fn overrides(m: &eframe::egui::Modifiers) -> bool {
+    m.ctrl || m.command || m.mac_cmd
+}
+
+/// Alt: summons the Alternate edit behavior for the operation.
+pub fn alternate(m: &eframe::egui::Modifiers) -> bool {
+    m.alt
+}
+
+/// The keys that change how the snap engine reads the pointer while they are
+/// held, as the shell last saw them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HeldKeys {
+    /// Shift: angle snaps restrict to 90 or 45 degrees.
+    pub shift: bool,
+    /// The S key: object snaps are off, extension anchors still work.
+    pub s_key: bool,
+}
+
+thread_local! {
+    static HELD: Cell<HeldKeys> = const { Cell::new(HeldKeys { shift: false, s_key: false }) };
+    /// Extension anchors: points the pointer rested on at an endpoint,
+    /// midpoint or quadrant, newest last.
+    static ANCHORS: RefCell<Vec<Point>> = const { RefCell::new(Vec::new()) };
+}
+
+pub fn held() -> HeldKeys {
+    HELD.with(Cell::get)
+}
+
+pub fn set_held(h: HeldKeys) {
+    HELD.with(|c| c.set(h));
+}
+
+/// Notes the held keys of an event's modifiers (Shift); the S key is kept.
+pub fn note_modifiers(m: &eframe::egui::Modifiers) {
+    let mut h = held();
+    h.shift = m.shift;
+    set_held(h);
+}
+
+thread_local! {
+    /// Where the raw pointer and the slowed pointer were when Shift went down
+    /// during a drag.
+    static SLOW: Cell<Option<(eframe::egui::Pos2, eframe::egui::Pos2)>> =
+        const { Cell::new(None) };
+}
+
+/// How much of the real movement the pointer follows while Shift slows it.
+pub const SLOW_FACTOR: f32 = 0.25;
+
+/// Shift held during a drag slows the pointer (manual p. 195): from the
+/// moment Shift goes down, the pointer follows a quarter of the real
+/// movement. `raw` is where the mouse is, `active` is Shift and a drag; the
+/// answer is where the tools should see the pointer. Letting go of Shift
+/// gives the real position back.
+pub fn slow_pointer(raw: eframe::egui::Pos2, active: bool) -> eframe::egui::Pos2 {
+    if !active {
+        SLOW.with(|c| c.set(None));
+        return raw;
+    }
+    match SLOW.with(Cell::get) {
+        None => {
+            SLOW.with(|c| c.set(Some((raw, raw))));
+            raw
+        }
+        Some((raw0, eff0)) => eff0 + (raw - raw0) * SLOW_FACTOR,
+    }
+}
+
+/// Key `1`: forgets every extension anchor.
+pub fn clear_anchors() {
+    ANCHORS.with(|a| a.borrow_mut().clear());
+}
+
+pub fn anchors() -> Vec<Point> {
+    ANCHORS.with(|a| a.borrow().clone())
+}
+
+/// The pointer rested on `r`: an endpoint, midpoint or quadrant becomes an
+/// extension anchor; at most `history` are kept (Objects in History), the
+/// oldest dropping out.
+pub fn note_hover(r: &SnapResult, history: usize) {
+    if !matches!(
+        r.kind,
+        SnapKind::Endpoint | SnapKind::Midpoint | SnapKind::Quadrant
+    ) {
+        return;
+    }
+    ANCHORS.with(|a| {
+        let mut a = a.borrow_mut();
+        if a.iter().any(|p| p.dist(r.point) < 1e-6) {
+            return;
+        }
+        a.push(r.point);
+        while a.len() > history.max(1) {
+            a.remove(0);
+        }
+    });
+}
+
+/// The angles Shift restricts to: every 90 or every 45 degrees
+/// (`EditingDefaults::restrictive_angle_deg`).
+pub fn restrictive_angles(e: &EditingDefaults) -> Vec<f64> {
+    let step = if (e.restrictive_angle_deg - 45.0).abs() < 1e-6 {
+        45.0
+    } else {
+        90.0
+    };
+    (0..(360.0 / step) as usize)
+        .map(|i| i as f64 * step)
+        .collect()
+}
+
+/// Every Allowed Angle in force, degrees in `[0, 360)` sorted: the multiples
+/// of `increment` (the plan's angle snap step), `snap_angles` when the file lists exact ones, and the
+/// Additional Angles, each with its opposing angle. Empty when angle snaps
+/// have nothing to snap to (increment 0 and no extras). The Shift restriction
+/// replaces the set.
+pub fn allowed_angle_set(e: &EditingDefaults, increment: f64, shift: bool) -> Vec<f64> {
+    if shift {
+        return restrictive_angles(e);
+    }
+    let mut set: Vec<f64> = Vec::new();
+    if !e.snap_angles.is_empty() {
+        set.extend(e.snap_angles.iter().copied());
+    } else if increment > 0.0 {
+        let n = (360.0 / increment).round() as usize;
+        set.extend((0..n).map(|i| i as f64 * increment));
+    }
+    set.extend(e.additional_angles.iter().copied());
+    let mut out: Vec<f64> = Vec::new();
+    for a in set {
+        for v in [a, a + 180.0] {
+            let v = v.rem_euclid(360.0);
+            if !out.iter().any(|o| (o - v).abs() < 1e-9) {
+                out.push(v);
+            }
+        }
+    }
+    out.sort_by(f64::total_cmp);
+    out
+}
+
+/// The Angle Snap Grid: every allowed angle as a faint ray from `from`
+/// (manual p. 193), drawn while a line-based object is under way and the
+/// grid is on in Snap Settings.
+pub fn draw_angle_rays(
+    painter: &eframe::egui::Painter,
+    cam: &super::Camera,
+    cx: &super::EditorContext,
+    from: Point,
+) {
+    if !cx.defaults.editing.angle_snap_grid {
+        return;
+    }
+    let angles = allowed_angle_set(
+        &cx.defaults.editing,
+        cx.defaults.grid.angle_snap_deg,
+        held().shift,
+    );
+    // Far enough to leave any screen, whatever the zoom.
+    let reach = 100_000.0;
+    let stroke = eframe::egui::Stroke::new(1.0_f32, cx.palette.ghost_stroke.gamma_multiply(0.35));
+    let a = cam.world_to_screen(from);
+    for deg in angles {
+        let r = deg.to_radians();
+        let to = from + Point::new(r.cos(), r.sin()) * reach;
+        painter.line_segment([a, cam.world_to_screen(to)], stroke);
+    }
+}
+
+/// A point lined up with an extension anchor: on the horizontal or vertical
+/// line through one, or both (a crossing of two such lines). `None` when no
+/// anchor is within `tol` of a line.
+pub fn anchor_extension(raw: Point, tol: f64, anchors: &[Point]) -> Option<Point> {
+    let x = anchors
+        .iter()
+        .map(|a| a.x)
+        .filter(|ax| (raw.x - ax).abs() <= tol)
+        .min_by(|a, b| (raw.x - a).abs().total_cmp(&(raw.x - b).abs()));
+    let y = anchors
+        .iter()
+        .map(|a| a.y)
+        .filter(|ay| (raw.y - ay).abs() <= tol)
+        .min_by(|a, b| (raw.y - a).abs().total_cmp(&(raw.y - b).abs()));
+    match (x, y) {
+        (None, None) => None,
+        (x, y) => Some(Point::new(x.unwrap_or(raw.x), y.unwrap_or(raw.y))),
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SnapKind {
@@ -516,13 +712,15 @@ pub fn snap(raw: Point, q: &SnapQuery, s: &SnapSettings) -> SnapResult {
             .filter(|p| p.dist(raw) <= q.tol)
             .min_by(|a, b| a.dist(raw).total_cmp(&b.dist(raw)))
     };
-    let (rounds, segments) = if s.object_snaps {
+    // The S key turns the object snaps off but not the extension anchors.
+    let objects = s.object_snaps && !held().s_key;
+    let (rounds, segments) = if objects {
         (cad_rounds(q), cad_segments(q))
     } else {
         (Vec::new(), Vec::new())
     };
 
-    if s.object_snaps {
+    if objects {
         if s.markers {
             if let Some(r) = cad_hit(SnapKind::Marker, nearest_pt(cad_marker_points(q))) {
                 return r;
@@ -665,6 +863,17 @@ pub fn snap(raw: Point, q: &SnapQuery, s: &SnapSettings) -> SnapResult {
         }
     }
 
+    // Extension anchors: lined up (across or down) with an anchor.
+    if s.extension {
+        if let Some(point) = anchor_extension(raw, q.tol, &anchors()) {
+            return SnapResult {
+                point,
+                kind: SnapKind::Extension,
+                source: None,
+            };
+        }
+    }
+
     if s.angle && !q.suspend_angle {
         if let Some(start) = q.origin {
             let snapped = if q.angles.is_empty() {
@@ -717,6 +926,7 @@ pub fn snap_with_reference(
     if reference.is_empty()
         || q.suspend_all
         || !s.object_snaps
+        || held().s_key
         || matches!(base.kind, SnapKind::Endpoint | SnapKind::Intersection)
     {
         return base;
@@ -1576,5 +1786,89 @@ mod tests {
         assert!(a.contains(&Point::new(120.0, 0.0)));
         let ids: Vec<Id> = p.floors[0].walls.iter().map(|w| w.id).collect();
         assert!(alignment_anchors(&p.floors[0], &layers, &ids).is_empty());
+    }
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn allowed_angles_list_the_increment_the_extras_and_their_opposites() {
+        let mut e = EditingDefaults::default();
+        let set = allowed_angle_set(&e, 90.0, false);
+        assert_eq!(set, vec![0.0, 90.0, 180.0, 270.0]);
+        // An additional angle joins with its opposing angle.
+        e.additional_angles = vec![22.5];
+        let set = allowed_angle_set(&e, 90.0, false);
+        assert_eq!(set, vec![0.0, 22.5, 90.0, 180.0, 202.5, 270.0]);
+        // Exact `snap_angles` replace the increment, extras still join.
+        e.snap_angles = vec![45.0];
+        let set = allowed_angle_set(&e, 15.0, false);
+        assert_eq!(set, vec![22.5, 45.0, 202.5, 225.0]);
+        // No increment and no extras: nothing to snap to.
+        let none = EditingDefaults::default();
+        assert!(allowed_angle_set(&none, 0.0, false).is_empty());
+        // Angles wrap into [0, 360).
+        let mut w = EditingDefaults::default();
+        w.additional_angles = vec![-10.0];
+        let set = allowed_angle_set(&w, 0.0, false);
+        assert_eq!(set, vec![170.0, 350.0]);
+    }
+
+    #[test]
+    fn shift_replaces_the_set_by_90_or_45_degree_steps() {
+        let mut e = EditingDefaults::default();
+        assert_eq!(
+            allowed_angle_set(&e, 15.0, true),
+            vec![0.0, 90.0, 180.0, 270.0]
+        );
+        e.restrictive_angle_deg = 45.0;
+        assert_eq!(allowed_angle_set(&e, 15.0, true).len(), 8);
+        // Anything but 45 reads as 90.
+        e.restrictive_angle_deg = 30.0;
+        assert_eq!(allowed_angle_set(&e, 15.0, true).len(), 4);
+    }
+
+    #[test]
+    fn anchors_line_a_point_up_across_or_down() {
+        let a = [Point::new(100.0, 50.0), Point::new(300.0, 200.0)];
+        let p = anchor_extension(Point::new(102.0, 400.0), 5.0, &a).unwrap();
+        assert_eq!(p, Point::new(100.0, 400.0));
+        let p = anchor_extension(Point::new(-40.0, 201.0), 5.0, &a).unwrap();
+        assert_eq!(p, Point::new(-40.0, 200.0));
+        // Near both lines of two anchors: the crossing.
+        let p = anchor_extension(Point::new(299.0, 52.0), 5.0, &a).unwrap();
+        assert_eq!(p, Point::new(300.0, 50.0));
+        assert!(anchor_extension(Point::new(150.0, 120.0), 5.0, &a).is_none());
+        assert!(anchor_extension(Point::new(100.0, 50.0), 5.0, &[]).is_none());
+    }
+
+    #[test]
+    fn ctrl_and_cmd_override_and_alt_alternates() {
+        use eframe::egui::Modifiers;
+        let ctrl = Modifiers {
+            ctrl: true,
+            ..Modifiers::NONE
+        };
+        let cmd = Modifiers {
+            mac_cmd: true,
+            command: true,
+            ..Modifiers::NONE
+        };
+        let alt_only = Modifiers {
+            alt: true,
+            ..Modifiers::NONE
+        };
+        assert!(overrides(&ctrl) && overrides(&cmd) && !overrides(&alt_only));
+        assert!(alternate(&alt_only) && !alternate(&ctrl) && !alternate(&Modifiers::NONE));
+    }
+    #[test]
+    fn shift_slows_the_pointer_during_a_drag() {
+        use eframe::egui::pos2;
+        slow_pointer(pos2(0.0, 0.0), false);
+        // Shift goes down at (100, 100): nothing jumps.
+        assert_eq!(slow_pointer(pos2(100.0, 100.0), true), pos2(100.0, 100.0));
+        // The mouse moves 40 pixels; the pointer follows 10.
+        assert_eq!(slow_pointer(pos2(140.0, 100.0), true), pos2(110.0, 100.0));
+        assert_eq!(slow_pointer(pos2(140.0, 60.0), true), pos2(110.0, 90.0));
+        // Shift up: the real position again, and a new reference next time.
+        assert_eq!(slow_pointer(pos2(150.0, 70.0), false), pos2(150.0, 70.0));
+        assert_eq!(slow_pointer(pos2(150.0, 70.0), true), pos2(150.0, 70.0));
     }
 }

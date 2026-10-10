@@ -19,6 +19,9 @@ pub struct SnapDraft {
     pub grid_snap: f64,
     /// The allowed-angles text as typed (`0, 45, 90`).
     pub angles_text: String,
+    /// The Additional Angles text as typed; each also allows its opposing
+    /// angle (manual p. 122).
+    pub additional_text: String,
 }
 
 /// `0, 45, 90` as degrees; `None` when a piece is not a number.
@@ -49,12 +52,15 @@ impl SnapDraft {
             editing: cx.defaults.editing.clone(),
             grid_snap: cx.defaults.grid.snap,
             angles_text: format_angles(&cx.defaults.editing.snap_angles),
+            additional_text: format_angles(&cx.defaults.editing.additional_angles),
         }
     }
 
     /// Why OK is not allowed, if so.
     pub fn error(&self) -> Option<String> {
-        if parse_angles(&self.angles_text).is_none() {
+        if parse_angles(&self.angles_text).is_none()
+            || parse_angles(&self.additional_text).is_none()
+        {
             return Some("The allowed angles are degrees separated by commas".into());
         }
         if self.grid_snap < 0.0 {
@@ -74,6 +80,13 @@ impl SnapDraft {
         }
         let mut e = self.editing.clone();
         e.snap_angles = angles;
+        e.additional_angles = parse_angles(&self.additional_text).unwrap_or_default();
+        e.restrictive_angle_deg = if (e.restrictive_angle_deg - 45.0).abs() < 1e-6 {
+            45.0
+        } else {
+            90.0
+        };
+        e.anchor_history = e.anchor_history.clamp(1, 20);
         // Both places carry the angle increment (the engine reads the grid's).
         cx.defaults.grid.angle_snap_deg = e.angle_snap_deg;
         cx.defaults.grid.snap = self.grid_snap;
@@ -166,6 +179,37 @@ impl SnapSettingsDialog {
                         );
                     });
                     ui.weak("Degrees counter-clockwise from east; each also allows its opposite.");
+                    super::row(ui, "Additional Angles", |ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.draft.additional_text)
+                                .hint_text("none")
+                                .desired_width(140.0),
+                        );
+                    });
+                    ui.weak("Angles besides the increment; each lists its opposing angle too.");
+                    let opposing = parse_angles(&self.draft.additional_text)
+                        .unwrap_or_default()
+                        .iter()
+                        .map(|a| format!("{a}\u{b0} / {}\u{b0}", (a + 180.0).rem_euclid(360.0)))
+                        .collect::<Vec<_>>()
+                        .join(",  ");
+                    if !opposing.is_empty() {
+                        ui.weak(format!("Opposing: {opposing}"));
+                    }
+                    super::row(ui, "Shift Restricts To", |ui| {
+                        egui::ComboBox::from_id_salt("restrictive_angle")
+                            .selected_text(format!("{}\u{b0}", e.restrictive_angle_deg))
+                            .show_ui(ui, |ui| {
+                                for v in [90.0, 45.0] {
+                                    ui.selectable_value(
+                                        &mut e.restrictive_angle_deg,
+                                        v,
+                                        format!("{v}\u{b0}"),
+                                    );
+                                }
+                            });
+                    });
+                    ui.checkbox(&mut e.angle_snap_grid, "Display the Angle Snap Grid");
                 });
                 ui.separator();
                 ui.checkbox(&mut e.bumping, "Bumping/Pushing");
@@ -174,6 +218,9 @@ impl SnapSettingsDialog {
                         self.fields.length(ui, "bumping", &mut e.bumping_distance)
                     });
                 });
+                super::row(ui, "Objects in History (extension anchors)", |ui| {
+                    ui.add(egui::DragValue::new(&mut e.anchor_history).range(1..=20));
+                });
                 super::row(ui, "Snap Distance (pixels)", |ui| {
                     ui.add(
                         egui::DragValue::new(&mut e.snap_distance_px)
@@ -181,7 +228,7 @@ impl SnapSettingsDialog {
                             .speed(0.25),
                     );
                 });
-                ui.weak("Hold Alt while drawing or dragging to suspend every snap.");
+                ui.weak("Hold Ctrl/Cmd to suspend every snap and restriction; hold S to drop the object snaps only; key 1 clears the anchors.");
                 if let Some(err) = self.draft.error() {
                     ui.colored_label(egui::Color32::from_rgb(0xC0, 0x30, 0x30), err);
                 }

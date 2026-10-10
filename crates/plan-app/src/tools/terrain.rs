@@ -82,6 +82,22 @@ pub use scape::{apply_plant, default_plant, plant_categories, plant_choices, pla
 
 /// Default Hill/Valley height, inches.
 const DEFAULT_HILL: f64 = 72.0;
+/// Side of the square one click makes for an Elevation Region (8 ft), inches.
+const CLICK_REGION_SIDE: f64 = 96.0;
+/// Side of the square one click makes for a modifier region (10 ft), inches.
+const CLICK_MODIFIER_SIDE: f64 = 120.0;
+
+/// A square of `side` centred on `c`.
+fn click_square(c: Point, side: f64) -> Vec<Point> {
+    let h = side / 2.0;
+    vec![
+        Point::new(c.x - h, c.y - h),
+        Point::new(c.x + h, c.y - h),
+        Point::new(c.x + h, c.y + h),
+        Point::new(c.x - h, c.y + h),
+    ]
+}
+
 /// Default Raised/Lowered Region height, inches.
 const DEFAULT_REGION_SHIFT: f64 = 24.0;
 const DEFAULT_ROAD_WIDTH: f64 = 240.0;
@@ -856,6 +872,22 @@ impl TerrainTool {
     /// break or landscape object, or asks for the value the shape needs.
     fn finish(&mut self, cx: &mut EditorContext) -> ToolResult {
         let v = self.variant;
+        // One click and Enter make the default square (manual pp. 1313, 1316):
+        // 8 ft for an Elevation Region, 10 ft for a modifier region.
+        if self.points.len() == 1 && v.draw() == Draw::Polygon {
+            let side = match v {
+                TerrainVariant::ElevationRegion => Some(CLICK_REGION_SIDE),
+                TerrainVariant::Hill
+                | TerrainVariant::Valley
+                | TerrainVariant::Raised
+                | TerrainVariant::Lowered
+                | TerrainVariant::Flat => Some(CLICK_MODIFIER_SIDE),
+                _ => None,
+            };
+            if let Some(side) = side {
+                self.points = click_square(self.points[0], side);
+            }
+        }
         if self.points.len() < v.min_points() {
             cx.status = format!("{} needs at least {} points", v.name(), v.min_points());
             return ToolResult::consumed();
@@ -1236,7 +1268,7 @@ impl TerrainTool {
     }
 
     fn snapped(&self, cx: &EditorContext, p: &PointerEvent) -> Point {
-        cx.snap_at(p.world, self.points.last().copied(), p.modifiers.alt, &[])
+        cx.snap_at(p.world, self.points.last().copied(), p.overrides(), &[])
             .point
     }
 

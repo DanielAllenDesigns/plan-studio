@@ -580,6 +580,46 @@ fn rays_from(segments: &[(Point, Point)], origin: Point) -> Rays {
     }
 }
 
+/// The axis-aligned box of `poly`.
+fn bbox(poly: &[Point]) -> (Point, Point) {
+    poly.iter().fold(
+        (
+            Point::new(f64::INFINITY, f64::INFINITY),
+            Point::new(f64::NEG_INFINITY, f64::NEG_INFINITY),
+        ),
+        |(lo, hi), p| {
+            (
+                Point::new(lo.x.min(p.x), lo.y.min(p.y)),
+                Point::new(hi.x.max(p.x), hi.y.max(p.y)),
+            )
+        },
+    )
+}
+
+/// The dimension string along `a -> b`: every crossing of `edges`, in order,
+/// joined into consecutive segments on the line itself (DECISIONS DM25).
+fn string_along(edges: &[(Point, Point)], a: Point, b: Point) -> Vec<Dimension> {
+    let len = a.dist(b);
+    let mut ts: Vec<f64> = edges
+        .iter()
+        .filter_map(|(p, q)| segment_intersection(a, b, *p, *q).map(|(t, _)| t))
+        .collect();
+    ts.sort_by(f64::total_cmp);
+    ts.dedup_by(|x, y| (*x - *y).abs() * len < 0.25);
+    ts.windows(2)
+        .filter(|w| (w[1] - w[0]) * len >= MIN_LENGTH)
+        .map(|w| {
+            Dimension::new(
+                0,
+                DimensionKind::AutoExterior,
+                Point::lerp(a, b, w[0]),
+                Point::lerp(a, b, w[1]),
+                0.0,
+            )
+        })
+        .collect()
+}
+
 fn polygon_edges(poly: &[Point]) -> Vec<(Point, Point)> {
     (0..poly.len())
         .map(|i| (poly[i], poly[(i + 1) % poly.len()]))
@@ -781,7 +821,7 @@ fn locate_with(
     origin: Option<Point>,
     tool: LocateTool,
 ) -> Located {
-    if p.modifiers.alt {
+    if p.overrides() {
         return Located {
             point: p.world,
             what: "Free point",
@@ -1217,6 +1257,19 @@ impl DimensionTool {
     }
 
     fn lock_check(&self, cx: &mut EditorContext, layer: &str) -> bool {
+        // The Layer panel's names stand in for Chief's own (DIM-57).
+        let setup = &cx.defaults.dimensions.setup;
+        let named = match layer {
+            MANUAL_LAYER => &setup.layer_manual,
+            AUTO_LAYER => &setup.layer_automatic,
+            _ => &String::new(),
+        };
+        let layer = if named.is_empty() {
+            layer.to_string()
+        } else {
+            named.clone()
+        };
+        let layer = layer.as_str();
         if cx.layers().is_locked(layer) {
             cx.status = format!("The layer \"{layer}\" is locked");
             false
@@ -1349,6 +1402,26 @@ impl DimensionTool {
 
     fn auto_exterior(&mut self, cx: &mut EditorContext) -> ToolResult {
         cx.refresh();
+        let dims = Self::exterior_dims(cx);
+        if dims.is_empty() {
+            cx.status = "No exterior walls to dimension".into();
+            return ToolResult::consumed();
+        }
+        if !self.lock_check(cx, AUTO_LAYER) {
+            return ToolResult::consumed();
+        }
+        let inner: Vec<Vec<Point>> = cx.rooms.iter().map(|r| r.inner_polygon.clone()).collect();
+        cx.begin_change("Auto Exterior Dimensions");
+        // DIM-25: a new run replaces the previous exterior strings.
+        Self::clear_run(cx, AutoGroup::Exterior, &inner);
+        let n = Self::add_run(cx, dims);
+        cx.mark_dirty();
+        cx.status = format!("Added {n} exterior dimensions");
+        ToolResult::committed("Auto Exterior Dimensions")
+    }
+
+    /// The strings Auto Exterior Dimensions would make now.
+    fn exterior_dims(cx: &EditorContext) -> Vec<Dimension> {
         let walls: Vec<Wall> = cx
             .floor()
             .walls
@@ -1363,7 +1436,7 @@ impl DimensionTool {
             .filter(|o| walls.iter().any(|w| w.id == o.wall_id))
             .cloned()
             .collect();
-        let dims = {
+        {
             let set = &cx.defaults.dimensions;
             let tl = set.tool_locate(LocateTool::AutoExterior);
             // Setup Automatic: which strings, and where the first line
@@ -1381,22 +1454,7 @@ impl DimensionTool {
                 main_span: &main,
             };
             auto_exterior_set(&walls, &openings, &setup)
-        };
-        if dims.is_empty() {
-            cx.status = "No exterior walls to dimension".into();
-            return ToolResult::consumed();
         }
-        if !self.lock_check(cx, AUTO_LAYER) {
-            return ToolResult::consumed();
-        }
-        let inner: Vec<Vec<Point>> = cx.rooms.iter().map(|r| r.inner_polygon.clone()).collect();
-        cx.begin_change("Auto Exterior Dimensions");
-        // DIM-25: a new run replaces the previous exterior strings.
-        Self::clear_run(cx, AutoGroup::Exterior, &inner);
-        let n = Self::add_run(cx, dims);
-        cx.mark_dirty();
-        cx.status = format!("Added {n} exterior dimensions");
-        ToolResult::committed("Auto Exterior Dimensions")
     }
 
     /// Auto NKBA Dimensions: strings along every kitchen and bath cabinet
@@ -1561,6 +1619,25 @@ impl DimensionTool {
 
     fn auto_interior(&mut self, cx: &mut EditorContext) -> ToolResult {
         cx.refresh();
+        let (dims, inner) = Self::interior_dims(cx);
+        if dims.is_empty() {
+            cx.status = "No rooms to dimension".into();
+            return ToolResult::consumed();
+        }
+        if !self.lock_check(cx, AUTO_LAYER) {
+            return ToolResult::consumed();
+        }
+        cx.begin_change("Auto Interior Dimensions");
+        Self::clear_run(cx, AutoGroup::Interior, &inner);
+        let n = Self::add_run(cx, dims);
+        cx.mark_dirty();
+        cx.status = format!("Added {n} interior dimensions");
+        ToolResult::committed("Auto Interior Dimensions")
+    }
+
+    /// The strings Auto Room Dimensions would make now, and the rooms'
+    /// inner outlines.
+    fn interior_dims(cx: &EditorContext) -> (Vec<Dimension>, Vec<Vec<Point>>) {
         let sep = Self::separation(cx);
         let setup = cx.defaults.dimensions.setup.clone();
         // Setup Automatic, room: the smallest room, the lines inside or
@@ -1573,6 +1650,17 @@ impl DimensionTool {
         let side = if setup.room_inside { 1.0 } else { -1.0 };
         let mut dims = Vec::new();
         let rooms = cx.rooms.clone();
+        // Daniel's drafting practice (DECISIONS DM25): one string through the
+        // whole plan in the upper third of each room, and one in its right
+        // third, locating every interior surface they cross. A room whose
+        // third already holds a line from another room gets no second one.
+        let all_edges: Vec<(Point, Point)> = rooms
+            .iter()
+            .filter(|r| r.inner_polygon.len() >= 3)
+            .flat_map(|r| polygon_edges(&r.inner_polygon))
+            .collect();
+        let mut h_lines: Vec<f64> = Vec::new();
+        let mut v_lines: Vec<f64> = Vec::new();
         for room in &rooms {
             if room.interior_area_sq_in / 144.0 < min_area || room.inner_polygon.len() < 3 {
                 continue;
@@ -1581,27 +1669,35 @@ impl DimensionTool {
             if !point_in_polygon(c, &room.inner_polygon) {
                 continue;
             }
-            let segs = Self::interior_segments(cx, Some(&room.inner_polygon));
-            let rays = rays_from(&segs, c);
             let mut spans = Vec::new();
             if setup.room_overall {
-                if let Some((l, r)) = rays.left.zip(rays.right) {
-                    spans.push(Dimension::new(
-                        0,
-                        DimensionKind::AutoExterior,
-                        l,
-                        r,
-                        sep * side,
-                    ));
-                }
-                if let Some((d, u)) = rays.down.zip(rays.up) {
-                    spans.push(Dimension::new(
-                        0,
-                        DimensionKind::AutoExterior,
-                        d,
-                        u,
-                        -sep * side,
-                    ));
+                let (min, max) = bbox(&room.inner_polygon);
+                let (w, h) = (max.x - min.x, max.y - min.y);
+                if w > 12.0 && h > 12.0 {
+                    const FAR: f64 = 1.0e5;
+                    let covered = |lines: &[f64], hi: f64, third: f64| {
+                        lines
+                            .iter()
+                            .any(|l| *l >= hi - third - 1e-6 && *l <= hi + 1e-6)
+                    };
+                    if !covered(&h_lines, max.y, h / 3.0) {
+                        let y = max.y - h / 6.0;
+                        h_lines.push(y);
+                        spans.extend(string_along(
+                            &all_edges,
+                            Point::new(min.x - FAR, y),
+                            Point::new(max.x + FAR, y),
+                        ));
+                    }
+                    if !covered(&v_lines, max.x, w / 3.0) {
+                        let x = max.x - w / 6.0;
+                        v_lines.push(x);
+                        spans.extend(string_along(
+                            &all_edges,
+                            Point::new(x, min.y - FAR),
+                            Point::new(x, max.y + FAR),
+                        ));
+                    }
                 }
             }
             for d in &mut spans {
@@ -1633,20 +1729,8 @@ impl DimensionTool {
             let mut seen = std::collections::HashSet::new();
             dims.retain(|d| seen.insert(key(d)));
         }
-        if dims.is_empty() {
-            cx.status = "No rooms to dimension".into();
-            return ToolResult::consumed();
-        }
-        if !self.lock_check(cx, AUTO_LAYER) {
-            return ToolResult::consumed();
-        }
         let inner: Vec<Vec<Point>> = rooms.iter().map(|r| r.inner_polygon.clone()).collect();
-        cx.begin_change("Auto Interior Dimensions");
-        Self::clear_run(cx, AutoGroup::Interior, &inner);
-        let n = Self::add_run(cx, dims);
-        cx.mark_dirty();
-        cx.status = format!("Added {n} interior dimensions");
-        ToolResult::committed("Auto Interior Dimensions")
+        (dims, inner)
     }
 
     // ----- elevation and story pole dimensions -----
@@ -1881,6 +1965,32 @@ impl DimensionTool {
             }
             // One string per row of the pole.
             cx.project.floors[fl].join_string(&ids);
+        }
+        // Elevation Markers (DIM-64): one per mark on the pole line, from the
+        // Saved Marker Defaults, pointing at the mark. A new run replaces the last run's markers on this line.
+        use plan_core::callout::{AnnotRef, MarkerKind};
+        let stale: Vec<usize> = cx.project.floors[fl]
+            .annots
+            .markers
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| m.kind == MarkerKind::Elevation && (m.center.x - x).abs() < 1e-6)
+            .map(|(i, _)| i)
+            .collect();
+        for i in stale.into_iter().rev() {
+            cx.project.remove_annot(fl, AnnotRef::Marker(i));
+        }
+        let saved = cx.project.annot_defaults.marker.clone();
+        for (_, elevation, left) in &labels {
+            let mut m = saved.clone();
+            m.kind = MarkerKind::Elevation;
+            m.center = Point::new(x, *elevation);
+            m.angle = if *left { 0.0 } else { 180.0 };
+            // The name and height stay in the CAD text beside the line.
+            m.label.text.clear();
+            m.below.text.clear();
+            m.height_z = elevation - datum;
+            cx.project.add_marker(fl, m);
         }
         let mut texts = Vec::new();
         for (text, elevation, left) in labels {
@@ -2166,7 +2276,7 @@ impl DimensionTool {
             drag.changed = true;
         }
         if let Some(pt) = offset_to {
-            let snap = (!p.modifiers.alt).then_some(unit);
+            let snap = (!p.overrides()).then_some(unit);
             cx.project.floors[fl].drag_dimension_line(drag_id, pt, snap);
         }
         cx.mark_dirty();
@@ -3098,7 +3208,7 @@ impl DimensionTool {
 
     fn locate_for(&self, cx: &EditorContext, p: &PointerEvent) -> Located {
         if self.mode == DimMode::PointToPoint {
-            if p.modifiers.alt {
+            if p.overrides() {
                 return Located {
                     point: p.world,
                     what: "Free point",
@@ -3154,6 +3264,59 @@ impl DimensionTool {
             _ => None,
         };
     }
+}
+
+/// Auto Refresh (Setup Automatic, DIM-52): with the box checked, the
+/// automatic strings of a kind that was generated are deleted and replaced
+/// whenever the model changes what they measure. A run that would come out
+/// the same is left alone, so refreshing twice changes nothing. Returns
+/// whether anything was replaced. Elevation strings have no plan object to
+/// refresh (DIM-61).
+pub fn auto_refresh(cx: &mut EditorContext) -> bool {
+    let st = &cx.defaults.dimensions.setup;
+    let (ext, room) = (st.exterior_auto_refresh, st.room_auto_refresh);
+    let mut changed = false;
+    if ext {
+        changed |= refresh_run(cx, AutoGroup::Exterior);
+    }
+    if room {
+        changed |= refresh_run(cx, AutoGroup::Interior);
+    }
+    changed
+}
+
+fn refresh_run(cx: &mut EditorContext, group: AutoGroup) -> bool {
+    let fl = cx.floor;
+    let have: Vec<(Point, Point, f64)> = cx.project.floors[fl]
+        .dimensions
+        .iter()
+        .filter(|d| d.kind == DimensionKind::AutoExterior && d.auto_group == group)
+        .map(|d| (d.start, d.end, d.offset))
+        .collect();
+    // Nothing was ever generated: there is nothing to refresh.
+    if have.is_empty() || cx.layers().is_locked(AUTO_LAYER) {
+        return false;
+    }
+    let (dims, inner) = if group == AutoGroup::Exterior {
+        let inner = cx.rooms.iter().map(|r| r.inner_polygon.clone()).collect();
+        (DimensionTool::exterior_dims(cx), inner)
+    } else {
+        DimensionTool::interior_dims(cx)
+    };
+    let near = |a: Point, b: Point| a.dist(b) < 0.01;
+    let same = dims.len() == have.len()
+        && dims.iter().all(|d| {
+            have.iter().any(|h| {
+                (near(h.0, d.start) && near(h.1, d.end) || near(h.0, d.end) && near(h.1, d.start))
+                    && (h.2 - d.offset).abs() < 0.01
+            })
+        });
+    if same {
+        return false;
+    }
+    DimensionTool::clear_run(cx, group, &inner);
+    DimensionTool::add_run(cx, dims);
+    true
 }
 
 impl Tool for DimensionTool {
@@ -3795,11 +3958,11 @@ mod tests {
         let l = locate(&cx, &p, false, None);
         assert_eq!(l.what, "Opening center");
         assert!(l.point.dist(Point::new(120.0, 0.0)) < 1e-9);
-        let alt = p.with_modifiers(egui::Modifiers {
-            alt: true,
+        let ctrl = p.with_modifiers(egui::Modifiers {
+            ctrl: true,
             ..egui::Modifiers::NONE
         });
-        assert_eq!(locate(&cx, &alt, false, None).what, "Free point");
+        assert_eq!(locate(&cx, &ctrl, false, None).what, "Free point");
         // No Locate walls are skipped (DIM-5).
         cx.project.floors[0].walls[0].flags.no_locate = true;
         let l = locate(
@@ -4398,6 +4561,56 @@ mod tests {
         assert_eq!(cx.floor().dimensions.len(), 2 + 16);
         click(&mut t, &mut cx, 120.0, 60.0);
         assert_eq!(cx.floor().dimensions.len(), 2 + 16);
+    }
+
+    #[test]
+    fn auto_interior_strings_run_through_the_plan_in_the_upper_and_right_thirds() {
+        // DECISIONS DM25: two rooms side by side share one horizontal string
+        // through the whole plan, in the upper third; each gets its own
+        // vertical string in its right third.
+        let mut cx = new_cx();
+        rect_room(&mut cx);
+        cx.project.add_wall(
+            0,
+            Point::new(120.0, 0.0),
+            Point::new(120.0, 120.0),
+            4.5,
+            96.0,
+            WallKind::Interior,
+        );
+        let mut t = tool(DimMode::AutoInterior);
+        click(&mut t, &mut cx, 60.0, 60.0);
+        let dims = cx.floor().dimensions.clone();
+        let horizontal: Vec<&Dimension> = dims
+            .iter()
+            .filter(|d| (d.start.y - d.end.y).abs() < 1e-6)
+            .collect();
+        let vertical: Vec<&Dimension> = dims
+            .iter()
+            .filter(|d| (d.start.x - d.end.x).abs() < 1e-6)
+            .collect();
+        assert_eq!(dims.len(), 5, "{dims:?}");
+        // Inner faces: y 3..117 (clear 114), x 3..237 with the partition's
+        // faces at 117.75 and 122.25.
+        assert_eq!(horizontal.len(), 3);
+        for d in &horizontal {
+            assert!((d.start.y - (117.0 - 114.0 / 6.0)).abs() < 1e-6, "{d:?}");
+            assert_eq!(d.offset, 0.0);
+        }
+        let total: f64 = horizontal.iter().map(|d| d.length()).sum();
+        assert!((total - 234.0).abs() < 1e-6, "{total}");
+        assert!(horizontal.iter().any(|d| (d.length() - 4.5).abs() < 1e-6));
+        // One vertical string per room, each the full clear height, in the
+        // right third of its room.
+        assert_eq!(vertical.len(), 2);
+        let mut xs: Vec<f64> = vertical.iter().map(|d| d.start.x).collect();
+        xs.sort_by(f64::total_cmp);
+        assert!((xs[0] - (117.75 - 114.75 / 6.0)).abs() < 1e-6, "{xs:?}");
+        assert!((xs[1] - (237.0 - 114.75 / 6.0)).abs() < 1e-6, "{xs:?}");
+        assert!(vertical.iter().all(|d| (d.length() - 114.0).abs() < 1e-6));
+        // A second run replaces, never doubles.
+        click(&mut t, &mut cx, 60.0, 60.0);
+        assert_eq!(cx.floor().dimensions.len(), 5);
     }
 
     /// Selects the dimension, clicks its text, types a value, presses Enter.

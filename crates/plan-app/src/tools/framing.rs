@@ -214,7 +214,7 @@ impl FramingTool {
 
     fn end_point(&self, cx: &EditorContext, p: &PointerEvent) -> Point {
         match self.start {
-            Some(a) => cx.snap_at(p.world, Some(a), p.modifiers.alt, &[]).point,
+            Some(a) => cx.snap_at(p.world, Some(a), p.overrides(), &[]).point,
             None => p.snapped,
         }
     }
@@ -593,7 +593,7 @@ impl Tool for FramingTool {
 impl FramingTool {
     fn end_point_poly(&self, cx: &EditorContext, p: &PointerEvent) -> Point {
         match self.poly.last() {
-            Some(a) => cx.snap_at(p.world, Some(*a), p.modifiers.alt, &[]).point,
+            Some(a) => cx.snap_at(p.world, Some(*a), p.overrides(), &[]).point,
             None => p.snapped,
         }
     }

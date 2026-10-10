@@ -253,9 +253,9 @@ fn build_roof_turns_the_kept_lines_into_gables_again_and_again() {
     build_roof(&mut sim);
     assert_eq!(gl::lines(sim.app.cx.floor()).len(), 1);
     assert_eq!(gl::lines(sim.app.cx.floor())[0].id, id);
-    assert_eq!(planes(&sim).len(), hip.len(), "the rebuild starts clean");
-    assert_eq!(gl::apply_stored(&mut sim.app.cx.project, fl), 1);
-    assert_eq!(planes(&sim).len(), gabled.len());
+    // Build Roof applies the stored lines itself (`roof_view::rebuild` calls
+    // `gable_line::apply_stored`): the same gable as before.
+    assert_eq!(planes(&sim).len(), gabled.len(), "the rebuild gables again");
 }
 
 #[test]

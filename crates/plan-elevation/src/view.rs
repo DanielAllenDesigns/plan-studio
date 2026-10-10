@@ -212,6 +212,30 @@ pub fn clip_x(drawing: &mut Drawing, lo: f64, hi: f64) {
     drawing.update_bounds();
 }
 
+/// Swap the X and Y of every point of a drawing (used to clip along Y with
+/// the X clipper; clipping and fills do not care about the winding flip).
+fn swap_xy(drawing: &mut Drawing) {
+    let sw = |p: Point| Point::new(p.y, p.x);
+    for l in &mut drawing.lines {
+        l.a = sw(l.a);
+        l.b = sw(l.b);
+    }
+    for r in &mut drawing.regions {
+        r.polygon.iter_mut().for_each(|p| *p = sw(*p));
+    }
+    for (p, _) in &mut drawing.texts {
+        *p = sw(*p);
+    }
+}
+
+/// Cut a drawing off outside `lo <= y <= hi` (Clip Elevation, C-136).
+pub fn clip_y(drawing: &mut Drawing, lo: f64, hi: f64) {
+    swap_xy(drawing);
+    clip_x(drawing, lo, hi);
+    swap_xy(drawing);
+    drawing.update_bounds();
+}
+
 /// How much finer the depth buffer gets when the view window is much narrower
 /// than the scene it is cut from.
 const MAX_RASTER_BOOST: f64 = 2.0;
@@ -260,6 +284,22 @@ pub fn elevation_free(scene: &Scene, view: &FreeView, opts: &Options) -> Drawing
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clip_y_keeps_the_band_between_two_heights() {
+        use crate::{EdgeKind, Line2, LineWeight};
+        let line = |y0: f64, y1: f64| Line2 {
+            a: Point::new(0.0, y0),
+            b: Point::new(0.0, y1),
+            weight: LineWeight::Heavy,
+            kind: EdgeKind::Cut,
+        };
+        let mut d = Drawing::new(vec![line(-10.0, 100.0), line(60.0, 90.0)]);
+        clip_y(&mut d, 0.0, 48.0);
+        assert_eq!(d.lines.len(), 1, "a line wholly above the band is dropped");
+        assert!(d.lines[0].a.y.abs() < 1e-9 && (d.lines[0].b.y - 48.0).abs() < 1e-9);
+        assert!((d.bounds.1.y - 48.0).abs() < 1e-9);
+    }
 
     #[test]
     fn axis_views_are_exact() {

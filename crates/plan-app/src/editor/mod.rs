@@ -235,14 +235,27 @@ impl EditorContext {
     /// Call before mutating the project: snapshots it as the undo step
     /// `label` (an imperative name such as "Move Wall").
     pub fn begin_change(&mut self, label: &str) {
+        self.sync_dimension_layers();
         self.history.begin(&self.project, label);
         self.touch();
+    }
+
+    /// Copies the Dimension Defaults' Layer panel into the plan, where
+    /// `Project::add_dimension` reads it (DIM-57).
+    pub fn sync_dimension_layers(&mut self) {
+        let st = &self.defaults.dimensions.setup;
+        if self.project.dimension_layers[0] != st.layer_manual
+            || self.project.dimension_layers[1] != st.layer_automatic
+        {
+            self.project.dimension_layers = [st.layer_manual.clone(), st.layer_automatic.clone()];
+        }
     }
 
     /// Like [`begin_change`](Self::begin_change) but consecutive calls with
     /// the same label share one step (a slider drag). Ended by
     /// [`end_merge`](Self::end_merge).
     pub fn begin_change_merged(&mut self, label: &str) {
+        self.sync_dimension_layers();
         self.history.begin_merged(&self.project, label);
         self.touch();
     }
@@ -404,6 +417,7 @@ impl EditorContext {
     /// tests call it before reading `rooms`.
     pub fn refresh(&mut self) {
         self.floor = self.floor.min(self.project.floors.len() - 1);
+        crate::tools::cad::survey::on_refresh(self);
         self.refresh_layer_view();
 
         if self.dirty {
@@ -459,6 +473,11 @@ impl EditorContext {
                     d.framing_values = Some(values.clone());
                 }
             }
+            // Auto Refresh: the automatic strings follow the model (DIM-52).
+            if crate::tools::dimension::auto_refresh(self) {
+                let dim_fmt = self.dim_format();
+                self.project.floors[self.floor].refresh_dimensions(&dim_fmt);
+            }
             self.dirty = false;
         }
         self.selection.retain_existing(&self.project, self.floor);
@@ -505,25 +524,35 @@ impl EditorContext {
     }
 
     /// Runs the snap engine. `origin` is the pending start point (angle and
-    /// perpendicular snaps); `alt` suspends every snap (S-74); walls in
-    /// `exclude` are ignored.
+    /// perpendicular snaps); `overrides` (Ctrl/Cmd held, DT2) suspends every
+    /// snap (S-74); walls in `exclude` are ignored.
     pub fn snap_at(
         &self,
         raw: Point,
         origin: Option<Point>,
-        alt: bool,
+        overrides: bool,
         exclude: &[Id],
     ) -> SnapResult {
+        // Shift restricts the angle snaps to 90 or 45 degrees; extra allowed
+        // angles join the increment's own (manual pp. 122, 193).
+        let allowed = snap::allowed_angle_set(
+            &self.defaults.editing,
+            self.defaults.grid.angle_snap_deg,
+            snap::held().shift,
+        );
+        let plain = self.defaults.editing.snap_angles.is_empty()
+            && self.defaults.editing.additional_angles.is_empty()
+            && !snap::held().shift;
         let q = SnapQuery {
             floor: self.floor(),
             layers: self.layers(),
             tol: self.snap_tol(),
             grid_step: self.defaults.grid.snap,
             angle_deg: self.defaults.grid.angle_snap_deg,
-            angles: &self.defaults.editing.snap_angles,
+            angles: if plain { &[] } else { &allowed },
             origin,
-            suspend_angle: alt,
-            suspend_all: alt,
+            suspend_angle: overrides,
+            suspend_all: overrides,
             exclude,
         };
         // The reference floor's wall ends and crossings snap too (R-65).
@@ -593,7 +622,13 @@ impl EditorContext {
             OpeningTarget::DefaultWindow => {
                 OpeningExtras::from_window_defaults(&self.defaults.window)
             }
+            OpeningTarget::DefaultType(k) if k.kind == plan_core::OpeningKind::Window => {
+                OpeningExtras::from_window_defaults(&self.defaults.window)
+            }
             OpeningTarget::DefaultExteriorDoor => {
+                OpeningExtras::from_door_defaults(&self.defaults.exterior_door, true)
+            }
+            OpeningTarget::DefaultType(k) if k.exterior => {
                 OpeningExtras::from_door_defaults(&self.defaults.exterior_door, true)
             }
             _ => OpeningExtras::from_door_defaults(&self.defaults.interior_door, false),

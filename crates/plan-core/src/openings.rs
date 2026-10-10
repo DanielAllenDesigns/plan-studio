@@ -1703,6 +1703,7 @@ mod tests {
         use crate::defaults::{WallLayer, WallTypeDef};
         let (mut p, w) = proj();
         p.wall_types.push(WallTypeDef {
+            props: Default::default(),
             name: "Brick Veneer".into(),
             kind: WallKind::Exterior,
             layers: vec![

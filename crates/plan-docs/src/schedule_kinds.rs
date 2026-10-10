@@ -1708,7 +1708,7 @@ fn number_schedule(
             });
             n_of[i] = n;
         }
-    } else if def.numbers.is_empty() {
+    } else if def.numbers.is_empty() && !def.numbers_recorded {
         let mut next: BTreeMap<usize, u32> = BTreeMap::new();
         for (i, e) in entries.iter().enumerate() {
             let c = next.entry(scope(e)).or_insert(0);
@@ -1880,8 +1880,10 @@ pub fn snapshot_numbers(project: &Project, def: &Schedule, active: ActiveRooms) 
         scope_of(a, def.numbering)
             .cmp(&scope_of(b, def.numbering))
             .then_with(|| natural_cmp(&a.text("label"), &b.text("label")))
-            .then_with(|| reading_key(a.position).cmp(&reading_key(b.position)))
+            // Equal labels go by placement (ids ascend as objects are made);
+            // lines that stand for no single object keep reading order.
             .then_with(|| a.id.cmp(&b.id))
+            .then_with(|| reading_key(a.position).cmp(&reading_key(b.position)))
     });
     records_in_order(&all, def.numbering)
 }
@@ -3776,7 +3778,6 @@ mod r16_tests {
     }
 
     #[test]
-    #[ignore = "R16-04 in progress"]
     fn numbers_follow_placement_order_and_renumber_closes_gaps() {
         let mut p = Project::new("N");
         let ids = rect_walls(&mut p, 480.0, 360.0, 6.5, WallKind::Exterior);
@@ -3853,6 +3854,7 @@ mod r16_tests {
         let mut p = Project::new("L");
         let ids = rect_walls(&mut p, 240.0, 120.0, 4.5, WallKind::Exterior);
         p.register_wall_type(plan_core::defaults::WallTypeDef {
+            props: Default::default(),
             name: "Stucco".into(),
             layers: vec![
                 plan_core::defaults::WallLayer::new("Stucco", 1.0, false, "Stucco"),
@@ -3861,6 +3863,7 @@ mod r16_tests {
             kind: WallKind::Exterior,
         });
         p.register_wall_type(plan_core::defaults::WallTypeDef {
+            props: Default::default(),
             name: "Foundation".into(),
             layers: vec![plan_core::defaults::WallLayer::new(
                 "Concrete", 8.0, true, "Concrete",

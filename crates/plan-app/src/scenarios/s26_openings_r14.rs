@@ -314,7 +314,8 @@ fn swings_both_ways_indicators_recess_and_size_without_frame_in_the_plan() {
 fn renumber_schedule_closes_gaps_from_the_menu_and_the_toolbar() {
     let mut sim = house();
     sim.tool(ToolId::Door);
-    // Drawn right to left; a schedule reads them left to right at first.
+    // Drawn right to left; the doors are alike, so a new schedule numbers
+    // them in the order they were placed (p. 715).
     for x in [400.0, 250.0, 100.0] {
         sim.click(x, 0.5);
     }
@@ -333,17 +334,17 @@ fn renumber_schedule_closes_gaps_from_the_menu_and_the_toolbar() {
             .map(|e| (e.id, e.cell("mark").to_string()))
             .collect()
     };
-    assert_eq!(marks(&sim)[0], (ids[2], "D01".to_string()));
-    // The leftmost door goes; Schedules > Renumber Door Schedule closes the gap.
+    assert_eq!(marks(&sim)[0], (ids[0], "D01".to_string()));
+    // The first door goes; Schedules > Renumber Door Schedule closes the gap.
     sim.app.cx.begin_change("Delete Door");
-    sim.app.cx.project.remove_opening(0, ids[2]);
+    sim.app.cx.project.remove_opening(0, ids[0]);
     sim.app.cx.mark_dirty();
     sim.app.cx.refresh();
     assert_eq!(marks(&sim)[0].1, "D02");
     sim.action(Action::Custom(RENUMBER_DOORS));
     assert_eq!(
         marks(&sim),
-        [(ids[1], "D01".to_string()), (ids[0], "D02".to_string())]
+        [(ids[1], "D01".to_string()), (ids[2], "D02".to_string())]
     );
     assert_eq!(sim.app.cx.undo_label(), Some("Renumber Schedule"));
     // No mark is written into the doors.

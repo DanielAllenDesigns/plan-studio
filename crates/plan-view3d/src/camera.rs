@@ -102,6 +102,13 @@ pub struct Camera {
     pub fov_deg: f32,
     /// Half the visible height of the orthographic views, inches.
     pub ortho_half_height: f32,
+    /// Clip Surfaces Within (manual p. 1189): objects nearer than this to
+    /// the camera are not drawn. `None` keeps the mode's own near plane.
+    pub near: Option<f32>,
+    /// Parallel projection for an orbit-like mode: the Orthographic Full,
+    /// Floor and Framing Overviews and the Isometric Views (C-15). Zoom
+    /// changes `ortho_half_height`, as in the orthographic elevations.
+    pub parallel: bool,
 }
 
 impl Default for Camera {
@@ -116,17 +123,34 @@ impl Default for Camera {
             position: [0.0, 66.0, 600.0],
             fov_deg: 60.0,
             ortho_half_height: 600.0,
+            near: None,
+            parallel: false,
         }
     }
 }
 
 impl Camera {
+    /// Is the projection parallel (an orthographic mode, or an orbit-like
+    /// mode with [`Camera::parallel`])?
+    pub fn is_parallel(&self) -> bool {
+        self.parallel || self.mode.is_orthographic()
+    }
+
+    /// Makes an orbit-like view parallel, keeping what it shows: the visible
+    /// height is that of the perspective view at the target's distance.
+    pub fn make_parallel(&mut self) {
+        self.ortho_half_height =
+            (self.distance * (self.fov_deg.to_radians() * 0.5).tan()).clamp(6.0, 1.0e6);
+        self.parallel = true;
+    }
+
     /// Switch view mode and apply that mode's default orientation.
     ///
     /// Orbit/doll house keep the current yaw when coming from another orbit
     /// view, `FullCamera` keeps the current yaw and position, and the
     /// orthographic modes snap to their fixed direction.
     pub fn set_mode(&mut self, mode: CameraMode) {
+        self.parallel = false;
         let was_orbit_like = self.mode.is_orbit_like();
         let was_full = self.mode == CameraMode::FullCamera;
         match mode {
@@ -237,7 +261,7 @@ impl Camera {
         } else {
             1.0
         };
-        if self.mode.is_orthographic() {
+        if self.is_parallel() {
             let h = self.ortho_half_height.max(1e-3);
             let w = h * aspect;
             // A negative near plane keeps geometry behind the eye plane visible.
@@ -251,6 +275,7 @@ impl Camera {
                     (self.distance * 20.0).max(20_000.0),
                 )
             };
+            let near = self.near.map_or(near, |n| n.clamp(0.1, far * 0.5));
             math::perspective(self.fov_deg.to_radians(), aspect, near, far)
         }
     }
@@ -312,7 +337,7 @@ impl Camera {
             return;
         }
         let h = viewport_height_px.max(1.0);
-        let per_px = if self.mode.is_orthographic() {
+        let per_px = if self.is_parallel() {
             2.0 * self.ortho_half_height / h
         } else {
             2.0 * self.distance * (self.fov_deg.to_radians() * 0.5).tan() / h
@@ -358,7 +383,7 @@ impl Camera {
         let factor = (-amount).exp();
         match self.mode {
             CameraMode::FullCamera => self.walk(amount * WALK_DOLLY_INCHES, 0.0),
-            m if m.is_orthographic() => {
+            m if m.is_orthographic() || self.parallel => {
                 self.ortho_half_height = (self.ortho_half_height * factor).clamp(6.0, 1.0e6);
             }
             _ => self.distance = (self.distance * factor).clamp(10.0, 1.0e6),

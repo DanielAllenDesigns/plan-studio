@@ -291,6 +291,15 @@ fn extra_commands() -> Vec<Command> {
             Action::Custom(AlignMode::Bottom.id()),
         ),
         c("Tools", "Layer Display Options", Action::OpenLayerDisplay),
+        // Join Roof Planes is an Edit-toolbar command in Chief; Daniel's
+        // hotkey 2 (command 231) starts it.
+        c(
+            "Build",
+            "Join Roof Planes",
+            Action::SetTool(crate::tools::ToolId::RoofVariant(
+                crate::tools::roof::RoofMode::Join,
+            )),
+        ),
         c("Help", "About Plan Studio", Action::ShowAbout),
     ]
 }
@@ -1330,7 +1339,7 @@ mod tests {
                 .map(|u| u.name.as_str())
                 .collect::<Vec<_>>()
         );
-        assert_eq!(s.named, 143);
+        assert_eq!(s.named, 144);
         assert_eq!(s.mapped + s.unmapped, s.named);
         assert!(s.live > 15, "live mapped: {}", s.live);
         assert_eq!(map.unmapped().len(), s.unmapped);

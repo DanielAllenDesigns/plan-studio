@@ -19,7 +19,13 @@ use plan_framing::{
     WallConnection, TWO_BY_EIGHT, TWO_BY_FOUR, TWO_BY_SIX, TWO_BY_TEN, TWO_BY_TWELVE,
 };
 
-const SIZES: [Lumber; 5] = [TWO_BY_FOUR, TWO_BY_SIX, TWO_BY_EIGHT, TWO_BY_TEN, TWO_BY_TWELVE];
+const SIZES: [Lumber; 5] = [
+    TWO_BY_FOUR,
+    TWO_BY_SIX,
+    TWO_BY_EIGHT,
+    TWO_BY_TEN,
+    TWO_BY_TWELVE,
+];
 
 const TABS_1: &[Tab] = &[
     on("Foundation"),
@@ -247,24 +253,38 @@ impl AutoForm {
         ui.horizontal(|ui| {
             ui.label("Floor Structure");
             ui.checkbox(&mut a.floor_structure_default[fi], "Default")
-                .on_hover_text("Use the Floor Structure Definition of the Floor/Ceiling Platform Defaults");
+                .on_hover_text(
+                    "Use the Floor Structure Definition of the Floor/Ceiling Platform Defaults",
+                );
         });
         let w = &mut self.settings.walls;
         row(ui, "On Center Spacing", |ui| {
             inches(ui, &mut w.joist_spacing, 4.0, 96.0)
         });
-        row(ui, "Joist size", |ui| size_combo(ui, "af_joist", &mut w.joist_size));
+        row(ui, "Joist size", |ui| {
+            size_combo(ui, "af_joist", &mut w.joist_size)
+        });
         row(ui, "Joists run", |ui| {
             enum_combo(
                 ui,
                 "af_dir",
                 &mut w.joist_direction,
-                &[JoistDirection::Auto, JoistDirection::AlongX, JoistDirection::AlongY],
+                &[
+                    JoistDirection::Auto,
+                    JoistDirection::AlongX,
+                    JoistDirection::AlongY,
+                ],
                 direction_name,
             )
         });
         row(ui, "Bearing", |ui| {
-            enum_combo(ui, "af_bear", &mut w.bearing, &BearingMode::ALL, BearingMode::name)
+            enum_combo(
+                ui,
+                "af_bear",
+                &mut w.bearing,
+                &BearingMode::ALL,
+                BearingMode::name,
+            )
         });
         ui.checkbox(&mut w.blocking, "Mid-span blocking");
         ui.checkbox(&mut w.rim_joist, "Rim Joist");
@@ -275,7 +295,9 @@ impl AutoForm {
                 ui.radio_value(&mut self.settings.walls.rim_plies, 2, "Double");
             });
             let d = &mut self.settings.build.detail;
-            row(ui, "Rim Joist Width", |ui| inches(ui, &mut d.rim_width, 0.5, 12.0));
+            row(ui, "Rim Joist Width", |ui| {
+                inches(ui, &mut d.rim_width, 0.5, 12.0)
+            });
             let a = &mut self.catalog.auto;
             ui.horizontal(|ui| {
                 ui.checkbox(&mut a.max_rim_on, "Max Rim Joist Length");
@@ -290,7 +312,13 @@ impl AutoForm {
                 }
             });
             row(ui, "Rim Joist Connection Style", |ui| {
-                enum_combo(ui, "af_rimconn", &mut d.rim_connection, &Connection::ALL, Connection::name)
+                enum_combo(
+                    ui,
+                    "af_rimconn",
+                    &mut d.rim_connection,
+                    &Connection::ALL,
+                    Connection::name,
+                )
             });
         });
         self.construction(ui, "Joist construction", "af_jcon", Role::FloorJoist);
@@ -300,7 +328,13 @@ impl AutoForm {
             enum_combo(ui, "af_splice", &mut d.splice, &Splice::ALL, Splice::name)
         });
         row(ui, "Blocking", |ui| {
-            enum_combo(ui, "af_blk", &mut d.blocking_style, &BlockingStyle::ALL, BlockingStyle::name)
+            enum_combo(
+                ui,
+                "af_blk",
+                &mut d.blocking_style,
+                &BlockingStyle::ALL,
+                BlockingStyle::name,
+            )
         });
         ui.weak("The lap is 8\" and centred over the support. The spacing, size and styles apply to every floor.");
     }
@@ -315,7 +349,9 @@ impl AutoForm {
         ui.horizontal(|ui| {
             ui.label("Ceiling Structure");
             ui.checkbox(&mut a.ceiling_structure_default[fi], "Default")
-                .on_hover_text("Use the Ceiling Structure Definition of the Floor/Ceiling Platform Defaults");
+                .on_hover_text(
+                    "Use the Ceiling Structure Definition of the Floor/Ceiling Platform Defaults",
+                );
         });
         let w = &mut self.settings.walls;
         row(ui, "On Center Spacing", |ui| {
@@ -329,14 +365,24 @@ impl AutoForm {
                 ui,
                 "af_cdir",
                 &mut w.ceiling_direction,
-                &[JoistDirection::Auto, JoistDirection::AlongX, JoistDirection::AlongY],
+                &[
+                    JoistDirection::Auto,
+                    JoistDirection::AlongX,
+                    JoistDirection::AlongY,
+                ],
                 direction_name,
             )
         });
         self.construction(ui, "Joist construction", "af_ccon", Role::CeilingJoist);
         let d = &mut self.settings.build.detail;
         row(ui, "Bear Joists on Beams and Walls", |ui| {
-            enum_combo(ui, "af_csplice", &mut d.ceiling_splice, &Splice::ALL, Splice::name)
+            enum_combo(
+                ui,
+                "af_csplice",
+                &mut d.ceiling_splice,
+                &Splice::ALL,
+                Splice::name,
+            )
         });
         row(ui, "Blocking", |ui| {
             enum_combo(
@@ -381,31 +427,55 @@ impl AutoForm {
         section(ui, "Studs and Girts");
         self.construction(ui, "Construction", "af_stud", Role::Stud);
         let w = &mut self.settings.walls;
-        row(ui, "Width", |ui| size_combo(ui, "af_studsize", &mut w.stud_size));
-        row(ui, "Spacing", |ui| inches(ui, &mut w.stud_spacing, 4.0, 96.0));
+        row(ui, "Width", |ui| {
+            size_combo(ui, "af_studsize", &mut w.stud_size)
+        });
+        row(ui, "Spacing", |ui| {
+            inches(ui, &mut w.stud_spacing, 4.0, 96.0)
+        });
         let a = &mut self.catalog.auto;
-        row(ui, "Max Girt Length", |ui| inches(ui, &mut a.max_girt_length, 12.0, 960.0));
+        row(ui, "Max Girt Length", |ui| {
+            inches(ui, &mut a.max_girt_length, 12.0, 960.0)
+        });
         ui.checkbox(&mut a.allow_balloon, "Allow Automatic Balloon Framing");
         section(ui, "Wall Connections");
         let d = &mut self.settings.build.detail;
         row(ui, "Corners", |ui| {
-            enum_combo(ui, "af_corner", &mut d.corner_style, &WallConnection::ALL, WallConnection::name)
+            enum_combo(
+                ui,
+                "af_corner",
+                &mut d.corner_style,
+                &WallConnection::ALL,
+                WallConnection::name,
+            )
         });
         row(ui, "Intersections", |ui| {
-            let tees = [WallConnection::Standard, WallConnection::Reduced, WallConnection::Laddered];
+            let tees = [
+                WallConnection::Standard,
+                WallConnection::Reduced,
+                WallConnection::Laddered,
+            ];
             enum_combo(ui, "af_tee", &mut d.tee_style, &tees, WallConnection::name)
         });
         section(ui, "Plates");
         self.construction(ui, "Top Plate Construction", "af_tpc", Role::Plate);
         let w = &mut self.settings.walls;
         let a = &mut self.catalog.auto;
-        row(ui, "Top Plate Width", |ui| inches(ui, &mut a.top_plate_width, 0.5, 12.0));
+        row(ui, "Top Plate Width", |ui| {
+            inches(ui, &mut a.top_plate_width, 0.5, 12.0)
+        });
         row(ui, "Top Plate Count", |ui| {
             ui.add(egui::DragValue::new(&mut w.top_plates).range(1..=3));
         });
         let d = &mut self.settings.build.detail;
         row(ui, "Top Plate Connection Style", |ui| {
-            enum_combo(ui, "af_tpconn", &mut d.top_plate_connection, &Connection::ALL, Connection::name)
+            enum_combo(
+                ui,
+                "af_tpconn",
+                &mut d.top_plate_connection,
+                &Connection::ALL,
+                Connection::name,
+            )
         });
         row(ui, "Bottom Plate Count", |ui| {
             ui.add(egui::DragValue::new(&mut w.bottom_plates).range(1..=2));
@@ -413,7 +483,9 @@ impl AutoForm {
         row(ui, "Bottom Plate Thickness", |ui| {
             inches(ui, &mut a.bottom_plate_thickness, 0.5, 6.0)
         });
-        row(ui, "Max Plate Length", |ui| inches(ui, &mut a.max_plate_length, 12.0, 960.0));
+        row(ui, "Max Plate Length", |ui| {
+            inches(ui, &mut a.max_plate_length, 12.0, 960.0)
+        });
         section(ui, "Blocking");
         ui.label("Include Automatic Blocking");
         ui.horizontal(|ui| {
@@ -437,7 +509,10 @@ impl AutoForm {
         ui.checkbox(&mut d.rotate_end_studs, "Rotate End Studs");
         ui.checkbox(&mut d.frame_through_horizontal, "Horizontal Frame Through");
         section(ui, "Wall Detail Views");
-        ui.checkbox(&mut d.details_from_exterior, "Build Wall Framing Details from Exterior");
+        ui.checkbox(
+            &mut d.details_from_exterior,
+            "Build Wall Framing Details from Exterior",
+        );
     }
 
     // ----- openings -----
@@ -481,8 +556,13 @@ impl AutoForm {
                     .nth(1)
                     .map_or(48.0, |r| r.up_to + 12.0);
                 let n = w.header_table.len();
-                w.header_table
-                    .insert(n - 1, plan_framing::HeaderRow { up_to, lumber: last.lumber });
+                w.header_table.insert(
+                    n - 1,
+                    plan_framing::HeaderRow {
+                        up_to,
+                        lumber: last.lumber,
+                    },
+                );
             }
         }
         let d = &mut self.settings.build.detail;
@@ -493,12 +573,16 @@ impl AutoForm {
         let w = &mut self.settings.walls;
         count(ui, "King studs per side", &mut w.king_studs, 3);
         count(ui, "Trimmers per side", &mut w.trimmers, 3);
-        row(ui, "Cripple spacing", |ui| inches(ui, &mut w.cripple_spacing, 4.0, 96.0));
+        row(ui, "Cripple spacing", |ui| {
+            inches(ui, &mut w.cripple_spacing, 4.0, 96.0)
+        });
         self.construction(ui, "Header construction", "af_hcon", Role::Header);
         section(ui, "Bay/Box/Bow Trimmers");
         let a = &mut self.catalog.auto;
         count(ui, "Maximum Number", &mut a.bay_max_trimmers, 4);
-        row(ui, "Component Thickness", |ui| inches(ui, &mut a.bay_component_thickness, 0.5, 6.0));
+        row(ui, "Component Thickness", |ui| {
+            inches(ui, &mut a.bay_component_thickness, 0.5, 6.0)
+        });
         section(ui, "Materials List");
         let d = &mut self.settings.build.detail;
         ui.checkbox(&mut d.list_cut_header_lengths, "List Cut Header Lengths in Mixed Reporting")
@@ -511,17 +595,27 @@ impl AutoForm {
         let types: Vec<String> = self.catalog.types.iter().map(|t| t.name.clone()).collect();
         let a = &mut self.catalog.auto;
         section(ui, "Headers");
-        row(ui, "Type", |ui| name_combo(ui, "af_fp_type", &mut a.fireplace_header_type, &types));
-        row(ui, "Thickness", |ui| inches(ui, &mut a.fireplace_header_thickness, 0.5, 12.0));
+        row(ui, "Type", |ui| {
+            name_combo(ui, "af_fp_type", &mut a.fireplace_header_type, &types)
+        });
+        row(ui, "Thickness", |ui| {
+            inches(ui, &mut a.fireplace_header_thickness, 0.5, 12.0)
+        });
         count(ui, "Count", &mut a.fireplace_header_count, 6);
         section(ui, "Trimmers");
-        row(ui, "Double Trimmer At", |ui| inches(ui, &mut a.double_trimmer_at, 6.0, 240.0));
-        row(ui, "Triple Trimmer At", |ui| inches(ui, &mut a.triple_trimmer_at, 6.0, 240.0));
+        row(ui, "Double Trimmer At", |ui| {
+            inches(ui, &mut a.double_trimmer_at, 6.0, 240.0)
+        });
+        row(ui, "Triple Trimmer At", |ui| {
+            inches(ui, &mut a.triple_trimmer_at, 6.0, 240.0)
+        });
         if a.triple_trimmer_at < a.double_trimmer_at {
             a.triple_trimmer_at = a.double_trimmer_at;
         }
         section(ui, "Sills");
-        row(ui, "Thickness", |ui| inches(ui, &mut a.fireplace_sill_thickness, 0.5, 12.0));
+        row(ui, "Thickness", |ui| {
+            inches(ui, &mut a.fireplace_sill_thickness, 0.5, 12.0)
+        });
         ui.checkbox(&mut a.fireplace_double_sill, "Double Sills");
         ui.weak("These are the rough openings of legacy fireplaces placed in walls; a sill is made only when the fireplace is raised off the floor.");
     }
@@ -539,14 +633,34 @@ impl AutoForm {
             ui.label(format!("{label:<16}"));
             match lumber {
                 Some(l) => {
-                    ui.add(egui::DragValue::new(&mut l.thickness).speed(0.125).range(0.25..=12.0).suffix("\""));
+                    ui.add(
+                        egui::DragValue::new(&mut l.thickness)
+                            .speed(0.125)
+                            .range(0.25..=12.0)
+                            .suffix("\""),
+                    );
                     ui.label("x");
-                    ui.add(egui::DragValue::new(&mut l.depth).speed(0.125).range(0.5..=24.0).suffix("\""));
+                    ui.add(
+                        egui::DragValue::new(&mut l.depth)
+                            .speed(0.125)
+                            .range(0.5..=24.0)
+                            .suffix("\""),
+                    );
                 }
                 None => {
-                    ui.add(egui::DragValue::new(&mut row_state.width).speed(0.125).range(0.25..=12.0).suffix("\""));
+                    ui.add(
+                        egui::DragValue::new(&mut row_state.width)
+                            .speed(0.125)
+                            .range(0.25..=12.0)
+                            .suffix("\""),
+                    );
                     ui.label("x");
-                    ui.add(egui::DragValue::new(&mut row_state.depth).speed(0.125).range(0.5..=24.0).suffix("\""));
+                    ui.add(
+                        egui::DragValue::new(&mut row_state.depth)
+                            .speed(0.125)
+                            .range(0.5..=24.0)
+                            .suffix("\""),
+                    );
                 }
             }
         });
@@ -562,7 +676,9 @@ impl AutoForm {
         let r = &mut self.settings.roof;
         ui.checkbox(&mut r.trim_to_soffits, "Trim Framing To Soffits");
         row(ui, "Spacing", |ui| inches(ui, &mut r.spacing, 4.0, 96.0));
-        row(ui, "Maximum Lookout Spacing", |ui| inches(ui, &mut r.lookout_spacing, 4.0, 96.0));
+        row(ui, "Maximum Lookout Spacing", |ui| {
+            inches(ui, &mut r.lookout_spacing, 4.0, 96.0)
+        });
         ui.horizontal(|ui| {
             ui.checkbox(&mut a.max_subfascia_on, "Maximum Subfascia Length");
             ui.add_enabled_ui(a.max_subfascia_on, |ui| {
@@ -570,18 +686,32 @@ impl AutoForm {
             });
         });
         row(ui, "Blocking Style", |ui| {
-            enum_combo(ui, "af_rblk", &mut a.roof_blocking_style, &BlockingStyle::ALL, BlockingStyle::name)
+            enum_combo(
+                ui,
+                "af_rblk",
+                &mut a.roof_blocking_style,
+                &BlockingStyle::ALL,
+                BlockingStyle::name,
+            )
         });
         ui.checkbox(&mut a.roof_blocking_vertical, "Vertical");
         section(ui, "Roof Lookouts");
         ui.checkbox(&mut r.lookouts, "Lookouts under gable overhangs");
-        row(ui, "Lookout Spacing", |ui| inches(ui, &mut r.lookout_spacing, 4.0, 96.0));
+        row(ui, "Lookout Spacing", |ui| {
+            inches(ui, &mut r.lookout_spacing, 4.0, 96.0)
+        });
         let mut match_spacing = r.lookout_offset <= 0.0;
         if ui.checkbox(&mut match_spacing, "Match Spacing").changed() {
-            r.lookout_offset = if match_spacing { 0.0 } else { r.lookout_spacing };
+            r.lookout_offset = if match_spacing {
+                0.0
+            } else {
+                r.lookout_spacing
+            };
         }
         ui.add_enabled_ui(!match_spacing, |ui| {
-            row(ui, "Offset from Subfascia", |ui| inches(ui, &mut r.lookout_offset, 0.0, 96.0))
+            row(ui, "Offset from Subfascia", |ui| {
+                inches(ui, &mut r.lookout_offset, 0.0, 96.0)
+            })
         });
         section(ui, "Roof Layers");
         ui.weak("The Surface, Structure and Ceiling Finish definitions are edited in the Roof Defaults and the Roof Plane Specification.");
@@ -591,9 +721,14 @@ impl AutoForm {
             r.soffit_thickness = if soffits { 0.5 } else { 0.0 };
         }
         ui.add_enabled_ui(soffits, |ui| {
-            row(ui, "Soffit thickness", |ui| inches(ui, &mut r.soffit_thickness, 0.25, 6.0))
+            row(ui, "Soffit thickness", |ui| {
+                inches(ui, &mut r.soffit_thickness, 0.25, 6.0)
+            })
         });
-        ui.checkbox(&mut a.flat_under_eave_subfascia, "Flat Under Eave Subfascia");
+        ui.checkbox(
+            &mut a.flat_under_eave_subfascia,
+            "Flat Under Eave Subfascia",
+        );
         section(ui, "Roof Size");
         ui.weak("Width x depth of each roof framing member; clear a box to leave the member out.");
         Self::roof_row(ui, "Rafters", &mut a.rafters, Some(&mut r.rafter));
@@ -625,7 +760,13 @@ impl AutoForm {
         ui.checkbox(&mut r.overframing, "Roof Overframing");
         ui.add_enabled_ui(r.overframing, |ui| {
             row(ui, "Overframe Layer", |ui| {
-                enum_combo(ui, "af_over", &mut r.overframe_layer, &OverframeLayer::ALL, OverframeLayer::name)
+                enum_combo(
+                    ui,
+                    "af_over",
+                    &mut r.overframe_layer,
+                    &OverframeLayer::ALL,
+                    OverframeLayer::name,
+                )
             })
         });
     }
@@ -637,23 +778,43 @@ impl AutoForm {
         section(ui, "Roof Trusses");
         let a = &mut self.catalog.auto;
         ui.checkbox(&mut a.include_peak_trusses, "Include Peak Trusses");
-        ui.checkbox(&mut a.end_truss_blocking, "Include Horizontal Blocking in End Trusses");
+        ui.checkbox(
+            &mut a.end_truss_blocking,
+            "Include Horizontal Blocking in End Trusses",
+        );
         ui.add_enabled_ui(a.end_truss_blocking, |ui| {
-            row(ui, "Vertical Spacing", |ui| inches(ui, &mut a.end_truss_vertical_spacing, 4.0, 96.0));
+            row(ui, "Vertical Spacing", |ui| {
+                inches(ui, &mut a.end_truss_vertical_spacing, 4.0, 96.0)
+            });
             ui.checkbox(&mut a.end_truss_rollout_auto, "Automatic");
             ui.add_enabled_ui(!a.end_truss_rollout_auto, |ui| {
-                row(ui, "Rollout Offset", |ui| inches(ui, &mut a.end_truss_rollout_offset, 0.0, 96.0))
+                row(ui, "Rollout Offset", |ui| {
+                    inches(ui, &mut a.end_truss_rollout_offset, 0.0, 96.0)
+                })
             });
         });
         section(ui, "Trusses over a Truss Base");
         let t = &mut self.settings.build.trusses;
         row(ui, "Type", |ui| {
-            enum_combo(ui, "af_trtype", &mut t.kind, &super::super::truss::TYPES, |k| k.name())
+            enum_combo(
+                ui,
+                "af_trtype",
+                &mut t.kind,
+                &super::super::truss::TYPES,
+                |k| k.name(),
+            )
         });
         row(ui, "Pitch", |ui| {
-            ui.add(egui::DragValue::new(&mut t.pitch).speed(0.25).range(0.0..=24.0).suffix(" in 12"));
+            ui.add(
+                egui::DragValue::new(&mut t.pitch)
+                    .speed(0.25)
+                    .range(0.0..=24.0)
+                    .suffix(" in 12"),
+            );
         });
-        row(ui, "Heel height", |ui| inches(ui, &mut t.heel_height, 0.0, 48.0));
+        row(ui, "Heel height", |ui| {
+            inches(ui, &mut t.heel_height, 0.0, 48.0)
+        });
         row(ui, "Overhang", |ui| inches(ui, &mut t.overhang, 0.0, 96.0));
         row(ui, "Spacing", |ui| inches(ui, &mut t.spacing, 4.0, 96.0));
         ui.add_space(4.0);
@@ -752,15 +913,27 @@ pub(super) fn sketch_members(painter: &egui::Painter, rect: Rect) {
     let ink = Color32::from_rgb(0x2B, 0x2B, 0x2B);
     painter.rect_filled(rect, 4.0, Color32::from_rgb(0xEC, 0xEA, 0xE3));
     let r = rect.shrink(18.0);
-    let stroke = Stroke::new(1.5, ink);
+    let stroke = Stroke::new(1.5_f32, ink);
     painter.rect_stroke(r, 0.0, stroke, egui::StrokeKind::Inside);
     let n = 8;
     for i in 1..n {
         let x = r.min.x + r.width() * i as f32 / n as f32;
         painter.line_segment([Pos2::new(x, r.min.y), Pos2::new(x, r.max.y)], stroke);
     }
-    painter.line_segment([Pos2::new(r.min.x, r.min.y + 6.0), Pos2::new(r.max.x, r.min.y + 6.0)], stroke);
-    painter.line_segment([Pos2::new(r.min.x, r.max.y - 6.0), Pos2::new(r.max.x, r.max.y - 6.0)], stroke);
+    painter.line_segment(
+        [
+            Pos2::new(r.min.x, r.min.y + 6.0),
+            Pos2::new(r.max.x, r.min.y + 6.0),
+        ],
+        stroke,
+    );
+    painter.line_segment(
+        [
+            Pos2::new(r.min.x, r.max.y - 6.0),
+            Pos2::new(r.max.x, r.max.y - 6.0),
+        ],
+        stroke,
+    );
 }
 
 #[cfg(test)]

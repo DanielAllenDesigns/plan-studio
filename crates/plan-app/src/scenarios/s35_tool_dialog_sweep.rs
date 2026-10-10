@@ -557,6 +557,8 @@ fn role(id: ToolId) -> Role {
             | CadMode::BreakLine
             | CadMode::ChangeLineArc
             | CadMode::DeleteBreak
+            | CadMode::DisconnectEdges
+            | CadMode::HideShowEdge
             | CadMode::MakeArcTangent
             | CadMode::ReverseDirection
             | CadMode::MakeParallel
@@ -592,6 +594,12 @@ fn role(id: ToolId) -> Role {
             RoofMode::Return => Modifies(Fx::Roofed, G::EaveCorner),
             RoofMode::Edit | RoofMode::EditAll => NoObject("modifier: edits roof planes"),
             RoofMode::Join => NoObject("modifier: joins two roof planes"),
+            RoofMode::Coplanar
+            | RoofMode::IntersectionPoint
+            | RoofMode::MakeParallel
+            | RoofMode::MakePerpendicular => {
+                NoObject("modifier: places a roof plane against another object")
+            }
         },
         ToolId::Electrical => Creates(Fx::Shell, ON_WALL),
         ToolId::ElectricalVariant(v) => match v {
@@ -1249,12 +1257,47 @@ fn edit_draft(sim: &mut Sim, o: ObjectRef) -> bool {
                 Ci::Text { text, .. } => text.push('x'),
             }
         }
-        _ => return false,
+        _ => {
+            if !edit_spec_draft(sim) {
+                return false;
+            }
+        }
     }
     dialog_texts(sim, Vec::new());
     dialog_texts(sim, vec![key_event(Key::Enter)]);
     dialog_texts(sim, Vec::new());
     flush_tool(sim);
+    true
+}
+
+/// Edits one field of the open dialog of the kinds the shell hosts through
+/// the specification-dialog host (landings, foundation and detail objects,
+/// dormers, terrain elements); false when none of them is open.
+fn edit_spec_draft(sim: &mut Sim) -> bool {
+    use crate::dialogs::{details::Draft as Dd, foundation::Draft as Fd};
+    if let Some(d) = sim.app.spec.stair_draft_mut() {
+        d.stair.params.width += 6.0;
+    } else if let Some(d) = sim.app.spec.foundation_draft_mut() {
+        match d {
+            Fd::Slab(s) => s.thickness += 1.0,
+            Fd::Hole(h) => h.with_footing = !h.with_footing,
+            Fd::Pad(p) => p.thickness += 1.0,
+            Fd::Pier(p) => p.height += 1.0,
+            Fd::Platform(_) => return false,
+        }
+    } else if let Some(d) = sim.app.spec.details_draft_mut() {
+        match d {
+            Dd::Solid(s) => s.elevation += 6.0,
+            Dd::Region(r) => r.thickness += 0.5,
+            _ => return false,
+        }
+    } else if let Some(d) = sim.app.spec.dormer_spec_mut() {
+        d.width += 6.0;
+    } else if let Some(d) = sim.app.spec.terrain_object_draft_mut() {
+        d.extras_mut().schedule_category.push('x');
+    } else {
+        return false;
+    }
     true
 }
 

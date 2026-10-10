@@ -1510,3 +1510,30 @@ fn a_sprinkler_line_is_a_dashed_two_d_pipe_with_no_3d() {
         .any(|i| matches!(&i.shape, PlanShape::Polyline { dashed: true, closed: false, points, .. } if points.len() == 3)));
     assert_eq!(category_of(&t, ObjectKey::Landscape(0)), None);
 }
+
+#[test]
+fn the_perimeter_fill_style_draws_a_fill_only_when_asked() {
+    let mut t = Terrain::default();
+    t.perimeter = vec![
+        pt(0.0, 0.0),
+        pt(600.0, 0.0),
+        pt(600.0, 400.0),
+        pt(0.0, 400.0),
+    ];
+    let fills = |t: &Terrain| {
+        landscape_plan(t)
+            .iter()
+            .filter(|i| matches!(i.shape, PlanShape::Fill { .. }) && i.layer == "Terrain")
+            .count()
+    };
+    assert_eq!(fills(&t), 0, "the default is the outline only");
+    t.perimeter_extras.style.fill = crate::FillStyle::Solid;
+    t.perimeter_extras.style.fill_color = Some([10, 20, 30]);
+    assert_eq!(fills(&t), 1);
+    assert!(landscape_plan(&t).iter().any(|i| matches!(
+        &i.shape,
+        PlanShape::Fill { color, .. } if color[..3] == [10, 20, 30]
+    )));
+    t.perimeter_extras.style.fill = crate::FillStyle::None;
+    assert_eq!(fills(&t), 0);
+}

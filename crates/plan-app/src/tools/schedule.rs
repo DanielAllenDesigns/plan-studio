@@ -354,7 +354,7 @@ impl Tool for ScheduleTool {
                 return ToolResult::consumed();
             }
         }
-        self.hover = Some(cx.snap_at(p.world, None, p.modifiers.alt, &[]).point);
+        self.hover = Some(cx.snap_at(p.world, None, p.overrides(), &[]).point);
         if self.ghost.is_none() {
             self.ghost = Some(self.ghost_size(cx));
         }
@@ -369,7 +369,7 @@ impl Tool for ScheduleTool {
         // Create Schedule from Room: the click places the room's schedule.
         if let Some(room) = armed_room() {
             if sv::pick(cx, p.world).is_none() {
-                let at = cx.snap_at(p.world, None, p.modifiers.alt, &[]).point;
+                let at = cx.snap_at(p.world, None, p.overrides(), &[]).point;
                 disarm();
                 if let Some(i) = rooms_edit::room_index_at(cx, room.point()) {
                     if sv::create_from_room(cx, self.kind, i, at).is_some() {
@@ -401,7 +401,7 @@ impl Tool for ScheduleTool {
             return ToolResult::consumed();
         }
         sv::clear_selection(cx);
-        let at = cx.snap_at(p.world, None, p.modifiers.alt, &[]).point;
+        let at = cx.snap_at(p.world, None, p.overrides(), &[]).point;
         let id = sv::add(cx, self.kind, at);
         sv::select(cx, id);
         cx.status = format!("{} placed", entry_name(self.kind));

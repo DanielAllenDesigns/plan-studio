@@ -194,11 +194,7 @@ impl DrawSurface {
             let u = unit3(cross3(up, n));
             (u, unit3(cross3(n, u)))
         };
-        Some(Self {
-            origin: a,
-            u,
-            v,
-        })
+        Some(Self { origin: a, u, v })
     }
 }
 
@@ -319,7 +315,14 @@ impl AnnotKind {
                     *tip = to;
                 }
             }
-            AnnotKind::Dimension { a, b, offset, a_cut, b_cut, .. } => match i {
+            AnnotKind::Dimension {
+                a,
+                b,
+                offset,
+                a_cut,
+                b_cut,
+                ..
+            } => match i {
                 0 => {
                     *a = to;
                     *a_cut = None;
@@ -363,7 +366,9 @@ impl AnnotKind {
                 mv(tip);
                 mv(at);
             }
-            AnnotKind::Dimension { a, b, a_cut, b_cut, .. } => {
+            AnnotKind::Dimension {
+                a, b, a_cut, b_cut, ..
+            } => {
                 mv(a);
                 mv(b);
                 *a_cut = None;
@@ -375,6 +380,27 @@ impl AnnotKind {
             }
             AnnotKind::Polyline { pts, .. } => pts.iter_mut().for_each(mv),
             AnnotKind::PointMarker { at, .. } => mv(at),
+        }
+    }
+
+    /// Moves the points that locate a Cross Section Line to where the line
+    /// stands now (`position_of` gives its position: `x` for a face, `y` for
+    /// a level edge). A line that is gone leaves the point where it was.
+    pub fn relocate(&mut self, position_of: &dyn Fn(CutRef) -> Option<f64>) {
+        let place = |p: &mut [f64; 2], cut: Option<CutRef>| {
+            if let Some((c, v)) = cut.and_then(|c| position_of(c).map(|v| (c, v))) {
+                p[usize::from(!c.is_vertical_face())] = v;
+            }
+        };
+        match self {
+            AnnotKind::Dimension {
+                a, b, a_cut, b_cut, ..
+            } => {
+                place(a, *a_cut);
+                place(b, *b_cut);
+            }
+            AnnotKind::PointMarker { at, cut } => place(at, Some(*cut)),
+            _ => {}
         }
     }
 
@@ -443,14 +469,24 @@ impl AnnotKind {
         match self {
             AnnotKind::Text { at, text, size, .. } | AnnotKind::Note { at, text, size, .. } => {
                 let w = text_width(text, *size);
-                m.texts.push(([at[0] + w * 0.5, at[1] + size * 0.5], text.clone(), *size));
+                m.texts
+                    .push(([at[0] + w * 0.5, at[1] + size * 0.5], text.clone(), *size));
             }
-            AnnotKind::Leader { tip, at, text, size } => {
+            AnnotKind::Leader {
+                tip,
+                at,
+                text,
+                size,
+            } => {
                 let w = text_width(text, *size);
                 let c = [at[0] + w * 0.5, at[1] + size * 0.5];
                 m.texts.push((c, text.clone(), *size));
                 // The line runs from the tip to the nearest end of the text.
-                let end = if tip[0] < at[0] { *at } else { [at[0] + w, at[1] + size * 0.5] };
+                let end = if tip[0] < at[0] {
+                    *at
+                } else {
+                    [at[0] + w, at[1] + size * 0.5]
+                };
                 let end = [end[0], at[1] + size * 0.5];
                 m.lines.push((*tip, end));
                 let dir = (p2(end) - p2(*tip)).normalized();
@@ -459,7 +495,9 @@ impl AnnotKind {
                 m.lines.push((*tip, a2(back + n * (ARROW * 0.3))));
                 m.lines.push((*tip, a2(back - n * (ARROW * 0.3))));
             }
-            AnnotKind::Dimension { a, b, offset, text, .. } => {
+            AnnotKind::Dimension {
+                a, b, offset, text, ..
+            } => {
                 let (n, d) = dim_axes(*a, *b);
                 let len = p2(*a).dist(p2(*b));
                 let off = offset[1];
@@ -474,8 +512,8 @@ impl AnnotKind {
                 m.lines.push((a2(pa), a2(pb)));
                 for p in [pa, pb] {
                     m.lines.push((
-                        a2(p - (d + n) * (TICK * 0.7071)),
-                        a2(p + (d + n) * (TICK * 0.7071)),
+                        a2(p - (d + n) * (TICK * std::f64::consts::FRAC_1_SQRT_2)),
+                        a2(p + (d + n) * (TICK * std::f64::consts::FRAC_1_SQRT_2)),
                     ));
                 }
                 let value = text
@@ -578,7 +616,9 @@ mod tests {
         assert_eq!(h.len(), 3);
         assert!((h[2][1] - 10.0).abs() < 1e-9 && (h[2][0] - 50.0).abs() < 1e-9);
         d.set_handle(2, [70.0, -20.0]);
-        let AnnotKind::Dimension { offset, .. } = &d else { unreachable!() };
+        let AnnotKind::Dimension { offset, .. } = &d else {
+            unreachable!()
+        };
         assert!((offset[0] - 20.0).abs() < 1e-9 && (offset[1] + 20.0).abs() < 1e-9);
         // Moving an end point frees it from a Cross Section Line.
         let mut e = AnnotKind::Dimension {
@@ -590,7 +630,9 @@ mod tests {
             text: Some("custom".into()),
         };
         e.set_handle(0, [4.0, 0.0]);
-        let AnnotKind::Dimension { a_cut, .. } = &e else { unreachable!() };
+        let AnnotKind::Dimension { a_cut, .. } = &e else {
+            unreachable!()
+        };
         assert!(a_cut.is_none());
         assert_eq!(e.marks().texts[0].1, "custom");
     }
@@ -621,7 +663,10 @@ mod tests {
 
     #[test]
     fn cad_objects_have_their_corners_as_handles() {
-        let mut r = AnnotKind::Rect { a: [0.0, 0.0], b: [10.0, 5.0] };
+        let mut r = AnnotKind::Rect {
+            a: [0.0, 0.0],
+            b: [10.0, 5.0],
+        };
         assert_eq!(r.marks().lines.len(), 4);
         r.set_handle(1, [20.0, 8.0]);
         assert_eq!(r.handles(), vec![[0.0, 0.0], [20.0, 8.0]]);
@@ -664,8 +709,13 @@ mod tests {
         assert!(from_front.normal()[2] > 0.99 && from_back.normal()[2] < -0.99);
         assert!(from_front.v[1] > 0.99, "up is up on a vertical face");
         // A floor face keeps u east.
-        let floor = DrawSurface::face([0.0; 3], [10.0, 0.0, 0.0], [10.0, 0.0, 10.0], [0.0, 50.0, 0.0])
-            .unwrap();
+        let floor = DrawSurface::face(
+            [0.0; 3],
+            [10.0, 0.0, 0.0],
+            [10.0, 0.0, 10.0],
+            [0.0, 50.0, 0.0],
+        )
+        .unwrap();
         assert!(floor.normal()[1] > 0.99 && floor.u[0] > 0.99);
         assert!(DrawSurface::face(a, a, a, [0.0; 3]).is_none());
     }
@@ -679,7 +729,39 @@ mod tests {
             layer: "Dimensions".into(),
             weight: Some(0.5),
         };
-        let back: ViewAnnotation = serde_json::from_str(&serde_json::to_string(&a).unwrap()).unwrap();
+        let back: ViewAnnotation =
+            serde_json::from_str(&serde_json::to_string(&a).unwrap()).unwrap();
         assert_eq!(back, a);
+    }
+
+    #[test]
+    fn a_dimension_to_a_cut_line_follows_the_line() {
+        let cut = CutRef { object: 3, edge: 1 };
+        let mut dim = AnnotKind::Dimension {
+            a: [100.0, 40.0],
+            b: [160.0, 40.0],
+            offset: [0.0, 12.0],
+            a_cut: Some(cut),
+            b_cut: None,
+            text: None,
+        };
+        // The wall moved: its right face now stands at x = 112.
+        dim.relocate(&|c| (c == cut).then_some(112.0));
+        let AnnotKind::Dimension { a, b, .. } = &dim else {
+            unreachable!()
+        };
+        assert_eq!((a[0], a[1]), (112.0, 40.0));
+        assert_eq!(b[0], 160.0, "the free end stays where it is");
+        // A level edge moves the height instead.
+        let top = CutRef { object: 3, edge: 3 };
+        let mut m = AnnotKind::PointMarker {
+            at: [5.0, 90.0],
+            cut: top,
+        };
+        m.relocate(&|_| Some(96.0));
+        assert_eq!(m.handles()[0], [5.0, 96.0]);
+        // A line that is gone leaves the point alone.
+        m.relocate(&|_| None);
+        assert_eq!(m.handles()[0], [5.0, 96.0]);
     }
 }

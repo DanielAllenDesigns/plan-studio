@@ -585,3 +585,10 @@ edits the same values.
   Specification are still (disabled), and the Roof tab is dimmed on interior and other non-exterior walls.
   Crossing walls with the T-split turned off overlap in plan (their fill and layer lines are not merged at the
   crossing).
+
+## Wall Type Definitions (Round 16)
+
+Build > Wall > Define Wall Types opens the dialog without a wall selected (it also opens from the Define button of a Wall Specification). The table runs from the exterior face to the interior face in three sections, Exterior, Main and Interior layers. Each row has a Main checkbox (several Main layers may sit together; the last one stays), Name, Thickness, Extension (Exterior layers only, the highest sets the Brick Ledge Depth), Role (Framing, Air Gap, Standard, Cladding, Finish), a Fill swatch (click to open the layer's Fill Style) and Material. Insert Above/Below, Delete, Move Up/Down and Edit Layer work on the selected row; Total Thickness is taken by the outermost Main layer, down to 1/16 in. Copy starts a new type from the current one, Room Divider adds a 0 in divider type, Delete All Unused removes the types no wall or default uses (the type on screen stays), Import brings in the types of another plan (a clash arrives as `Name_2`).
+
+Edit Layer opens the Wall Layer Specification (General, Line Style, Fill Style, Materials). The Wall Properties tab sets Dimension to Exterior of Layer, Foundation to Exterior of Layer and its offset, Build Platform To This Line, the roof layer, Partition Wall, Room Divider and the Energy Values. The preview turns when dragged, or shows the plan view with the layer fills. OK is one undo step; the walls of an edited type take its new thickness.
+

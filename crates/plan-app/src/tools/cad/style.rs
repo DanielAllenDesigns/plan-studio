@@ -214,6 +214,17 @@ pub fn draw_cad_styled(
             }
             let _ = text;
         }
+        // Hidden edges of a polyline are left out (CAD-117).
+        CadItem::Polyline { points, closed } if !a.hidden_edges.is_empty() => {
+            let l = super::arcs::Logical::decompose(points, *closed, &a.arc_edges);
+            for i in (0..l.edge_count()).filter(|i| !a.hidden_edges.contains(i)) {
+                let edge = CadItem::Polyline {
+                    points: l.edge_path(i),
+                    closed: false,
+                };
+                render::draw_cad(painter, cam, &edge, stroke, pal);
+            }
+        }
         item => match (a.dash, screen_path(cam, item)) {
             (Some(style), Some((pts, closed))) if style != LineStyle::Solid => {
                 let mut pts = pts;
@@ -264,6 +275,8 @@ pub fn draw_cad_styled(
             draw_arrow_end(painter, e_tip, e_from, a.arrow_end, size, stroke);
         }
     }
+    // Live Show Length / Show Angle labels (CAD-118).
+    survey::draw_labels(painter, cam, c, &a.labels, color);
 }
 
 #[cfg(test)]

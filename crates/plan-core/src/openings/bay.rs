@@ -226,7 +226,14 @@ impl BayUnit {
     /// Whether a roof is built over the unit from its own options: not when the
     /// standard roof is told to use the existing one.
     pub fn builds_own_roof(&self) -> bool {
-        !self.roof.use_existing
+        !self.roof.use_existing && !self.extends_main_roof()
+    }
+
+    /// Whether the main roof comes down over the unit (Extend Existing Roof
+    /// Over). A lowered ceiling spoils it: the unit gets a lower hip of its
+    /// own (manual p. 638).
+    pub fn extends_main_roof(&self) -> bool {
+        self.roof.extend_existing && self.lowered_ceiling.is_none()
     }
 }
 
@@ -369,7 +376,7 @@ pub fn roof_footprint(shape: &BayShape, bay: &BayUnit) -> Vec<(f64, f64)> {
 /// is a hip over a rectangle; a shed or flat roof is one plane; using or
 /// extending the existing roof adds none of its own.
 pub fn roof_plane_count(style: OpeningStyle, bay: &BayUnit, roof: &BayRoof) -> usize {
-    if bay.roof.use_existing || bay.roof.extend_existing {
+    if bay.roof.use_existing || bay.extends_main_roof() {
         return 0;
     }
     match roof.kind.resolved(style == OpeningStyle::BoxWindow) {
@@ -535,20 +542,37 @@ impl Project {
         if floor != 0 {
             return Vec::new();
         }
-        let f = &self.floors[floor];
-        f.openings
+        self.floors[floor]
+            .bay_foundation_outlines(exterior)
+            .into_iter()
+            .map(|(id, _, pts)| (id, pts))
+            .collect()
+    }
+}
+
+impl crate::model::Floor {
+    /// The outer faces of the units that need a foundation under them (the
+    /// ones with Build Foundation on and not raised from the floor), as
+    /// `(opening, host wall, polyline in world coordinates)`. The Build
+    /// Foundation command lays a wall along each section of the polyline.
+    pub fn bay_foundation_outlines(
+        &self,
+        exterior: &dyn Fn(&Wall) -> f64,
+    ) -> Vec<(Id, Id, Vec<Point>)> {
+        self.openings
             .iter()
             .filter(|o| o.style.projects() && o.extras.spec.bay.foundation)
             .filter(|o| o.extras.spec.bay.on_grade())
             .filter_map(|o| {
-                let wall = f.wall(o.wall_id)?;
+                let wall = self.wall(o.wall_id)?;
                 let sign = unit_side(o, exterior(wall));
-                let pts = unit_world_outline(wall, o, sign);
-                Some((o.id, pts))
+                Some((o.id, wall.id, unit_world_outline(wall, o, sign)))
             })
             .collect()
     }
+}
 
+impl Project {
     /// Explode Bay/Bow Window (manual p. 636): the unit becomes walls, one
     /// window in each, and — when it had a lowered ceiling or a raised floor — a
     /// room of its own with Raised Floor For Bump Out set. The main wall keeps a
@@ -672,6 +696,91 @@ pub fn unit_side(o: &Opening, exterior: f64) -> f64 {
         -exterior
     } else {
         exterior
+    }
+}
+
+impl crate::model::Floor {
+    /// `walls` (the exterior walls the roof builder sees) with the stretch of
+    /// wall behind every unit that asks for Extend Existing Roof Over replaced
+    /// by the sections of the unit, so the main roof comes down over it and
+    /// follows its shape; with Rectangular Roof Over the sections are the
+    /// rectangle around the unit (manual pp. 637, 638). A unit with a lowered
+    /// ceiling is left out: its own lower hip is built instead. The pieces
+    /// keep the id and settings of the wall they come from.
+    pub fn extend_roof_over_units(
+        &self,
+        walls: Vec<Wall>,
+        exterior: &dyn Fn(&Wall) -> f64,
+    ) -> Vec<Wall> {
+        let wanted = |o: &&Opening| {
+            o.style.projects()
+                && o.extras.spec.bay.extends_main_roof()
+                && !o.extras.spec.bay.roof.use_existing
+        };
+        if !self.openings.iter().any(|o| wanted(&o)) {
+            return walls;
+        }
+        let mut out = Vec::with_capacity(walls.len() + 8);
+        for w in walls {
+            let mut units: Vec<&Opening> = self
+                .openings
+                .iter()
+                .filter(|o| o.wall_id == w.id)
+                .filter(wanted)
+                .collect();
+            if units.is_empty() || w.curve.is_some_and(|c| !c.is_straight()) {
+                out.push(w);
+                continue;
+            }
+            units.sort_by(|a, b| a.center_offset.total_cmp(&b.center_offset));
+            let sign = exterior(&w);
+            let piece = |a: Point, b: Point| Wall {
+                start: a,
+                end: b,
+                ..w.clone()
+            };
+            let mut cursor = 0.0;
+            let mut at = w.start;
+            for o in units {
+                let (s0, s1) = (o.start_offset().max(cursor), o.end_offset());
+                if s1 <= s0 + 1.0 {
+                    continue;
+                }
+                let shape = bay_shape(o.style, o.width, &o.extras.spec.bay);
+                let poly = roof_footprint(&shape, &o.extras.spec.bay);
+                let side = unit_side(o, sign);
+                let half = w.thickness * 0.5;
+                let mut pts: Vec<Point> = poly
+                    .iter()
+                    .map(|p| {
+                        let s = o.start_offset() + p.0;
+                        w.point_along(s)
+                            .add(w.normal_along(s).scale(side * (half + p.1)))
+                    })
+                    .collect();
+                let n = pts.len();
+                if n < 2 {
+                    continue;
+                }
+                pts[0] = w.point_along(o.start_offset());
+                pts[n - 1] = w.point_along(o.end_offset());
+                let first = pts[0];
+                if at.dist(first) > 1.0 {
+                    out.push(piece(at, first));
+                }
+                for pair in pts.windows(2) {
+                    if pair[0].dist(pair[1]) > 0.5 {
+                        out.push(piece(pair[0], pair[1]));
+                    }
+                }
+                at = pts[pts.len() - 1];
+                cursor = s1;
+            }
+            if at.dist(w.end) > 1.0 {
+                out.push(piece(at, w.end));
+            }
+        }
+        out
     }
 }
 

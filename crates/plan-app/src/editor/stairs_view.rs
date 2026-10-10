@@ -29,6 +29,7 @@ use std::f64::consts::FRAC_PI_2;
 mod down;
 mod modes;
 mod posts;
+pub mod staircase;
 
 #[allow(unused_imports)]
 pub use down::{build_down, build_to_deck, terrain_drop, DECK_PICK_TOL, DEFAULT_DROP};
@@ -37,6 +38,10 @@ pub use modes::{
     MAX_FLARE,
 };
 pub use posts::{library_posts, part_meshes, PostKind};
+pub use staircase::{
+    adjust_landing, best_fit_draft, make_best_fit, merge_partner, merge_sections, section_labels,
+    section_length, set_length, staircase, staircase_info, tread_mode,
+};
 
 /// The layer stairs live on.
 pub const LAYER: &str = "Stairs";
@@ -229,6 +234,12 @@ pub struct StairExtras {
     pub stairwell_guard: bool,
     /// Ids of the railing walls that guard made on the floor above.
     pub guard_walls: Vec<Id>,
+    /// Dialog only (never saved): which end stays put when the dialog changes
+    /// the section's length.
+    pub lock_end: plan_stairs::LockEnd,
+    /// Dialog only (never saved): copy Display on Floor Above to every
+    /// section and landing connected to this one when the dialog closes.
+    pub apply_display_all: bool,
 }
 
 impl Default for StairExtras {
@@ -260,6 +271,8 @@ impl Default for StairExtras {
             stairwell_hole: None,
             stairwell_guard: false,
             guard_walls: Vec::new(),
+            lock_end: plan_stairs::LockEnd::Bottom,
+            apply_display_all: false,
         }
     }
 }
@@ -343,6 +356,8 @@ impl StairExtras {
                 .and_then(Value::as_array)
                 .map(|a| a.iter().filter_map(Value::as_u64).collect())
                 .unwrap_or_default(),
+            lock_end: plan_stairs::LockEnd::Bottom,
+            apply_display_all: false,
         }
     }
 }
@@ -694,7 +709,9 @@ pub fn build(
     // A new stair starts at the plan's code minimums (editor::code).
     super::code::legalize_stair_params(&mut params);
     let mut direction = drag.map_or(FRAC_PI_2, |b| b.sub(a).angle());
-    let run = drag.map(|b| a.dist(b));
+    // One section runs from 6 inches to 100 feet; a drag past either end
+    // stops there (a longer climb needs a landing).
+    let run = drag.map(|b| plan_stairs::clamp_section_run(a.dist(b)));
     let mut anchor = a;
 
     match kind {
@@ -887,7 +904,9 @@ pub fn connect(project: &mut Project, fl: usize, id: Id) -> usize {
     // A landing takes the height of the stair that arrives on it ...
     for (stair, landing, _) in joints.iter().filter(|j| j.2 == Joint::Top) {
         let h = stair.top_height();
-        update(project, fl, landing.id(), |l| l.stair.params.total_rise = h);
+        if landing.stair.params.landing_auto_height {
+            update(project, fl, landing.id(), |l| l.stair.params.total_rise = h);
+        }
         n += 1;
     }
     // ... and a stair that starts on it begins there.
@@ -908,6 +927,15 @@ pub fn connect(project: &mut Project, fl: usize, id: Id) -> usize {
             });
             n += 1;
         }
+    }
+    // Auto Adjust Thickness and the neighbouring landings (brief 21).
+    let touched: Vec<Id> = if me.is_landing() {
+        vec![id]
+    } else {
+        joints.iter().map(|j| j.1.id()).collect()
+    };
+    for l in touched {
+        adjust_landing(project, fl, l);
     }
     n
 }
@@ -1345,10 +1373,16 @@ pub enum StairCommand {
     /// Disconnect Selected Subsection (CB-133): an L or U stair as separate
     /// sections.
     DisconnectSubsection,
+    /// Make Best Fit (brief 21): the riser height nearest 6 3/4 inches that
+    /// reaches the next level exactly.
+    MakeBestFit,
+    /// Merge Sections (brief 21): a flight and the one that continues it
+    /// become one section of two subsections.
+    MergeSections,
 }
 
 impl StairCommand {
-    pub const ALL: [StairCommand; 7] = [
+    pub const ALL: [StairCommand; 9] = [
         StairCommand::AutoStairwell,
         StairCommand::FlareCurve,
         StairCommand::StarterTread,
@@ -1356,6 +1390,8 @@ impl StairCommand {
         StairCommand::MakeRailing,
         StairCommand::CompleteBreak,
         StairCommand::DisconnectSubsection,
+        StairCommand::MakeBestFit,
+        StairCommand::MergeSections,
     ];
 
     pub fn label(self) -> &'static str {
@@ -1367,6 +1403,8 @@ impl StairCommand {
             StairCommand::MakeRailing => "Make Railing",
             StairCommand::CompleteBreak => "Complete Break",
             StairCommand::DisconnectSubsection => "Disconnect Subsection",
+            StairCommand::MakeBestFit => "Make Best Fit",
+            StairCommand::MergeSections => "Merge Sections",
         }
     }
 
@@ -1380,6 +1418,8 @@ impl StairCommand {
             StairCommand::MakeRailing => "stair.railing",
             StairCommand::CompleteBreak => "stair.complete_break",
             StairCommand::DisconnectSubsection => "stair.disconnect_subsection",
+            StairCommand::MakeBestFit => "stair.best_fit",
+            StairCommand::MergeSections => "stair.merge_sections",
         }
     }
 
@@ -1425,6 +1465,14 @@ pub fn edit_commands(cx: &EditorContext) -> Vec<(StairCommand, bool)> {
                     o.stair.params.shape,
                     StairShape::LShaped { .. } | StairShape::UShaped { .. }
                 ),
+                StairCommand::MakeBestFit => {
+                    stepped
+                        && staircase_info(cx.floor(), o.id())
+                            .is_some_and(|i| i.info.can_make_best_fit)
+                }
+                StairCommand::MergeSections => {
+                    stepped && merge_partner(cx.floor(), o.id()).is_some()
+                }
             };
             (c, on)
         })
@@ -1498,6 +1546,26 @@ pub fn run_command(cx: &mut EditorContext, cmd: StairCommand) -> bool {
             cx.status = "Make Railing: railings with newels and balusters on both sides".into();
             true
         }
+        StairCommand::MakeBestFit | StairCommand::MergeSections => {
+            let done = if cmd == StairCommand::MakeBestFit {
+                make_best_fit(cx, id, plan_stairs::LockEnd::Bottom)
+            } else {
+                match merge_partner(cx.floor(), id) {
+                    Some((lo, up)) => merge_sections(cx, lo, up),
+                    None => Err("No section continues this one".into()),
+                }
+            };
+            match done {
+                Ok(s) => {
+                    cx.status = s;
+                    true
+                }
+                Err(e) => {
+                    cx.status = e;
+                    false
+                }
+            }
+        }
         StairCommand::CompleteBreak | StairCommand::DisconnectSubsection => {
             let done = if cmd == StairCommand::CompleteBreak {
                 complete_break(cx, id)
@@ -1525,9 +1593,19 @@ pub fn apply_edit(cx: &mut EditorContext, edited: &StairObj) -> bool {
         return false;
     }
     cx.begin_change("Stair Specification");
+    let before = find(cx.floor(), edited.id());
+    let all = staircase(cx.floor(), edited.id());
     let e = edited.clone();
     update(&mut cx.project, fl, edited.id(), |o| *o = e);
+    // A new length moves the sections beyond the end the dialog locked.
+    if let Some(before) = before.filter(|b| !b.is_landing() && !b.is_ramp()) {
+        let delta = section_length(edited) - section_length(&before);
+        staircase::shift_for_resize(&mut cx.project, fl, &before, &all, delta, edited.x.lock_end);
+    }
     connect(&mut cx.project, fl, edited.id());
+    if edited.x.apply_display_all {
+        staircase::copy_floor_above(&mut cx.project, fl, edited.id());
+    }
     cx.mark_dirty();
     true
 }
@@ -2538,5 +2616,12 @@ pub fn draw_stairs(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
     }
     if let Some(o) = selected_stair(cx) {
         handles::draw(&editor_handles(&o, cam.px_per_in), painter, cam, pal);
+        // The numbers of the sections and subsections of the selected
+        // staircase (1, 2 and 1-1, 1-2).
+        if !o.is_landing() {
+            for (at, number) in section_labels(cx.floor(), o.id()) {
+                draw_text(painter, cam, at, &number, 6.0, 0.0, pal.selection);
+            }
+        }
     }
 }

@@ -558,26 +558,16 @@ macro_rules! string_lists {
 macro_rules! pole_mark {
     ($p:expr, $kind:expr, $name:literal) => {{
         let k = |s: &str| format!("{}.{}_{}", $p, $name, s);
+        // Inclusion is the mark's own flag: the name and the outer-string
+        // switch never add or remove the mark (DECISIONS QA-32).
+        let on_by_default = PoleMark::default_marks()
+            .iter()
+            .any(|m| m.kind == $kind && m.included);
         [
-            F::flag(&k("included"), concat!($name, ": Locate"), false).bound(Bind {
-                get: |d| {
-                    PageValue::Bool(
-                        d.dimensions
-                            .setup
-                            .pole
-                            .marks
-                            .iter()
-                            .any(|m| m.kind == $kind),
-                    )
-                },
+            F::flag(&k("included"), concat!($name, ": Locate"), on_by_default).bound(Bind {
+                get: |d| PageValue::Bool(d.dimensions.setup.pole.locates($kind)),
                 set: |d, v| {
-                    let marks = &mut d.dimensions.setup.pole.marks;
-                    let has = marks.iter().any(|m| m.kind == $kind);
-                    if v.flag() && !has {
-                        marks.push(PoleMark::new($kind, false));
-                    } else if !v.flag() {
-                        marks.retain(|m| m.kind != $kind);
-                    }
+                    d.dimensions.setup.pole.entry_mut($kind).included = v.flag();
                     sync(d);
                 },
             }),
@@ -593,22 +583,7 @@ macro_rules! pole_mark {
                     )
                 },
                 set: |d, v| {
-                    if let Some(m) = d
-                        .dimensions
-                        .setup
-                        .pole
-                        .marks
-                        .iter_mut()
-                        .find(|m| m.kind == $kind)
-                    {
-                        m.outer = v.flag();
-                    } else if v.flag() {
-                        d.dimensions
-                            .setup
-                            .pole
-                            .marks
-                            .push(PoleMark::new($kind, true));
-                    }
+                    d.dimensions.setup.pole.entry_mut($kind).outer = v.flag();
                     sync(d);
                 },
             }),
@@ -626,20 +601,7 @@ macro_rules! pole_mark {
                     )
                 },
                 set: |d, v| {
-                    if let Some(m) = d
-                        .dimensions
-                        .setup
-                        .pole
-                        .marks
-                        .iter_mut()
-                        .find(|m| m.kind == $kind)
-                    {
-                        m.name = v.text().trim().to_string();
-                    } else if !v.text().trim().is_empty() {
-                        let mut m = PoleMark::new($kind, false);
-                        m.name = v.text().trim().to_string();
-                        d.dimensions.setup.pole.marks.push(m);
-                    }
+                    d.dimensions.setup.pole.entry_mut($kind).name = v.text().trim().to_string();
                     sync(d);
                 },
             }),
@@ -917,7 +879,7 @@ pub fn page(slug: &str) -> Option<PageSpec> {
                 vec![
                     F::flag(&k("exterior_primary"), "Primary Side", true)
                         .bound(setup_flag!(temp_exterior_primary)),
-                    F::flag(&k("exterior_secondary"), "Secondary Side", false)
+                    F::flag(&k("exterior_secondary"), "Secondary Side", true)
                         .bound(setup_flag!(temp_exterior_secondary)),
                 ],
             )
@@ -1371,7 +1333,7 @@ mod tests {
             PageValue::Text("Ridge Line".into()),
         );
         let marks = &d.dimensions.setup.pole.marks;
-        assert!(marks.iter().any(|m| m.kind == MarkKind::OpeningSill));
+        assert!(d.dimensions.setup.pole.locates(MarkKind::OpeningSill));
         assert!(marks.iter().any(|m| m.kind == MarkKind::Eave && m.outer));
         assert_eq!(
             marks
@@ -1387,13 +1349,21 @@ mod tests {
             "Sill_included",
             PageValue::Bool(false),
         );
-        assert!(!d
-            .dimensions
-            .setup
-            .pole
-            .marks
-            .iter()
-            .any(|m| m.kind == MarkKind::OpeningSill));
+        assert!(!d.dimensions.setup.pole.locates(MarkKind::OpeningSill));
+        // Naming or moving a mark that is not located does not locate it.
+        set_field(
+            &mut d,
+            "pole_elevations",
+            "Sill_name",
+            PageValue::Text("Sill Line".into()),
+        );
+        set_field(
+            &mut d,
+            "pole_elevations",
+            "Sill_outer",
+            PageValue::Bool(true),
+        );
+        assert!(!d.dimensions.setup.pole.locates(MarkKind::OpeningSill));
         let (positions, offsets) = choice_names();
         assert_eq!(positions.len(), 3);
         assert_eq!(offsets.len(), 3);

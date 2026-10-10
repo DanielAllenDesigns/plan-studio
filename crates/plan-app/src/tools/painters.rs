@@ -36,7 +36,8 @@ pub const MODES: &str = "painters.object_modes";
 /// Edit toolbar > Match Properties.
 pub const MATCH_PROPERTIES: &str = "painters.match_properties";
 
-/// The four tools of the painter family.
+/// The tools of the painter family (the Layer Hider rides along: it is the
+/// third tool of the Layer Painter, Eyedropper and Hider group).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash, Default)]
 pub enum PainterMode {
     /// Click objects to move them to the loaded layer.
@@ -48,14 +49,18 @@ pub enum PainterMode {
     ObjectPaint,
     /// Click an object to load its attributes.
     ObjectEyedropper,
+    /// Click an object to turn off its primary layer in the shown layer set
+    /// (LAY-73).
+    LayerHider,
 }
 
 impl PainterMode {
-    pub const ALL: [PainterMode; 4] = [
+    pub const ALL: [PainterMode; 5] = [
         PainterMode::LayerPaint,
         PainterMode::LayerEyedropper,
         PainterMode::ObjectPaint,
         PainterMode::ObjectEyedropper,
+        PainterMode::LayerHider,
     ];
 
     pub fn name(self) -> &'static str {
@@ -64,6 +69,7 @@ impl PainterMode {
             PainterMode::LayerEyedropper => "Layer Eyedropper",
             PainterMode::ObjectPaint => "Object Painter",
             PainterMode::ObjectEyedropper => "Object Eyedropper",
+            PainterMode::LayerHider => "Layer Hider",
         }
     }
 
@@ -162,6 +168,9 @@ pub struct PainterState {
     /// The layer the Layer Painter paints.
     pub layer: Option<String>,
     pub layer_scope: LayerScope,
+    /// "Use Default Layer": the Layer Painter puts each object on its own
+    /// system default layer instead of the loaded one.
+    pub use_default: bool,
     /// The attributes the Object Painter paints.
     pub source: Option<Attrs>,
     pub scope: ObjectScope,
@@ -798,6 +807,14 @@ pub fn eyedrop_layer(cx: &mut EditorContext, o: ObjectRef) -> Option<String> {
 /// Layer Painter: moves `clicked` (and its group, by scope) to the loaded
 /// layer as one undo step. Returns how many objects moved.
 pub fn paint_layer(cx: &mut EditorContext, clicked: ObjectRef) -> usize {
+    if with_state(|s| s.use_default) {
+        let scope = with_state(|s| s.layer_scope);
+        let items = match scope {
+            LayerScope::Component => vec![clicked],
+            LayerScope::Object => expand_groups(cx, &[clicked]),
+        };
+        return crate::dialogs::select_layer::send_items_to_default(cx, &items, "Layer Painter");
+    }
     let Some(layer) = with_state(|s| s.layer.clone()) else {
         cx.status = "Layer Painter: pick a layer first (Layer Eyedropper or the layer list)".into();
         return 0;
@@ -975,6 +992,10 @@ impl Tool for PaintersTool {
             PainterMode::ObjectEyedropper => {
                 "Click an object to load its attributes, then click others to paint them".into()
             }
+            PainterMode::LayerHider => {
+                "Click an object to turn off its primary layer in the active layer set. Esc ends the tool"
+                    .into()
+            }
         }
     }
 
@@ -993,12 +1014,12 @@ impl Tool for PaintersTool {
         match self.mode {
             PainterMode::LayerPaint => {
                 // Start from the layer of the selection.
-                if with_state(|s| s.layer.is_none()) {
+                if with_state(|s| s.layer.is_none() && !s.use_default) {
                     if let Some(l) = cx.selection_layers().into_iter().next() {
                         with_state(|s| s.layer = Some(l));
                     }
                 }
-                if with_state(|s| s.layer.is_none()) {
+                if with_state(|s| s.layer.is_none() && !s.use_default) {
                     cx.status =
                         "Layer Painter: pick a layer in the bar or use the Layer Eyedropper".into();
                 }
@@ -1028,6 +1049,12 @@ impl Tool for PaintersTool {
 
     fn pointer_move(&mut self, cx: &mut EditorContext, p: PointerEvent) -> ToolResult {
         cx.hover = pick(cx, p.world);
+        // The Status Bar says which layer a click would turn off.
+        if self.mode == PainterMode::LayerHider {
+            if let Some(layer) = cx.hover.and_then(|o| layer_of(cx.floor(), o)) {
+                cx.status = format!("Layer Hider: click to turn off {layer}");
+            }
+        }
         ToolResult {
             repaint: true,
             ..ToolResult::default()
@@ -1079,6 +1106,13 @@ impl Tool for PaintersTool {
                     ToolResult::consumed()
                 }
             }
+            PainterMode::LayerHider => {
+                if crate::dialogs::object_layers::hide_primary_layer(cx, clicked).is_some() {
+                    ToolResult::committed("Layer Hider")
+                } else {
+                    ToolResult::consumed()
+                }
+            }
         }
     }
 
@@ -1108,7 +1142,8 @@ mod tests {
                 "Layer Painter",
                 "Layer Eyedropper",
                 "Object Painter",
-                "Object Eyedropper"
+                "Object Eyedropper",
+                "Layer Hider"
             ]
         );
         assert!(PainterMode::LayerPaint.is_layer() && !PainterMode::ObjectPaint.is_layer());

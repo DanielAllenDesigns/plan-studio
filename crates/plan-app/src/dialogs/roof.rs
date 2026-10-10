@@ -8,18 +8,20 @@
 
 use super::assembly_def::AssemblyDefDialog;
 use super::{
-    dis_check, fmt_short, on, row, section, Fields, Outcome, SpecDialog, SpecPages, Tab, PV_ACCENT,
-    PV_INK,
+    fmt_short, on, row, section, Fields, Outcome, SpecDialog, SpecPages, Tab, PV_ACCENT, PV_INK,
 };
 use crate::editor::roof_view::{
-    pitch_label, AllPlanesEdit, CeilingFraming, CeilingRecord, RoofFraming, RoofPlaneRecord,
-    RoofSettings, RoofStructure, RoofStyle, ROOF_MATERIALS,
+    pitch_label, AllPlanesEdit, CeilingFraming, CeilingRecord, FillKind, RoofFraming,
+    RoofPlaneRecord, RoofSettings, RoofStructure, RoofStyle, LOCKS, ROOF_MATERIALS,
 };
 use eframe::egui::{self, Align2, FontId, Painter, Pos2, Rect, Stroke, Ui};
 use plan_core::assemblies::{AssemblyKind, AssemblyLibrary, RoofLayers};
 use plan_core::defaults::{EaveCut, RoofDetailDefaults};
 use plan_core::LineStyle;
-use plan_roof::{DormerKind, DormerSpec, ReturnKind, ReturnSpec};
+use plan_roof::{
+    BaselineOver, DormerKind, DormerSpec, HeightLock, HeightSettings, LengthEntry, ReturnKind,
+    ReturnSpec, NO_BIRDSMOUTH_RAISE,
+};
 
 const MIN_PITCH: f64 = 0.5;
 const MAX_PITCH: f64 = 24.0;
@@ -200,6 +202,72 @@ struct BuildPages {
     style: Option<RoofStyle>,
 }
 
+impl BuildPages {
+    /// The Roof Height group of the Build Roof dialog (manual pp. 829, 830):
+    /// Heel Height or the birdsmouth fields by framing method, and the three
+    /// eave switches.
+    fn height_group(&mut self, ui: &mut egui::Ui) {
+        use plan_roof::RoofFraming;
+        section(ui, "Roof Height");
+        match self.s.heights.framing {
+            RoofFraming::Trusses => {
+                self.fields.length_row(
+                    ui,
+                    "Heel Height",
+                    "heel_height",
+                    &mut self.s.heights.heel_height,
+                );
+            }
+            RoofFraming::Rafters => {
+                ui.checkbox(
+                    &mut self.s.heights.auto_birdsmouth,
+                    "Automatic Birdsmouth Cut",
+                )
+                .on_hover_text(
+                    "On, the cut follows the pitch and the seat is the plate; off, \
+                     enter the Raise Off Plate / Birdsmouth Cut (negative cuts)",
+                );
+                let cut = self.s.heights.birdsmouth_cut;
+                if self.s.heights.auto_birdsmouth {
+                    ui.weak("Birdsmouth Cut and Seat follow the pitch and the plate");
+                } else {
+                    self.fields.length_row(
+                        ui,
+                        "Raise Off Plate / Birdsmouth Cut",
+                        "birdsmouth_cut",
+                        &mut self.s.heights.birdsmouth_cut,
+                    );
+                    if cut < 0.0 {
+                        let seat = plan_roof::birdsmouth_seat_for_cut(-cut, self.s.pitch);
+                        ui.weak(format!("Birdsmouth Seat {}", fmt_short(seat)));
+                    }
+                }
+            }
+        }
+        let depth = plan_roof::vertical_structure_depth(self.s.detail.thickness, self.s.pitch);
+        ui.weak(format!(
+            "Vertical Structure Depth {} (Structure panel)",
+            fmt_short(depth)
+        ));
+        let h = &mut self.s.heights;
+        ui.checkbox(
+            &mut h.same_roof_height,
+            "Same Roof Height at Exterior Walls",
+        )
+        .on_hover_text(
+            "Bearing walls stay the same height; overhangs change so eaves meet \
+                 (wall overhangs are ignored)",
+        );
+        ui.checkbox(&mut h.same_height_eaves, "Same Height Eaves")
+            .on_hover_text(
+                "Every eave is at the height of a default-pitch plane; planes are \
+                 raised or lowered to meet it",
+            );
+        ui.checkbox(&mut h.allow_low_planes, "Allow Low Roof Planes")
+            .on_hover_text("Uncheck only when an upper floor overhangs the roofs below");
+    }
+}
+
 impl SpecPages for BuildPages {
     fn tabs(&self) -> &'static [Tab] {
         BUILD_TABS
@@ -291,6 +359,7 @@ impl SpecPages for BuildPages {
                     "raise",
                     &mut self.s.raise_off_plate,
                 );
+                self.height_group(ui);
                 ui.add_space(6.0);
                 ui.weak(&self.note);
             }
@@ -304,8 +373,12 @@ impl SpecPages for BuildPages {
                 {
                     self.s.build_framing = v;
                 }
-                dis_check(ui, "Rafters", true);
-                dis_check(ui, "Trusses", false);
+                let h = &mut self.s.heights;
+                ui.horizontal(|ui| {
+                    ui.label("Framing Method");
+                    ui.radio_value(&mut h.framing, plan_roof::RoofFraming::Rafters, "Rafters");
+                    ui.radio_value(&mut h.framing, plan_roof::RoofFraming::Trusses, "Trusses");
+                });
                 ui.weak("Roof framing is a placeholder until plan-framing exists.");
                 section(ui, "3D Display");
                 ui.checkbox(&mut self.s.switches.show_all_ridges, "Show All Ridges")
@@ -490,7 +563,22 @@ const PLANE_TABS: &[Tab] = &[
     on("Materials"),
     on("Layer"),
     on("Label"),
+    on("Line Style"),
+    on("Fill Style"),
+    on("Arrow"),
+    on("Polyline"),
+    on("Schedule"),
 ];
+
+/// Field key of a height lock's length field.
+fn lock_key(lock: HeightLock) -> &'static str {
+    match lock {
+        HeightLock::RidgeTop => "plane_ridge_top",
+        HeightLock::Baseline => "baseline",
+        HeightLock::FasciaTop => "plane_fascia_top",
+        HeightLock::TopOfPlate => "plane_top_of_plate",
+    }
+}
 
 struct PlanePages {
     draft: RoofPlaneRecord,
@@ -504,6 +592,325 @@ struct PlanePages {
     /// The Material Layers Definition window of a single plane's Roof
     /// Surface, Roof Structure or Roof Ceiling Finish while it is open.
     layers_edit: Option<AssemblyDefDialog>,
+    /// The height a pitch change keeps fixed (RF-104, manual p. 840).
+    lock: HeightLock,
+    /// The roof's Roof Height settings: framing and birdsmouth.
+    heights: HeightSettings,
+    /// How typed edge lengths are read (RF-97).
+    entry: LengthEntry,
+}
+
+impl PlanePages {
+    fn new(draft: RoofPlaneRecord, layers: Vec<String>) -> Self {
+        Self {
+            draft,
+            layers,
+            fields: Fields::default(),
+            default_structure: RoofStructure::default(),
+            define: None,
+            layers_edit: None,
+            lock: HeightLock::Baseline,
+            heights: HeightSettings::default(),
+            entry: LengthEntry::Projected,
+        }
+    }
+
+    /// Structure thickness square to the slope: the plane's own structure,
+    /// else the Roof Defaults'.
+    fn thickness(&self) -> f64 {
+        self.draft
+            .structure
+            .unwrap_or(self.default_structure)
+            .thickness()
+    }
+
+    fn plane_heights(&self) -> plan_roof::PlaneHeights {
+        self.draft.plane_heights(self.thickness())
+    }
+
+    /// A pitch typed in the specification: the plane pivots about the locked
+    /// height.
+    fn set_pitch_locked(&mut self, pitch: f64) {
+        let h = self
+            .plane_heights()
+            .with_pitch(pitch, self.lock, self.heights.auto_birdsmouth);
+        self.draft.apply_heights(&h);
+    }
+
+    /// A height typed in the specification: the plane keeps its pitch and
+    /// moves (or, for Top of Plate, the plate does).
+    fn set_height(&mut self, lock: HeightLock, value: f64) {
+        let h = self.plane_heights().with_height(lock, value);
+        self.draft.apply_heights(&h);
+    }
+
+    /// The General panel (RF-36, RF-115..RF-118).
+    fn general_page(&mut self, ui: &mut Ui) {
+        section(ui, "3D Orientation");
+        let mut pitch = self.draft.pitch;
+        pitch_row(ui, "Pitch", &mut pitch);
+        if (pitch - self.draft.pitch).abs() > 1e-9 {
+            self.set_pitch_locked(pitch);
+        }
+        ui.weak(
+            "The radio button picks the height a pitch change keeps fixed. Heights are elevations.",
+        );
+        let shown = self.plane_heights();
+        for (lock, label) in LOCKS {
+            let mut v = shown.height(lock);
+            let key = lock_key(lock);
+            let radio = &mut self.lock;
+            let fields = &mut self.fields;
+            if row(ui, label, |ui| {
+                ui.radio_value(radio, lock, "");
+                fields.length(ui, key, &mut v)
+            }) {
+                self.set_height(lock, v);
+            }
+        }
+        section(ui, "Measurements");
+        let ph = self.plane_heights();
+        row(ui, "Structure Thickness", |ui| {
+            ui.label(fmt_short(ph.thickness));
+        });
+        row(ui, "Vertical Structure Depth", |ui| {
+            ui.label(fmt_short(ph.vertical_depth()));
+        });
+        let depth = ph.birdsmouth_depth();
+        if self.heights.framing == plan_roof::RoofFraming::Trusses {
+            row(ui, "Birdsmouth", |ui| {
+                ui.label("None (trusses)");
+            });
+            row(ui, "Heel Height", |ui| {
+                ui.label(fmt_short(self.heights.heel_height));
+            });
+        } else if -depth >= NO_BIRDSMOUTH_RAISE {
+            row(ui, "Birdsmouth", |ui| {
+                ui.label(format!("None (raised {} off the plate)", fmt_short(-depth)));
+            });
+        } else {
+            row(ui, "Birdsmouth Depth", |ui| {
+                ui.label(fmt_short(depth.max(0.0)));
+            });
+            row(ui, "Birdsmouth Seat", |ui| {
+                ui.label(fmt_short(ph.birdsmouth_seat().max(0.0)));
+            });
+        }
+        row(ui, "Overhang from Baseline", |ui| {
+            ui.label(fmt_short(ph.overhang));
+        });
+        row(ui, "Surface Area", |ui| {
+            ui.label(format!("{:.1} sq ft", self.draft.area() / 144.0));
+        });
+        section(ui, "Options");
+        let mut edited = !self.draft.auto;
+        let can_clear = self.draft.source.is_some();
+        if ui
+            .add_enabled(
+                can_clear || self.draft.auto,
+                egui::Checkbox::new(&mut edited, "Mark as Edited"),
+            )
+            .on_hover_text("An edited plane is kept when the roof is rebuilt")
+            .changed()
+        {
+            self.draft.auto = !edited;
+        }
+        ui.checkbox(&mut self.draft.special_snapping, "Use Special Snapping")
+            .on_hover_text("Plane edges snap to the outside of a parallel wall nearby");
+        super::roof_baseline::curved_section(ui, &mut self.draft, &mut self.fields);
+        section(ui, "Vertices");
+        egui::Grid::new("roof_vertices")
+            .striped(true)
+            .show(ui, |ui| {
+                ui.strong("#");
+                ui.strong("X");
+                ui.strong("Y");
+                ui.strong("Elevation");
+                ui.end_row();
+                for (i, v) in self.draft.polygon3d.iter().enumerate() {
+                    ui.label(format!("{}", i + 1));
+                    ui.label(fmt_short(v[0]));
+                    ui.label(fmt_short(-v[2]));
+                    ui.label(fmt_short(v[1]));
+                    ui.end_row();
+                }
+            });
+    }
+
+    /// Line Style panel (RF-88).
+    fn line_style_page(&mut self, ui: &mut Ui) {
+        section(ui, "Line Style");
+        let st = &mut self.draft.style;
+        let mut own = st.line_color.is_some();
+        if ui.checkbox(&mut own, "Own line color").changed() {
+            st.line_color = own.then_some([0, 0, 0]);
+        }
+        if let Some(c) = st.line_color.as_mut() {
+            row(ui, "Color", |ui| ui.color_edit_button_srgb(c));
+        } else {
+            ui.weak("Drawn in the color of the plane's layer.");
+        }
+        row(ui, "Line Weight", |ui| {
+            ui.add(
+                egui::DragValue::new(&mut st.line_weight)
+                    .range(0.25..=8.0)
+                    .speed(0.05)
+                    .max_decimals(2)
+                    .suffix(" x"),
+            )
+        });
+        row(ui, "Dash", |ui| {
+            for d in [
+                LineStyle::Solid,
+                LineStyle::Dashed,
+                LineStyle::Dotted,
+                LineStyle::DashDot,
+            ] {
+                ui.radio_value(&mut st.dash, d, format!("{d:?}"));
+            }
+        });
+    }
+
+    /// Fill Style panel (RF-89).
+    fn fill_style_page(&mut self, ui: &mut Ui) {
+        section(ui, "Fill Style");
+        let f = &mut self.draft.style.fill;
+        row(ui, "Fill", |ui| {
+            for k in FillKind::ALL {
+                ui.radio_value(&mut f.kind, k, k.label());
+            }
+        });
+        if f.kind != FillKind::None {
+            row(ui, "Color", |ui| ui.color_edit_button_srgb(&mut f.color));
+            row(ui, "Opacity", |ui| {
+                ui.add(egui::Slider::new(&mut f.opacity, 0..=255).show_value(false))
+            });
+        }
+        if f.kind == FillKind::Hatch {
+            self.fields
+                .length_row(ui, "Line Spacing", "plane_hatch", &mut f.spacing);
+            f.spacing = f.spacing.max(1.0);
+        }
+        ui.weak("Drawn inside the plane's outline in the plan view.");
+    }
+
+    /// Arrow panel (RF-91): the slope arrow.
+    fn arrow_page(&mut self, ui: &mut Ui) {
+        section(ui, "Slope Arrow");
+        let a = &mut self.draft.style.arrow;
+        ui.checkbox(&mut a.show, "Show Slope Arrow");
+        ui.checkbox(&mut a.show_text, "Show Pitch and Label");
+        if a.show {
+            let mut own = a.length > 0.0;
+            if ui.checkbox(&mut own, "Specify Length").changed() {
+                a.length = if own { 48.0 } else { 0.0 };
+            }
+            if own {
+                self.fields
+                    .length_row(ui, "Length", "plane_arrow_len", &mut a.length);
+                a.length = a.length.max(1.0);
+            }
+            let mut color = a.color.is_some();
+            if ui.checkbox(&mut color, "Own color").changed() {
+                a.color = color.then_some([0, 0, 0]);
+            }
+            if let Some(c) = a.color.as_mut() {
+                row(ui, "Color", |ui| ui.color_edit_button_srgb(c));
+            }
+        }
+        ui.weak("The arrow points down the slope from the middle of the plane.");
+    }
+
+    /// Polyline panel (RF-92, RF-97): perimeter, areas and volume, and the
+    /// edge lengths, typed as projected or actual.
+    fn polyline_page(&mut self, ui: &mut Ui) {
+        let rep = self.draft.report(self.thickness());
+        section(ui, "Roof Plane Polyline");
+        let sq = |a: f64| format!("{:.1} sq ft", a / 144.0);
+        for (label, text) in [
+            ("Perimeter (projected)", fmt_short(rep.perimeter_projected)),
+            ("Perimeter (actual)", fmt_short(rep.perimeter_actual)),
+            ("Surface Area", sq(rep.area_surface)),
+            ("Projected Area", sq(rep.area_projected)),
+            ("Framing Area", sq(rep.area_framing)),
+            ("Volume", format!("{:.1} cu ft", rep.volume / 1728.0)),
+        ] {
+            row(ui, label, |ui| {
+                ui.label(text);
+            });
+        }
+        section(ui, "Edge Lengths");
+        row(ui, "Enter lengths as", |ui| {
+            for e in [LengthEntry::Projected, LengthEntry::Actual] {
+                ui.radio_value(&mut self.entry, e, e.label());
+            }
+        });
+        const KEYS: [&str; 12] = [
+            "plane_edge0",
+            "plane_edge1",
+            "plane_edge2",
+            "plane_edge3",
+            "plane_edge4",
+            "plane_edge5",
+            "plane_edge6",
+            "plane_edge7",
+            "plane_edge8",
+            "plane_edge9",
+            "plane_edge10",
+            "plane_edge11",
+        ];
+        #[allow(clippy::needless_range_loop)]
+        for i in 0..self.draft.polygon3d.len().min(KEYS.len()) {
+            let Some((plan, actual)) = self.draft.edge_lengths(i) else {
+                continue;
+            };
+            let mut shown = match self.entry {
+                LengthEntry::Projected => plan,
+                LengthEntry::Actual => actual,
+            };
+            let label = format!("Edge {}", i + 1);
+            let entry = self.entry;
+            let fields = &mut self.fields;
+            if row(ui, &label, |ui| fields.length(ui, KEYS[i], &mut shown)) {
+                self.draft.set_edge_length(i, shown, entry);
+            }
+        }
+        if self.draft.polygon3d.len() > KEYS.len() {
+            ui.weak("Only the first twelve edges are listed.");
+        }
+    }
+
+    /// Schedule panel (RF-101): the plane's row in the roof schedule.
+    fn schedule_page(&mut self, ui: &mut Ui) {
+        section(ui, "Roof Plane Schedule");
+        ui.checkbox(
+            &mut self.draft.in_schedule,
+            "List this plane in the roof schedule",
+        );
+        let rep = self.draft.report(self.thickness());
+        section(ui, "Schedule Row");
+        egui::Grid::new("plane_schedule_row")
+            .striped(true)
+            .show(ui, |ui| {
+                for h in ["Label", "Pitch", "Material", "Surface Area", "Layer"] {
+                    ui.strong(h);
+                }
+                ui.end_row();
+                ui.label(if self.draft.label.is_empty() {
+                    "(none)"
+                } else {
+                    &self.draft.label
+                });
+                ui.label(self.draft.pitch_label());
+                ui.label(&self.draft.material);
+                ui.label(format!("{:.1} sq ft", rep.area_surface / 144.0));
+                ui.label(&self.draft.layer);
+                ui.end_row();
+            });
+        if !self.draft.in_schedule {
+            ui.weak("Left out of the schedule.");
+        }
+    }
 }
 
 /// The Define Roof Structure window (RF-36): framing, member size and
@@ -743,53 +1150,7 @@ impl SpecPages for PlanePages {
 
     fn page(&mut self, ui: &mut Ui, tab: usize) {
         match tab {
-            0 => {
-                section(ui, "General");
-                let mut pitch = self.draft.pitch;
-                pitch_row(ui, "Pitch", &mut pitch);
-                if (pitch - self.draft.pitch).abs() > 1e-9 {
-                    // Heights follow the new pitch right away.
-                    self.draft.set_pitch(pitch);
-                }
-                let mut h = self.draft.baseline_height();
-                if self
-                    .fields
-                    .length_row(ui, "Baseline Height", "baseline", &mut h)
-                {
-                    self.draft.set_baseline_height(h);
-                }
-                super::roof_baseline::curved_section(ui, &mut self.draft, &mut self.fields);
-                row(ui, "Overhang", |ui| {
-                    ui.add_enabled(false, egui::Label::new(fmt_short(self.draft.overhang)));
-                });
-                row(ui, "Surface Area", |ui| {
-                    ui.label(format!("{:.1} sq ft", self.draft.area() / 144.0));
-                });
-                row(ui, "Origin", |ui| {
-                    ui.label(if self.draft.auto {
-                        "Automatic (rebuilt with the walls)"
-                    } else {
-                        "Manual (kept when the roof is rebuilt)"
-                    });
-                });
-                section(ui, "Vertices");
-                egui::Grid::new("roof_vertices")
-                    .striped(true)
-                    .show(ui, |ui| {
-                        ui.strong("#");
-                        ui.strong("X");
-                        ui.strong("Y");
-                        ui.strong("Elevation");
-                        ui.end_row();
-                        for (i, v) in self.draft.polygon3d.iter().enumerate() {
-                            ui.label(format!("{}", i + 1));
-                            ui.label(fmt_short(v[0]));
-                            ui.label(fmt_short(-v[2]));
-                            ui.label(fmt_short(v[1]));
-                            ui.end_row();
-                        }
-                    });
-            }
+            0 => self.general_page(ui),
             1 => self.holes_page(ui),
             2 => self.edge_page(ui),
             3 => {
@@ -852,13 +1213,18 @@ impl SpecPages for PlanePages {
                         });
                 });
             }
-            _ => {
+            7 => {
                 section(ui, "Label");
                 row(ui, "Label", |ui| {
                     ui.text_edit_singleline(&mut self.draft.label);
                 });
                 ui.weak("The pitch is always shown next to the label.");
             }
+            8 => self.line_style_page(ui),
+            9 => self.fill_style_page(ui),
+            10 => self.arrow_page(ui),
+            11 => self.polyline_page(ui),
+            _ => self.schedule_page(ui),
         }
     }
 
@@ -910,15 +1276,15 @@ impl RoofPlaneDialog {
         let key = record.id;
         Self {
             frame: SpecDialog::new("Roof Plane Specification", ("roof_plane", key)),
-            pages: PlanePages {
-                draft: record,
-                layers,
-                fields: Fields::default(),
-                default_structure: RoofStructure::default(),
-                define: None,
-                layers_edit: None,
-            },
+            pages: PlanePages::new(record, layers),
         }
+    }
+
+    /// The roof's Roof Height settings: the framing and birdsmouth the
+    /// General panel's lock arithmetic and read-outs follow.
+    pub fn with_heights(mut self, heights: HeightSettings) -> Self {
+        self.pages.heights = heights;
+        self
     }
 
     /// Structure > Define starts from the structure these Roof Defaults give.
@@ -1566,6 +1932,12 @@ impl DormerDialog {
     pub fn spec(&self) -> DormerSpec {
         self.pages.spec
     }
+
+    /// Test access to the dimensions the Dormer Specification edits.
+    #[cfg(test)]
+    pub fn spec_mut(&mut self) -> &mut DormerSpec {
+        &mut self.pages.spec
+    }
 }
 
 // ----- Roof Return (RF-27) -----
@@ -1663,6 +2035,101 @@ impl ReturnDialog {
     }
 }
 
+// ===================================================================
+// Set Baseline Height
+// ===================================================================
+
+const BASELINE_TABS: &[Tab] = &[on("General")];
+
+struct BaselinePages {
+    choice: BaselineOver,
+    wall_top: f64,
+    existing: f64,
+}
+
+impl SpecPages for BaselinePages {
+    fn tabs(&self) -> &'static [Tab] {
+        BASELINE_TABS
+    }
+
+    fn error(&self) -> Option<String> {
+        None
+    }
+
+    fn page(&mut self, ui: &mut Ui, _tab: usize) {
+        section(ui, "Set Baseline Height");
+        ui.label("The baseline starts on an existing roof plane. Where does it sit?");
+        ui.radio_value(
+            &mut self.choice,
+            BaselineOver::WallTop,
+            format!("Over Wall Top ({})", fmt_short(self.wall_top)),
+        );
+        ui.weak("A full-height dormer rising from the wall below.");
+        ui.radio_value(
+            &mut self.choice,
+            BaselineOver::ExistingPlane,
+            format!(
+                "Over the Existing Roof Plane ({})",
+                fmt_short(self.existing)
+            ),
+        );
+        ui.weak("A dormer vent or cricket sitting on the roof surface.");
+    }
+
+    fn preview(&self, p: &Painter, area: Rect) {
+        // Side sketch: the wall, the roof plane, and the new baseline.
+        let c = area.center();
+        let w = area.width() * 0.7;
+        let wall = Stroke::new(1.5_f32, PV_INK);
+        let left = c.x - w * 0.5;
+        p.line_segment(
+            [Pos2::new(left, c.y + 30.0), Pos2::new(left, c.y - 10.0)],
+            wall,
+        );
+        p.line_segment(
+            [Pos2::new(left, c.y - 10.0), Pos2::new(left + w, c.y - 50.0)],
+            wall,
+        );
+        let y = match self.choice {
+            BaselineOver::WallTop => c.y - 10.0,
+            BaselineOver::ExistingPlane => c.y - 28.0,
+        };
+        let x = c.x;
+        p.line_segment(
+            [Pos2::new(x - 24.0, y), Pos2::new(x + 24.0, y)],
+            Stroke::new(3.0_f32, PV_ACCENT),
+        );
+    }
+}
+
+/// Set Baseline Height (RF-114, manual p. 844): shown when a new roof plane's
+/// baseline starts on an existing plane.
+pub struct BaselineHeightDialog {
+    frame: SpecDialog,
+    pages: BaselinePages,
+}
+
+impl BaselineHeightDialog {
+    pub fn new(wall_top: f64, existing: f64) -> Self {
+        Self {
+            frame: SpecDialog::new("Set Baseline Height", "roof_baseline_height"),
+            pages: BaselinePages {
+                choice: BaselineOver::WallTop,
+                wall_top,
+                existing,
+            },
+        }
+    }
+
+    pub fn show(&mut self, ctx: &egui::Context) -> Outcome {
+        self.frame.show(ctx, &mut self.pages)
+    }
+
+    pub fn choice(&self) -> BaselineOver {
+        self.pages.choice
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1716,6 +2183,136 @@ mod tests {
         assert!(d.pages.error().is_none());
         d.pages.draft.pitch = 40.0;
         assert!(d.pages.error().is_some());
-        assert_eq!(PLANE_TABS.len(), 8);
+        assert_eq!(PLANE_TABS.len(), 13);
+    }
+
+    /// A 20 ft by 12 ft plane at 8:12 whose eave is at 100", overhanging 16".
+    fn sample_plane() -> RoofPlaneRecord {
+        let mut r = RoofPlaneRecord::new(
+            1,
+            vec![
+                [0.0, 100.0, 0.0],
+                [240.0, 100.0, 0.0],
+                [240.0, 196.0, -144.0],
+                [0.0, 196.0, -144.0],
+            ],
+            8.0,
+            (Point::new(0.0, 0.0), Point::new(240.0, 0.0)),
+        );
+        r.overhang = 16.0;
+        r.plate_top = Some(98.0);
+        r.plate_width = 4.5;
+        r
+    }
+
+    fn sample_dialog() -> RoofPlaneDialog {
+        RoofPlaneDialog::new(sample_plane(), vec!["Roof Planes".into()])
+    }
+
+    #[test]
+    fn the_general_panel_reads_the_four_heights_from_the_record() {
+        let d = sample_dialog();
+        let h = d.pages.plane_heights();
+        // The baseline is the surface over the wall face: the eave tip plus
+        // the overhang climbed at 8:12.
+        assert!((h.baseline - (100.0 + 16.0 * 8.0 / 12.0)).abs() < 1e-9);
+        assert!((h.fascia_top() - 100.0).abs() < 1e-9);
+        assert!((h.ridge_top() - (h.baseline + 128.0 * 8.0 / 12.0)).abs() < 1e-9);
+        assert!((h.plate_top - 98.0).abs() < 1e-9);
+        assert!((h.run - 128.0).abs() < 1e-9, "run {}", h.run);
+    }
+
+    #[test]
+    fn a_pitch_change_pivots_about_the_locked_height_in_the_dialog() {
+        for lock in [
+            HeightLock::RidgeTop,
+            HeightLock::Baseline,
+            HeightLock::FasciaTop,
+            HeightLock::TopOfPlate,
+        ] {
+            let mut d = sample_dialog();
+            d.pages.lock = lock;
+            let before = d.pages.plane_heights();
+            d.pages.set_pitch_locked(12.0);
+            let after = d.pages.plane_heights();
+            assert_eq!(d.pages.draft.pitch, 12.0);
+            assert!(
+                (after.height(lock) - before.height(lock)).abs() < 1e-9,
+                "{lock:?} moved: {} to {}",
+                before.height(lock),
+                after.height(lock)
+            );
+            // The drawn polygon follows: its ridge sits at the new ridge.
+            let top = d
+                .pages
+                .draft
+                .polygon3d
+                .iter()
+                .map(|v| v[1])
+                .fold(f64::MIN, f64::max);
+            assert!((top - after.ridge_top()).abs() < 1e-6, "{lock:?}");
+        }
+    }
+
+    #[test]
+    fn typing_a_height_raises_the_plane_with_its_pitch_locked() {
+        let mut d = sample_dialog();
+        let before = d.pages.plane_heights();
+        d.pages
+            .set_height(HeightLock::RidgeTop, before.ridge_top() + 6.0);
+        let after = d.pages.plane_heights();
+        assert_eq!(d.pages.draft.pitch, 8.0);
+        assert!((after.baseline - before.baseline - 6.0).abs() < 1e-9);
+        // Raised 6" off the plate: the birdsmouth is 6" shallower.
+        assert!((before.birdsmouth_depth() - after.birdsmouth_depth() - 6.0).abs() < 1e-9);
+        // Top of Plate is the plate itself: the plane stays.
+        let mut d = sample_dialog();
+        d.pages.set_height(HeightLock::TopOfPlate, 99.0);
+        assert_eq!(d.pages.draft.plate_top, Some(99.0));
+        assert!((d.pages.draft.baseline_height() - 100.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn edge_lengths_are_typed_as_projected_or_actual() {
+        let mut d = sample_dialog();
+        // Edge 2 climbs: 240 across, 0 in plan... edge 1 is the side edge,
+        // 144 in plan and 96 up.
+        let (plan, actual) = d.pages.draft.edge_lengths(1).unwrap();
+        assert!((plan - 144.0).abs() < 1e-9);
+        assert!((actual - (144.0f64.powi(2) + 96.0f64.powi(2)).sqrt()).abs() < 1e-9);
+        assert!(d
+            .pages
+            .draft
+            .set_edge_length(1, 72.0, LengthEntry::Projected));
+        assert!((d.pages.draft.edge_lengths(1).unwrap().0 - 72.0).abs() < 1e-6);
+        // Typed along the slope.
+        let (p, a) = d.pages.draft.edge_lengths(1).unwrap();
+        assert!(d
+            .pages
+            .draft
+            .set_edge_length(1, a / 2.0, LengthEntry::Actual));
+        assert!((d.pages.draft.edge_lengths(1).unwrap().0 - p / 2.0).abs() < 1e-6);
+        // The report adds up.
+        let rep = d.pages.draft.report(6.0);
+        assert!(rep.perimeter_actual > rep.perimeter_projected);
+        assert!(rep.area_surface > rep.area_projected);
+        assert!((rep.volume - rep.area_framing * 6.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_new_panels_keep_their_choices_in_the_record() {
+        let mut d = sample_dialog();
+        let st = &mut d.pages.draft.style;
+        st.dash = LineStyle::Dashed;
+        st.fill.kind = FillKind::Hatch;
+        st.arrow.show = false;
+        d.pages.draft.in_schedule = false;
+        let json = d.pages.draft.to_json_for_test();
+        let back = RoofPlaneRecord::from_json_for_test(&json).unwrap();
+        assert_eq!(back.style, d.pages.draft.style);
+        assert!(!back.in_schedule);
+        assert_eq!(back.plate_top, Some(98.0));
+        // A plane that was never styled writes no style at all.
+        assert!(sample_plane().to_json_for_test().get("style").is_none());
     }
 }

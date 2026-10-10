@@ -1610,6 +1610,22 @@ mod tests {
         let quarter = d.text_styles.get("1/4\" Text Style").unwrap();
         assert_eq!((quarter.font.as_str(), quarter.height_in), ("Avenir", 4.5));
         assert!(d.dimension_set("1/4\" Scale").is_some());
+        // DECISIONS DT1: Daniel's x17 working template brings 34 layer sets,
+        // 14 dimension sets, 13 Rich Text sets and 20 saved plan views.
+        if seed.file_name.starts_with("x17 Working Template") {
+            assert_eq!(seed.layer_set_names.len(), 34, "{:?}", seed.layer_set_names);
+            assert_eq!(seed.dimension_defaults.len(), 14);
+            assert_eq!(seed.rich_text_defaults.len(), 13);
+            assert_eq!(seed.plan_view_names.len(), 20);
+            for n in &seed.layer_set_names {
+                assert!(d.layer_sets.get(n).is_some(), "layer set {n}");
+            }
+            for n in &seed.plan_view_names {
+                assert!(d.plan_views.iter().any(|v| &v.name == n), "view {n}");
+            }
+            let rich = d.saved.lists.get("rich_text").map_or(0, |l| l.items.len());
+            assert!(rich >= 13, "{rich} Rich Text defaults");
+        }
     }
 
     #[test]

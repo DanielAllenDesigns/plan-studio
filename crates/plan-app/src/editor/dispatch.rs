@@ -256,6 +256,8 @@ impl EditorContext {
         v.extend(crate::tools::cad_ops::edit_actions(self));
         // Architectural blocks, 3D solid Booleans, material layers, distribution options.
         v.extend(crate::tools::arch_block::edit_actions(self));
+        // Object Layer Properties (primary and secondary layers).
+        v.extend(crate::dialogs::object_layers::edit_actions(self));
         // Callout links, Note Schedules, Convert Text to Note, hyperlinks.
         v.extend(crate::tools::text::edit_actions(self));
         // Selected 3D solids become a User Catalog symbol.
@@ -315,6 +317,9 @@ impl EditorContext {
                         "roof_build",
                         true,
                     ));
+                    for (c, label) in roof_view::PLANE_COMMANDS {
+                        v.push(custom(c, label, "roof_plane", true));
+                    }
                 }
             }
             ObjectRef::Symbol(_) | ObjectRef::Cabinet(_) => {
@@ -387,6 +392,7 @@ impl EditorContext {
         // Construction lines and the Reference Display's commands.
         if crate::dialogs::construction_line::run_command(self, id)
             || crate::dialogs::reference_display::run_command(self, id)
+            || crate::dialogs::wall_types::run_command(self, id)
         {
             return;
         }
@@ -395,6 +401,11 @@ impl EditorContext {
             return;
         }
         if super::wall_edit::run_command(self, id) {
+            return;
+        }
+        // Framing Member Defaults, Framing Types, Automatic and Manual Framing
+        // Defaults, Structural Member Reporting (brief 29).
+        if crate::dialogs::framing_defaults::run_command(self, id) {
             return;
         }
         if super::framing_view::run_command(self, id) {
@@ -410,6 +421,9 @@ impl EditorContext {
         }
         // Architectural blocks, 3D solid Booleans, material layers, distribution options, soffits.
         if crate::tools::arch_block::run_command(self, id) {
+            return;
+        }
+        if crate::dialogs::object_layers::run_command(self, id) {
             return;
         }
         // Match Properties and Object Painter Modes.
@@ -435,6 +449,9 @@ impl EditorContext {
             return;
         }
         if roof_view::run_wall_command(self, id) {
+            return;
+        }
+        if roof_view::run_plane_command(self, id) {
             return;
         }
         match id {

@@ -43,25 +43,13 @@ pub mod details;
 pub mod selected;
 pub mod trusses;
 
-pub use commands::{edit_actions, run_command};
+pub use commands::{cmd, edit_actions, run_command};
 pub use details::{
-    configs as truss_configs_of, detail_wall, find_config, open_truss_detail, refresh_details,
-    wall_details,
+    configs as truss_configs_of, detail_wall, find_config, in_wall_detail, open_truss_detail,
+    refresh_details, wall_details,
 };
 pub use selected::{build_parents, build_selected, Outcome};
 pub use trusses::{LAYER_FLOOR_TRUSS_LABELS, LAYER_ROOF_TRUSS_LABELS};
-// Used by the framing scenarios only (Round 16 brief 30 still wires the UI side).
-#[cfg(test)]
-pub use commands::cmd;
-#[cfg(test)]
-pub use details::{
-    in_truss_detail, in_wall_detail, load_map, open_wall_detail, truss_detail_floor,
-    wall_detail_floor,
-};
-#[cfg(test)]
-pub use selected::{build_targets, set_planes_retained, Target};
-#[cfg(test)]
-pub use trusses::truss_labels;
 
 use super::{Camera, EditorContext, ObjectRef};
 use crate::editor::roof_view;

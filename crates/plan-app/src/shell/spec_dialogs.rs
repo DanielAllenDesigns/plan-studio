@@ -167,6 +167,51 @@ impl SpecDialogs {
         }
     }
 
+    /// Test access to the open Staircase, Ramp or Landing Specification's draft.
+    #[cfg(test)]
+    pub fn stair_draft_mut(&mut self) -> Option<&mut stairs_view::StairObj> {
+        match self.active.as_mut()? {
+            Active::Stair(d) => Some(d.draft_mut()),
+            _ => None,
+        }
+    }
+
+    /// Test access to the open foundation object's draft.
+    #[cfg(test)]
+    pub fn foundation_draft_mut(&mut self) -> Option<&mut crate::dialogs::foundation::Draft> {
+        match self.active.as_mut()? {
+            Active::Foundation(d) => Some(d.draft_mut()),
+            _ => None,
+        }
+    }
+
+    /// Test access to the open detail object's draft.
+    #[cfg(test)]
+    pub fn details_draft_mut(&mut self) -> Option<&mut crate::dialogs::details::Draft> {
+        match self.active.as_mut()? {
+            Active::Details(d) => Some(d.draft_mut()),
+            _ => None,
+        }
+    }
+
+    /// Test access to the open terrain element's draft.
+    #[cfg(test)]
+    pub fn terrain_object_draft_mut(&mut self) -> Option<&mut site_view::TerrainObject> {
+        match self.active.as_mut()? {
+            Active::TerrainObject(_, d) => Some(d.draft_mut()),
+            _ => None,
+        }
+    }
+
+    /// Test access to the open Dormer Specification's dimensions.
+    #[cfg(test)]
+    pub fn dormer_spec_mut(&mut self) -> Option<&mut plan_roof::DormerSpec> {
+        match self.active.as_mut()? {
+            Active::Dormer(_, _, d) => Some(d.spec_mut()),
+            _ => None,
+        }
+    }
+
     /// Opens one Wall Specification over the walls `ids` of the active floor
     /// (Open Object with several walls selected, W-83). Fields whose values
     /// differ show the mixed state; only the fields edited are written to all

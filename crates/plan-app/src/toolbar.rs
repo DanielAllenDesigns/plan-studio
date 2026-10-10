@@ -2306,6 +2306,7 @@ fn row2_slots() -> Vec<Slot> {
         painter_toggle("material_eyedropper", PainterMode::LayerEyedropper),
         painter_toggle("material_painter", PainterMode::ObjectPaint),
         painter_toggle("object_eyedropper", PainterMode::ObjectEyedropper),
+        painter_toggle("cad_layer", PainterMode::LayerHider),
     ]
 }
 
@@ -2887,6 +2888,13 @@ fn show_flyout(
     if icon_resp.double_clicked() {
         if let Action::SetTool(ToolId::ElectricalVariant(v)) = cur.action {
             crate::dialogs::default_pages::electrical::request_open_for(v);
+        }
+        // ... and a Door or Window Tools button its type's Defaults dialog
+        // (manual p. 603).
+        if let Action::SetTool(tool) = cur.action {
+            if let Some(key) = crate::tools::opening::defaults_key_for_tool(tool) {
+                crate::dialogs::request_type_defaults(key);
+            }
         }
     }
     if arrow_resp.clicked() {

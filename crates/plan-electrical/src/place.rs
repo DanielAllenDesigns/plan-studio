@@ -3,6 +3,7 @@
 use crate::defaults::ElectricalDefaults;
 use crate::device::{Device, DeviceKind, COUNTER_OUTLET_HEIGHT, OUTLET_HEIGHT, SWITCH_HEIGHT};
 use plan_core::geometry::{dist_to_segment, point_in_polygon};
+use plan_core::rooms::{ElectricalRules, OutletPlacement};
 use plan_core::{Floor, Opening, OpeningKind, Point, Room, Wall};
 use serde::{Deserialize, Serialize};
 
@@ -268,6 +269,8 @@ struct Span<'a> {
     a: f64,
     b: f64,
     at: Vec<f64>,
+    kind: DeviceKind,
+    height: f64,
 }
 
 impl Span<'_> {
@@ -384,6 +387,30 @@ fn wall_spaces(floor: &Floor, wall: &Wall, lo: f64, hi: f64, min_len: f64) -> Ve
     spaces
 }
 
+/// The parts of `[a, b]` outside the sorted `cover` intervals that are at
+/// least `min_len` long.
+fn subtract_covered(a: f64, b: f64, cover: &[(f64, f64)], min_len: f64) -> Vec<(f64, f64)> {
+    let mut free = Vec::new();
+    let mut cursor = a;
+    for &(c0, c1) in cover {
+        if c1 <= cursor {
+            continue;
+        }
+        if c0 >= b {
+            break;
+        }
+        if c0 > cursor {
+            free.push((cursor, c0));
+        }
+        cursor = cursor.max(c1);
+    }
+    if cursor < b {
+        free.push((cursor, b));
+    }
+    free.retain(|(x, y)| y - x >= min_len);
+    free
+}
+
 /// Evenly spread the fewest outlets so none is farther than `max_gap` from
 /// its neighbour (so nothing is over `max_gap / 2` from an outlet), kept
 /// `clear` away from the space ends when there is room.
@@ -438,21 +465,65 @@ pub fn auto_place_outlets(
     room_types: &[(String, RoomFunction)],
     opts: &AutoOutletOptions,
 ) -> Vec<Device> {
+    auto_place_outlets_by_rules(floor, rooms, room_types, &[], opts)
+}
+
+/// [`auto_place_outlets`] with the electrical rules of each room's function
+/// and type (manual p. 447; `plan_core::rooms::electrical_rules`), keyed by
+/// [`Room::label`]; a room without an entry follows the plain rules.
+///
+/// * [`OutletPlacement::None`] (exterior rooms, Porches, Open Below): no outlets.
+/// * [`OutletPlacement::Fewer`] (other hybrid rooms such as a garage): twice
+///   the spacing between outlets; a garage still gets one per bay.
+/// * `gfci_over_base_cabinets` (kitchens and baths): the wall spaces a run of
+///   base cabinets stands against get GFCI outlets at the counter height.
+///   A bath with a vanity keeps no outlets elsewhere.
+/// * `standard_height_outlets` (kitchens): the wall spaces without cabinets
+///   get plain outlets at the standard height as well.
+pub fn auto_place_outlets_by_rules(
+    floor: &Floor,
+    rooms: &[Room],
+    room_types: &[(String, RoomFunction)],
+    rules: &[(String, ElectricalRules)],
+    opts: &AutoOutletOptions,
+) -> Vec<Device> {
     let mut out = Vec::new();
     for room in rooms {
+        let rule = rules
+            .iter()
+            .find(|(name, _)| *name == room.label)
+            .map(|(_, r)| *r);
+        let known = rule.is_some();
+        let rule = rule.unwrap_or_default();
+        if rule.outlets == OutletPlacement::None {
+            continue;
+        }
+        let gap_scale = if rule.outlets == OutletPlacement::Fewer {
+            2.0
+        } else {
+            1.0
+        };
         let function = room_types
             .iter()
             .find(|(name, _)| *name == room.label)
             .map_or(RoomFunction::Other, |(_, f)| *f);
         let runs = room_runs(floor, room);
 
-        let counters = match function {
-            RoomFunction::Kitchen => true,
-            RoomFunction::Bath | RoomFunction::Garage => !opts.skip_garage_bath_counters,
-            _ => false,
-        };
-        let gfci =
-            function == RoomFunction::Garage || (function.is_wet() && opts.gfci_in_wet_rooms);
+        // A kitchen or bath with base cabinets on its walls takes counter
+        // outlets over them whatever the options say (the room's rules).
+        let cabinet_counters = rule.gfci_over_base_cabinets
+            && runs
+                .iter()
+                .any(|r| !counter_intervals(r.wall, &opts.counter_runs).is_empty());
+        let counters = cabinet_counters
+            || match function {
+                RoomFunction::Kitchen => true,
+                RoomFunction::Bath | RoomFunction::Garage => !opts.skip_garage_bath_counters,
+                _ => false,
+            };
+        let gfci = function == RoomFunction::Garage
+            || (function.is_wet() && opts.gfci_in_wet_rooms)
+            || (rule.gfci_over_base_cabinets && counters);
         let (kind, height, max_gap) = match (counters, gfci) {
             (true, true) => (
                 DeviceKind::Gfci,
@@ -467,6 +538,7 @@ pub fn auto_place_outlets(
             (false, true) => (DeviceKind::Gfci, opts.outlet_height, opts.max_spacing),
             (false, false) => (DeviceKind::Outlet110, opts.outlet_height, opts.max_spacing),
         };
+        let max_gap = max_gap * gap_scale;
 
         // Counter outlets follow the cabinets when the room's walls have
         // any: only the spaces a run of base cabinets stands against.
@@ -501,6 +573,8 @@ pub fn auto_place_outlets(
                             a,
                             b,
                             at: spread(a, b, max_gap, opts.from_opening),
+                            kind,
+                            height,
                         });
                     }
                 }
@@ -536,10 +610,31 @@ pub fn auto_place_outlets(
             }
         }
 
+        // A kitchen's standard height outlets: the wall spaces the cabinets
+        // leave free (only where cabinets stand, else the counter outlets run
+        // all around).
+        if known && rule.standard_height_outlets && follow_cabinets {
+            for (ri, run) in runs.iter().enumerate() {
+                for (a, b) in wall_spaces(floor, run.wall, run.lo, run.hi, opts.min_wall_segment) {
+                    for (a, b) in subtract_covered(a, b, &counter_cover[ri], opts.min_wall_segment)
+                    {
+                        spans.push(Span {
+                            wall: run.wall,
+                            side: run.side,
+                            a,
+                            b,
+                            at: spread(a, b, opts.max_spacing, opts.from_opening),
+                            kind: DeviceKind::Outlet110,
+                            height: opts.outlet_height,
+                        });
+                    }
+                }
+            }
+        }
         for span in &spans {
             for &t in &span.at {
-                let mut d = place_on_wall(kind, span.wall, t, span.side);
-                d.height = height;
+                let mut d = place_on_wall(span.kind, span.wall, t, span.side);
+                d.height = span.height;
                 d.label = room.label.clone();
                 out.push(d);
             }

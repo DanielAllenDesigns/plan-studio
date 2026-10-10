@@ -115,12 +115,12 @@ impl Tool for MaterialsListPolylineTool {
     }
 
     fn pointer_move(&mut self, cx: &mut EditorContext, p: PointerEvent) -> ToolResult {
-        self.hover = Some(cx.snap_at(p.world, None, p.modifiers.alt, &[]).point);
+        self.hover = Some(cx.snap_at(p.world, None, p.overrides(), &[]).point);
         ToolResult::consumed()
     }
 
     fn pointer_down(&mut self, cx: &mut EditorContext, p: PointerEvent) -> ToolResult {
-        let at = cx.snap_at(p.world, None, p.modifiers.alt, &[]).point;
+        let at = cx.snap_at(p.world, None, p.overrides(), &[]).point;
         if self.anchor.is_some() {
             return self.finish(cx, at);
         }
@@ -135,7 +135,7 @@ impl Tool for MaterialsListPolylineTool {
         let Some(a) = self.anchor else {
             return ToolResult::ignored();
         };
-        let at = cx.snap_at(p.world, None, p.modifiers.alt, &[]).point;
+        let at = cx.snap_at(p.world, None, p.overrides(), &[]).point;
         if (at.x - a.x).abs() >= MIN_SIDE && (at.y - a.y).abs() >= MIN_SIDE {
             return self.finish(cx, at);
         }

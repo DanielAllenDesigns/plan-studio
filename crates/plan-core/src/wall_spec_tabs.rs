@@ -1034,6 +1034,7 @@ mod tests {
         m.set("Layer: Siding", None);
         assert!(m.get("Layer: Siding").is_none());
         let ty = WallTypeDef {
+            props: Default::default(),
             name: "T".into(),
             layers: vec![WallLayer::new("Siding", 0.75, false, "Siding")],
             kind: WallKind::Exterior,
@@ -1101,6 +1102,7 @@ mod tests {
             .map(|d| d.width * d.height)
             .unwrap();
         let ty = WallTypeDef {
+            props: Default::default(),
             name: "T".into(),
             layers: vec![
                 WallLayer::new("Siding", 1.0, false, "Siding"),

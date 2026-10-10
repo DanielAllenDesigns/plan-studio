@@ -95,9 +95,43 @@ pub enum Nudge {
     Look(Direction),
 }
 
-/// Applies `n` to `cam`. Returns false (and leaves the camera alone) in the
-/// orthographic views.
+/// The step sizes of one camera: its Incremental Move Distance and
+/// Incremental Rotate Angle (C-121, DECISIONS 41). The tilt step is a third of
+/// the rotate angle, 5 degrees at the default 15.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Steps {
+    pub move_in: f32,
+    pub rotate: f32,
+}
+
+impl Default for Steps {
+    fn default() -> Self {
+        Self {
+            move_in: MOVE_STEP,
+            rotate: ORBIT_STEP,
+        }
+    }
+}
+
+impl Steps {
+    /// The steps stored on a camera's view settings.
+    pub fn of(view: &plan_core::camera_view::CameraView) -> Self {
+        Self {
+            move_in: view.move_step.max(0.1) as f32,
+            rotate: (view.rotate_step.clamp(0.1, 180.0) as f32).to_radians(),
+        }
+    }
+}
+
+/// Applies `n` to `cam` with the default step sizes. Returns false (and
+/// leaves the camera alone) in the orthographic views.
 pub fn apply(cam: &mut Camera, n: Nudge) -> bool {
+    apply_with(cam, n, Steps::default())
+}
+
+/// [`apply`] with the step sizes of the camera being viewed.
+pub fn apply_with(cam: &mut Camera, n: Nudge, steps: Steps) -> bool {
+    let (move_step, orbit_step, tilt_step) = (steps.move_in, steps.rotate, steps.rotate / 3.0);
     if cam.mode.is_orthographic() {
         return false;
     }
@@ -119,23 +153,23 @@ pub fn apply(cam: &mut Camera, n: Nudge) -> bool {
     match n {
         // An overview's eye circles its target (the yaw grows toward the
         // right); the Full Camera turns left as its yaw grows.
-        Nudge::OrbitLeft | Nudge::TurnLeft => yaw(cam, if full { ORBIT_STEP } else { -ORBIT_STEP }),
+        Nudge::OrbitLeft | Nudge::TurnLeft => yaw(cam, if full { orbit_step } else { -orbit_step }),
         Nudge::OrbitRight | Nudge::TurnRight => {
-            yaw(cam, if full { -ORBIT_STEP } else { ORBIT_STEP })
+            yaw(cam, if full { -orbit_step } else { orbit_step })
         }
-        Nudge::OrbitUp => pitch(cam, ORBIT_STEP),
-        Nudge::OrbitDown => pitch(cam, -ORBIT_STEP),
-        Nudge::TiltUp => pitch(cam, TILT_STEP),
-        Nudge::TiltDown => pitch(cam, -TILT_STEP),
-        Nudge::Forward => cam.walk(MOVE_STEP, 0.0),
-        Nudge::Back => cam.walk(-MOVE_STEP, 0.0),
-        Nudge::Left => cam.walk(0.0, -MOVE_STEP),
-        Nudge::Right => cam.walk(0.0, MOVE_STEP),
+        Nudge::OrbitUp => pitch(cam, orbit_step),
+        Nudge::OrbitDown => pitch(cam, -orbit_step),
+        Nudge::TiltUp => pitch(cam, tilt_step),
+        Nudge::TiltDown => pitch(cam, -tilt_step),
+        Nudge::Forward => cam.walk(move_step, 0.0),
+        Nudge::Back => cam.walk(-move_step, 0.0),
+        Nudge::Left => cam.walk(0.0, -move_step),
+        Nudge::Right => cam.walk(0.0, move_step),
         Nudge::Raise | Nudge::Lower => {
             let d = if n == Nudge::Raise {
-                MOVE_STEP
+                move_step
             } else {
-                -MOVE_STEP
+                -move_step
             };
             if full {
                 cam.position[1] += d;

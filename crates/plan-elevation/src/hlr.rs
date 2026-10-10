@@ -568,6 +568,35 @@ fn collect_runs(flags: &[bool]) -> Vec<(bool, usize, usize)> {
 /// With `depth_weights`, lines more than this far (inches) behind the nearest drawn line step down a weight.
 const DEPTH_BAND: f64 = 12.0;
 
+/// Depth Cue (C-140): the fog over a line `behind` inches behind the nearest
+/// drawn line is 0 up to `start`, `opacity` from `end` on and grows linearly
+/// between (a sharp edge at `start` when `end <= start`). A line keeps its
+/// weight under a third of fog, steps down one class under two thirds and is
+/// Light beyond, which is how a line drawing shows a see-through mask.
+pub(crate) fn cue_weight(
+    w: LineWeight,
+    behind: f64,
+    start: f64,
+    end: f64,
+    opacity: f64,
+) -> LineWeight {
+    let ramp = if behind <= start {
+        0.0
+    } else if end <= start || behind >= end {
+        1.0
+    } else {
+        (behind - start) / (end - start)
+    };
+    let fog = ramp * opacity.clamp(0.0, 1.0);
+    if fog < 1.0 / 3.0 {
+        w
+    } else if fog < 2.0 / 3.0 {
+        step_down(w)
+    } else {
+        LineWeight::Light
+    }
+}
+
 fn step_down(w: LineWeight) -> LineWeight {
     match w {
         LineWeight::Heavy => LineWeight::Medium,
@@ -680,16 +709,24 @@ pub(crate) fn render(
             }
         }
     }
-    if opts.depth_weights {
+    if opts.depth_weights || opts.depth_cue.is_some() {
         let nearest = lines
             .iter()
             .filter(|(l, _, _)| l.kind != EdgeKind::Hidden)
             .map(|(_, d, _)| *d)
             .filter(|d| d.is_finite())
             .fold(f64::NEG_INFINITY, f64::max);
+        // A section stands at its cut plane, which is the camera; anything
+        // else measures from the nearest drawn line.
+        let camera_depth = cut_depth.unwrap_or(nearest);
         for (l, d, _) in &mut lines {
-            if l.kind != EdgeKind::Hidden && *d < nearest - DEPTH_BAND {
+            if l.kind != EdgeKind::Hidden && opts.depth_weights && *d < nearest - DEPTH_BAND {
                 l.weight = step_down(l.weight);
+            }
+            if let (Some((start, end, opacity)), true) =
+                (opts.depth_cue, l.kind != EdgeKind::Hidden)
+            {
+                l.weight = cue_weight(l.weight, camera_depth - *d, start, end, opacity);
             }
         }
     }
@@ -747,4 +784,30 @@ pub(crate) fn render(
         ));
     }
     drawing
+}
+
+#[cfg(test)]
+mod depth_cue_tests {
+    use super::*;
+
+    #[test]
+    fn the_depth_cue_fogs_lines_from_the_start_to_the_end_distance() {
+        use LineWeight::{Heavy, Light, Medium};
+        assert_eq!(cue_weight(Heavy, 10.0, 24.0, 96.0, 1.0), Heavy);
+        assert_eq!(cue_weight(Heavy, 24.0, 24.0, 96.0, 1.0), Heavy);
+        assert_eq!(cue_weight(Heavy, 50.0, 24.0, 96.0, 1.0), Medium);
+        assert_eq!(cue_weight(Medium, 50.0, 24.0, 96.0, 1.0), Light);
+        assert_eq!(cue_weight(Heavy, 96.0, 24.0, 96.0, 1.0), Light);
+        assert_eq!(cue_weight(Heavy, 300.0, 24.0, 96.0, 1.0), Light);
+    }
+
+    #[test]
+    fn equal_start_and_end_make_a_sharp_border_and_opacity_limits_the_fog() {
+        use LineWeight::{Heavy, Light, Medium};
+        assert_eq!(cue_weight(Heavy, 59.0, 60.0, 60.0, 1.0), Heavy);
+        assert_eq!(cue_weight(Heavy, 61.0, 60.0, 60.0, 1.0), Light);
+        // Half-opaque fog never gets past one step.
+        assert_eq!(cue_weight(Heavy, 500.0, 60.0, 120.0, 0.5), Medium);
+        assert_eq!(cue_weight(Heavy, 500.0, 60.0, 120.0, 0.2), Heavy);
+    }
 }

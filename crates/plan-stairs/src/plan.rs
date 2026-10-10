@@ -481,6 +481,26 @@ fn curve_arrow(stair: &Stair, layout: &Layout, c: &Curve, circle_at: f64, end: f
     out
 }
 
+/// The Show Arc Centers and Ends marks of a curved section: a small cross at
+/// the centre and a line from it to each end of the walking line.
+fn arc_marks(c: &Curve, sweep: f64, to_plan: impl Fn(Uv) -> Point) -> Vec<Stroke> {
+    const ARM: f64 = 3.0;
+    let (cx, cy) = c.center;
+    let mut out = vec![
+        Stroke::Line(to_plan((cx - ARM, cy)), to_plan((cx + ARM, cy))),
+        Stroke::Line(to_plan((cx, cy - ARM)), to_plan((cx, cy + ARM))),
+    ];
+    let lat = if c.left {
+        c.walk_off
+    } else {
+        c.width - c.walk_off
+    };
+    for a in [0.0, sweep] {
+        out.push(Stroke::Line(to_plan(c.center), to_plan(c.at_lat(a, lat))));
+    }
+    out
+}
+
 /// The plan symbol of a curved stair: radial riser lines, the two edge arcs,
 /// the break line, the direction arrow along the walking line and "UP".
 fn curved_symbol(stair: &Stair, layout: &Layout, c: &Curve, cut_at: Option<f64>) -> Vec<Stroke> {
@@ -575,6 +595,9 @@ fn curved_symbol(stair: &Stair, layout: &Layout, c: &Curve, cut_at: Option<f64>)
         }
     }
 
+    if p.plan.show_arc_centers {
+        out.extend(arc_marks(c, sweep, to_plan));
+    }
     let circle_at = (CIRCLE_ALONG / c.walk().max(1e-9)).min(end / 2.0);
     out.extend(curve_arrow(stair, layout, c, circle_at, end));
     out
@@ -618,6 +641,9 @@ fn ramp_arc_symbol(stair: &Stair, layout: &Layout, arc: &RampArc) -> Vec<Stroke>
                 .collect(),
             false,
         ));
+    }
+    if p.plan.show_arc_centers {
+        out.extend(arc_marks(c, sweep, to_plan));
     }
     let circle_at = (CIRCLE_ALONG / c.walk().max(1e-9)).min(sweep / 2.0);
     out.extend(curve_arrow(stair, layout, c, circle_at, sweep));

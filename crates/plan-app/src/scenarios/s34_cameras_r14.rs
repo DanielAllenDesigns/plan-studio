@@ -257,7 +257,9 @@ fn save_camera_then_restore_it_from_the_project_browser() {
     assert_eq!(ids.len(), 1);
     let saved = sim.app.cx.project.camera(ids[0]).unwrap().clone();
     assert_eq!(saved.kind, CameraKind::DollHouse);
-    assert!(saved.view.pose.is_some() && !saved.view.show_in_plan);
+    // Round 16 (DECISIONS 166): an overview has a symbol in the plan that
+    // places its eye and target.
+    assert!(saved.view.pose.is_some_and(|p| p.symbol) && saved.view.show_in_plan);
     // It is listed in the browser, renamed and deleted like any camera.
     assert!(crate::shell::docks::rename_camera(
         &mut sim.app.cx,

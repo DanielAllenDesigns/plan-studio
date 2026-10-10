@@ -408,6 +408,7 @@ fn without_attic_walls_the_wall_reaches_down_to_the_roof_below() {
 
 fn typed(name: &str, layer: &str) -> WallTypeDef {
     WallTypeDef {
+        props: Default::default(),
         name: name.into(),
         layers: vec![WallLayer::new(layer, 4.0, true, layer)],
         kind: WallKind::Exterior,

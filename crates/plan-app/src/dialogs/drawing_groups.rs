@@ -87,26 +87,39 @@ pub struct SetDialog {
     pub group: i32,
     /// Put the objects back in the group of their kind.
     pub kind_default: bool,
+    /// The selected objects are in different groups: the box reads
+    /// "Multiple Values" (manual p. 218) until a number is typed.
+    pub multiple: bool,
+    /// The number was edited.
+    pub touched: bool,
 }
 
 impl SetDialog {
     pub fn new(cx: &EditorContext) -> Self {
         let table = &cx.project.drawing_group_defaults;
-        let group = cx
+        let groups: Vec<i32> = cx
             .selection
             .items
             .iter()
             .filter_map(|o| o.to_group_ref())
-            .next()
-            .map_or(GROUP_MAX / 2, |r| cx.floor().drawing_group(table, r));
+            .map(|r| cx.floor().drawing_group(table, r))
+            .collect();
+        let group = groups.first().copied().unwrap_or(GROUP_MAX / 2);
         Self {
             group,
             kind_default: false,
+            multiple: groups.iter().any(|g| *g != group),
+            touched: false,
         }
     }
 
     /// OK on the selection of `cx`.
     pub fn apply(&self, cx: &mut EditorContext) -> Result<usize, String> {
+        // "Multiple Values" left alone changes nothing (and makes no undo
+        // step).
+        if self.multiple && !self.touched && !self.kind_default {
+            return Ok(0);
+        }
         cad_ops::set_drawing_group(cx, (!self.kind_default).then_some(self.group))
     }
 
@@ -123,7 +136,14 @@ impl SetDialog {
                 ui.add_enabled_ui(!self.kind_default, |ui| {
                     ui.horizontal(|ui| {
                         ui.label("Drawing group");
-                        ui.add(egui::DragValue::new(&mut self.group).range(GROUP_MIN..=GROUP_MAX));
+                        let mut drag =
+                            egui::DragValue::new(&mut self.group).range(GROUP_MIN..=GROUP_MAX);
+                        if self.multiple && !self.touched {
+                            drag = drag.custom_formatter(|_, _| "Multiple Values".to_string());
+                        }
+                        if ui.add(drag).changed() {
+                            self.touched = true;
+                        }
                     });
                 });
                 ui.horizontal(|ui| {
@@ -270,6 +290,44 @@ mod tests {
         d.kind_default = true;
         assert_eq!(d.apply(&mut cx).unwrap(), 1);
         assert_eq!(cx.floor().drawing_group_override(r), None);
+    }
+
+    #[test]
+    fn different_groups_read_multiple_values_and_untouched_changes_nothing() {
+        let (mut cx, id) = cx_with_circle();
+        let b = cx.project.add_cad(
+            0,
+            "CAD, Default",
+            CadItem::Circle {
+                center: Point::ZERO,
+                radius: 3.0,
+            },
+        );
+        cx.project
+            .set_drawing_groups(0, &[plan_core::ObjectRef::Cad(b)], Some(40));
+        cx.selection.items = vec![ObjectRef::Cad(id), ObjectRef::Cad(b)];
+        let mut d = SetDialog::new(&cx);
+        assert!(d.multiple && !d.touched);
+        let undo = cx.undo_label().map(str::to_string);
+        assert_eq!(
+            d.apply(&mut cx).unwrap(),
+            0,
+            "OK on Multiple Values is a no-op"
+        );
+        assert_eq!(cx.undo_label().map(str::to_string), undo);
+        d.group = 30;
+        d.touched = true;
+        assert_eq!(d.apply(&mut cx).unwrap(), 2);
+        let t = cx.project.drawing_group_defaults.clone();
+        assert_eq!(
+            cx.floor().drawing_group(&t, plan_core::ObjectRef::Cad(id)),
+            30
+        );
+        assert_eq!(
+            cx.floor().drawing_group(&t, plan_core::ObjectRef::Cad(b)),
+            30
+        );
+        assert!(!SetDialog::new(&cx).multiple);
     }
 
     #[test]

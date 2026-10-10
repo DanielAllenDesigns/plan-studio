@@ -27,6 +27,8 @@ pub mod cmd {
     pub const OPEN_TRUSS_DETAIL: &str = "framing.open_truss_detail";
     pub const FIND_TRUSSES: &str = "framing.find_trusses";
     pub const WALL_MEMBER_DELETE: &str = "framing.wall_member_delete";
+    /// Retain Framing on the selected roof planes, or release it.
+    pub const RETAIN_PLANES: &str = "framing.retain_planes";
     pub const FLAT_INSIDE: &str = "framing.flat_inside";
     pub const FLAT_OUTSIDE: &str = "framing.flat_outside";
     /// Opens the Truss Detail window (Build > Framing > Truss Detail).
@@ -61,6 +63,17 @@ fn retained(cx: &EditorContext, t: &Target) -> bool {
             .and_then(|r| r.member().and_then(|m| m.truss.as_ref().map(|t| t.locked)))
             .unwrap_or(false),
     }
+}
+
+/// The roof planes among the selection.
+fn selected_planes(cx: &EditorContext) -> Vec<Id> {
+    selected::selected_targets(cx)
+        .into_iter()
+        .filter_map(|t| match t {
+            Target::RoofPlane(id) => Some(id),
+            _ => None,
+        })
+        .collect()
 }
 
 /// The manual linear members selected on the active floor.
@@ -115,6 +128,21 @@ pub fn edit_actions(cx: &EditorContext) -> Vec<EditAction> {
             cmd::BUILD_SELECTED,
             "Build Framing for Selected Object(s)",
             any_free,
+        ));
+    }
+    let planes = selected_planes(cx);
+    if !planes.is_empty() {
+        let all = planes
+            .iter()
+            .all(|id| retained(cx, &Target::RoofPlane(*id)));
+        v.push(button(
+            cmd::RETAIN_PLANES,
+            if all {
+                "Release Roof Plane Framing"
+            } else {
+                "Retain Roof Plane Framing"
+            },
+            true,
         ));
     }
     let walls: Vec<Id> = cx
@@ -238,8 +266,13 @@ pub fn run_command(cx: &mut EditorContext, id: &str) -> bool {
                 ObjectRef::Wall(id) => Some(*id),
                 _ => None,
             });
-            if let Some(w) = wall {
-                details::open_wall_detail(cx, w);
+            match wall {
+                Some(w) => {
+                    if !details::open_wall_detail(cx, w) {
+                        cx.status = "Build the framing of that wall first".into();
+                    }
+                }
+                None => cx.status = "Select a framed wall to open its Wall Detail".into(),
             }
         }
         cmd::FIND_WALL => {
@@ -252,7 +285,20 @@ pub fn run_command(cx: &mut EditorContext, id: &str) -> bool {
             let n = selected::move_to_reference(cx, &ids);
             if n > 0 {
                 cx.status = format!("Moved {n} framing member(s) to the Framing Reference");
+            } else {
+                cx.status = "Select framing members and set a Framing Reference first".into();
             }
+        }
+        cmd::RETAIN_PLANES => {
+            let planes = selected_planes(cx);
+            let retain = !planes
+                .iter()
+                .all(|id| retained(cx, &Target::RoofPlane(*id)));
+            let n = selected::set_planes_retained(cx, &planes, retain);
+            cx.status = format!(
+                "{} framing on {n} roof plane(s)",
+                if retain { "Retaining" } else { "Releasing" }
+            );
         }
         cmd::JOIN_LAP | cmd::JOIN_MITRE => {
             let ids = selected_ids(cx);

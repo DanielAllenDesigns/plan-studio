@@ -298,6 +298,7 @@ pub fn apply_code_minimums(d: &mut PlanDefaults, m: &CodeMinimums) -> Vec<String
 fn garage_wall_type(name: &str, gypsum: f64) -> WallTypeDef {
     let l = WallLayer::new;
     WallTypeDef {
+        props: Default::default(),
         name: name.into(),
         kind: WallKind::Interior,
         layers: vec![

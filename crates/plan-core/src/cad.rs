@@ -886,6 +886,33 @@ pub struct CadAttrs {
     /// (drawing, DXF, layout) sees a smooth curve in plain points. Empty for
     /// anything but a polyline with an arc edge.
     pub arc_edges: Vec<PolyArc>,
+    /// Live length / angle / radius labels (CAD-118).
+    pub labels: CadLabels,
+    /// Polyline edges that are not drawn (Hide Selected Edge, CAD-117): the
+    /// numbers of the control-vertex edges, edge `i` running from vertex `i`
+    /// to the next.
+    pub hidden_edges: Vec<usize>,
+}
+
+/// Which live labels a CAD line, arc or polyline shows (CAD-118): the length
+/// centered above and the angle (or the radius of an arc) centered below.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CadLabels {
+    pub show_length: bool,
+    pub show_angle: bool,
+    /// An arc shows its radius under its length.
+    pub show_radius: bool,
+    /// Polyline: label the angle of every edge, not only the selected one.
+    pub all_angles: bool,
+    /// Show the angle the other way round (the line read from its far end).
+    pub reverse_angle: bool,
+}
+
+impl CadLabels {
+    pub fn any(&self) -> bool {
+        self.show_length || self.show_angle || self.show_radius
+    }
 }
 
 /// One arc edge of a polyline: `points[from..=to]` sample an arc that leaves

@@ -70,7 +70,6 @@ fn settings(sim: &mut Sim, f: impl FnOnce(&mut roof_view::RoofSettings)) {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "R16-19 in progress"]
 fn make_baselines_draw_a_porch_and_build_the_roof_from_them() {
     let mut sim = house();
     build_roof(&mut sim);

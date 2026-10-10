@@ -1,0 +1,171 @@
+//! Scenario 77: roof eave alignment (Round 16 brief 18; manual pp. 829,
+//! 830, 844; RF-76, RF-112). A mixed-pitch roof built with Same Roof Height
+//! at Exterior Walls, Same Height Eaves and neither, and the settings kept
+//! with the roof. Pivot locks and birdsmouth arithmetic are unit-tested in
+//! `plan-roof` (`tests.rs`).
+
+use super::{draw_shell, Sim};
+use crate::editor::roof_view::{self, RoofPlaneRecord, RoofSettings};
+use crate::tools::roof::RoofMode;
+use crate::tools::ToolId;
+use plan_roof::{HeightSettings, RoofFraming};
+
+const W: f64 = 480.0;
+const H: f64 = 360.0;
+
+/// A rectangular house whose long walls rise at 12:12 and short walls at 6:12.
+fn mixed_pitch_house() -> Sim {
+    let mut sim = Sim::new();
+    draw_shell(&mut sim, W, H);
+    for w in &mut sim.app.cx.project.floors[0].walls {
+        let long = (w.start.y - w.end.y).abs() < 1e-6;
+        w.roof.pitch_in_12 = Some(if long { 12.0 } else { 6.0 });
+    }
+    sim
+}
+
+fn build(sim: &mut Sim, heights: HeightSettings) -> Vec<RoofPlaneRecord> {
+    let fl = sim.app.cx.floor;
+    let mut s = RoofSettings::from_defaults(&sim.app.cx.defaults);
+    s.heights = heights;
+    roof_view::rebuild(&mut sim.app.cx.project, fl, s, false).expect("roof built");
+    roof_view::load(sim.app.cx.floor()).planes
+}
+
+/// Elevation of a plane over the outside face of its wall: the eave tip
+/// plus the overhang climbed at the pitch.
+fn wall_height(r: &RoofPlaneRecord) -> f64 {
+    eave_height(r) + r.overhang * r.pitch / 12.0
+}
+
+fn eave_height(r: &RoofPlaneRecord) -> f64 {
+    r.polygon3d[0][1]
+}
+
+fn spread(v: impl Iterator<Item = f64>) -> f64 {
+    let v: Vec<f64> = v.collect();
+    v.iter().cloned().fold(f64::MIN, f64::max) - v.iter().cloned().fold(f64::MAX, f64::min)
+}
+
+#[test]
+fn same_roof_height_changes_overhangs_so_mixed_pitches_meet_at_the_wall_and_the_eave() {
+    let mut sim = mixed_pitch_house();
+    let planes = build(&mut sim, HeightSettings::default());
+    assert_eq!(planes.len(), 4);
+    assert!(
+        spread(planes.iter().map(wall_height)) < 1e-6,
+        "walls bear at one height"
+    );
+    assert!(
+        spread(planes.iter().map(eave_height)) < 1e-6,
+        "eaves meet at one height"
+    );
+    // Default plane: 8:12 with a 16" overhang. The 12:12 planes overhang
+    // less, the 6:12 planes more, so the fascia drop is the same.
+    for p in &planes {
+        let want = 16.0 * 8.0 / p.pitch;
+        assert!(
+            (p.overhang - want).abs() < 1e-6,
+            "{}:12 overhang {}",
+            p.pitch,
+            p.overhang
+        );
+    }
+}
+
+#[test]
+fn same_height_eaves_keeps_the_wall_overhangs_and_moves_the_planes() {
+    let mut sim = mixed_pitch_house();
+    let planes = build(
+        &mut sim,
+        HeightSettings {
+            same_roof_height: false,
+            same_height_eaves: true,
+            ..HeightSettings::default()
+        },
+    );
+    assert!(planes.iter().all(|p| (p.overhang - 16.0).abs() < 1e-6));
+    assert!(
+        spread(planes.iter().map(eave_height)) < 1e-6,
+        "one eave height"
+    );
+    // Equal overhangs at unequal pitches: the steeper plane bears higher.
+    assert!(spread(planes.iter().map(wall_height)) > 7.9);
+    let steep = planes.iter().map(wall_height).fold(f64::MIN, f64::max);
+    let flat = planes.iter().map(wall_height).fold(f64::MAX, f64::min);
+    assert!((steep - flat - (16.0 * 12.0 / 12.0 - 16.0 * 6.0 / 12.0)).abs() < 1e-6);
+}
+
+#[test]
+fn a_single_pitch_roof_is_independent_and_keeps_a_wall_overhang() {
+    let mut sim = Sim::new();
+    draw_shell(&mut sim, W, H);
+    for w in &mut sim.app.cx.project.floors[0].walls {
+        w.roof.pitch_in_12 = Some(12.0);
+        w.roof.overhang = Some(24.0);
+    }
+    let planes = build(&mut sim, HeightSettings::default());
+    assert!(planes.iter().all(|p| (p.overhang - 24.0).abs() < 1e-6));
+    // Both switches on adjust it to the default plane's fascia drop.
+    let planes = build(
+        &mut sim,
+        HeightSettings {
+            same_height_eaves: true,
+            ..HeightSettings::default()
+        },
+    );
+    assert!(planes
+        .iter()
+        .all(|p| (p.overhang - 16.0 * 8.0 / 12.0).abs() < 1e-6));
+}
+
+#[test]
+fn heel_height_lifts_a_truss_roof_and_the_cut_a_rafter_roof() {
+    let mut sim = mixed_pitch_house();
+    let base = build(&mut sim, HeightSettings::default());
+    let top = |v: &[RoofPlaneRecord]| v.iter().map(wall_height).fold(f64::MIN, f64::max);
+    let heel = build(
+        &mut sim,
+        HeightSettings {
+            framing: RoofFraming::Trusses,
+            heel_height: 5.0,
+            ..HeightSettings::default()
+        },
+    );
+    assert!((top(&heel) - top(&base) - 5.0).abs() < 1e-6);
+    // A birdsmouth cut of 3" with the automatic cut off sinks the roof.
+    let cut = build(
+        &mut sim,
+        HeightSettings {
+            auto_birdsmouth: false,
+            birdsmouth_cut: -3.0,
+            ..HeightSettings::default()
+        },
+    );
+    assert!((top(&base) - top(&cut) - 3.0).abs() < 1e-6);
+}
+
+#[test]
+fn the_height_group_is_kept_with_the_roof_and_a_build_is_one_undo_step() {
+    let mut sim = mixed_pitch_house();
+    let wanted = HeightSettings {
+        same_height_eaves: true,
+        allow_low_planes: false,
+        framing: RoofFraming::Trusses,
+        heel_height: 4.0,
+        ..HeightSettings::default()
+    };
+    build(&mut sim, wanted.clone());
+    let kept = roof_view::load(sim.app.cx.floor())
+        .settings
+        .expect("settings kept");
+    assert_eq!(kept.heights, wanted);
+    // Build Roof through the tool: one undo step takes the roof away.
+    let mut fresh = mixed_pitch_house();
+    fresh.tool(ToolId::RoofVariant(RoofMode::Build));
+    fresh.click(240.0, 180.0);
+    fresh.ok();
+    assert_eq!(roof_view::load(fresh.app.cx.floor()).planes.len(), 4);
+    fresh.undo();
+    assert!(roof_view::load(fresh.app.cx.floor()).planes.is_empty());
+}

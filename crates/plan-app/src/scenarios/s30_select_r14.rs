@@ -25,8 +25,10 @@ fn ctrl() -> Modifiers {
     }
 }
 
-fn alt() -> Modifiers {
+/// Ctrl and Alt together: the copy-drag (S-94); Ctrl alone overrides.
+fn ctrl_alt() -> Modifiers {
     Modifiers {
+        ctrl: true,
         alt: true,
         ..Modifiers::NONE
     }
@@ -186,21 +188,21 @@ fn hover_and_selection_are_described_in_the_status_bar() {
     );
 }
 
-// ----- S-30: Alt marquee over objects, the Marquee Selection setting -----
+// ----- S-30: Ctrl/Cmd marquee over objects, the Marquee Selection setting -----
 
 #[test]
-fn alt_on_the_press_marquees_from_on_top_of_an_object() {
+fn ctrl_on_the_press_marquees_from_on_top_of_an_object() {
     let mut sim = Sim::new();
     sim.tool(ToolId::Select);
     let ids = house(&mut sim);
-    // Without Alt the press on the wall drags it.
+    // Without Ctrl the press on the wall drags it.
     drag_with(&mut sim, (120.0, 0.0), (120.0, 24.0), Modifiers::NONE);
     assert_ne!(sim.app.cx.floor().wall(ids[0]).unwrap().start.y, 0.0);
     sim.undo();
     assert_eq!(sim.app.cx.floor().wall(ids[0]).unwrap().start.y, 0.0);
-    // With Alt the same press starts a marquee: right to left touches walls.
+    // With Ctrl the same press starts a marquee: right to left touches walls.
     sim.app.cx.selection.clear();
-    drag_with(&mut sim, (120.0, 0.0), (-30.0, 40.0), alt());
+    drag_with(&mut sim, (120.0, 0.0), (-30.0, 40.0), ctrl());
     assert_eq!(sim.app.cx.floor().wall(ids[0]).unwrap().start.y, 0.0);
     assert!(sim.app.cx.selection.contains(ObjectRef::Wall(ids[0])));
     assert!(sim.app.cx.selection.contains(ObjectRef::Wall(ids[3])));
@@ -283,7 +285,7 @@ fn the_select_tool_reports_a_drag_in_progress_for_the_shell() {
 // ----- S-94: Ctrl-drag copies -----
 
 #[test]
-fn ctrl_drag_copies_the_selection_in_one_undo_step() {
+fn ctrl_alt_drag_copies_the_selection_in_one_undo_step() {
     let mut sim = Sim::new();
     sim.tool(ToolId::Select);
     let l = line(&mut sim, p(0.0, 0.0), p(100.0, 0.0));
@@ -292,7 +294,7 @@ fn ctrl_drag_copies_the_selection_in_one_undo_step() {
     sim.click(25.0, 0.0);
     assert_eq!(sim.app.cx.selection.single(), Some(ObjectRef::Cad(l)));
     let x = free_spot(&sim, 10.0, 90.0);
-    let res = drag_with(&mut sim, (x, 0.0), (x, 60.0), ctrl());
+    let res = drag_with(&mut sim, (x, 0.0), (x, 60.0), ctrl_alt());
     assert_eq!(res.commit.as_deref(), Some("Copy Objects"));
     assert_eq!(sim.app.cx.floor().cad.len(), 2);
     // The original stayed, the copy moved and is what is selected now.
@@ -310,13 +312,13 @@ fn ctrl_drag_copies_the_selection_in_one_undo_step() {
 }
 
 #[test]
-fn ctrl_drag_of_a_wall_leaves_the_walls_around_it_alone() {
+fn ctrl_alt_drag_of_a_wall_leaves_the_walls_around_it_alone() {
     let mut sim = Sim::new();
     sim.tool(ToolId::Select);
     let ids = house(&mut sim);
     sim.click(60.0, 0.0);
     assert_eq!(sim.app.cx.selection.single(), Some(ObjectRef::Wall(ids[0])));
-    drag_with(&mut sim, (60.0, 0.0), (60.0, -72.0), ctrl());
+    drag_with(&mut sim, (60.0, 0.0), (60.0, -72.0), ctrl_alt());
     let f = sim.app.cx.floor();
     assert_eq!(f.walls.len(), 5);
     // Every original wall is where it was; the copy sits 72" below.
@@ -328,14 +330,14 @@ fn ctrl_drag_of_a_wall_leaves_the_walls_around_it_alone() {
 }
 
 #[test]
-fn escape_during_a_ctrl_drag_removes_the_copies_and_restores_the_selection() {
+fn escape_during_a_ctrl_alt_drag_removes_the_copies_and_restores_the_selection() {
     let mut sim = Sim::new();
     sim.tool(ToolId::Select);
     let l = line(&mut sim, p(0.0, 0.0), p(100.0, 0.0));
     sim.click(25.0, 0.0);
     let x = free_spot(&sim, 10.0, 90.0);
-    send_down(&mut sim, x, 0.0, ctrl());
-    send_move(&mut sim, x, 40.0, ctrl(), true);
+    send_down(&mut sim, x, 0.0, ctrl_alt());
+    send_move(&mut sim, x, 40.0, ctrl_alt(), true);
     assert_eq!(sim.app.cx.floor().cad.len(), 2);
     sim.esc();
     assert_eq!(sim.app.cx.floor().cad.len(), 1);
@@ -663,13 +665,14 @@ fn cad_tool(sim: &mut Sim, mode: CadMode) {
 }
 
 #[test]
-fn shift_holds_a_cad_line_to_15_degree_steps() {
+fn shift_holds_a_cad_line_to_90_or_45_degrees() {
     let mut sim = Sim::new();
     cad_tool(&mut sim, CadMode::Line);
     sim.app.cx.defaults.editing.angle_snaps = false;
     sim.app.cx.defaults.grid.snap = 0.0;
     sim.click(0.0, 0.0);
-    // 100" east and 25" north is 14 degrees: Shift makes it 15.
+    // 100" east and 25" north is 14 degrees: Shift makes it 0 (90 degrees
+    // is the default restriction).
     send_move(&mut sim, 100.0, 25.0, shift(), false);
     send_down(&mut sim, 100.0, 25.0, shift());
     send_up(&mut sim, 100.0, 25.0, shift());
@@ -678,7 +681,19 @@ fn shift_holds_a_cad_line_to_15_degree_steps() {
         panic!()
     };
     let ang = b.sub(*a).angle().to_degrees();
-    assert!((ang - 15.0).abs() < 1e-6, "{ang}");
+    assert!(ang.abs() < 1e-6, "{ang}");
+    // The Preferences choice of 45 degrees: 100" east and 60" north (31
+    // degrees) becomes 45.
+    sim.app.cx.selection.clear();
+    sim.app.cx.defaults.editing.restrictive_angle_deg = 45.0;
+    sim.click(0.0, 300.0);
+    send_move(&mut sim, 100.0, 360.0, shift(), false);
+    send_down(&mut sim, 100.0, 360.0, shift());
+    send_up(&mut sim, 100.0, 360.0, shift());
+    let CadItem::Line { a, b } = &sim.app.cx.floor().cad.last().unwrap().item else {
+        panic!()
+    };
+    assert!((b.sub(*a).angle().to_degrees() - 45.0).abs() < 1e-6);
     // Without Shift the pointer's own angle stands.
     sim.app.cx.selection.clear();
     sim.click(0.0, 500.0);
@@ -700,7 +715,7 @@ fn the_edit_menu_picks_the_arc_creation_mode() {
         assert_eq!(crate::tools::cad::current_arc_mode(), m);
         assert!(sim.app.cx.status.contains(m.name()));
     }
-    assert_eq!(ArcMode::ALL.len(), 4);
+    assert_eq!(ArcMode::ALL.len(), 6);
 }
 
 #[test]

@@ -29,6 +29,13 @@ pub struct WallLayer {
     /// The main (structural) layer; its exterior side is the framing line.
     pub is_main: bool,
     pub material: String,
+    /// Role, fill, extension, framing and line of the layer (Round 16, brief
+    /// 12); an older plan's two-field layer loads with the default.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::wall_types::WallLayerSpec::is_default"
+    )]
+    pub spec: crate::wall_types::WallLayerSpec,
 }
 
 impl WallLayer {
@@ -40,6 +47,7 @@ impl WallLayer {
             thickness,
             is_main,
             material: material.into(),
+            spec: Default::default(),
         }
     }
 }
@@ -51,6 +59,12 @@ pub struct WallTypeDef {
     pub name: String,
     pub layers: Vec<WallLayer>,
     pub kind: WallKind,
+    /// Wall Properties, flags and alignment layers (Round 16, brief 12).
+    #[serde(
+        default,
+        skip_serializing_if = "crate::wall_types::WallTypeProps::is_default"
+    )]
+    pub props: crate::wall_types::WallTypeProps,
 }
 
 impl WallTypeDef {
@@ -1121,15 +1135,20 @@ pub enum EditBehavior {
     Fillet,
     /// Dragging a polyline corner cuts it off with a chamfer.
     Chamfer,
-    /// A body drag moves along the dominant axis only.
+    /// Alternate: continuous drawing of lines and arcs by clicking, a corner
+    /// handle keeps the angles beside it, a wall moves at the allowed angles
+    /// (manual p. 253). Held Alt summons it for one operation.
     Alternate,
     /// A body drag leaves the original and places copies at the drag delta.
     Replicate,
+    /// Any resize handle moves the object (manual p. 254).
+    Move,
 }
 
 impl EditBehavior {
-    pub const ALL: [EditBehavior; 7] = [
+    pub const ALL: [EditBehavior; 8] = [
         EditBehavior::Default,
+        EditBehavior::Move,
         EditBehavior::Resize,
         EditBehavior::Concentric,
         EditBehavior::Fillet,
@@ -1147,6 +1166,7 @@ impl EditBehavior {
             EditBehavior::Chamfer => "Chamfer",
             EditBehavior::Alternate => "Alternate",
             EditBehavior::Replicate => "Replicate",
+            EditBehavior::Move => "Move",
         }
     }
 }
@@ -1167,8 +1187,20 @@ pub struct EditBehaviorSettings {
     /// Chamfer: distance cut back along both sides of the corner, inches;
     /// 0 follows the drag.
     pub chamfer_distance: f64,
-    /// Alternate: lock the move to the dominant axis.
+    /// Retired: Alternate no longer locks the move to the dominant axis
+    /// (Round 16); kept so old files load.
     pub alternate_lock_axis: bool,
+    /// Concentric Jump: every edge moves in steps of this many inches; 0 uses
+    /// the Snap Unit (manual p. 255).
+    pub concentric_jump: f64,
+    /// Stop When Connected: Alternate's continuous drawing halts when a
+    /// closed shape forms (manual p. 149).
+    pub stop_when_connected: bool,
+    /// Primary Movement Method: true is Polar (allowed angles), false is
+    /// Orthogonal (square to the object's edges).
+    pub movement_polar: bool,
+    /// Show the pointer icon of the active behavior.
+    pub behavior_indicators: bool,
     /// Replicate: copies placed, each one more delta along.
     pub replicate_copies: u32,
     /// Replicate: after the drag, open Transform/Replicate Object with the
@@ -1186,6 +1218,10 @@ impl Default for EditBehaviorSettings {
             fillet_radius: 0.0,
             chamfer_distance: 0.0,
             alternate_lock_axis: true,
+            concentric_jump: 0.0,
+            stop_when_connected: true,
+            movement_polar: false,
+            behavior_indicators: true,
             replicate_copies: 1,
             replicate_dialog: false,
         }
@@ -1222,6 +1258,16 @@ pub struct EditingDefaults {
     /// Allowed drawing angles, degrees counter-clockwise from east, each one
     /// also allowing its opposite. Empty: every multiple of `angle_snap_deg`.
     pub snap_angles: Vec<f64>,
+    /// Additional Angles (Angle/Grid panel), degrees counter-clockwise from
+    /// east; each also allows its opposing angle (180 degrees on).
+    pub additional_angles: Vec<f64>,
+    /// What Shift restricts the angle snaps to, degrees: 90 or 45.
+    pub restrictive_angle_deg: f64,
+    /// Objects in History: how many extension anchors show at once.
+    pub anchor_history: u32,
+    /// Display the Angle Snap Grid (the allowed angles as rays from the last
+    /// point while drawing).
+    pub angle_snap_grid: bool,
     pub behavior: EditBehaviorSettings,
 }
 
@@ -1246,6 +1292,10 @@ impl Default for EditingDefaults {
             grid_snaps: true,
             angle_snaps: true,
             snap_angles: Vec::new(),
+            additional_angles: Vec::new(),
+            restrictive_angle_deg: 90.0,
+            anchor_history: 6,
+            angle_snap_grid: false,
             behavior: EditBehaviorSettings::default(),
         }
     }
@@ -1533,6 +1583,7 @@ fn wall_type(name: &str, kind: WallKind, layers: Vec<WallLayer>) -> WallTypeDef 
         name: name.into(),
         layers,
         kind,
+        props: Default::default(),
     }
 }
 
@@ -1764,6 +1815,7 @@ mod tests {
             name: "x".into(),
             kind: WallKind::Interior,
             layers: vec![WallLayer::new("A", 1.0, false, "")],
+            props: Default::default(),
         };
         assert_eq!(none.main_layer_offset(), 0.0);
         // Every shipped type has exactly one main layer.
@@ -2011,9 +2063,26 @@ mod tests {
         d.editing.behavior.fillet_radius = 18.0;
         d.editing.snap_angles = vec![0.0, 45.0, 90.0];
         d.editing.snap_center = false;
+        d.editing.additional_angles = vec![22.5, 67.5];
+        d.editing.restrictive_angle_deg = 45.0;
+        d.editing.behavior.concentric_jump = 6.0;
+        d.editing.behavior.movement_polar = true;
         let back: PlanDefaults = serde_json::from_str(&serde_json::to_string(&d).unwrap()).unwrap();
         assert_eq!(back.editing, d.editing);
-        assert_eq!(EditBehavior::ALL.len(), 7);
+        // Files saved before the Round 16 settings load with their defaults.
+        let mut v = serde_json::to_value(&d.editing).unwrap();
+        for k in [
+            "additional_angles",
+            "restrictive_angle_deg",
+            "anchor_history",
+        ] {
+            v.as_object_mut().unwrap().remove(k);
+        }
+        let old: EditingDefaults = serde_json::from_value(v).unwrap();
+        assert!(old.additional_angles.is_empty());
+        assert_eq!(old.restrictive_angle_deg, 90.0);
+        assert_eq!(EditBehavior::ALL.len(), 8);
+        assert_eq!(EditBehavior::Move.label(), "Move");
         assert_eq!(EditBehavior::Concentric.label(), "Concentric");
     }
 

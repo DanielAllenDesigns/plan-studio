@@ -30,6 +30,16 @@ use crate::model::{Id, Wall, WallEnd, WallKind};
 pub const MITER_LIMIT: f64 = 4.0;
 /// `|sin|` of the angle between two walls below which they count as parallel.
 const MIN_SIN: f64 = 0.02;
+/// Walls that leave a junction less than this many degrees apart are not
+/// mitered: both end square (W-132, manual p. 386).
+pub const ACUTE_JOIN_DEG: f64 = 60.0;
+
+/// Whether two wall directions leaving one junction are closer than
+/// [`ACUTE_JOIN_DEG`] (an acute corner, which ends square).
+pub fn is_acute_join(da: Point, db: Point) -> bool {
+    let (la, lb) = (da.length(), db.length());
+    la > 1e-12 && lb > 1e-12 && da.dot(db) / (la * lb) > ACUTE_JOIN_DEG.to_radians().cos() + 1e-9
+}
 
 #[derive(Debug, Clone)]
 pub struct WallOutline {
@@ -552,7 +562,7 @@ fn end_role(walls: &[Wall], i: usize, e: End, touching: &[(usize, End)]) -> Role
 /// walls are parallel or the miter is longer than [`MITER_LIMIT`] allows.
 fn side_point(p: Point, da: Point, ta: f64, db: Point, tb: f64, s: f64) -> Option<Point> {
     let cross = da.cross(db);
-    if cross.abs() < MIN_SIN {
+    if cross.abs() < MIN_SIN || is_acute_join(da, db) {
         return None;
     }
     let pa = p + da.perp() * (s * ta * 0.5);
@@ -624,7 +634,7 @@ fn role_faces(walls: &[Wall], i: usize, e: End, role: Role) -> Option<(Point, Po
 /// perpendicular of `da`); wall B's `-1` / `+1` sides meet there respectively.
 fn miter_points(p: Point, da: Point, ta: f64, db: Point, tb: f64) -> Option<(Point, Point)> {
     let cross = da.cross(db);
-    if cross.abs() < MIN_SIN {
+    if cross.abs() < MIN_SIN || is_acute_join(da, db) {
         return None;
     }
     let mut out = [Point::ZERO; 2];
@@ -955,7 +965,7 @@ fn layer_end_points(
             let o = &walls[j];
             let db = away_dir(o, oe);
             let cross = dw.cross(db);
-            if cross.abs() < MIN_SIN {
+            if cross.abs() < MIN_SIN || is_acute_join(dw, db) {
                 return square();
             }
             let (b_lat, b_lo, b_hi) = boundaries(&stacks[j], end_sign(oe));
@@ -1126,7 +1136,16 @@ fn layer_outlines_facets(
                 let back = arcs[lo].iter().rev();
                 arcs[hi].iter().copied().chain(back.copied()).collect()
             } else {
-                vec![starts[hi], ends[hi], ends[lo], starts[lo]]
+                // Edit Wall Intersections: a layer slid along the wall (W-144).
+                let d = w.direction();
+                let ss = crate::walls::intersect::layer_shift(w, false, k);
+                let es = crate::walls::intersect::layer_shift(w, true, k);
+                vec![
+                    starts[hi] - d * ss,
+                    ends[hi] + d * es,
+                    ends[lo] + d * es,
+                    starts[lo] - d * ss,
+                ]
             };
             out.push(WallLayerOutline {
                 wall_id: w.id,
@@ -1680,6 +1699,42 @@ mod tests {
                 assert!(p.dist(*q) < 1e-9);
             }
         }
+    }
+
+    #[test]
+    fn an_acute_junction_under_sixty_degrees_ends_square_and_sixty_miters() {
+        // 45 degrees between the arms: square (the miter would be short enough
+        // for MITER_LIMIT, so only the acute rule makes it square).
+        let a = 45f64.to_radians();
+        let walls = vec![
+            wall(1, 0.0, 0.0, 100.0, 0.0, 6.0),
+            wall(2, 100.0, 0.0, 100.0 - 100.0 * a.cos(), 100.0 * a.sin(), 6.0),
+        ];
+        assert!(is_acute_join(
+            Point::new(-1.0, 0.0),
+            Point::new(-a.cos(), a.sin())
+        ));
+        for (w, out) in walls.iter().zip(wall_outlines(&walls, 0.01)) {
+            for (p, q) in out.polygon.iter().zip(w.footprint().iter()) {
+                assert!(p.dist(*q) < 1e-9, "wall {} not square", w.id);
+            }
+        }
+        // Exactly 60 degrees is not acute and still miters.
+        let a = 60f64.to_radians();
+        assert!(!is_acute_join(
+            Point::new(-1.0, 0.0),
+            Point::new(-a.cos(), a.sin())
+        ));
+        let walls = vec![
+            wall(1, 0.0, 0.0, 100.0, 0.0, 6.0),
+            wall(2, 100.0, 0.0, 100.0 - 100.0 * a.cos(), 100.0 * a.sin(), 6.0),
+        ];
+        let o = wall_outlines(&walls, 0.01);
+        assert!(o[0]
+            .polygon
+            .iter()
+            .zip(walls[0].footprint().iter())
+            .any(|(p, q)| p.dist(*q) > 1.0));
     }
 
     // ----- layered outlines -----

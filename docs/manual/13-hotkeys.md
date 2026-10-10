@@ -47,6 +47,23 @@ unless one of Daniel's keys takes the chord.
   tooltips and the Customize Hotkeys dialog then write `Ctrl+` where this chapter writes `Cmd+`. The tables below
   keep the Mac spelling.
 - `Alt` is Option on a Mac.
+- **Keys held while drawing or dragging** (Round 16, DECISIONS EB1; these are not hotkeys and are not in the
+  Customize Hotkeys table):
+
+  | Key | What it does |
+  | --- | --- |
+  | `Alt` (or the right button) | Calls up the Alternate edit behavior for this operation: a polyline corner keeps the angles beside it, walls and groups move at the allowed angles, CAD lines chain by clicking. On the stair tools it reverses the direction (draws downward). |
+  | `Ctrl` / `Cmd` | Overrides the snaps, the move restrictions and bumping (including the occupied-space rule for accessories). At the start of a drag on the empty plan or on an object it begins a marquee that toggles what it covers. |
+  | `Ctrl+Alt` | Starts a copy-drag of the selection (Plan Studio's own, S-94). |
+  | `Shift` | Restricts the angle snaps to 90 or 45 degrees (Snap Settings, "Shift Restricts To"); adds to the selection and to a marquee. |
+  | `S` | Drops the object snaps while held; extension anchors still work. |
+  | `1` | Clears the extension anchors. |
+  | `Z` or `/` | Move behavior for this operation (`Alt+Z` or `Alt+/`: Default). |
+  | `X` or `.` | Resize behavior for this operation (also the X2 mouse button). |
+  | `C` | Concentric behavior for this operation (also the X1 mouse button). |
+  | `F` | Fillet behavior for this operation. |
+  | `Tab` or `Enter` | With nothing typed, while a wall is drawn or a move or wall end is dragged: opens Enter Coordinates. |
+  | `Esc` | Cancels the operation. |
 - Tools never read raw keys to activate themselves. Inside a running tool, keys such as `Esc`, `Enter`,
   `Tab`, `Delete` and the arrow keys go to the tool (13.9).
 

@@ -45,6 +45,7 @@ mod edit;
 #[cfg(test)]
 mod edit_tests;
 mod style;
+pub mod survey;
 #[allow(unused_imports)]
 pub use edit::{
     apply_hatch, closed_outline, edit_actions, hatch_lines, hatch_pattern, item_segments,
@@ -58,8 +59,6 @@ pub use style::draw_cad_styled;
 pub const CAD_LAYER: &str = plan_core::cad::DEFAULT_CAD_LAYER;
 /// Pixels between press and release that make a drag-draw.
 const DRAG_PX: f32 = 4.0;
-/// The increment Shift holds a line to (CAD-14).
-pub const SHIFT_ANGLE_DEG: f64 = 15.0;
 /// Shapes smaller than this are not created.
 const MIN_SIZE: f64 = 0.5;
 /// Segments of a sampled ellipse.
@@ -514,14 +513,22 @@ pub enum ArcMode {
     /// two clicks when the start is the end of the line or arc just drawn,
     /// which the new arc continues without a corner.
     StartEndTangent,
+    /// Free Form (CAD-119): start, end, then the curvature; with a dragged
+    /// path the arc follows it (`arcs::free_form_arc`).
+    FreeForm,
+    /// Arc About Center (CAD-7): the center, the start, then the end, taking
+    /// the shorter way round (`arcs::arc_about_center`).
+    AboutCenter,
 }
 
 impl ArcMode {
-    pub const ALL: [ArcMode; 4] = [
-        ArcMode::ThreePoint,
+    pub const ALL: [ArcMode; 6] = [
+        ArcMode::FreeForm,
         ArcMode::CenterStartEnd,
-        ArcMode::StartEndRadius,
+        ArcMode::ThreePoint,
         ArcMode::StartEndTangent,
+        ArcMode::AboutCenter,
+        ArcMode::StartEndRadius,
     ];
 
     pub fn name(self) -> &'static str {
@@ -530,6 +537,8 @@ impl ArcMode {
             ArcMode::CenterStartEnd => "Center-Start-End",
             ArcMode::StartEndRadius => "Start-End-Radius",
             ArcMode::StartEndTangent => "Tangent",
+            ArcMode::FreeForm => "Free Form",
+            ArcMode::AboutCenter => "Arc About Center",
         }
     }
 
@@ -540,29 +549,51 @@ impl ArcMode {
             ArcMode::CenterStartEnd => "cad.arc_mode.center_start_end",
             ArcMode::StartEndRadius => "cad.arc_mode.start_end_radius",
             ArcMode::StartEndTangent => "cad.arc_mode.tangent",
+            ArcMode::FreeForm => "cad.arc_mode.free_form",
+            ArcMode::AboutCenter => "cad.arc_mode.about_center",
         }
     }
 }
 
 thread_local! {
-    /// The Arc Creation Mode the Edit menu shows and the tool uses (CAD-7).
-    static ARC_MODE: std::cell::Cell<ArcMode> = const { std::cell::Cell::new(ArcMode::ThreePoint) };
+    /// The Arc Creation Mode the Edit menu shows and the tool uses (CAD-7);
+    /// `None` until first read, when the mode of the last session is loaded.
+    static ARC_MODE: std::cell::Cell<Option<ArcMode>> = const { std::cell::Cell::new(None) };
 }
 
-/// The Arc Creation Mode in force.
+/// The Arc Creation Mode in force. The last mode used is kept between
+/// sessions in the Preferences file (`CadPrefs::arc_mode`).
 pub fn current_arc_mode() -> ArcMode {
-    ARC_MODE.with(|m| m.get())
+    ARC_MODE.with(|m| {
+        m.get().unwrap_or_else(|| {
+            let saved = crate::dialogs::preferences::pages::current().cad.arc_mode;
+            let mode = ArcMode::ALL
+                .into_iter()
+                .find(|a| a.command() == saved)
+                .unwrap_or(ArcMode::ThreePoint);
+            m.set(Some(mode));
+            mode
+        })
+    })
 }
 
-/// Is `id` an Edit > Arc Creation Modes command?
+/// Picks the Arc Creation Mode and remembers it for the next session.
+fn remember_arc_mode(m: ArcMode) {
+    ARC_MODE.with(|c| c.set(Some(m)));
+    crate::dialogs::preferences::pages::update(|p| p.cad.arc_mode = m.command().to_string());
+}
+
+/// Is `id` an Edit > Arc Creation Modes or a CAD > Survey Entry command?
 pub fn is_command(id: &str) -> bool {
-    id.starts_with("cad.arc_mode.")
+    id.starts_with("cad.arc_mode.") || survey::is_command(id)
 }
 
-/// Runs an Edit > Arc Creation Modes command.
+/// Runs an Edit > Arc Creation Modes or CAD > Survey Entry command.
 pub fn run_command(cx: &mut EditorContext, id: &str) {
-    if let Some(m) = ArcMode::ALL.into_iter().find(|m| m.command() == id) {
-        ARC_MODE.with(|c| c.set(m));
+    if survey::is_command(id) {
+        survey::run_command(cx, id);
+    } else if let Some(m) = ArcMode::ALL.into_iter().find(|m| m.command() == id) {
+        remember_arc_mode(m);
         cx.status = format!("Arc Creation Mode: {}", m.name());
     }
 }
@@ -614,6 +645,10 @@ pub enum CadMode {
     ChangeLineArc,
     /// Removes a polyline vertex (CAD-21).
     DeleteBreak,
+    /// Makes the clicked edge of a polyline an object of its own (CAD-117).
+    DisconnectEdges,
+    /// Hides or shows the clicked edge of a polyline (CAD-117).
+    HideShowEdge,
     /// Turns an arc so it meets its neighbour without a corner (CAD-24).
     MakeArcTangent,
     ReverseDirection,
@@ -627,7 +662,7 @@ pub enum CadMode {
 }
 
 impl CadMode {
-    pub const ALL: [CadMode; 47] = [
+    pub const ALL: [CadMode; 49] = [
         CadMode::Line,
         CadMode::InputLine,
         CadMode::LineArrow,
@@ -666,6 +701,8 @@ impl CadMode {
         CadMode::BreakLine,
         CadMode::ChangeLineArc,
         CadMode::DeleteBreak,
+        CadMode::DisconnectEdges,
+        CadMode::HideShowEdge,
         CadMode::MakeArcTangent,
         CadMode::ReverseDirection,
         CadMode::MakeParallel,
@@ -718,6 +755,8 @@ impl CadMode {
             CadMode::BreakLine => "Break Line",
             CadMode::ChangeLineArc => "Change Line/Arc",
             CadMode::DeleteBreak => "Delete Break",
+            CadMode::DisconnectEdges => "Disconnect Edges",
+            CadMode::HideShowEdge => "Hide/Show Selected Edge",
             CadMode::MakeArcTangent => "Make Arc Tangent",
             CadMode::ReverseDirection => "Reverse Direction",
             CadMode::MakeParallel => "Make Parallel",
@@ -776,6 +815,8 @@ impl CadMode {
             CadMode::BreakLine => "Break",
             CadMode::ChangeLineArc => "Line/Arc",
             CadMode::DeleteBreak => "Delete Break",
+            CadMode::DisconnectEdges => "Disconnect",
+            CadMode::HideShowEdge => "Hide/Show Edge",
             CadMode::MakeArcTangent => "Arc Tangent",
             CadMode::ReverseDirection => "Reverse",
             CadMode::MakeParallel => "Parallel",
@@ -857,6 +898,8 @@ impl CadMode {
                 | CadMode::BreakLine
                 | CadMode::ChangeLineArc
                 | CadMode::DeleteBreak
+                | CadMode::DisconnectEdges
+                | CadMode::HideShowEdge
                 | CadMode::MakeArcTangent
                 | CadMode::ReverseDirection
                 | CadMode::MakeParallel
@@ -920,6 +963,8 @@ impl CadMode {
                 C::BreakLine,
                 C::ChangeLineArc,
                 C::DeleteBreak,
+                C::DisconnectEdges,
+                C::HideShowEdge,
                 C::MakeArcTangent,
                 C::ReverseDirection,
                 C::MakeParallel,
@@ -1003,6 +1048,12 @@ impl CadMode {
                 "Change Line/Arc: click a line, an arc or a polyline edge to make it curved or straight"
             }
             CadMode::DeleteBreak => "Delete Break: click a polyline vertex to remove it",
+            CadMode::DisconnectEdges => {
+                "Disconnect Edges: click an edge of a polyline to make it an object of its own"
+            }
+            CadMode::HideShowEdge => {
+                "Hide/Show Selected Edge: click an edge of a polyline to hide it, or to show it again"
+            }
             CadMode::MakeArcTangent => {
                 "Make Arc Tangent: click an arc to meet its neighbouring line without a corner"
             }
@@ -1066,9 +1117,11 @@ impl Typed {
     fn value(&self, i: usize) -> Option<f64> {
         let (_, text, angle) = self.fields.get(i)?;
         if *angle {
-            text.trim().trim_end_matches('\u{b0}').trim().parse().ok()
+            // Degrees, DMS, a quadrant bearing or an azimuth (CAD-109).
+            survey::parse_angle_text(text)
         } else {
-            parse_ft_in(text)
+            // A bare number is read in the Number Style's unit (PR-30).
+            survey::parse_length(text).or_else(|| parse_ft_in(text))
         }
     }
 
@@ -1222,6 +1275,9 @@ pub struct CadTool {
     /// for a Tangent arc to continue (CAD-7).
     last_segment: Option<(Point, Point)>,
     pts: Vec<Point>,
+    /// Where the chain of continuously drawn lines began (Alternate, or
+    /// Connect CAD Segments): coming back to it closes the shape.
+    chain_first: Option<Point>,
     hover: Option<Point>,
     press: Option<Pos2>,
     typed: Option<Typed>,
@@ -1239,6 +1295,7 @@ impl Default for CadTool {
             sides: 6,
             last_segment: None,
             pts: Vec::new(),
+            chain_first: None,
             hover: None,
             press: None,
             typed: None,
@@ -1270,7 +1327,7 @@ impl CadTool {
     }
 
     pub fn set_arc_mode(&mut self, m: ArcMode) {
-        ARC_MODE.with(|c| c.set(m));
+        remember_arc_mode(m);
         self.pts.clear();
     }
 
@@ -1322,6 +1379,7 @@ impl CadTool {
     }
 
     fn cancel(&mut self, cx: &mut EditorContext) {
+        self.chain_first = None;
         self.pts.clear();
         self.press = None;
         self.grab = None;
@@ -1334,13 +1392,14 @@ impl CadTool {
         self.snap_result(cx, p).point
     }
 
-    /// The snap of the pointer: Shift holds the line to 15-degree increments
-    /// from the last point (CAD-14), whatever the Angle Snaps setting; Alt
-    /// suspends the snaps.
+    /// The snap of the pointer: Shift holds the line to 90 or 45 degrees from
+    /// the last point (the Preferences choice; CAD-14, manual p. 193),
+    /// whatever the Angle Snaps setting; Ctrl/Cmd suspends the snaps.
     fn snap_result(&self, cx: &EditorContext, p: &PointerEvent) -> crate::editor::SnapResult {
-        if p.modifiers.shift && !p.modifiers.alt {
+        if p.modifiers.shift && !p.overrides() {
+            let set = crate::editor::snap::restrictive_angles(&cx.defaults.editing);
             if let Some(held) = self.origin().and_then(|o| {
-                crate::editor::snap::angle_snap(o, p.world, cx.defaults.grid.snap, SHIFT_ANGLE_DEG)
+                crate::editor::snap::angle_snap_list(o, p.world, cx.defaults.grid.snap, &set)
             }) {
                 return crate::editor::SnapResult {
                     point: held,
@@ -1349,7 +1408,7 @@ impl CadTool {
                 };
             }
         }
-        cx.snap_at(p.world, self.origin(), p.modifiers.alt, &[])
+        cx.snap_at(p.world, self.origin(), p.overrides(), &[])
     }
 
     /// The items the click points `pts` (the last one being the pointer or
@@ -1511,6 +1570,8 @@ impl CadTool {
             ArcMode::CenterStartEnd => arc_center_start_end(pts[0], pts[1], pts[2]),
             ArcMode::StartEndRadius => arc_start_end_radius(pts[0], pts[1], pts[2]),
             ArcMode::StartEndTangent => arc_start_end_tangent(pts[0], pts[1], pts[2]),
+            ArcMode::FreeForm => arc_three_point(pts[0], pts[2], pts[1]),
+            ArcMode::AboutCenter => arcs::arc_about_center(pts[0], pts[1], pts[2]),
         }?;
         let mut items = vec![arc.clone()];
         if self.mode == CadMode::ArcArrow {
@@ -1560,12 +1621,15 @@ impl CadTool {
                 Some((*b, b.sub(*a).normalized()))
             }
             (CadMode::Arc | CadMode::ArcArrow, arc @ CadItem::Arc { .. }) => {
-                let end =
-                    if self.mode == CadMode::Arc && current_arc_mode() == ArcMode::CenterStartEnd {
-                        *pts.get(2)?
-                    } else {
-                        *pts.get(1)?
-                    };
+                let end = if self.mode == CadMode::Arc
+                    && matches!(
+                        current_arc_mode(),
+                        ArcMode::CenterStartEnd | ArcMode::AboutCenter
+                    ) {
+                    *pts.get(2)?
+                } else {
+                    *pts.get(1)?
+                };
                 arc_heading(arc, end).map(|d| (end, d))
             }
             _ => None,
@@ -1624,11 +1688,20 @@ impl CadTool {
         }
         self.pts.clear();
         self.press = None;
+        // A line chains into the next when Connect CAD Segments is on, or the
+        // Alternate behavior (continuous drawing, manual p. 253) is in force;
+        // closing the shape ends the chain unless Stop When Connected is off.
+        let first = self.chain_first.take().unwrap_or(pts[0]);
+        let closed = first.dist(last) < 1e-6 && pts.len() == 2 && first != pts[0];
+        let alternate = crate::editor::behaviors::alternate(cx);
+        let stop = alternate && closed && cx.defaults.editing.behavior.stop_when_connected;
         if res.commit.is_some()
             && self.mode.is_line()
-            && cx.view_flags.contains(&ViewFlag::ConnectCad)
+            && !stop
+            && (cx.view_flags.contains(&ViewFlag::ConnectCad) || alternate)
         {
             self.pts.push(last);
+            self.chain_first = Some(first);
         }
         if res.commit.is_some() && self.mode == CadMode::InputPoint {
             self.start_typed_point(cx);
@@ -1670,13 +1743,16 @@ impl CadTool {
         let (Some(start), Some(h)) = (self.pts.last().copied(), self.hover) else {
             return;
         };
-        let angle = h.sub(start).angle().to_degrees();
+        // The angle starts as the cursor's direction, in the Angle Style in
+        // force; blank when the cursor is on the start (CAD-109).
+        let angle = if h.dist(start) > MIN_SIZE {
+            survey::number_style().format_angle(h.sub(start).angle().to_degrees())
+        } else {
+            String::new()
+        };
         self.typed = Some(Typed::new(
             TypedKind::Line,
-            vec![
-                ("Length", String::new(), false),
-                ("Angle", format!("{angle:.1}"), true),
-            ],
+            vec![("Length", String::new(), false), ("Angle", angle, true)],
         ));
         set_typing(cx, true);
     }
@@ -1732,7 +1808,17 @@ impl CadTool {
                     .add(Point::new(ang.to_radians().cos(), ang.to_radians().sin()).scale(len));
                 self.typed = None;
                 set_typing(cx, false);
-                self.complete(cx, &[start, end])
+                let res = self.complete(cx, &[start, end]);
+                if res.commit.is_some() {
+                    survey::set_current_point(Some(end));
+                    // Next (CAD-112): with Connect CAD Segments on, the next
+                    // course starts where this one ended.
+                    if self.pts.last() == Some(&end) {
+                        self.hover = Some(end);
+                        self.start_typed_line(cx);
+                    }
+                }
+                res
             }
             TypedKind::Radius => {
                 let (Some(r), Some(c)) = (t.value(0), self.pts.first().copied()) else {
@@ -1789,6 +1875,7 @@ impl CadTool {
                 };
                 self.typed = None;
                 set_typing(cx, false);
+                survey::set_current_point(Some(Point::new(x, y)));
                 let items = point_items(Point::new(x, y), false);
                 let res = self.commit(cx, items);
                 self.start_typed_point(cx);
@@ -1822,6 +1909,9 @@ impl CadTool {
                 c.is_ascii_digit()
                     || matches!(c, '.' | '-' | '/' | ' ')
                     || (!angle && matches!(c, '\'' | '"'))
+                    // Bearings: N S E W, Az, and the degree marks.
+                    || (angle
+                        && (c.is_ascii_alphabetic() || matches!(c, '\'' | '"' | '\u{b0}')))
             };
             t.fields[t.active].1.extend(s.chars().filter(|c| ok(*c)));
         } else {
@@ -2216,6 +2306,8 @@ impl Tool for CadTool {
     }
 
     fn pointer_down(&mut self, cx: &mut EditorContext, p: PointerEvent) -> ToolResult {
+        // Alt (or the Alternate behavior chosen) draws continuously.
+        crate::editor::behaviors::summon(&p);
         if let Some(id) = self.strip.hit(p.screen) {
             return self.strip_click(cx, id);
         }
@@ -2244,6 +2336,7 @@ impl Tool for CadTool {
     }
 
     fn pointer_up(&mut self, cx: &mut EditorContext, p: PointerEvent) -> ToolResult {
+        crate::editor::behaviors::summon(&p);
         if let Some(d) = self.drag.take() {
             return if d.changed {
                 cx.mark_dirty();
@@ -2332,6 +2425,10 @@ impl Tool for CadTool {
         self.strip.draw(painter, cam, pal, &self.strip_items());
         self.draw_edit_overlay(cx, painter, cam);
         let ghost = Stroke::new(1.0_f32, pal.ghost_stroke);
+        // The Angle Snap Grid fans out from the last point (manual p. 193).
+        if let Some(o) = self.origin() {
+            crate::editor::snap::draw_angle_rays(painter, cam, cx, o);
+        }
         // Handles of the selected object.
         if self.idle() {
             if let Some((_, item)) = self.selected_cad(cx) {

@@ -242,7 +242,8 @@ pub fn new_schedule(cx: &mut EditorContext, kind: ScheduleKind, at: Point) -> Sc
     let mut s = cx.project.schedule_setup.template(kind, at);
     s.id = id;
     let rooms = active_rooms(cx, cx.floor);
-    s.numbers = schedule_kinds::snapshot_numbers(&cx.project, &s, rooms);
+    let recorded = schedule_kinds::snapshot_numbers(&cx.project, &s, rooms);
+    s.record_numbers(recorded);
     // A schedule that does not take new types (Notes) records the types it
     // has now as ticked.
     if !s.new_types_included && s.categories.is_empty() {

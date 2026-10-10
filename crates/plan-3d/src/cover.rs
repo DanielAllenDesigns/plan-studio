@@ -750,7 +750,11 @@ pub fn bottom_cut(
     type Cand<'a> = (&'a Surface, Vec<(f64, f64)>, bool);
     let cands: Vec<Cand> = below
         .iter()
-        .filter(|f| f.detail.roof_cuts_wall_at_bottom)
+        .filter(|f| {
+            wall.roof
+                .cuts_wall_at_bottom
+                .unwrap_or(f.detail.roof_cuts_wall_at_bottom)
+        })
         .flat_map(|f| f.tops.iter().map(move |s| (s, !f.detail.auto_attic_walls)))
         .filter_map(|(s, reach)| {
             let cov = s.covered(a, b, 0.0);

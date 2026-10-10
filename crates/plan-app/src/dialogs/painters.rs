@@ -48,6 +48,16 @@ pub fn show(painter: &egui::Painter, cx: &EditorContext, mode: PainterMode) {
 
 fn bar(ui: &mut egui::Ui, cx: &EditorContext, mode: PainterMode, switch: &mut Option<ToolId>) {
     ui.strong(mode.name());
+    if mode == PainterMode::LayerHider {
+        // The hider has no choices: the click turns off the primary layer of
+        // the object in the shown layer set.
+        ui.separator();
+        ui.label(format!(
+            "Click an object to turn off its layer in {}",
+            cx.project.shown_layer_set()
+        ));
+        return;
+    }
     let (paint, dropper) = if mode.is_layer() {
         (PainterMode::LayerPaint, PainterMode::LayerEyedropper)
     } else {
@@ -68,16 +78,29 @@ fn bar(ui: &mut egui::Ui, cx: &EditorContext, mode: PainterMode, switch: &mut Op
 }
 
 fn layer_controls(ui: &mut egui::Ui, cx: &EditorContext) {
+    // Use Default Layer (manual p. 217): each object goes to its own system
+    // default layer, and the layer below is not used.
+    let mut use_default = with_state(|s| s.use_default);
+    ui.checkbox(&mut use_default, "Use Default Layer")
+        .on_hover_text("Put each object on its own system default layer");
+    with_state(|s| s.use_default = use_default);
     let mut layer = with_state(|s| s.layer.clone());
-    ui.label("Layer:");
-    egui::ComboBox::from_id_salt("painter_layer")
-        .selected_text(layer.clone().unwrap_or_else(|| "(none)".into()))
-        .width(170.0)
-        .show_ui(ui, |ui| {
-            for l in &cx.project.layers.layers {
-                ui.selectable_value(&mut layer, Some(l.name.clone()), &l.name);
-            }
-        });
+    ui.add_enabled_ui(!use_default, |ui| {
+        ui.label("Layer:");
+        let shown = layer.clone().unwrap_or_else(|| "(none)".into());
+        if let Some(pick) = super::select_layer::layer_combo(ui, cx, "painter_layer", &shown, 170.0)
+        {
+            layer = Some(pick);
+        }
+        // Define opens Layer Display Options to pick, change or add a layer.
+        if ui
+            .small_button("Define\u{2026}")
+            .on_hover_text("Open Layer Display Options")
+            .clicked()
+        {
+            super::layer_display::open_define();
+        }
+    });
     with_state(|s| s.layer = layer);
     ui.separator();
     ui.label("Scope:");

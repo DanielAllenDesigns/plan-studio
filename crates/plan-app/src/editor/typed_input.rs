@@ -7,7 +7,9 @@
 //! angle field and back, Backspace edits, Enter commits and Esc drops what was
 //! typed. Tools read the values with [`TypedInput::length`] and
 //! [`TypedInput::angle`]; temporary-dimension drags use
-//! `tempdim::typed_value`.
+//! `tempdim::typed_value`. A length also takes arithmetic (`10' + 6"`,
+//! `92 5/8 - 3"`; see `plan_core::calc`), and the Enter Coordinates dialog
+//! hands its answer over as a length and angle ([`TypedInput::set_polar`]).
 
 use eframe::egui::{Key, Modifiers};
 use plan_core::units::parse_ft_in;
@@ -96,16 +98,27 @@ impl TypedInput {
         } else {
             t.to_string()
         };
-        parse_ft_in(&t).filter(|v| *v > 0.0)
+        let v = if plan_core::calc::has_operator(&t) {
+            plan_core::units::parse_length(&t, plan_core::units::LengthUnit::Inches)
+        } else {
+            parse_ft_in(&t)
+        };
+        v.filter(|v| *v > 0.0)
+    }
+
+    /// Fills both fields with a length (inches) and an angle (degrees) and
+    /// puts the length field in front, as if they had been typed: Enter then
+    /// commits them. The Enter Coordinates dialog answers this way.
+    pub fn set_polar(&mut self, length: f64, angle_deg: f64) {
+        self.armed = true;
+        self.field = TypedField::Length;
+        self.length = format!("{length:.6}\"");
+        self.angle = format!("{angle_deg:.6}");
     }
 
     /// The typed angle in degrees, counter-clockwise from east.
     pub fn angle(&self) -> Option<f64> {
-        self.angle
-            .trim()
-            .trim_end_matches('\u{b0}')
-            .parse::<f64>()
-            .ok()
+        plan_core::calc::eval_number(self.angle.trim().trim_end_matches('\u{b0}'))
     }
 
     /// Is `key` a typed character the armed input takes instead of a hotkey?
@@ -150,8 +163,8 @@ impl TypedInput {
             let ok: String = t
                 .chars()
                 .filter(|c| match field {
-                    TypedField::Length => c.is_ascii_digit() || " '\"-/.".contains(*c),
-                    TypedField::Angle => c.is_ascii_digit() || ".-".contains(*c),
+                    TypedField::Length => c.is_ascii_digit() || " '\"-/.+*".contains(*c),
+                    TypedField::Angle => c.is_ascii_digit() || ".-+*/ ".contains(*c),
                 })
                 .collect();
             if ok.is_empty() {

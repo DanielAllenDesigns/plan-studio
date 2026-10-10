@@ -1,5 +1,6 @@
 #![allow(clippy::field_reassign_with_default)]
 use super::*;
+use plan_core::rooms::ElectricalRules;
 use plan_core::{detect_rooms, Floor, Id, Opening, Point, Room, Wall, WallKind};
 use std::f64::consts::FRAC_PI_2;
 
@@ -1813,4 +1814,119 @@ fn rope_lights_are_modeled_as_strips_along_their_path() {
         (top - 60.0).abs() < 1e-3,
         "the top of the rope profile is its height"
     );
+}
+
+// ----- Auto Place Outlets by the room's electrical rules (manual p. 447) -----
+
+fn rules_for(label: &str, function: &str, type_name: &str) -> Vec<(String, ElectricalRules)> {
+    vec![(
+        label.to_string(),
+        plan_core::rooms::electrical_rules(function, type_name),
+    )]
+}
+
+fn north_run() -> Vec<Point> {
+    vec![
+        Point::new(40.0, 117.75),
+        Point::new(200.0, 117.75),
+        Point::new(200.0, 141.75),
+        Point::new(40.0, 141.75),
+    ]
+}
+
+#[test]
+fn exterior_rooms_porches_and_open_below_get_no_outlets_and_hybrids_fewer() {
+    let (floor, rooms) = room_20x12();
+    let label = rooms[0].label.clone();
+    let types = vec![(label.clone(), RoomFunction::Other)];
+    let opts = AutoOutletOptions::default();
+    let full = auto_place_outlets_by_rules(
+        &floor,
+        &rooms,
+        &types,
+        &rules_for(&label, "Standard", "Bedroom"),
+        &opts,
+    );
+    assert_eq!(
+        full,
+        auto_place_outlets(&floor, &rooms, &types, &opts),
+        "a bedroom keeps the plain rules"
+    );
+    for (f, t) in [
+        ("Deck", "Deck"),
+        ("Balcony", "Balcony"),
+        ("Porch", "Porch"),
+        ("Open Below", "Open Below"),
+    ] {
+        let placed =
+            auto_place_outlets_by_rules(&floor, &rooms, &types, &rules_for(&label, f, t), &opts);
+        assert!(placed.is_empty(), "{f} gets none");
+    }
+    // A slab room is a hybrid: the same walls, but half as many outlets.
+    let few = auto_place_outlets_by_rules(
+        &floor,
+        &rooms,
+        &types,
+        &rules_for(&label, "Slab", "Slab"),
+        &opts,
+    );
+    assert!(
+        !few.is_empty() && few.len() < full.len(),
+        "{} vs {}",
+        few.len(),
+        full.len()
+    );
+}
+
+#[test]
+fn a_kitchen_gets_gfci_over_the_base_cabinets_and_standard_outlets_elsewhere() {
+    let (floor, rooms) = room_20x12();
+    let label = rooms[0].label.clone();
+    let types = vec![(label.clone(), RoomFunction::Kitchen)];
+    let opts = AutoOutletOptions {
+        counter_runs: vec![north_run()],
+        ..AutoOutletOptions::default()
+    };
+    let rules = rules_for(&label, "Standard", "Kitchen");
+    let placed = auto_place_outlets_by_rules(&floor, &rooms, &types, &rules, &opts);
+    let counter: Vec<_> = placed.iter().filter(|d| d.height == 44.0).collect();
+    let standard: Vec<_> = placed.iter().filter(|d| d.height == 12.0).collect();
+    assert!(counter.len() >= 4, "{}", counter.len());
+    assert!(counter
+        .iter()
+        .all(|d| d.kind == DeviceKind::Gfci && d.wall_id == Some(3)));
+    assert!(!standard.is_empty(), "the free walls take standard outlets");
+    assert!(standard.iter().all(|d| d.kind == DeviceKind::Outlet110));
+    assert!(standard.iter().any(|d| d.wall_id != Some(3)));
+    // Without the rules a kitchen only has the counter outlets.
+    let plain = auto_place_outlets(&floor, &rooms, &types, &opts);
+    assert!(plain.iter().all(|d| d.height == 44.0));
+}
+
+#[test]
+fn a_bath_gets_gfci_over_the_vanity_and_no_standard_outlets() {
+    let (floor, rooms) = room_20x12();
+    let label = rooms[0].label.clone();
+    let types = vec![(label.clone(), RoomFunction::Bath)];
+    let rules = rules_for(&label, "Standard", "Bath");
+    let with_vanity = AutoOutletOptions {
+        counter_runs: vec![north_run()],
+        ..AutoOutletOptions::default()
+    };
+    let placed = auto_place_outlets_by_rules(&floor, &rooms, &types, &rules, &with_vanity);
+    assert!(!placed.is_empty());
+    assert!(placed
+        .iter()
+        .all(|d| d.kind == DeviceKind::Gfci && d.height == 44.0 && d.wall_id == Some(3)));
+    // No vanity drawn: the walls keep their GFCI outlets at the wall height.
+    let bare = auto_place_outlets_by_rules(
+        &floor,
+        &rooms,
+        &types,
+        &rules,
+        &AutoOutletOptions::default(),
+    );
+    assert!(bare
+        .iter()
+        .all(|d| d.kind == DeviceKind::Gfci && d.height == 12.0));
 }

@@ -617,6 +617,13 @@ pub(super) fn architectural(ui: &mut egui::Ui) {
             &mut a.delete_unused_roof_planes,
             "Delete Unused Roof Planes",
         );
+        ui.checkbox(
+            &mut a.build_roof_when_room_closes,
+            "Build the roof when exterior walls close a room",
+        )
+        .on_hover_text(
+            "The Residential Template does this and then keeps the roof up to date; off by default",
+        );
         ui.add_space(6.0);
         ui.strong("Code minimums");
         ui.checkbox(
@@ -754,6 +761,9 @@ pub(super) fn units(ui: &mut egui::Ui) {
         ui.label("Decimals");
         ui.add(egui::DragValue::new(&mut pg.units.decimals).range(0..=6));
     });
+    if ui.button("Number Style...").clicked() {
+        crate::dialogs::number_style::open();
+    }
     ui.add_space(6.0);
     let rows = convert(&input, &pg.units);
     if rows.is_empty() {

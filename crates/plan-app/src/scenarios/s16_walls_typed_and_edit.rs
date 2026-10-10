@@ -94,7 +94,7 @@ fn typing_twelve_feet_at_ninety_degrees_draws_a_vertical_wall_and_esc_drops_the_
 }
 
 #[test]
-fn shift_holds_the_angle_increment_and_alt_returns_the_raw_point() {
+fn shift_holds_the_angle_to_90_degrees_and_ctrl_returns_the_raw_point() {
     // With the angle snaps off a plain drag to (200, 30) keeps its angle.
     let mut sim = Sim::new();
     sim.app.cx.defaults.editing.angle_snaps = false;
@@ -104,14 +104,15 @@ fn shift_holds_the_angle_increment_and_alt_returns_the_raw_point() {
     let a = angle_deg(plain.start, plain.end);
     assert!((a / 15.0 - (a / 15.0).round()).abs() > 0.05, "plain {a}");
 
-    // Shift holds the angle increment (15 degrees) even with them off.
+    // Shift holds the angle to 90 degrees (the default restriction) even with
+    // them off: 8.5 degrees falls to the horizontal.
     let mut sim = Sim::new();
     sim.app.cx.defaults.editing.angle_snaps = false;
     sim.tool(interior());
     drag_with(&mut sim, (0.0, 0.0), (200.0, 30.0), Modifiers::SHIFT);
     let w = wall(&sim, 0);
     let a = angle_deg(w.start, w.end);
-    assert!((a / 15.0 - (a / 15.0).round()).abs() < 0.01, "shift {a}");
+    assert!(a.abs() < 0.01, "shift {a}");
 
     // With the angle snaps on (the default) the plain drag lands on 15 too.
     let mut sim = Sim::new();
@@ -121,10 +122,10 @@ fn shift_holds_the_angle_increment_and_alt_returns_the_raw_point() {
     let a = angle_deg(w.start, w.end);
     assert!((a - 15.0).abs() < 0.01, "angle snap {a}");
 
-    // Alt suspends every snap: the end is the pointer, to the thousandth.
+    // Ctrl/Cmd suspends every snap: the end is the pointer, to the thousandth.
     let mut sim = Sim::new();
     sim.tool(interior());
-    drag_with(&mut sim, (0.0, 0.0), (200.37, 30.21), Modifiers::ALT);
+    drag_with(&mut sim, (0.0, 0.0), (200.37, 30.21), Modifiers::CTRL);
     let w = wall(&sim, 0);
     assert!(w.end.dist(Point::new(200.37, 30.21)) < 1e-9, "{:?}", w.end);
 }
@@ -429,10 +430,13 @@ fn an_angle_list_in_snap_settings_limits_the_directions_a_shift_drag_may_take() 
     // 30 degrees is not allowed: Shift picks the nearest of 0 / 45 / 90.
     drag_with(&mut sim, (0.0, 0.0), (200.0, 115.0), Modifiers::SHIFT);
     let w = wall(&sim, 0);
+    // The direction line wraps at 180 degrees: 179.999999 is 0 degrees.
     let a = angle_deg(w.start, w.end).rem_euclid(180.0);
+    let a = if a > 179.99 { a - 180.0 } else { a };
     assert!(
         [0.0, 45.0, 90.0].iter().any(|t| (a - t).abs() < 0.01),
-        "{a}"
+        "{a} {:?}",
+        w.end
     );
 }
 

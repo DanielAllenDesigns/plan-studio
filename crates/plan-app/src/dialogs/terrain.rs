@@ -49,6 +49,7 @@ const TABS: &[Tab] = &[
     on("Contours"),
     on("Polyline"),
     on("Line Style"),
+    on("Fill Style"),
     on("Building Pad"),
     on("Materials"),
     on("Label"),
@@ -704,6 +705,26 @@ impl Form {
         ui.checkbox(&mut st.dashed, "Dashed");
     }
 
+    /// Fill Style page of the perimeter: the ground inside it in plan.
+    fn fill_style(&mut self, ui: &mut Ui) {
+        use plan_terrain::FillStyle;
+        section(ui, "Fill Style");
+        let st = &mut self.draft.terrain.perimeter_extras.style;
+        ui.radio_value(&mut st.fill, FillStyle::Default, "No fill (outline only)");
+        ui.radio_value(&mut st.fill, FillStyle::Solid, "Solid");
+        ui.radio_value(&mut st.fill, FillStyle::Hatch, "Hatch");
+        let mut own = st.fill_color.is_some();
+        if ui
+            .checkbox(&mut own, "Use a fill color of its own")
+            .changed()
+        {
+            st.fill_color = own.then_some([79, 143, 58]);
+        }
+        if let Some(c) = &mut st.fill_color {
+            row(ui, "Color", |ui| ui.color_edit_button_srgb(c));
+        }
+    }
+
     fn label(&mut self, ui: &mut Ui) {
         let auto = plan_terrain::auto_label(&self.draft.terrain, ObjectKey::Perimeter);
         let t = &mut self.draft.terrain;
@@ -914,6 +935,7 @@ impl SpecPages for Form {
             "Contours" => self.contours(ui),
             "Polyline" => self.polyline(ui),
             "Line Style" => self.line_style(ui),
+            "Fill Style" => self.fill_style(ui),
             "Building Pad" => self.building_pad(ui),
             "Materials" => self.materials(ui),
             "Label" => self.label(ui),
@@ -1087,6 +1109,7 @@ mod tests {
                 "Contours",
                 "Polyline",
                 "Line Style",
+                "Fill Style",
                 "Building Pad",
                 "Materials",
                 "Label",

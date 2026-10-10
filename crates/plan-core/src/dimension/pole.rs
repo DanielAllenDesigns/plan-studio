@@ -74,7 +74,7 @@ pub fn roof_marks(planes: &[Vec<[f64; 3]>]) -> Vec<RoofMark> {
 /// The marks of the floors: top of subfloor, top of plate, ceiling and the
 /// openings' sills and heads, for the kinds the setup locates.
 pub fn floor_marks(floors: &[Floor], setup: &PoleSetup) -> Vec<ElevationMark> {
-    let wants = |k: MarkKind| setup.marks.iter().find(|m| m.kind == k);
+    let wants = |k: MarkKind| setup.located(k);
     let mut out = Vec::new();
     for f in floors {
         let xs: Vec<f64> = f.walls.iter().flat_map(|w| [w.start.x, w.end.x]).collect();
@@ -140,7 +140,7 @@ pub fn pole_marks(
     let mut roofs: Vec<RoofMark> = roof
         .iter()
         .copied()
-        .filter(|r| setup.marks.iter().any(|m| m.kind == r.kind))
+        .filter(|r| setup.locates(r.kind))
         .collect();
     if setup.primary_ridges_only {
         let top = roofs
@@ -151,7 +151,7 @@ pub fn pole_marks(
         roofs.retain(|r| r.kind != MarkKind::Ridge || (r.elevation - top).abs() < 1e-6);
     }
     for r in roofs {
-        let m = setup.marks.iter().find(|m| m.kind == r.kind).unwrap();
+        let m = setup.located(r.kind).unwrap();
         marks.push(ElevationMark {
             kind: r.kind,
             name: m.display().to_string(),

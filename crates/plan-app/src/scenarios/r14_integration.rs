@@ -237,6 +237,10 @@ fn tools_rows() -> Vec<(&'static str, Action)> {
             Action::Custom(layer_sets::ACTIVE_LAYERS),
         ),
         (
+            "Layer Set Defaults\u{2026}",
+            Action::Custom(layer_sets::DEFAULTS),
+        ),
+        (
             "Floor/Reference Display\u{2026}",
             Action::ReferenceDisplayOptions,
         ),

@@ -254,11 +254,19 @@ fn connect_end(
     id: Id,
     end: WallEnd,
     opts: &ConnectOptions,
+    only: Option<Id>,
 ) -> usize {
     let Some(w) = project.floors[floor].wall(id).cloned() else {
         return 0;
     };
     if !straight(&w) {
+        return 0;
+    }
+    // An end with its Auto Connect lock on never snaps to other walls (W-135).
+    if match end {
+        WallEnd::Start => w.flags.lock_start,
+        WallEnd::End => w.flags.lock_end,
+    } {
         return 0;
     }
     let p = end_pos(&w, end);
@@ -270,10 +278,17 @@ fn connect_end(
     let mut best_int: Option<(f64, Id, Point)> = None;
     for o in &project.floors[floor].walls {
         // A curved wall is a neighbour too: its ends and its arc.
-        if o.id == id || o.path_length() < MIN_WALL_LENGTH {
+        if o.id == id || o.path_length() < MIN_WALL_LENGTH || only.is_some_and(|x| x != o.id) {
             continue;
         }
         for oe in [WallEnd::Start, WallEnd::End] {
+            // A locked end attracts nothing either (W-135).
+            if match oe {
+                WallEnd::Start => o.flags.lock_start,
+                WallEnd::End => o.flags.lock_end,
+            } {
+                continue;
+            }
             let q = end_pos(o, oe);
             let dist = p.dist(q);
             if dist <= d && best_end.is_none_or(|b| dist < b.0) {
@@ -520,7 +535,7 @@ pub fn auto_connect_project(
             break;
         }
         for end in [WallEnd::Start, WallEnd::End] {
-            n += connect_end(project, floor, id, end, opts);
+            n += connect_end(project, floor, id, end, opts, None);
             n += snap_curved_end(project, floor, id, end, opts);
         }
         if opts.split_on_tee {
@@ -533,6 +548,46 @@ pub fn auto_connect_project(
         }
     }
     // The invisible walls between platforms follow the walls (W-63).
+    project.sync_platform_walls();
+    total
+}
+
+/// How far (inches, at least) the Connect Walls tool reaches between two
+/// walls the user named: four times the automatic connect distance.
+pub const CONNECT_WALLS_REACH: f64 = 4.0 * MIN_CONNECT_DISTANCE;
+
+/// Connect Walls (W-136): joins the close ends of walls `a` and `b` (and a
+/// loose end onto the other wall's centerline) as the automatic connection
+/// would, but only between these two walls and over a longer reach. Ends
+/// with their Auto Connect lock on stay put. Returns the number of edits.
+pub fn connect_walls_project(
+    project: &mut Project,
+    floor: usize,
+    a: Id,
+    b: Id,
+    opts: &ConnectOptions,
+) -> usize {
+    let wide = ConnectOptions {
+        connect_distance_min: opts.connect_distance_min.max(CONNECT_WALLS_REACH),
+        ..*opts
+    };
+    let mut total = 0;
+    for _ in 0..MAX_PASSES {
+        let mut n = 0;
+        for (id, other) in [(a, b), (b, a)] {
+            for end in [WallEnd::Start, WallEnd::End] {
+                if project.floors[floor].wall(id).is_some()
+                    && project.floors[floor].wall(other).is_some()
+                {
+                    n += connect_end(project, floor, id, end, &wide, Some(other));
+                }
+            }
+        }
+        total += n;
+        if n == 0 {
+            break;
+        }
+    }
     project.sync_platform_walls();
     total
 }

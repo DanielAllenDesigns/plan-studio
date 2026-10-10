@@ -495,6 +495,8 @@ impl CadTool {
             CadMode::BreakLine => self.break_click(cx, &p),
             CadMode::ChangeLineArc => self.change_arc_click(cx, &p),
             CadMode::DeleteBreak => self.delete_break_click(cx, &p),
+            CadMode::DisconnectEdges => self.disconnect_click(cx, &p),
+            CadMode::HideShowEdge => self.edge_visibility_click(cx, &p),
             CadMode::MakeArcTangent => self.arc_tangent_click(cx, &p),
             CadMode::ReverseDirection => self.reverse_click(cx, &p),
             CadMode::MakeParallel | CadMode::MakePerpendicular => self.turn_click(cx, &p),

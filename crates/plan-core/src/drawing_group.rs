@@ -353,6 +353,26 @@ impl Project {
         }
         n
     }
+
+    /// Bring Forward (`delta` > 0) / Send Backward (`delta` < 0): each of
+    /// `refs` moves `delta` groups from where it is now (kept within the
+    /// range). Returns how many changed.
+    pub fn drawing_group_step(&mut self, floor: usize, refs: &[ObjectRef], delta: i32) -> usize {
+        let table = self.drawing_group_defaults.clone();
+        let Some(f) = self.floors.get_mut(floor) else {
+            return 0;
+        };
+        let mut n = 0;
+        for r in refs {
+            let now = f.drawing_group(&table, *r);
+            let to = (now + delta).clamp(GROUP_MIN, GROUP_MAX);
+            if to != now {
+                f.set_drawing_group(*r, Some(to));
+                n += 1;
+            }
+        }
+        n
+    }
 }
 
 #[cfg(test)]
@@ -507,5 +527,44 @@ mod tests {
         p.remove_cad(0, ids[1]);
         assert_eq!(p.floors[0].prune_drawing_groups(), 1);
         assert_eq!(p.floors[0].drawing_groups.len(), 1);
+    }
+
+    #[test]
+    fn forward_and_backward_step_one_group_and_stop_at_the_ends() {
+        let (mut p, ids) = plan();
+        let a = ObjectRef::Cad(ids[1]);
+        let g = p.floors[0].drawing_group(&p.drawing_group_defaults, a);
+        assert_eq!(g, 21, "CAD starts in group 21");
+        assert_eq!(p.drawing_group_step(0, &[a], 1), 1);
+        assert_eq!(p.floors[0].drawing_group(&p.drawing_group_defaults, a), 22);
+        assert_eq!(p.drawing_group_step(0, &[a], -2), 1);
+        assert_eq!(p.floors[0].drawing_group(&p.drawing_group_defaults, a), 20);
+        p.set_drawing_groups(0, &[a], Some(GROUP_MIN));
+        assert_eq!(p.drawing_group_step(0, &[a], -1), 0, "already at the back");
+        p.set_drawing_groups(0, &[a], Some(GROUP_MAX));
+        assert_eq!(p.drawing_group_step(0, &[a], 1), 0, "already at the front");
+        assert_eq!(p.drawing_group_step(5, &[a], 1), 0, "no such floor");
+    }
+
+    #[test]
+    fn a_step_can_pass_the_walls_group() {
+        let (mut p, ids) = plan();
+        let a = ObjectRef::Cad(ids[1]);
+        let order = |p: &Project| -> Vec<u64> {
+            p.floors[0]
+                .cad_draw_order_with(&p.drawing_group_defaults)
+                .iter()
+                .map(|c| c.id)
+                .collect()
+        };
+        let before = order(&p);
+        p.drawing_group_step(0, &[a], 40);
+        let after = order(&p);
+        assert_ne!(
+            before, after,
+            "a CAD item stepped past 50 draws over the walls"
+        );
+        let (under, over) = p.floors[0].cad_by_walls(&p.drawing_group_defaults);
+        assert!(over.iter().any(|c| c.id == ids[1]) && !under.iter().any(|c| c.id == ids[1]));
     }
 }

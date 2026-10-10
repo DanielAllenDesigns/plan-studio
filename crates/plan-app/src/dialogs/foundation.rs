@@ -1,6 +1,6 @@
 //! Specification dialogs of the Slab tools and the platform hole tools:
-//! Slab Specification (General, Fill Style, Line Style, Layer), Slab Hole,
-//! Pad and Pier Specification (General, Layer) and Platform Hole
+//! Slab Specification (General, Fill Style, Line Style, Materials, Layer), Slab Hole,
+//! Pad and Pier Specification (General, Materials, Layer) and Platform Hole
 //! Specification. Opened by a double-click on the object; the dialog edits a
 //! [`Draft`] clone that the tool stores on OK as one undo step.
 //!
@@ -35,10 +35,14 @@ const SLAB_TABS: &[Tab] = &[
     on("General"),
     on("Fill Style"),
     on("Line Style"),
+    on("Materials"),
     on("Layer"),
 ];
+// TODO parity: Chief's Label and Schedule tabs need label and schedule slots
+// on Slab, SlabHole, Pad, Pier and PlatformHole (plan-core foundation.rs); a
+// slab hole and a platform hole have no material of their own either.
 const HOLE_TABS: &[Tab] = &[on("General"), on("Line Style"), on("Layer")];
-const PAD_TABS: &[Tab] = &[on("General"), on("Layer")];
+const PAD_TABS: &[Tab] = &[on("General"), on("Materials"), on("Layer")];
 const PLATFORM_TABS: &[Tab] = &[on("General")];
 
 /// Materials the 3D concrete mesh understands.
@@ -767,6 +771,11 @@ fn footing_rows(fields: &mut Fields, ui: &mut Ui, footing: &mut Option<Footing>,
     }
 }
 
+fn materials_page(ui: &mut Ui, salt: &str, material: &mut String) {
+    section(ui, "Materials");
+    row(ui, "Material", |ui| material_combo(ui, salt, material));
+}
+
 fn layer_page(ui: &mut Ui, layers: &[String], layer: &mut String) {
     section(ui, "Layer");
     row(ui, "Layer", |ui| {
@@ -1171,6 +1180,12 @@ impl SpecPages for Form {
                 Draft::Hole(h) => line_style_page(ui, &mut h.line_style),
                 _ => {}
             },
+            "Materials" => match &mut self.draft {
+                Draft::Slab(s) => materials_page(ui, "slab_material_tab", &mut s.material),
+                Draft::Pad(p) => materials_page(ui, "pad_material_tab", &mut p.material),
+                Draft::Pier(p) => materials_page(ui, "pier_material_tab", &mut p.material),
+                _ => {}
+            },
             "Layer" => {
                 let layers = self.layers.clone();
                 match &mut self.draft {
@@ -1317,14 +1332,20 @@ mod tests {
         let tabs = |r| FoundationDialog::new(&l, r, names()).unwrap().tab_names();
         assert_eq!(
             tabs(FoundationRef::Slab(1)),
-            ["General", "Fill Style", "Line Style", "Layer"]
+            ["General", "Fill Style", "Line Style", "Materials", "Layer"]
         );
         assert_eq!(
             tabs(FoundationRef::SlabHole(2)),
             ["General", "Line Style", "Layer"]
         );
-        assert_eq!(tabs(FoundationRef::Pad(3)), ["General", "Layer"]);
-        assert_eq!(tabs(FoundationRef::Pier(4)), ["General", "Layer"]);
+        assert_eq!(
+            tabs(FoundationRef::Pad(3)),
+            ["General", "Materials", "Layer"]
+        );
+        assert_eq!(
+            tabs(FoundationRef::Pier(4)),
+            ["General", "Materials", "Layer"]
+        );
         assert_eq!(tabs(FoundationRef::PlatformHole(5)), ["General"]);
         assert!(FoundationDialog::new(&l, FoundationRef::Pad(99), names()).is_none());
     }

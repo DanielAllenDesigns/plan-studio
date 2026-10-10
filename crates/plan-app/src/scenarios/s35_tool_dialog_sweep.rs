@@ -222,6 +222,8 @@ enum Fx {
     RefPoint,
     /// The shell with a road (two clicks and Enter, Enter).
     Road,
+    /// The shell with a slab under the room (a slab hole must lie inside one).
+    Slab,
 }
 
 fn fixture(f: Fx) -> Sim {
@@ -270,6 +272,10 @@ fn fixture(f: Fx) -> Sim {
     if f == Fx::RefPoint {
         sim.tool(ToolId::TerrainVariant(Tv::ReferencePoint));
         sim.click(240.0, 180.0);
+    }
+    if f == Fx::Slab {
+        sim.tool(ToolId::FoundationVariant(FoundationVariant::Slab));
+        sim.drag((50.0, 50.0), (430.0, 310.0));
     }
     if f == Fx::Road {
         sim.tool(ToolId::TerrainVariant(Tv::Road));
@@ -679,6 +685,9 @@ fn role(id: ToolId) -> Role {
         ToolId::FoundationVariant(v) => match v {
             FoundationVariant::SquarePad | FoundationVariant::RoundPier => {
                 Creates(Fx::Shell, IN_ROOM)
+            }
+            FoundationVariant::SlabHole | FoundationVariant::SlabHoleFooting => {
+                Creates(Fx::Slab, DRAG)
             }
             _ => Creates(Fx::Shell, DRAG),
         },
@@ -1594,15 +1603,8 @@ struct Gap {
     qa: &'static str,
 }
 
-const NOT_DRIVEN: &str = "editing a field and pressing OK changed nothing";
-
 /// Known problems; anything else a tool shows fails the sweep.
 const KNOWN_GAPS: &[Gap] = &[
-    Gap {
-        ids: &["OpeningVariant(OpeningVariant { kind: Window, style: BayWindow })"],
-        problem: "panicked",
-        qa: "QA-12",
-    },
     Gap {
         ids: &["ElectricalVariant(RopeLight)"],
         problem: "the gesture created no object",
@@ -1629,54 +1631,10 @@ const KNOWN_GAPS: &[Gap] = &[
         problem: "no specification dialog opens for CAD Object",
         qa: "QA-16",
     },
-    // The dialog opens with Chief's tabs, but typing into a field and pressing
-    // OK leaves the plan as it was, and the dialog's draft is not reachable
-    // from a test, so the sweep cannot tell a dialog that drops the edit from
-    // a field the Tab walk never lands on. Each needs a draft accessor.
-    Gap {
-        ids: &[
-            "DetailsVariant(WallMaterialRegion)",
-            "DetailsVariant(Solid3d)",
-            "DetailsVariant(Face)",
-            "DetailsVariant(Cone)",
-            "DetailsVariant(Cylinder)",
-            "DetailsVariant(Pyramid)",
-            "DetailsVariant(Sphere)",
-            "StairsVariant(Landing)",
-            "RoofVariant(Dormer)",
-            "RoofVariant(FloatingDormer)",
-            "FoundationVariant(SlabHole)",
-            "FoundationVariant(SlabHoleFooting)",
-            "TerrainVariant(ElevationLine)",
-            "TerrainVariant(ElevationPoint)",
-            "TerrainVariant(ElevationSpline)",
-            "TerrainVariant(Hill)",
-            "TerrainVariant(Valley)",
-            "TerrainVariant(Raised)",
-            "TerrainVariant(Lowered)",
-            "TerrainVariant(Flat)",
-            "TerrainVariant(Hole)",
-            "TerrainVariant(GrassPolyline)",
-            "TerrainVariant(GrassKidney)",
-            "TerrainVariant(GrassSpline)",
-            "TerrainVariant(StonePolyline)",
-            "TerrainVariant(StoneSpline)",
-            "TerrainVariant(StraightRetainingWall)",
-            "TerrainVariant(CurvedRetainingWall)",
-            "TerrainVariant(SprinklerPolyline)",
-            "TerrainVariant(SprinklerSpline)",
-        ],
-        problem: NOT_DRIVEN,
-        qa: "QA-17",
-    },
 ];
 
 /// Findings the sweep reports in prose (no per-tool row carries them).
 const FINDINGS: &[(&str, &str)] = &[
-    (
-        "QA-12",
-        "Bay Window Specification: `Fields::degrees` asserts its key starts with `deg_` (dialogs.rs `Fields::degrees`), but dialogs/bay_window.rs:46 uses the key `bay_angle`. Debug builds panic the moment Open Object paints the dialog; release builds read the angle as a length.",
-    ),
     (
         "QA-13",
         "Rope Light (Electrical flyout): a click inside a room makes no device. Chief draws the rope light along a polyline.",
@@ -1692,10 +1650,6 @@ const FINDINGS: &[(&str, &str)] = &[
     (
         "QA-16",
         "CAD Detail From View makes a CAD object that Open Object cannot open.",
-    ),
-    (
-        "QA-17",
-        "OK changed nothing: the dialog opens, a value typed into any of the first 48 focus stops is accepted with Enter, and the plan is byte-identical. Roof Plane and the 110V Outlet no longer appear here; the list is the 30 tools in the Defects table with `QA-17`.",
     ),
     (
         "QA-18",

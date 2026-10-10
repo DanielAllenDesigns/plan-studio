@@ -523,7 +523,7 @@ pub fn hit_test_cx(cx: &EditorContext, p: Point, tol: f64) -> Vec<ObjectRef> {
         out.push(r.object());
     }
     if layers.is_visible(stairs_view::LAYER) {
-        if let Some(id) = stairs_view::pick(floor, p, tol) {
+        if let Some(id) = stairs_view::staircase::pick_noting_end(floor, p, tol) {
             out.push(ObjectRef::Stair(id));
         }
     }

@@ -141,6 +141,30 @@ struct StairForm {
     draft: StairObj,
     fields: Fields,
     scope: RailScope,
+    /// The sections of the whole staircase (bottom to top) and its landing
+    /// count; empty when the dialog was opened on a single object.
+    staircase: Vec<StairObj>,
+    landings: usize,
+}
+
+impl StairForm {
+    /// The sections the table and counts cover, the draft in place of its
+    /// stored copy so edits show at once.
+    fn sections(&self) -> Vec<&plan_stairs::Stair> {
+        if self.staircase.is_empty() {
+            return vec![&self.draft.stair];
+        }
+        self.staircase
+            .iter()
+            .map(|o| {
+                if o.id() == self.draft.id() {
+                    &self.draft.stair
+                } else {
+                    &o.stair
+                }
+            })
+            .collect()
+    }
 }
 
 pub struct StairDialog {
@@ -163,12 +187,27 @@ impl StairDialog {
                 draft: obj,
                 fields: Fields::default(),
                 scope: RailScope::default(),
+                staircase: Vec::new(),
+                landings: 0,
             },
         }
     }
 
+    /// Makes the table and counts cover the whole staircase: its sections,
+    /// bottom to top, and the number of its landings.
+    pub fn with_staircase(mut self, sections: Vec<StairObj>, landings: usize) -> Self {
+        self.form.staircase = sections;
+        self.form.landings = landings;
+        self
+    }
+
     pub fn show(&mut self, ctx: &egui::Context) -> Outcome {
         self.frame.show(ctx, &mut self.form)
+    }
+
+    /// The lines of the specification table the dialog shows.
+    pub fn table_rows(&self) -> Vec<plan_stairs::SpecRow> {
+        plan_stairs::spec_rows(&self.form.sections())
     }
 
     /// The edited stair; store it with `stairs_view::apply_edit` on OK.
@@ -239,6 +278,12 @@ impl StairForm {
             "Auto Adjust Thickness",
         );
         ui.weak("A stair section that arrives on the landing sets its height; one that starts on it begins there.");
+        // Add Break: a new corner in the middle of the longest edge, so a
+        // stair railing can meet the landing railing there (CB-141).
+        if ui.button("Add Break").clicked() {
+            let edge = view::staircase::longest_edge(&self.draft);
+            view::staircase::add_break_to(&mut self.draft, edge, 0.5);
+        }
     }
 
     /// The Staircase Information read-outs and Make Best Fit.
@@ -249,14 +294,27 @@ impl StairForm {
         let info = plan_stairs::info(p.total_rise, sol.risers, p.tread_depth, true);
         ui.label(&info.reach);
         ui.label(&info.best_fit);
-        let sections = plan_stairs::spec_rows(&[&self.draft.stair])
+        let secs = self.sections();
+        let sections = plan_stairs::spec_rows(&secs)
             .iter()
             .map(|r| r.number.split('-').next().unwrap_or("").to_string())
             .collect::<std::collections::BTreeSet<_>>()
             .len();
+        let risers = if self.staircase.is_empty() {
+            sol.risers
+        } else {
+            secs.iter()
+                .map(|s| plan_stairs::solve(&s.params).risers)
+                .sum::<u32>()
+        };
+        let landings = if self.landings > 0 {
+            format!("   Landings: {}", self.landings)
+        } else {
+            String::new()
+        };
         ui.label(format!(
-            "Sections: {sections}   Risers: {}   Rise Angle: {:.1} deg",
-            sol.risers, info.rise_angle
+            "Sections: {sections}{landings}   Risers: {risers}   Rise Angle: {:.1} deg",
+            info.rise_angle
         ));
         if ui
             .add_enabled(info.can_make_best_fit, egui::Button::new("Make Best Fit"))
@@ -269,7 +327,7 @@ impl StairForm {
     /// The table of sections and subsections (ten lines at most).
     fn specifications(&mut self, ui: &mut Ui) {
         section(ui, "Specifications");
-        let rows = plan_stairs::spec_rows(&[&self.draft.stair]);
+        let rows = plan_stairs::spec_rows(&self.sections());
         egui::Grid::new("stair_specs").striped(true).show(ui, |ui| {
             for h in [
                 "Section",

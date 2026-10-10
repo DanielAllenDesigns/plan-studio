@@ -120,6 +120,155 @@ pub fn staircase_info(floor: &Floor, id: Id) -> Option<StaircaseInfo> {
     })
 }
 
+// ----- lock end from the click -----
+
+thread_local! {
+    static LAST_CLICK: std::cell::Cell<Option<(Id, LockEnd)>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Which end a click at `p` locks on the section `o`: a click nearer its
+/// bottom locks the top, nearer its top locks the bottom (`LockEnd::from_click`).
+pub fn click_lock_end(o: &StairObj, p: Point) -> LockEnd {
+    let (from, to) = (o.bottom_center(), top_point(&o.stair).0);
+    let axis = to - from;
+    let len2 = axis.x * axis.x + axis.y * axis.y;
+    let along = if len2 < 1e-9 {
+        0.0
+    } else {
+        ((p - from).x * axis.x + (p - from).y * axis.y) / len2
+    };
+    LockEnd::from_click(along.clamp(0.0, 1.0))
+}
+
+/// Picks the stair under `p` like `pick` and remembers which end the click
+/// locks, for the dialog that opens next.
+pub fn pick_noting_end(floor: &Floor, p: Point, tol: f64) -> Option<Id> {
+    let id = pick(floor, p, tol)?;
+    if let Some(o) = find(floor, id).filter(|o| !o.is_landing()) {
+        LAST_CLICK.with(|c| c.set(Some((id, click_lock_end(&o, p)))));
+    }
+    Some(id)
+}
+
+/// The end remembered for `id` by the last click on it, if any.
+pub fn noted_lock_end(id: Id) -> Option<LockEnd> {
+    LAST_CLICK
+        .with(|c| c.get())
+        .filter(|(i, _)| *i == id)
+        .map(|(_, e)| e)
+}
+
+// ----- landings: between sections, Add Break -----
+
+/// The farthest apart two sections may be for a click between them to
+/// place a landing.
+pub const MAX_LANDING_GAP: f64 = 144.0;
+
+/// The outline of a landing that fills the gap between the top of one
+/// section and the bottom of another, for a click at `p` between them, or
+/// `None` if `p` is not between two unjoined sections. The nearest pair
+/// whose gap midpoint lies within the gap of `p` wins.
+pub fn landing_between(floor: &Floor, p: Point) -> Option<Vec<Point>> {
+    let secs: Vec<StairObj> = load(floor)
+        .into_iter()
+        .filter(|o| !o.is_landing())
+        .collect();
+    let mut best: Option<(f64, Vec<Point>)> = None;
+    for a in &secs {
+        for b in &secs {
+            if a.id() == b.id() {
+                continue;
+            }
+            let (top, bot) = (top_point(&a.stair).0, b.bottom_center());
+            let gap = top.dist(bot);
+            // Sections turning by less than 90 degrees need a short edge
+            // of at least 6 inches (`short_edge`); a narrower gap is no landing.
+            let turn = a.along().cross(b.along()).atan2(a.along().dot(b.along()));
+            if gap > MAX_LANDING_GAP || plan_stairs::short_edge(gap, turn) > gap + 1e-9 || gap < 0.5
+            {
+                continue;
+            }
+            let mid = (top + bot) * 0.5;
+            let d = mid.dist(p);
+            if d > (gap * 0.5).max(24.0) || best.as_ref().is_some_and(|(bd, _)| *bd <= d) {
+                continue;
+            }
+            let (ra, rb) = (
+                a.right() * (a.stair.params.width * 0.5),
+                b.right() * (b.stair.params.width * 0.5),
+            );
+            let (a_l, a_r) = (top - ra, top + ra);
+            let (b_l, b_r) = (bot - rb, bot + rb);
+            let straight = [a_l, a_r, b_r, b_l];
+            let crossed = [a_l, a_r, b_l, b_r];
+            let area = |q: &[Point; 4]| plan_core::geometry::polygon_area(q).abs();
+            let quad = if area(&straight) >= area(&crossed) {
+                straight
+            } else {
+                crossed
+            };
+            if area(&quad) < 1.0 {
+                continue;
+            }
+            best = Some((d, quad.to_vec()));
+        }
+    }
+    best.map(|(_, q)| q)
+}
+
+/// Splits the edge `edge` of a landing at the fraction `t` of its length
+/// with a new corner, so a stair railing can meet the landing railing there
+/// (CB-141). The two halves keep the railing of the edge. Returns whether
+/// the landing changed.
+pub fn add_break_to(o: &mut StairObj, edge: usize, t: f64) -> bool {
+    if !o.is_landing() {
+        return false;
+    }
+    let mut pts = o.footprint();
+    let n = pts.len();
+    if n < 3 || edge >= n || !(0.0..=1.0).contains(&t) {
+        return false;
+    }
+    let (a, b) = (pts[edge], pts[(edge + 1) % n]);
+    pts.insert(edge + 1, a + (b - a) * t.clamp(0.05, 0.95));
+    let mut rails = o.stair.params.edge_rails.clone();
+    rails.resize(n, plan_stairs::EdgeRail::Automatic);
+    let rail = rails[edge];
+    rails.insert(edge + 1, rail);
+    o.stair.params.outline = pts;
+    o.stair.params.edge_rails = rails;
+    true
+}
+
+/// The index of the longest edge of the landing outline.
+pub fn longest_edge(o: &StairObj) -> usize {
+    let pts = o.footprint();
+    let n = pts.len();
+    (0..n)
+        .max_by(|&i, &j| {
+            let (li, lj) = (pts[i].dist(pts[(i + 1) % n]), pts[j].dist(pts[(j + 1) % n]));
+            li.total_cmp(&lj)
+        })
+        .unwrap_or(0)
+}
+
+/// Add Break on the landing `id` (one undo step): the edge gets a corner at
+/// fraction `t`.
+pub fn add_landing_break(cx: &mut EditorContext, id: Id, edge: usize, t: f64) -> bool {
+    let Some(mut o) = find(cx.floor(), id) else {
+        return false;
+    };
+    if !add_break_to(&mut o, edge, t) {
+        return false;
+    }
+    cx.begin_change("Add Break");
+    let fl = cx.floor;
+    update(&mut cx.project, fl, id, |x| *x = o);
+    cx.mark_dirty();
+    true
+}
+
 // ----- tread mode -----
 
 /// The tread depth mode of a stair, from its two lock flags.

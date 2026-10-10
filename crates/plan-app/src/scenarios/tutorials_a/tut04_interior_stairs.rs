@@ -43,7 +43,11 @@ fn staircase_specification_best_fit() {
     assert_eq!(o.solution().risers, best.risers);
     // Lock Number of Treads, then a tread depth of 10 1/2 inches: the count
     // stays and the section grows to fit.
-    assert!(staircase::set_tread_mode(&mut sim.app.cx, id, TreadMode::LockCount));
+    assert!(staircase::set_tread_mode(
+        &mut sim.app.cx,
+        id,
+        TreadMode::LockCount
+    ));
     let mut o = stairs_view::find(&sim.app.cx.project.floors[0], id).unwrap();
     let treads = o.solution().treads;
     let len = staircase::section_length(&o);

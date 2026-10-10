@@ -683,7 +683,12 @@ pub fn move_group(floor: &Floor, id: Id, independent: bool, shift: bool) -> Vec<
 /// the wall's near face. Walls that belong to the stair's own stairwell are
 /// ignored. Only straight runs stop; `dragged` comes back as it is for any
 /// other case.
-pub fn stairwell_stop(project: &Project, fl: usize, orig: &StairObj, dragged: StairObj) -> StairObj {
+pub fn stairwell_stop(
+    project: &Project,
+    fl: usize,
+    orig: &StairObj,
+    dragged: StairObj,
+) -> StairObj {
     if orig.is_landing() || orig.is_curved() || orig.is_ramp() {
         return dragged;
     }
@@ -771,7 +776,8 @@ pub fn run_command(cx: &mut EditorContext, id: &str) -> bool {
 /// floor (one undo step); the polyline goes. The landing takes the
 /// polyline's corners, the default landing height and railing.
 pub fn convert_polyline_to_landing(cx: &mut EditorContext) -> Result<String, String> {
-    let (cad_id, pts) = selected_polyline(cx).ok_or("Select a polyline of three or more corners")?;
+    let (cad_id, pts) =
+        selected_polyline(cx).ok_or("Select a polyline of three or more corners")?;
     if plan_core::geometry::polygon_area(&pts).abs() < 1.0 {
         return Err("The polyline encloses no area".into());
     }

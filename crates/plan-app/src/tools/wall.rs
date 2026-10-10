@@ -2131,9 +2131,17 @@ mod tests {
         cx.refresh();
         assert_eq!(cx.floor().walls.len(), 6);
         assert_eq!(cx.rooms.len(), 1, "the ring closes into a room");
-        assert!(cx.floor().walls.iter().all(|w| w.kind == WallKind::Interior));
+        assert!(cx
+            .floor()
+            .walls
+            .iter()
+            .all(|w| w.kind == WallKind::Interior));
         for w in &cx.floor().walls {
-            assert!((w.start.dist(w.end) - 96.0).abs() < 0.5, "{}", w.start.dist(w.end));
+            assert!(
+                (w.start.dist(w.end) - 96.0).abs() < 0.5,
+                "{}",
+                w.start.dist(w.end)
+            );
         }
         assert_eq!(cx.undo_label(), Some("Polygon Shaped Room"));
         cx.undo();
@@ -2145,10 +2153,7 @@ mod tests {
     #[test]
     fn a_polygon_deck_takes_railing_or_deck_edge_walls() {
         use crate::dialogs::polygon_room as pr;
-        for (railing, class) in [
-            (true, WallClass::DeckRailing),
-            (false, WallClass::DeckEdge),
-        ] {
+        for (railing, class) in [(true, WallClass::DeckRailing), (false, WallClass::DeckEdge)] {
             let mut cx = new_cx();
             let mut t = WallTool::default();
             t.set_variant(ToolId::WallVariant(WallVariant {

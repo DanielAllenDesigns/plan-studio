@@ -434,5 +434,13 @@ fn the_select_tool_drags_a_layer_handle_into_slide_layer_in_one_undo_step() {
     assert!(joins[0].at_end && joins[0].layer == 0 && joins[0].shift > 0.5);
     assert_eq!(sim.app.cx.undo_label(), Some("Edit Wall Intersections"));
     sim.undo();
-    assert!(sim.app.cx.floor().wall(a).unwrap().spec.layer_joins.is_empty());
+    assert!(sim
+        .app
+        .cx
+        .floor()
+        .wall(a)
+        .unwrap()
+        .spec
+        .layer_joins
+        .is_empty());
 }

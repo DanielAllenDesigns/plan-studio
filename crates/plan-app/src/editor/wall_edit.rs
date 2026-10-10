@@ -467,13 +467,7 @@ fn wall_types(cx: &EditorContext) -> Vec<plan_core::defaults::WallTypeDef> {
 
 /// The slide a layer handle dragged to `want` inches settles at: it snaps to
 /// the nearest layer line of the wall it meets (W-144, DECISIONS WR5).
-pub fn snap_layer_slide(
-    cx: &EditorContext,
-    id: Id,
-    end: WallEnd,
-    layer: usize,
-    want: f64,
-) -> f64 {
+pub fn snap_layer_slide(cx: &EditorContext, id: Id, end: WallEnd, layer: usize, want: f64) -> f64 {
     let types = wall_types(cx);
     let cands = plan_core::walls::intersect::layer_snap_candidates(
         &cx.floor().walls,
@@ -498,7 +492,11 @@ fn outward(w: &plan_core::Wall, end: WallEnd) -> Point {
 /// `want` of [`slide_layer`] for a handle dragged there.
 pub fn layer_drag_amount(cx: &EditorContext, id: Id, end: WallEnd, at: Point) -> Option<f64> {
     let w = cx.floor().wall(id)?;
-    let base = if end == WallEnd::Start { w.start } else { w.end };
+    let base = if end == WallEnd::Start {
+        w.start
+    } else {
+        w.end
+    };
     Some((at - base).dot(outward(w, end)))
 }
 
@@ -523,7 +521,11 @@ pub fn layer_handle_at(cx: &EditorContext, at: Point, tol: f64) -> Option<(Id, W
             continue;
         }
         for end in [WallEnd::Start, WallEnd::End] {
-            let tip = if end == WallEnd::Start { w.start } else { w.end };
+            let tip = if end == WallEnd::Start {
+                w.start
+            } else {
+                w.end
+            };
             for k in 0..layers {
                 let Some(h) = plan_core::walls::intersect::layer_handle(w, &types, end, k) else {
                     continue;

@@ -379,7 +379,10 @@ pub fn collect_commands() -> Vec<Command> {
 fn cad_edit_commands(out: &mut Vec<Command>) {
     use crate::tools::cad::{survey, EDIT_COMMANDS};
     let mut push = |name: String, id: &'static str| {
-        if out.iter().any(|c| matches!(c.action, Action::Custom(x) if x == id)) {
+        if out
+            .iter()
+            .any(|c| matches!(c.action, Action::Custom(x) if x == id))
+        {
             return;
         }
         let name = if out.iter().any(|c| c.name == name) {

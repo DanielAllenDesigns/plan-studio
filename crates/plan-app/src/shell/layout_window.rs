@@ -2179,7 +2179,10 @@ impl LayoutView {
         let (src, page) = (self.selected_cad?, self.page);
         let mut made = None;
         self.edit(project, "Concentric Copy", |l| {
-            made = l.pages.get_mut(page).and_then(|p| p.concentric_copy(src, inset));
+            made = l
+                .pages
+                .get_mut(page)
+                .and_then(|p| p.concentric_copy(src, inset));
             made.is_some()
         });
         if made.is_some() {

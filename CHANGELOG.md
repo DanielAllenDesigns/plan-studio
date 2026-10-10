@@ -12,6 +12,16 @@ Test counts are the workspace totals the commit messages and manual state.
 
 ## [Unreleased]
 
+### Round 17 wave B - 2026-10-10 (five single-pass builders in isolated worktrees)
+
+#### Added
+- **Stairs**: whole-staircase drags with a Stair Sections Move Independently preference, curved-section merge, run-handle stop at the stairwell, Convert Polyline to Landing, stringer/transition/bracket data (ST17-1 to ST17-5).
+- **Electrical**: Auto Place Outlets adds 220 V and 110 V appliance outlets and a sink light and skips railings and invisible walls; ganged electrical blocks with Make and Explode (EL13, EL14).
+- **Walls**: Polygon Shaped Room and Deck dialog; the Select tool drags the layer-intersection handle (WP1, WP2). Auto Reverse Wall Layers is on by default and turns the layer stack in place when a room closes (DT3, Daniel's decision).
+- **Selection and editing**: Edit Area marquee reshape and resize handles, Place at Allowed Angles window, more-than-half inclusion rule, cameras carry their cut lines, Delete Objects scopes, Customize Hotkeys ids for the new commands (R17-AA1 to AA5).
+- **Layout**: every lesson 26 to 28 tutorial replay passes: template per page, concentric copies on the page grid, renamed table headings, logo image box, callout labels from the linked page, Plot Lines then Live View (LG1 to LG5).
+- **Dimensions**: vertical Auto Interior strings stay in the right third (confirmed, DT3).
+
 ### Round 17 wave A - 2026-10-10 (branch `wip/round-16`, seven single-pass builders in isolated worktrees)
 
 #### Added

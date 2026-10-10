@@ -1208,6 +1208,20 @@ impl Project {
         true
     }
 
+    /// Reverse Layers without moving the wall: the layer stack swaps faces
+    /// about the centerline. Used by the automatic reverse when a room
+    /// closes (DECISIONS DT3). False for an unknown wall.
+    pub fn reverse_wall_layers_in_place(&mut self, floor: usize, id: Id) -> bool {
+        let Some(f) = self.floors.get_mut(floor) else {
+            return false;
+        };
+        let Some(w) = f.wall_mut(id) else {
+            return false;
+        };
+        w.reverse_layers();
+        true
+    }
+
     /// Sets (or clears) the curve of a wall, keeping its openings in
     /// proportion along the centerline (W-67): the arc is longer than the
     /// chord, so offsets scale with the path length and are clamped to fit.

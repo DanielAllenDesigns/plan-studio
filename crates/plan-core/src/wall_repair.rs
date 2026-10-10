@@ -383,8 +383,12 @@ impl Project {
                 }
             }
         }
+        // The walls were just drawn where the user wanted them, so the
+        // layer stack turns in place: the centerline, the connected ends
+        // and the openings stay put (DECISIONS DT3). A manual Reverse
+        // Layers later still moves the centerline as Chief's does.
         flip.iter()
-            .filter(|id| self.reverse_wall_layers(floor, **id))
+            .filter(|id| self.reverse_wall_layers_in_place(floor, **id))
             .count()
     }
 }

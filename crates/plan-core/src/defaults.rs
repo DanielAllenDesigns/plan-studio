@@ -1125,7 +1125,7 @@ impl Default for WallConnectDefaults {
             split_on_tee: true,
             connect_distance_min: 6.0,
             auto_merge_collinear: true,
-            auto_reverse_layers: false,
+            auto_reverse_layers: true,
         }
     }
 }

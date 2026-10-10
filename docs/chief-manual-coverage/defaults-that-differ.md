@@ -50,6 +50,8 @@ This is why briefs 26 (saved defaults, default sets, saved plan views, Import Se
 
 ## Decisions that need Daniel before launch
 
+**Decided 2026-10-09 (Daniel): use my template.** Every row below resolves to the "Daniel's template" column; Chief's Residential Template values stay as reference. Recorded as DECISIONS DT1.
+
 1. Rows marked *Offer both*: new-plan behavior (automatic roof and exterior dimensions), stair numbers, the template chooser.
 2. Rows marked *Follow Chief*: confirm each (layered structure, layout numbering, grid snap, outlet heights, deck footings).
 3. Whether imported templates (108 wall types, 34 layer sets) should replace the embedded 12-type template or merge into it.

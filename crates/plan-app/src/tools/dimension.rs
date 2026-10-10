@@ -3282,6 +3282,8 @@ pub fn auto_refresh(cx: &mut EditorContext) -> bool {
     if room {
         changed |= refresh_run(cx, AutoGroup::Interior);
     }
+    // Elevation Auto Refresh: the strings of section and elevation views.
+    super::view_annot::auto_refresh_elevations(cx);
     changed
 }
 

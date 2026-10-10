@@ -641,7 +641,7 @@ impl EditorContext {
                 }
                 ObjectRef::Camera(id) => {
                     self.project
-                        .update_camera(id, |c| c.position = c.position + d);
+                        .update_camera(id, |c| plan_core::transform::translate_camera(c, d));
                 }
                 _ => {}
             }

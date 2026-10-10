@@ -795,3 +795,33 @@ fn copy_on_one_floor_pastes_on_another_and_undo_leaves_the_first_alone() {
     sim.undo();
     assert_eq!(sim.floor_walls(), upstairs);
 }
+
+#[test]
+fn delete_objects_can_be_limited_to_one_room_or_all_rooms() {
+    use crate::dialogs::delete_objects::{default_room, delete_by_scope, DeleteScope};
+    let mut sim = house();
+    let inside = cad_line(&mut sim, (50.0, 50.0), (150.0, 50.0));
+    let outside = cad_line(&mut sim, (-300.0, -300.0), (-200.0, -300.0));
+    sim.app.cx.refresh();
+    assert!(!sim.app.cx.rooms.is_empty(), "the house is a room");
+    // No selection: the first room is the default.
+    assert_eq!(default_room(&sim.app.cx), Some(0));
+    let n = delete_by_scope(&mut sim.app.cx, &[Category::CadLines], DeleteScope::Room(0));
+    assert_eq!(n, 1, "only the line inside the room");
+    let ids: Vec<_> = sim.app.cx.floor().cad.iter().map(|c| c.id).collect();
+    assert!(!ids.contains(&inside) && ids.contains(&outside));
+    assert_eq!(sim.app.cx.undo_label(), Some("Delete Objects"));
+    // Walls are never part of a room scope (they are shared edges).
+    let walls = sim.floor_walls();
+    assert_eq!(
+        delete_by_scope(&mut sim.app.cx, &[Category::Walls], DeleteScope::AllRooms),
+        0
+    );
+    assert_eq!(sim.floor_walls(), walls);
+    // The floor scope takes the line outside too.
+    assert_eq!(
+        delete_by_scope(&mut sim.app.cx, &[Category::CadLines], DeleteScope::Floor),
+        1
+    );
+    assert!(sim.app.cx.floor().cad.is_empty());
+}

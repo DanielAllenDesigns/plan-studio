@@ -135,6 +135,7 @@ pub mod wall_layer;
 pub mod wall_types;
 pub mod watermark;
 pub mod polygon_room;
+pub mod place_angles;
 
 pub use default_lists::DefaultsList;
 pub use defaults::{DefaultsDialog, DefaultsEntry, DefaultsOutcome};

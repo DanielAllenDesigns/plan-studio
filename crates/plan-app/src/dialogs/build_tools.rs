@@ -798,6 +798,8 @@ pub fn show_all(ctx: &egui::Context, cx: &mut EditorContext, cam: &mut Camera) {
     super::fix_connections::show(ctx, cx);
     // New Polygon Shaped Room / Deck (W-123, W-126).
     super::polygon_room::show(ctx);
+    // Place at Allowed Angles (S-179).
+    super::place_angles::show(ctx, cx);
 }
 
 /// Tools > Checks > Plan Check Settings: opens the Plan Check window (running

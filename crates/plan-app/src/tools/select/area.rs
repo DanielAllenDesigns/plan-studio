@@ -48,6 +48,9 @@ enum Stage {
         copy: bool,
         shift: Point,
     },
+    /// Dragging one of the region's own handles (the marquee changes, the
+    /// plan does not).
+    Reshaping { lo: Point, hi: Point, handle: Grip },
     /// Dragging the Rotate handle.
     Turning {
         lo: Point,
@@ -76,6 +79,9 @@ struct State {
     kind: AreaKind,
     stage: Stage,
     scope: Scope,
+    /// The walls wholly inside the region when a move or turn began (the
+    /// Place at Allowed Angles check looks at these afterwards).
+    walls: Vec<Id>,
 }
 
 /// The region as the geometry sees it: a rectangle or the polyline outline.
@@ -215,7 +221,12 @@ pub fn begin_with(cx: &mut EditorContext, kind: AreaKind, all_floors: bool, incl
         }
     }
     let placed = matches!(stage, Stage::Placed { .. });
-    put(State { kind, stage, scope });
+    put(State {
+        kind,
+        stage,
+        scope,
+        walls: Vec::new(),
+    });
     if placed {
         cx.status = "Edit area from the polyline: drag to move, the handle to rotate, Delete removes, Esc ends".into();
         return;
@@ -241,6 +252,96 @@ pub fn cancel(cx: &mut EditorContext) {
                 cx.mark_dirty();
             }
             _ => {}
+        }
+    }
+}
+
+/// One of the handles on the placed marquee. A rectangle has eight: the
+/// corners resize it both ways, the edge middles one way (`sx`, `sy` are -1
+/// for the low side, 1 for the high side, 0 for no change on that axis). A
+/// polyline marquee has a handle on each vertex.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Grip {
+    Side { sx: i8, sy: i8 },
+    Vertex(usize),
+}
+
+/// The handles of a rectangular marquee with the place of each.
+pub fn rect_grips(lo: Point, hi: Point) -> [(Grip, Point); 8] {
+    let (mx, my) = ((lo.x + hi.x) * 0.5, (lo.y + hi.y) * 0.5);
+    let g = |sx: i8, sy: i8, x: f64, y: f64| (Grip::Side { sx, sy }, Point::new(x, y));
+    [
+        g(-1, -1, lo.x, lo.y),
+        g(1, -1, hi.x, lo.y),
+        g(1, 1, hi.x, hi.y),
+        g(-1, 1, lo.x, hi.y),
+        g(0, -1, mx, lo.y),
+        g(1, 0, hi.x, my),
+        g(0, 1, mx, hi.y),
+        g(-1, 0, lo.x, my),
+    ]
+}
+
+/// The handle under `p`, if any (within `tol` plan inches).
+fn grip_at(lo: Point, hi: Point, poly: Option<&[Point]>, p: Point, tol: f64) -> Option<Grip> {
+    let mut best: Option<(f64, Grip)> = None;
+    let mut see = |g: Grip, at: Point| {
+        let d = p.dist(at);
+        if d <= tol && best.is_none_or(|(b, _)| d < b) {
+            best = Some((d, g));
+        }
+    };
+    match poly {
+        Some(q) => q
+            .iter()
+            .enumerate()
+            .for_each(|(i, c)| see(Grip::Vertex(i), *c)),
+        None => rect_grips(lo, hi).iter().for_each(|(g, at)| see(*g, *at)),
+    }
+    best.map(|(_, g)| g)
+}
+
+/// The rectangle after a side handle is dragged to `to`. The rectangle stays
+/// at least 1 inch each way; the sides never cross.
+pub fn reshape_rect(lo: Point, hi: Point, sx: i8, sy: i8, to: Point) -> (Point, Point) {
+    let (mut lo, mut hi) = (lo, hi);
+    match sx {
+        -1 => lo.x = to.x.min(hi.x - 1.0),
+        1 => hi.x = to.x.max(lo.x + 1.0),
+        _ => {}
+    }
+    match sy {
+        -1 => lo.y = to.y.min(hi.y - 1.0),
+        1 => hi.y = to.y.max(lo.y + 1.0),
+        _ => {}
+    }
+    (lo, hi)
+}
+
+fn bounds_of(q: &[Point]) -> (Point, Point) {
+    let mut lo = Point::new(f64::MAX, f64::MAX);
+    let mut hi = Point::new(f64::MIN, f64::MIN);
+    for c in q {
+        lo = Point::new(lo.x.min(c.x), lo.y.min(c.y));
+        hi = Point::new(hi.x.max(c.x), hi.y.max(c.y));
+    }
+    (lo, hi)
+}
+
+/// Carries a handle drag: moves the handle to the pointer.
+fn reshape_to(st: &mut State, to: Point) {
+    let Stage::Reshaping { lo, hi, handle } = &mut st.stage else {
+        return;
+    };
+    match *handle {
+        Grip::Side { sx, sy } => (*lo, *hi) = reshape_rect(*lo, *hi, sx, sy, to),
+        Grip::Vertex(i) => {
+            if let Some(c) = st.scope.poly.as_mut().and_then(|q| q.get_mut(i)) {
+                *c = to;
+            }
+            if let Some(q) = st.scope.poly.as_deref() {
+                (*lo, *hi) = bounds_of(q);
+            }
         }
     }
 }
@@ -280,6 +381,16 @@ fn region_items(
             !pts.is_empty() && pts.iter().all(|p| point_in_polygon(*p, q))
         });
     }
+    // Cabinets and symbols are in when more than half of them is, cameras
+    // and section symbols when their eye or more than half of their cut line
+    // is (manual p. 297).
+    v.retain(|o| {
+        !matches!(
+            o,
+            ObjectRef::Cabinet(_) | ObjectRef::Symbol(_) | ObjectRef::Camera(_)
+        )
+    });
+    v.extend(half_inside_items(cx, reg, visible_only));
     if let Some(id) = scope.poly_cad {
         v.retain(|o| *o != ObjectRef::Cad(id));
         if scope.include_poly && cx.floor == scope.poly_floor {
@@ -287,6 +398,80 @@ fn region_items(
         }
     }
     v
+}
+
+/// The share (0 to 1) of the quadrilateral `quad` that lies inside the
+/// region, by a 9 x 9 sample of the shape.
+pub fn share_inside(reg_contains: &dyn Fn(Point) -> bool, quad: &[Point]) -> f64 {
+    if quad.len() < 3 {
+        return quad
+            .first()
+            .map_or(0.0, |p| f64::from(u8::from(reg_contains(*p))));
+    }
+    const N: usize = 9;
+    let (a, b, c, d) = if quad.len() >= 4 {
+        (quad[0], quad[1], quad[2], quad[3])
+    } else {
+        (quad[0], quad[1], quad[2], quad[2])
+    };
+    let mut hit = 0;
+    for i in 0..N {
+        for j in 0..N {
+            let (u, w) = ((i as f64 + 0.5) / N as f64, (j as f64 + 0.5) / N as f64);
+            let bottom = a + (b - a) * u;
+            let top = d + (c - d) * u;
+            if reg_contains(bottom + (top - bottom) * w) {
+                hit += 1;
+            }
+        }
+    }
+    f64::from(hit) / (N * N) as f64
+}
+
+/// The share of the segment `a`-`b` inside the region.
+fn share_of_line(reg_contains: &dyn Fn(Point) -> bool, a: Point, b: Point) -> f64 {
+    const N: usize = 21;
+    let hit = (0..N)
+        .filter(|i| reg_contains(a + (b - a) * ((*i as f64 + 0.5) / N as f64)))
+        .count();
+    hit as f64 / N as f64
+}
+
+/// Cabinets and symbols that are more than half inside the region, and
+/// cameras whose eye (or, for a section, more than half of whose cut line)
+/// is inside it. Layers follow the same rule as the rest of the area.
+fn half_inside_items(cx: &EditorContext, reg: &Region, visible_only: bool) -> Vec<ObjectRef> {
+    let floor = cx.floor();
+    let usable = |o: ObjectRef| {
+        layer_of(floor, o).is_none_or(|l| {
+            (!visible_only || cx.layers().is_visible(&l)) && !cx.layers().is_locked(&l)
+        })
+    };
+    let inside = |p: Point| reg.contains(p);
+    let mut out = Vec::new();
+    for c in placed::load_cabinets(floor) {
+        let r = ObjectRef::Cabinet(c.id);
+        if usable(r) && share_inside(&inside, &c.corners()) > 0.5 {
+            out.push(r);
+        }
+    }
+    for s in &floor.symbols {
+        let r = ObjectRef::Symbol(s.id);
+        if usable(r) && share_inside(&inside, &s.footprint()) > 0.5 {
+            out.push(r);
+        }
+    }
+    for c in cx.project.cameras_on(cx.floor) {
+        let r = ObjectRef::Camera(c.id);
+        let inn = match &c.section {
+            Some(sec) => share_of_line(&inside, sec.a, sec.b) > 0.5,
+            None => inside(c.position),
+        };
+        if usable(r) && inn {
+            out.push(r);
+        }
+    }
+    out
 }
 
 /// The walls that lie wholly inside the region.
@@ -602,7 +787,13 @@ pub fn pointer_down(cx: &mut EditorContext, p: &PointerEvent) -> Option<ToolResu
             let handle = rotate_handle(lo, hi, cx.px_per_in);
             let turn = matches!(kind, AreaKind::Edit { .. })
                 && p.world.dist(handle) <= cx.pick_tol() * 1.5;
+            let held = if let AreaKind::Edit { visible_only: v } = kind {
+                walls_inside(cx, &Region::new(lo, hi, &st.scope), v)
+            } else {
+                Vec::new()
+            };
             if turn {
+                st.walls = held;
                 cx.begin_change(label(kind, true, false));
                 cx.typed_input.arm_angle();
                 st.stage = Stage::Turning {
@@ -612,9 +803,19 @@ pub fn pointer_down(cx: &mut EditorContext, p: &PointerEvent) -> Option<ToolResu
                     original: Box::new(cx.project.clone()),
                     angle: 0.0,
                 };
+            } else if let Some(handle) = grip_at(
+                lo,
+                hi,
+                st.scope.poly.as_deref(),
+                p.world,
+                cx.pick_tol() * 1.2,
+            ) {
+                st.stage = Stage::Reshaping { lo, hi, handle };
+                cx.status = "Reshape the edit area: release to set it".into();
             } else if Region::new(lo, hi, &st.scope).contains(p.world) {
                 let copy = matches!(kind, AreaKind::Edit { .. })
                     && (p.modifiers.ctrl || p.modifiers.command);
+                st.walls = held;
                 cx.begin_change(label(kind, false, copy));
                 cx.typed_input.arm();
                 st.stage = Stage::Moving {
@@ -745,6 +946,7 @@ pub fn pointer_move(cx: &mut EditorContext, p: &PointerEvent) -> bool {
             current,
         } if p.down => *current = p.world,
         Stage::Moving { .. } | Stage::Turning { .. } if p.down => drag_to(cx, &mut st, p),
+        Stage::Reshaping { .. } if p.down => reshape_to(&mut st, p.world),
         _ => {}
     }
     put(st);
@@ -777,6 +979,15 @@ pub fn pointer_up(cx: &mut EditorContext, p: &PointerEvent) -> Option<ToolResult
                 };
             }
         }
+        Stage::Reshaping { lo, hi, handle } => {
+            st.stage = Stage::Reshaping { lo, hi, handle };
+            reshape_to(&mut st, p.world);
+            if let Stage::Reshaping { lo, hi, .. } = st.stage {
+                st.stage = Stage::Placed { lo, hi };
+            }
+            cx.status =
+                "Edit area: drag to move, the handle to rotate, Delete removes, Esc ends".into();
+        }
         Stage::Moving {
             lo,
             hi,
@@ -789,6 +1000,7 @@ pub fn pointer_up(cx: &mut EditorContext, p: &PointerEvent) -> Option<ToolResult
             let mut tmp = State {
                 kind,
                 scope: st.scope.clone(),
+                walls: Vec::new(),
                 stage: Stage::Moving {
                     lo,
                     hi,
@@ -810,6 +1022,9 @@ pub fn pointer_up(cx: &mut EditorContext, p: &PointerEvent) -> Option<ToolResult
                 st.stage = Stage::Placed { lo, hi };
             } else {
                 result = ToolResult::committed(label(kind, false, copy));
+                if !copy && matches!(kind, AreaKind::Edit { .. }) {
+                    crate::dialogs::place_angles::offer(cx, &st.walls);
+                }
                 if copy || kind == AreaKind::StretchCad {
                     keep = false;
                 } else {
@@ -833,6 +1048,7 @@ pub fn pointer_up(cx: &mut EditorContext, p: &PointerEvent) -> Option<ToolResult
             let mut tmp = State {
                 kind,
                 scope: st.scope.clone(),
+                walls: Vec::new(),
                 stage: Stage::Turning {
                     lo,
                     hi,
@@ -850,6 +1066,7 @@ pub fn pointer_up(cx: &mut EditorContext, p: &PointerEvent) -> Option<ToolResult
             } else {
                 // The turned region is no longer a rectangle: the mode ends.
                 result = ToolResult::committed(label(kind, true, false));
+                crate::dialogs::place_angles::offer(cx, &st.walls);
                 keep = false;
             }
         }
@@ -940,7 +1157,7 @@ pub fn draw_overlay(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
                 start: Some(a),
                 current,
             } => band = Some((*a, *current)),
-            Stage::Placed { lo, hi } => placed = Some((*lo, *hi)),
+            Stage::Placed { lo, hi } | Stage::Reshaping { lo, hi, .. } => placed = Some((*lo, *hi)),
             Stage::Moving {
                 lo, hi, shift: d, ..
             } => {
@@ -966,6 +1183,7 @@ pub fn draw_overlay(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
     });
     let Some(kind) = kind else { return };
     let col = cx.palette.selection;
+    let grip_poly = poly.clone();
     if let Some((a, b)) = band {
         let r = Rect::from_two_pos(cam.world_to_screen(a), cam.world_to_screen(b));
         painter.add(Shape::rect_filled(r, 0.0, col.gamma_multiply(0.10)));
@@ -995,6 +1213,17 @@ pub fn draw_overlay(cx: &EditorContext, painter: &egui::Painter, cam: &Camera) {
                 Stroke::new(1.0_f32, col),
             );
             painter.circle_filled(cam.world_to_screen(h), 5.0, col);
+        }
+        if angle == 0.0 && shift == Point::ZERO {
+            let spots: Vec<Point> = match grip_poly.as_deref() {
+                Some(q) => q.to_vec(),
+                None => rect_grips(lo, hi).iter().map(|(_, at)| *at).collect(),
+            };
+            for at in spots {
+                let r = Rect::from_center_size(cam.world_to_screen(at), egui::vec2(7.0, 7.0));
+                painter.rect_filled(r, 1.0, cx.palette.background);
+                painter.rect_stroke(r, 1.0, Stroke::new(1.5_f32, col), egui::StrokeKind::Inside);
+            }
         }
     }
 }
@@ -1262,6 +1491,179 @@ mod tests {
         assert!(!active(), "Esc ends the mode and the drag");
         assert_eq!(cx.floor().wall(ids[0]).unwrap().end, Point::new(240.0, 0.0));
         assert!(!cx.can_undo() || cx.undo_label() != Some("Move Edit Area"));
+    }
+
+    fn cabinet_at(cx: &mut EditorContext, x: f64, y: f64) -> Id {
+        let mut c = plan_cabinets::Cabinet::base(60.0);
+        c.position = Point::new(x, y);
+        crate::editor::placed::add_cabinet(&mut cx.project, 0, c).unwrap()
+    }
+
+    fn edit_area() -> AreaKind {
+        AreaKind::Edit {
+            visible_only: false,
+        }
+    }
+
+    #[test]
+    fn a_cabinet_is_inside_the_edit_area_when_more_than_half_of_it_is() {
+        let mut cx = cx();
+        let mostly_in = cabinet_at(&mut cx, 60.0, 10.0);
+        let mostly_out = cabinet_at(&mut cx, 80.0, 10.0);
+        let mut t = SelectTool::default();
+        begin(&mut cx, edit_area());
+        drag(&mut t, &mut cx, (0.0, 0.0), (100.0, 100.0));
+        drag(&mut t, &mut cx, (50.0, 50.0), (50.0, 250.0));
+        let y = |cx: &EditorContext, id| {
+            crate::editor::placed::cabinet_by_id(cx.floor(), id)
+                .unwrap()
+                .position
+                .y
+        };
+        assert!((y(&cx, mostly_in) - 210.0).abs() < 1e-6, "went along");
+        assert!((y(&cx, mostly_out) - 10.0).abs() < 1e-6, "stayed");
+    }
+
+    #[test]
+    fn cameras_and_section_cut_lines_move_with_the_edit_area() {
+        use plan_core::camera::{CameraKind, CameraObject};
+        use plan_core::extras::SectionLine;
+        let mut cx = cx();
+        let eye = cx.project.add_camera(CameraObject::new(
+            CameraKind::FullCamera,
+            Point::new(30.0, 30.0),
+            0.0,
+            "Eye",
+            0,
+        ));
+        let mut sec = CameraObject::new(
+            CameraKind::CrossSection { back_clip: None },
+            Point::new(50.0, -40.0),
+            90.0,
+            "Sec",
+            0,
+        );
+        sec.section = Some(SectionLine {
+            a: Point::new(10.0, 50.0),
+            b: Point::new(90.0, 50.0),
+            back_clip: None,
+        });
+        let sec = cx.project.add_camera(sec);
+        let mut t = SelectTool::default();
+        begin(&mut cx, edit_area());
+        drag(&mut t, &mut cx, (0.0, 0.0), (100.0, 100.0));
+        drag(&mut t, &mut cx, (50.0, 50.0), (50.0, 250.0));
+        assert!((cx.project.camera(eye).unwrap().position.y - 230.0).abs() < 1e-6);
+        let s = cx.project.camera(sec).unwrap();
+        assert!(
+            (s.position.y - 160.0).abs() < 1e-6,
+            "the eye of the section"
+        );
+        let line = s.section.as_ref().unwrap();
+        assert!((line.a.y - 250.0).abs() < 1e-6 && (line.b.y - 250.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_corner_handle_resizes_the_marquee_without_touching_the_plan() {
+        let mut cx = cx();
+        let inside_later = cabinet_at(&mut cx, 130.0, 10.0);
+        let mut t = SelectTool::default();
+        begin(&mut cx, edit_area());
+        drag(&mut t, &mut cx, (0.0, 0.0), (100.0, 100.0));
+        let before = cx.project.to_json().unwrap();
+        let depth = cx.action_history().0.len();
+        // The top-right corner handle, then the right edge middle.
+        drag(&mut t, &mut cx, (100.0, 100.0), (200.0, 150.0));
+        assert_eq!(
+            region(),
+            Some((Point::new(0.0, 0.0), Point::new(200.0, 150.0)))
+        );
+        drag(&mut t, &mut cx, (200.0, 75.0), (220.0, 60.0));
+        assert_eq!(
+            region(),
+            Some((Point::new(0.0, 0.0), Point::new(220.0, 150.0)))
+        );
+        assert_eq!(
+            cx.project.to_json().unwrap(),
+            before,
+            "the plan is untouched"
+        );
+        assert_eq!(cx.action_history().0.len(), depth, "no undo step");
+        // The wider marquee now holds the cabinet that was outside.
+        drag(&mut t, &mut cx, (50.0, 50.0), (50.0, 250.0));
+        let c = crate::editor::placed::cabinet_by_id(cx.floor(), inside_later).unwrap();
+        assert!((c.position.y - 210.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn reshape_rect_keeps_the_sides_from_crossing() {
+        let (lo, hi) = (Point::new(0.0, 0.0), Point::new(100.0, 100.0));
+        let (l, h) = reshape_rect(lo, hi, 1, 0, Point::new(-50.0, 999.0));
+        assert_eq!((l, h.y), (lo, 100.0));
+        assert!(h.x >= l.x + 1.0);
+        let (l, _) = reshape_rect(lo, hi, -1, -1, Point::new(500.0, 500.0));
+        assert_eq!((l.x, l.y), (99.0, 99.0));
+    }
+
+    #[test]
+    fn a_polyline_marquee_has_a_handle_on_each_vertex() {
+        let mut cx = cx();
+        let tri = vec![
+            Point::new(0.0, 0.0),
+            Point::new(100.0, 0.0),
+            Point::new(50.0, 80.0),
+        ];
+        cx.project.add_cad(
+            0,
+            "Default",
+            plan_core::cad::CadItem::Polyline {
+                points: tri.clone(),
+                closed: true,
+            },
+        );
+        let id = cx.floor().cad.last().unwrap().id;
+        cx.selection.set(ObjectRef::Cad(id));
+        begin(&mut cx, edit_area());
+        let mut t = SelectTool::default();
+        drag(&mut t, &mut cx, (50.0, 80.0), (50.0, 120.0));
+        let (lo, hi) = region().unwrap();
+        assert_eq!((lo, hi), (Point::new(0.0, 0.0), Point::new(100.0, 120.0)));
+    }
+
+    #[test]
+    fn moving_an_edit_area_of_off_angle_walls_offers_place_at_allowed_angles() {
+        use crate::dialogs::place_angles;
+        place_angles::close();
+        let mut cx = cx();
+        // A box of walls tilted 7 degrees: none sits on a 15 degree angle.
+        let turn = Xform::rotate(Point::new(0.0, 0.0), 7f64.to_radians());
+        let c = [
+            Point::new(0.0, 0.0),
+            Point::new(240.0, 0.0),
+            Point::new(240.0, 120.0),
+            Point::new(0.0, 120.0),
+        ]
+        .map(|p| turn.apply(p));
+        for i in 0..4 {
+            cx.project
+                .add_wall(0, c[i], c[(i + 1) % 4], 6.0, 96.0, WallKind::Exterior);
+        }
+        let mut t = SelectTool::default();
+        begin(&mut cx, edit_area());
+        drag(&mut t, &mut cx, (-100.0, -100.0), (400.0, 300.0));
+        drag(&mut t, &mut cx, (100.0, 100.0), (100.0, 200.0));
+        assert!(
+            place_angles::is_open(),
+            "the tilted walls are off the allowed angles"
+        );
+        place_angles::close();
+        // Square walls moved the same way raise nothing.
+        let mut cx = self::tests::cx();
+        house(&mut cx);
+        begin(&mut cx, edit_area());
+        drag(&mut t, &mut cx, (-50.0, -50.0), (300.0, 200.0));
+        drag(&mut t, &mut cx, (100.0, 100.0), (100.0, 200.0));
+        assert!(!place_angles::is_open());
     }
 
     #[test]

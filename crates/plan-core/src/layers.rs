@@ -62,6 +62,10 @@ impl Layer {
 pub const DOOR_LABEL_LAYER: &str = "Doors, Labels";
 /// The layer cabinet labels are drawn on.
 pub const CABINET_LABEL_LAYER: &str = "Cabinets, Labels";
+/// Stair overhangs and nosing (manual p. 782).
+pub const STAIR_DETAILS_LAYER: &str = "Stairs & Ramps, Details";
+/// Stair stringers in plan (manual p. 782).
+pub const STAIR_STRINGERS_LAYER: &str = "Stairs & Ramps, Stringers";
 /// The layer the dashed arcs between switches and the lights or outlets they
 /// control are drawn on (Chief keeps the connections apart from the devices
 /// on "Electrical").
@@ -594,6 +598,8 @@ pub fn is_system_layer(name: &str) -> bool {
             WINDOW_LABEL_LAYER,
             CABINET_LABEL_LAYER,
             ELECTRICAL_CONNECTION_LAYER,
+            STAIR_DETAILS_LAYER,
+            STAIR_STRINGERS_LAYER,
         ] {
             v.push(extra.to_string());
         }

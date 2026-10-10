@@ -3,7 +3,7 @@
 //! subsections, and merging two flights into one section.
 
 use crate::layout::Layout;
-use crate::{solve, Stair, StairShape};
+use crate::{solve, RadiusRef, Stair, StairShape};
 use plan_core::Point;
 
 /// Chief's ideal riser height, inches: the Best Fit riser is the one closest
@@ -345,30 +345,44 @@ pub fn merge(lower: &Stair, upper: &Stair) -> Result<Stair, MergeError> {
     if matches!(a.shape, StairShape::Ramp { .. }) || matches!(b.shape, StairShape::Ramp { .. }) {
         return Err(MergeError::Ramp);
     }
-    if a.shape != StairShape::Straight || b.shape != StairShape::Straight {
+    let curved = matches!(a.shape, StairShape::Curved { .. });
+    if curved != matches!(b.shape, StairShape::Curved { .. })
+        || (!curved && (a.shape != StairShape::Straight || b.shape != StairShape::Straight))
+    {
         return Err(MergeError::Shape);
     }
     if a.down != b.down {
         return Err(MergeError::Direction);
     }
-    let turn = (lower.direction - upper.direction).rem_euclid(std::f64::consts::TAU);
-    if turn.min(std::f64::consts::TAU - turn) > 0.01 {
-        return Err(MergeError::NotParallel);
-    }
     if (a.width - b.width).abs() > 0.01 {
         return Err(MergeError::Width);
     }
     let (sa, sb) = (solve(a), solve(b));
-    let along = Point::new(lower.direction.cos(), lower.direction.sin());
-    let right = Point::new(along.y, -along.x);
-    let top_a = lower.origin + along * (f64::from(sa.treads) * a.tread_depth);
-    let gap_vec = upper.origin - top_a;
-    let gap = gap_vec.x * along.x + gap_vec.y * along.y;
-    let lateral = gap_vec.x * right.x + gap_vec.y * right.y;
-    if gap < -MERGE_TOLERANCE
-        || gap > 3.0 * a.tread_depth.max(b.tread_depth)
-        || lateral.abs() > MERGE_TOLERANCE
-    {
+    let gap = if curved {
+        // Two curved sections merge when they turn the same way about one
+        // centre with one radius, the upper starting where the lower ends.
+        if a.turn != b.turn
+            || (a.curve_radius(RadiusRef::InnerArc) != b.curve_radius(RadiusRef::InnerArc))
+        {
+            return Err(MergeError::NotParallel);
+        }
+        curved_gap(lower, upper).ok_or(MergeError::Ends)?
+    } else {
+        let turn = (lower.direction - upper.direction).rem_euclid(std::f64::consts::TAU);
+        if turn.min(std::f64::consts::TAU - turn) > 0.01 {
+            return Err(MergeError::NotParallel);
+        }
+        let along = Point::new(lower.direction.cos(), lower.direction.sin());
+        let right = Point::new(along.y, -along.x);
+        let top_a = lower.origin + along * (f64::from(sa.treads) * a.tread_depth);
+        let gap_vec = upper.origin - top_a;
+        let lateral = gap_vec.x * right.x + gap_vec.y * right.y;
+        if lateral.abs() > MERGE_TOLERANCE {
+            return Err(MergeError::Ends);
+        }
+        gap_vec.x * along.x + gap_vec.y * along.y
+    };
+    if gap < -MERGE_TOLERANCE || gap > 3.0 * a.tread_depth.max(b.tread_depth) {
         return Err(MergeError::Ends);
     }
     if (upper.base - (lower.base + a.total_rise)).abs() > 0.01 {
@@ -385,4 +399,27 @@ pub fn merge(lower: &Stair, upper: &Stair) -> Result<Stair, MergeError> {
     out.params.top_landing = b.top_landing;
     out.params.subsections = vec![sa.treads, sb.treads + 1];
     Ok(out)
+}
+
+/// The gap along the walking line between the top of curved section `lower`
+/// and the bottom of curved section `upper`, or `None` when they do not lie
+/// on one circle (centres or radii more than [`MERGE_TOLERANCE`] apart).
+fn curved_gap(lower: &Stair, upper: &Stair) -> Option<f64> {
+    let (la, lb) = (Layout::build(lower), Layout::build(upper));
+    let (ca, cb) = (la.curve?, lb.curve?);
+    let (c_a, c_b) = (la.frame.uv(ca.center), lb.frame.uv(cb.center));
+    if c_a.dist(c_b) > MERGE_TOLERANCE {
+        return None;
+    }
+    let mid = |c: &crate::layout::Curve| c.width / 2.0;
+    let end = la.frame.uv(ca.at_lat(ca.sweep(), mid(&ca)));
+    let start = lb.frame.uv(cb.at_lat(0.0, mid(&cb)));
+    let ang = |p: Point| (p.y - c_a.y).atan2(p.x - c_a.x);
+    let mut d = ang(start) - ang(end);
+    if !ca.left {
+        d = -d;
+    }
+    let tau = std::f64::consts::TAU;
+    d = (d + std::f64::consts::PI).rem_euclid(tau) - std::f64::consts::PI;
+    Some(d * ca.walk())
 }

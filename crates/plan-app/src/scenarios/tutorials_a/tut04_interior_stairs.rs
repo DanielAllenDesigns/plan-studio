@@ -24,9 +24,32 @@ fn draw_stairs_between_floors_reaches_the_next_floor_in_one_undo_step() {
 }
 
 #[test]
-#[ignore = "T7-04: CB-160 (Lock Bottom, Make Best Fit, Lock Number of Treads, tread 10 1/2)"]
 fn staircase_specification_best_fit() {
-    assert_ignored_break("CB-160");
+    use crate::editor::stairs_view::staircase;
+    use crate::editor::ObjectRef;
+    use plan_stairs::{best_fit, LockEnd, TreadMode};
+    let mut sim = cottage();
+    sim.action(Action::BuildNewFloor);
+    sim.ok();
+    sim.action(Action::FloorDown);
+    sim.tool(ToolId::StairsVariant(StairKind::Draw));
+    sim.drag((100.0, 100.0), (250.0, 100.0));
+    let id = stairs_view::load(&sim.app.cx.project.floors[0])[0].id();
+    sim.app.cx.selection.set(ObjectRef::Stair(id));
+    // Lock Bottom, Make Best Fit: the riser is the one nearest 6 3/4 inches.
+    staircase::make_best_fit(&mut sim.app.cx, id, LockEnd::Bottom).expect("best fit");
+    let o = stairs_view::find(&sim.app.cx.project.floors[0], id).unwrap();
+    let best = best_fit(o.stair.params.total_rise);
+    assert_eq!(o.solution().risers, best.risers);
+    // Lock Number of Treads, then a tread depth of 10 1/2 inches: the count
+    // stays and the section grows to fit.
+    assert!(staircase::set_tread_mode(&mut sim.app.cx, id, TreadMode::LockCount));
+    let mut o = stairs_view::find(&sim.app.cx.project.floors[0], id).unwrap();
+    let treads = o.solution().treads;
+    let len = staircase::section_length(&o);
+    staircase::set_length(&mut o, 10.5 * f64::from(treads));
+    assert_eq!(o.solution().treads, treads);
+    assert!((o.stair.params.tread_depth - 10.5).abs() < 1e-6, "{len}");
 }
 
 #[test]

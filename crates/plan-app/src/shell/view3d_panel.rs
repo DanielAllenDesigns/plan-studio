@@ -124,6 +124,14 @@ pub fn set_camera_defaults(d: CameraDefaults) {
     *DEFAULTS.lock().unwrap_or_else(PoisonError::into_inner) = d;
 }
 
+/// Back to the built-in camera defaults (tests share the process-wide value).
+pub fn reset_camera_defaults() {
+    set_camera_defaults(CameraDefaults {
+        eye_height: DEFAULT_EYE_HEIGHT,
+        fov_deg: DEFAULT_FOV_DEG,
+    });
+}
+
 // ----- requests and commands -----
 
 /// What the Camera tool (or another plan-side feature) asks the 3D panel to do.
@@ -4219,6 +4227,7 @@ mod tests {
 
     #[test]
     fn camera_defaults_roundtrip() {
+        reset_camera_defaults();
         assert_eq!(camera_defaults().eye_height, 66.0);
         assert_eq!(camera_defaults().fov_deg, 60.0);
     }

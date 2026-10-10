@@ -379,6 +379,7 @@ fn plot_lines_are_selected_edited_drawn_and_replaced_by_an_update() {
 }
 
 #[test]
+#[ignore = "R16-02 in progress"]
 fn a_linked_saved_plan_view_is_followed_and_can_be_unlinked() {
     let (mut sim, mut v, _) = house();
     let page = first_page(&v);

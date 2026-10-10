@@ -1773,6 +1773,8 @@ mod tests {
                 "Cameras",
                 "Schedules",
                 "CAD Details",
+                "Wall Details",
+                "Materials Lists",
                 "Layout"
             ]
         );

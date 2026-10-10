@@ -391,6 +391,17 @@ mod tests {
     use plan_core::OpeningKind;
 
     #[test]
+    /// Maintenance: `cargo test -p plan-app regenerate_embedded_template -- --ignored`
+    /// rewrites the embedded template from the code defaults.
+    #[test]
+    #[ignore = "maintenance: regenerates assets/templates/chief-x18-daniel.json"]
+    fn regenerate_embedded_template() {
+        let text = PlanDefaults::chief_x18_daniel().to_json().expect("to_json");
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/templates/chief-x18-daniel.json");
+        std::fs::write(path, text).expect("write template");
+    }
+
+    #[test]
     fn embedded_template_matches_chief_x18_daniel() {
         let loaded = PlanDefaults::from_json(EMBEDDED_TEMPLATE).expect("template parses");
         assert_eq!(loaded, PlanDefaults::chief_x18_daniel());

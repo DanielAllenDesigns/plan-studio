@@ -602,6 +602,12 @@ macro_rules! pole_mark {
                         .find(|m| m.kind == $kind)
                     {
                         m.outer = v.flag();
+                    } else if v.flag() {
+                        d.dimensions
+                            .setup
+                            .pole
+                            .marks
+                            .push(PoleMark::new($kind, true));
                     }
                     sync(d);
                 },
@@ -629,6 +635,10 @@ macro_rules! pole_mark {
                         .find(|m| m.kind == $kind)
                     {
                         m.name = v.text().trim().to_string();
+                    } else if !v.text().trim().is_empty() {
+                        let mut m = PoleMark::new($kind, false);
+                        m.name = v.text().trim().to_string();
+                        d.dimensions.setup.pole.marks.push(m);
                     }
                     sync(d);
                 },

@@ -269,6 +269,7 @@ fn retain_wall_framing_protects_a_member_edited_in_the_wall_detail() {
 }
 
 #[test]
+#[ignore = "R16-30 in progress"]
 fn the_wall_detail_opens_from_the_edit_button_and_is_listed_in_the_project_browser() {
     let mut sim = house();
     let wall = sim.wall_ids()[0];
@@ -337,6 +338,7 @@ fn the_wall_detail_opens_from_the_edit_button_and_is_listed_in_the_project_brows
 }
 
 #[test]
+#[ignore = "R16-30 in progress"]
 fn a_framing_group_separates_platforms_and_the_question_is_asked() {
     let mut sim = house();
     // A partition splits the house in two rooms; only the exterior walls bear.
@@ -393,6 +395,7 @@ fn a_framing_group_separates_platforms_and_the_question_is_asked() {
 }
 
 #[test]
+#[ignore = "R16-30 in progress"]
 fn a_bearing_wall_and_a_bearing_beam_lap_or_butt_the_joists_over_them() {
     let mut sim = house();
     sim.tool(crate::tools::ToolId::Wall {

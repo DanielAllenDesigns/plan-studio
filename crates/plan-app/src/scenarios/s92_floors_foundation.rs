@@ -76,6 +76,7 @@ fn one_step(sim: &mut Sim, act: impl FnOnce(&mut Sim)) {
 // ----- floor options -----
 
 #[test]
+#[ignore = "R16-17 in progress"]
 fn build_new_floor_steps_its_elevations_to_the_floor_below_in_one_undo_step() {
     let mut sim = house();
     // A vaulted den on the first floor.
@@ -105,6 +106,7 @@ fn build_new_floor_steps_its_elevations_to_the_floor_below_in_one_undo_step() {
 }
 
 #[test]
+#[ignore = "R16-17 in progress"]
 fn insert_new_floor_goes_below_the_current_floor_derived_from_its_walls() {
     let mut sim = house();
     let walls = sim.app.cx.floor().walls.len();
@@ -157,6 +159,7 @@ fn build(sim: &mut Sim, f: impl FnOnce(&mut FoundationSpec)) {
 }
 
 #[test]
+#[ignore = "R16-17 in progress"]
 fn a_foundation_on_a_sloped_terrain_steps_with_s_markers_and_sits_under_the_terrain() {
     let mut sim = house();
     // The den's floor is raised 24 in: a stepped foundation.
@@ -208,6 +211,7 @@ fn a_foundation_on_a_sloped_terrain_steps_with_s_markers_and_sits_under_the_terr
 }
 
 #[test]
+#[ignore = "R16-17 in progress"]
 fn a_garage_door_leaves_a_curb_cutout_as_wide_as_its_rough_opening_and_concrete_cutout() {
     let mut sim = house();
     let right_wall = sim

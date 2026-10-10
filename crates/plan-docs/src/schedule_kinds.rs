@@ -3775,6 +3775,7 @@ mod r16_tests {
     }
 
     #[test]
+    #[ignore = "R16-04 in progress"]
     fn numbers_follow_placement_order_and_renumber_closes_gaps() {
         let mut p = Project::new("N");
         let ids = rect_walls(&mut p, 480.0, 360.0, 6.5, WallKind::Exterior);

@@ -1968,6 +1968,7 @@ mod tests {
 
     #[test]
     fn full_camera_drag_sets_position_and_direction() {
+        crate::shell::view3d_panel::reset_camera_defaults();
         let (mut cx, mut t, outbox) = setup();
         let res = drag(
             &mut cx,
@@ -2476,6 +2477,7 @@ mod tests {
 
     #[test]
     fn the_walkthrough_tool_draws_a_path_with_node_looks() {
+        crate::shell::view3d_panel::reset_camera_defaults();
         let (mut cx, mut t, outbox) = setup();
         pick(&mut t, CameraVariant::Walkthrough);
         // Click, click-and-drag (aims the second node), then double-click.
@@ -2778,6 +2780,7 @@ mod tests {
 
     #[test]
     fn the_cone_corners_change_the_angle_of_view() {
+        crate::shell::view3d_panel::reset_camera_defaults();
         let (mut cx, mut t, o, id) = placed_full_camera();
         let c = cx.project.camera(id).unwrap().clone();
         assert_eq!(c.fov_deg, DEFAULT_FOV_DEG);

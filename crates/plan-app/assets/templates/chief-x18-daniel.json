@@ -27,6 +27,57 @@
       "kind": "Hip"
     }
   },
+  "foundation": {
+    "auto_rebuild": false,
+    "hang_platform": false,
+    "s_markers": true,
+    "slab_at_stem_top": false,
+    "min_height": 12.0,
+    "pier_width": 12.0,
+    "pier_shape": "Round",
+    "garage_floor": true,
+    "garage_floor_to_stem_top": 12.0,
+    "lower_garage_floor": 3.5,
+    "min_garage_height": 24.0,
+    "vertical_step_footings": false,
+    "chamfer_width": 4.0,
+    "chamfer_height": 4.0,
+    "rebar": {
+      "footing": {
+        "bars": 2,
+        "spacing": 0.0,
+        "size": 4,
+        "overlap": 40.0
+      },
+      "wall_horizontal": {
+        "bars": 1,
+        "spacing": 32.0,
+        "size": 4,
+        "overlap": 40.0
+      },
+      "wall_vertical": {
+        "bars": 1,
+        "spacing": 32.0,
+        "size": 4,
+        "overlap": 40.0
+      },
+      "pier": {
+        "bars": 4,
+        "spacing": 0.0,
+        "size": 4,
+        "overlap": 40.0
+      },
+      "slab": {
+        "bars": 1,
+        "spacing": 18.0,
+        "size": 4,
+        "overlap": 40.0
+      },
+      "use_mesh": true
+    },
+    "foam_seal": false,
+    "termite_flashing": false
+  },
   "wall_variants": {
     "pony_upper_type": "Stucco-6",
     "pony_lower_type": "Foundation-8",
@@ -323,7 +374,19 @@
     "lites_across": 1,
     "lites_vertical": 1,
     "egress": true,
-    "tempered": true
+    "tempered": true,
+    "min_separation": 2.0,
+    "mulled": {
+      "treat_as_door": false,
+      "single_hole": false,
+      "mullion_inside": 1.5,
+      "mullion_outside": 1.5,
+      "label": "Single",
+      "layer": null,
+      "arrangement": "Horizontal",
+      "revision": 0
+    },
+    "ignore_casing": false
   },
   "cabinets": {
     "base": {
@@ -409,6 +472,20 @@
       "height": 4.0,
       "thickness": 0.5,
       "full_height": false
+    },
+    "general": {
+      "min_cabinet_width": 3.0,
+      "min_shelf_spacing": 6.0,
+      "auto_door_threshold": 24.0,
+      "create_automatic_fillers": true,
+      "create_automatic_fillers_angled": true,
+      "create_automatic_blind_corners": true,
+      "resize_by_grid": false,
+      "resize_increment": 3.0,
+      "show_partial_module_lines": false,
+      "show_closed_doors_drawers": false,
+      "show_pilasters": false,
+      "display_molding_edges": false
     }
   },
   "dimensions": {
@@ -439,7 +516,126 @@
     "locate_fixtures": "Sides",
     "interior_locates_interior_surfaces": true,
     "auto_strings": [],
-    "printed_size": false
+    "printed_size": false,
+    "setup": {
+      "text_position": null,
+      "label": {
+        "second": {
+          "include": false,
+          "format": {
+            "unit": "Millimeters",
+            "fraction_denominator": 16,
+            "decimals": 0,
+            "unit_indicators": true,
+            "trailing_zeroes": false
+          }
+        },
+        "tolerance": {
+          "mode": "None",
+          "plus": 0.0,
+          "minus": 0.0
+        },
+        "rounding": "Grid",
+        "plus_minus_after": false,
+        "tilde_before": false,
+        "position": "Above",
+        "angle": null,
+        "angle_decimals": 1,
+        "angle_dms": false
+      },
+      "label_angle_value": 0.0,
+      "leader_second_segment": false,
+      "leader_second_length": 12.0,
+      "leader_arrow": false,
+      "leader_arrow_style": "Match Dimension",
+      "leader_arrow_match_size": true,
+      "leader_arrow_size": 6.0,
+      "extend_extensions_3d": true,
+      "label_faces_camera": false,
+      "snap_line_separation": 1.0,
+      "layout_reach": 1.0,
+      "offset_from": "DimensionLayer",
+      "exterior_reach": 48.0,
+      "exterior_min_area": 0.0,
+      "exterior_height_3d": 36.0,
+      "exterior_vertical_labels": false,
+      "exterior_overall": true,
+      "exterior_inner": true,
+      "exterior_auto_refresh": false,
+      "room_min_area": 0.0,
+      "room_height_3d": 36.0,
+      "room_vertical_labels": false,
+      "room_overall": true,
+      "room_outer": false,
+      "room_auto_refresh": false,
+      "room_allow_duplicates": false,
+      "room_inside": true,
+      "elevation_overall": true,
+      "elevation_outer": false,
+      "elevation_auto_refresh": false,
+      "elevation_left": true,
+      "elevation_right": false,
+      "elevation_top": false,
+      "elevation_bottom": false,
+      "temp_row_limit": 2,
+      "temp_reach": 48.0,
+      "temp_walls": "Surfaces",
+      "temp_exterior_primary": true,
+      "temp_exterior_secondary": false,
+      "temp_interior_primary": true,
+      "temp_interior_secondary": true,
+      "temp_interior_centers": false,
+      "temp_inside_cad": true,
+      "temp_inside_terrain": true,
+      "auto_mark_centerlines": true,
+      "centerline_same_angle": true,
+      "centerline_offset": 3.0,
+      "layer_manual": "",
+      "layer_automatic": "",
+      "pole": {
+        "left": true,
+        "left_reach": 100,
+        "right": false,
+        "right_reach": 100,
+        "line_separation": 12.0,
+        "first_line_offset": 24.0,
+        "inner": true,
+        "between_markers": true,
+        "primary_ridges_only": true,
+        "primary_heights_only": true,
+        "marks": [
+          {
+            "kind": "TopOfSubfloor",
+            "name": "",
+            "outer": true
+          },
+          {
+            "kind": "TopOfPlate",
+            "name": "",
+            "outer": true
+          },
+          {
+            "kind": "Ceiling",
+            "name": "",
+            "outer": false
+          },
+          {
+            "kind": "Eave",
+            "name": "",
+            "outer": false
+          },
+          {
+            "kind": "Ridge",
+            "name": "",
+            "outer": true
+          }
+        ]
+      }
+    },
+    "locates": {
+      "manual": null,
+      "panels": {}
+    }
   },
   "dimension_sets": [
     {
@@ -453,6 +649,30 @@
           "decimals": 2,
           "unit_indicators": true,
           "trailing_zeroes": true
+        },
+        "label": {
+          "second": {
+            "include": false,
+            "format": {
+              "unit": "Millimeters",
+              "fraction_denominator": 16,
+              "decimals": 0,
+              "unit_indicators": true,
+              "trailing_zeroes": false
+            }
+          },
+          "tolerance": {
+            "mode": "None",
+            "plus": 0.0,
+            "minus": 0.0
+          },
+          "rounding": "Grid",
+          "plus_minus_after": false,
+          "tilde_before": false,
+          "position": "Above",
+          "angle": null,
+          "angle_decimals": 1,
+          "angle_dms": false
         }
       },
       "auto": {
@@ -483,7 +703,126 @@
         "locate_fixtures": "Sides",
         "interior_locates_interior_surfaces": true,
         "auto_strings": [],
-        "printed_size": false
+        "printed_size": false,
+        "setup": {
+          "text_position": null,
+          "label": {
+            "second": {
+              "include": false,
+              "format": {
+                "unit": "Millimeters",
+                "fraction_denominator": 16,
+                "decimals": 0,
+                "unit_indicators": true,
+                "trailing_zeroes": false
+              }
+            },
+            "tolerance": {
+              "mode": "None",
+              "plus": 0.0,
+              "minus": 0.0
+            },
+            "rounding": "Grid",
+            "plus_minus_after": false,
+            "tilde_before": false,
+            "position": "Above",
+            "angle": null,
+            "angle_decimals": 1,
+            "angle_dms": false
+          },
+          "label_angle_value": 0.0,
+          "leader_second_segment": false,
+          "leader_second_length": 12.0,
+          "leader_arrow": false,
+          "leader_arrow_style": "Match Dimension",
+          "leader_arrow_match_size": true,
+          "leader_arrow_size": 6.0,
+          "extend_extensions_3d": true,
+          "label_faces_camera": false,
+          "snap_line_separation": 1.0,
+          "layout_reach": 1.0,
+          "offset_from": "DimensionLayer",
+          "exterior_reach": 48.0,
+          "exterior_min_area": 0.0,
+          "exterior_height_3d": 36.0,
+          "exterior_vertical_labels": false,
+          "exterior_overall": true,
+          "exterior_inner": true,
+          "exterior_auto_refresh": false,
+          "room_min_area": 0.0,
+          "room_height_3d": 36.0,
+          "room_vertical_labels": false,
+          "room_overall": true,
+          "room_outer": false,
+          "room_auto_refresh": false,
+          "room_allow_duplicates": false,
+          "room_inside": true,
+          "elevation_overall": true,
+          "elevation_outer": false,
+          "elevation_auto_refresh": false,
+          "elevation_left": true,
+          "elevation_right": false,
+          "elevation_top": false,
+          "elevation_bottom": false,
+          "temp_row_limit": 2,
+          "temp_reach": 48.0,
+          "temp_walls": "Surfaces",
+          "temp_exterior_primary": true,
+          "temp_exterior_secondary": false,
+          "temp_interior_primary": true,
+          "temp_interior_secondary": true,
+          "temp_interior_centers": false,
+          "temp_inside_cad": true,
+          "temp_inside_terrain": true,
+          "auto_mark_centerlines": true,
+          "centerline_same_angle": true,
+          "centerline_offset": 3.0,
+          "layer_manual": "",
+          "layer_automatic": "",
+          "pole": {
+            "left": true,
+            "left_reach": 100,
+            "right": false,
+            "right_reach": 100,
+            "line_separation": 12.0,
+            "first_line_offset": 24.0,
+            "inner": true,
+            "between_markers": true,
+            "primary_ridges_only": true,
+            "primary_heights_only": true,
+            "marks": [
+              {
+                "kind": "TopOfSubfloor",
+                "name": "",
+                "outer": true
+              },
+              {
+                "kind": "TopOfPlate",
+                "name": "",
+                "outer": true
+              },
+              {
+                "kind": "Ceiling",
+                "name": "",
+                "outer": false
+              },
+              {
+                "kind": "Eave",
+                "name": "",
+                "outer": false
+              },
+              {
+                "kind": "Ridge",
+                "name": "",
+                "outer": true
+              }
+            ]
+          }
+        },
+        "locates": {
+          "manual": null,
+          "panels": {}
+        }
       }
     },
     {
@@ -497,6 +836,30 @@
           "decimals": 2,
           "unit_indicators": true,
           "trailing_zeroes": true
+        },
+        "label": {
+          "second": {
+            "include": false,
+            "format": {
+              "unit": "Millimeters",
+              "fraction_denominator": 16,
+              "decimals": 0,
+              "unit_indicators": true,
+              "trailing_zeroes": false
+            }
+          },
+          "tolerance": {
+            "mode": "None",
+            "plus": 0.0,
+            "minus": 0.0
+          },
+          "rounding": "Grid",
+          "plus_minus_after": false,
+          "tilde_before": false,
+          "position": "Above",
+          "angle": null,
+          "angle_decimals": 1,
+          "angle_dms": false
         }
       },
       "auto": {
@@ -527,7 +890,126 @@
         "locate_fixtures": "Sides",
         "interior_locates_interior_surfaces": true,
         "auto_strings": [],
-        "printed_size": false
+        "printed_size": false,
+        "setup": {
+          "text_position": null,
+          "label": {
+            "second": {
+              "include": false,
+              "format": {
+                "unit": "Millimeters",
+                "fraction_denominator": 16,
+                "decimals": 0,
+                "unit_indicators": true,
+                "trailing_zeroes": false
+              }
+            },
+            "tolerance": {
+              "mode": "None",
+              "plus": 0.0,
+              "minus": 0.0
+            },
+            "rounding": "Grid",
+            "plus_minus_after": false,
+            "tilde_before": false,
+            "position": "Above",
+            "angle": null,
+            "angle_decimals": 1,
+            "angle_dms": false
+          },
+          "label_angle_value": 0.0,
+          "leader_second_segment": false,
+          "leader_second_length": 12.0,
+          "leader_arrow": false,
+          "leader_arrow_style": "Match Dimension",
+          "leader_arrow_match_size": true,
+          "leader_arrow_size": 6.0,
+          "extend_extensions_3d": true,
+          "label_faces_camera": false,
+          "snap_line_separation": 1.0,
+          "layout_reach": 1.0,
+          "offset_from": "DimensionLayer",
+          "exterior_reach": 48.0,
+          "exterior_min_area": 0.0,
+          "exterior_height_3d": 36.0,
+          "exterior_vertical_labels": false,
+          "exterior_overall": true,
+          "exterior_inner": true,
+          "exterior_auto_refresh": false,
+          "room_min_area": 0.0,
+          "room_height_3d": 36.0,
+          "room_vertical_labels": false,
+          "room_overall": true,
+          "room_outer": false,
+          "room_auto_refresh": false,
+          "room_allow_duplicates": false,
+          "room_inside": true,
+          "elevation_overall": true,
+          "elevation_outer": false,
+          "elevation_auto_refresh": false,
+          "elevation_left": true,
+          "elevation_right": false,
+          "elevation_top": false,
+          "elevation_bottom": false,
+          "temp_row_limit": 2,
+          "temp_reach": 48.0,
+          "temp_walls": "Surfaces",
+          "temp_exterior_primary": true,
+          "temp_exterior_secondary": false,
+          "temp_interior_primary": true,
+          "temp_interior_secondary": true,
+          "temp_interior_centers": false,
+          "temp_inside_cad": true,
+          "temp_inside_terrain": true,
+          "auto_mark_centerlines": true,
+          "centerline_same_angle": true,
+          "centerline_offset": 3.0,
+          "layer_manual": "",
+          "layer_automatic": "",
+          "pole": {
+            "left": true,
+            "left_reach": 100,
+            "right": false,
+            "right_reach": 100,
+            "line_separation": 12.0,
+            "first_line_offset": 24.0,
+            "inner": true,
+            "between_markers": true,
+            "primary_ridges_only": true,
+            "primary_heights_only": true,
+            "marks": [
+              {
+                "kind": "TopOfSubfloor",
+                "name": "",
+                "outer": true
+              },
+              {
+                "kind": "TopOfPlate",
+                "name": "",
+                "outer": true
+              },
+              {
+                "kind": "Ceiling",
+                "name": "",
+                "outer": false
+              },
+              {
+                "kind": "Eave",
+                "name": "",
+                "outer": false
+              },
+              {
+                "kind": "Ridge",
+                "name": "",
+                "outer": true
+              }
+            ]
+          }
+        },
+        "locates": {
+          "manual": null,
+          "panels": {}
+        }
       }
     },
     {
@@ -541,6 +1023,30 @@
           "decimals": 2,
           "unit_indicators": true,
           "trailing_zeroes": true
+        },
+        "label": {
+          "second": {
+            "include": false,
+            "format": {
+              "unit": "Millimeters",
+              "fraction_denominator": 16,
+              "decimals": 0,
+              "unit_indicators": true,
+              "trailing_zeroes": false
+            }
+          },
+          "tolerance": {
+            "mode": "None",
+            "plus": 0.0,
+            "minus": 0.0
+          },
+          "rounding": "Grid",
+          "plus_minus_after": false,
+          "tilde_before": false,
+          "position": "Above",
+          "angle": null,
+          "angle_decimals": 1,
+          "angle_dms": false
         }
       },
       "auto": {
@@ -571,7 +1077,126 @@
         "locate_fixtures": "Sides",
         "interior_locates_interior_surfaces": true,
         "auto_strings": [],
-        "printed_size": false
+        "printed_size": false,
+        "setup": {
+          "text_position": null,
+          "label": {
+            "second": {
+              "include": false,
+              "format": {
+                "unit": "Millimeters",
+                "fraction_denominator": 16,
+                "decimals": 0,
+                "unit_indicators": true,
+                "trailing_zeroes": false
+              }
+            },
+            "tolerance": {
+              "mode": "None",
+              "plus": 0.0,
+              "minus": 0.0
+            },
+            "rounding": "Grid",
+            "plus_minus_after": false,
+            "tilde_before": false,
+            "position": "Above",
+            "angle": null,
+            "angle_decimals": 1,
+            "angle_dms": false
+          },
+          "label_angle_value": 0.0,
+          "leader_second_segment": false,
+          "leader_second_length": 12.0,
+          "leader_arrow": false,
+          "leader_arrow_style": "Match Dimension",
+          "leader_arrow_match_size": true,
+          "leader_arrow_size": 6.0,
+          "extend_extensions_3d": true,
+          "label_faces_camera": false,
+          "snap_line_separation": 1.0,
+          "layout_reach": 1.0,
+          "offset_from": "DimensionLayer",
+          "exterior_reach": 48.0,
+          "exterior_min_area": 0.0,
+          "exterior_height_3d": 36.0,
+          "exterior_vertical_labels": false,
+          "exterior_overall": true,
+          "exterior_inner": true,
+          "exterior_auto_refresh": false,
+          "room_min_area": 0.0,
+          "room_height_3d": 36.0,
+          "room_vertical_labels": false,
+          "room_overall": true,
+          "room_outer": false,
+          "room_auto_refresh": false,
+          "room_allow_duplicates": false,
+          "room_inside": true,
+          "elevation_overall": true,
+          "elevation_outer": false,
+          "elevation_auto_refresh": false,
+          "elevation_left": true,
+          "elevation_right": false,
+          "elevation_top": false,
+          "elevation_bottom": false,
+          "temp_row_limit": 2,
+          "temp_reach": 48.0,
+          "temp_walls": "Surfaces",
+          "temp_exterior_primary": true,
+          "temp_exterior_secondary": false,
+          "temp_interior_primary": true,
+          "temp_interior_secondary": true,
+          "temp_interior_centers": false,
+          "temp_inside_cad": true,
+          "temp_inside_terrain": true,
+          "auto_mark_centerlines": true,
+          "centerline_same_angle": true,
+          "centerline_offset": 3.0,
+          "layer_manual": "",
+          "layer_automatic": "",
+          "pole": {
+            "left": true,
+            "left_reach": 100,
+            "right": false,
+            "right_reach": 100,
+            "line_separation": 12.0,
+            "first_line_offset": 24.0,
+            "inner": true,
+            "between_markers": true,
+            "primary_ridges_only": true,
+            "primary_heights_only": true,
+            "marks": [
+              {
+                "kind": "TopOfSubfloor",
+                "name": "",
+                "outer": true
+              },
+              {
+                "kind": "TopOfPlate",
+                "name": "",
+                "outer": true
+              },
+              {
+                "kind": "Ceiling",
+                "name": "",
+                "outer": false
+              },
+              {
+                "kind": "Eave",
+                "name": "",
+                "outer": false
+              },
+              {
+                "kind": "Ridge",
+                "name": "",
+                "outer": true
+              }
+            ]
+          }
+        },
+        "locates": {
+          "manual": null,
+          "panels": {}
+        }
       }
     },
     {
@@ -585,6 +1210,30 @@
           "decimals": 2,
           "unit_indicators": true,
           "trailing_zeroes": true
+        },
+        "label": {
+          "second": {
+            "include": false,
+            "format": {
+              "unit": "Millimeters",
+              "fraction_denominator": 16,
+              "decimals": 0,
+              "unit_indicators": true,
+              "trailing_zeroes": false
+            }
+          },
+          "tolerance": {
+            "mode": "None",
+            "plus": 0.0,
+            "minus": 0.0
+          },
+          "rounding": "Grid",
+          "plus_minus_after": false,
+          "tilde_before": false,
+          "position": "Above",
+          "angle": null,
+          "angle_decimals": 1,
+          "angle_dms": false
         }
       },
       "auto": {
@@ -615,7 +1264,126 @@
         "locate_fixtures": "Sides",
         "interior_locates_interior_surfaces": true,
         "auto_strings": [],
-        "printed_size": false
+        "printed_size": false,
+        "setup": {
+          "text_position": null,
+          "label": {
+            "second": {
+              "include": false,
+              "format": {
+                "unit": "Millimeters",
+                "fraction_denominator": 16,
+                "decimals": 0,
+                "unit_indicators": true,
+                "trailing_zeroes": false
+              }
+            },
+            "tolerance": {
+              "mode": "None",
+              "plus": 0.0,
+              "minus": 0.0
+            },
+            "rounding": "Grid",
+            "plus_minus_after": false,
+            "tilde_before": false,
+            "position": "Above",
+            "angle": null,
+            "angle_decimals": 1,
+            "angle_dms": false
+          },
+          "label_angle_value": 0.0,
+          "leader_second_segment": false,
+          "leader_second_length": 12.0,
+          "leader_arrow": false,
+          "leader_arrow_style": "Match Dimension",
+          "leader_arrow_match_size": true,
+          "leader_arrow_size": 6.0,
+          "extend_extensions_3d": true,
+          "label_faces_camera": false,
+          "snap_line_separation": 1.0,
+          "layout_reach": 1.0,
+          "offset_from": "DimensionLayer",
+          "exterior_reach": 48.0,
+          "exterior_min_area": 0.0,
+          "exterior_height_3d": 36.0,
+          "exterior_vertical_labels": false,
+          "exterior_overall": true,
+          "exterior_inner": true,
+          "exterior_auto_refresh": false,
+          "room_min_area": 0.0,
+          "room_height_3d": 36.0,
+          "room_vertical_labels": false,
+          "room_overall": true,
+          "room_outer": false,
+          "room_auto_refresh": false,
+          "room_allow_duplicates": false,
+          "room_inside": true,
+          "elevation_overall": true,
+          "elevation_outer": false,
+          "elevation_auto_refresh": false,
+          "elevation_left": true,
+          "elevation_right": false,
+          "elevation_top": false,
+          "elevation_bottom": false,
+          "temp_row_limit": 2,
+          "temp_reach": 48.0,
+          "temp_walls": "Surfaces",
+          "temp_exterior_primary": true,
+          "temp_exterior_secondary": false,
+          "temp_interior_primary": true,
+          "temp_interior_secondary": true,
+          "temp_interior_centers": false,
+          "temp_inside_cad": true,
+          "temp_inside_terrain": true,
+          "auto_mark_centerlines": true,
+          "centerline_same_angle": true,
+          "centerline_offset": 3.0,
+          "layer_manual": "",
+          "layer_automatic": "",
+          "pole": {
+            "left": true,
+            "left_reach": 100,
+            "right": false,
+            "right_reach": 100,
+            "line_separation": 12.0,
+            "first_line_offset": 24.0,
+            "inner": true,
+            "between_markers": true,
+            "primary_ridges_only": true,
+            "primary_heights_only": true,
+            "marks": [
+              {
+                "kind": "TopOfSubfloor",
+                "name": "",
+                "outer": true
+              },
+              {
+                "kind": "TopOfPlate",
+                "name": "",
+                "outer": true
+              },
+              {
+                "kind": "Ceiling",
+                "name": "",
+                "outer": false
+              },
+              {
+                "kind": "Eave",
+                "name": "",
+                "outer": false
+              },
+              {
+                "kind": "Ridge",
+                "name": "",
+                "outer": true
+              }
+            ]
+          }
+        },
+        "locates": {
+          "manual": null,
+          "panels": {}
+        }
       }
     },
     {
@@ -629,6 +1397,30 @@
           "decimals": 2,
           "unit_indicators": true,
           "trailing_zeroes": true
+        },
+        "label": {
+          "second": {
+            "include": false,
+            "format": {
+              "unit": "Millimeters",
+              "fraction_denominator": 16,
+              "decimals": 0,
+              "unit_indicators": true,
+              "trailing_zeroes": false
+            }
+          },
+          "tolerance": {
+            "mode": "None",
+            "plus": 0.0,
+            "minus": 0.0
+          },
+          "rounding": "Grid",
+          "plus_minus_after": false,
+          "tilde_before": false,
+          "position": "Above",
+          "angle": null,
+          "angle_decimals": 1,
+          "angle_dms": false
         }
       },
       "auto": {
@@ -659,7 +1451,126 @@
         "locate_fixtures": "Sides",
         "interior_locates_interior_surfaces": true,
         "auto_strings": [],
-        "printed_size": false
+        "printed_size": false,
+        "setup": {
+          "text_position": null,
+          "label": {
+            "second": {
+              "include": false,
+              "format": {
+                "unit": "Millimeters",
+                "fraction_denominator": 16,
+                "decimals": 0,
+                "unit_indicators": true,
+                "trailing_zeroes": false
+              }
+            },
+            "tolerance": {
+              "mode": "None",
+              "plus": 0.0,
+              "minus": 0.0
+            },
+            "rounding": "Grid",
+            "plus_minus_after": false,
+            "tilde_before": false,
+            "position": "Above",
+            "angle": null,
+            "angle_decimals": 1,
+            "angle_dms": false
+          },
+          "label_angle_value": 0.0,
+          "leader_second_segment": false,
+          "leader_second_length": 12.0,
+          "leader_arrow": false,
+          "leader_arrow_style": "Match Dimension",
+          "leader_arrow_match_size": true,
+          "leader_arrow_size": 6.0,
+          "extend_extensions_3d": true,
+          "label_faces_camera": false,
+          "snap_line_separation": 1.0,
+          "layout_reach": 1.0,
+          "offset_from": "DimensionLayer",
+          "exterior_reach": 48.0,
+          "exterior_min_area": 0.0,
+          "exterior_height_3d": 36.0,
+          "exterior_vertical_labels": false,
+          "exterior_overall": true,
+          "exterior_inner": true,
+          "exterior_auto_refresh": false,
+          "room_min_area": 0.0,
+          "room_height_3d": 36.0,
+          "room_vertical_labels": false,
+          "room_overall": true,
+          "room_outer": false,
+          "room_auto_refresh": false,
+          "room_allow_duplicates": false,
+          "room_inside": true,
+          "elevation_overall": true,
+          "elevation_outer": false,
+          "elevation_auto_refresh": false,
+          "elevation_left": true,
+          "elevation_right": false,
+          "elevation_top": false,
+          "elevation_bottom": false,
+          "temp_row_limit": 2,
+          "temp_reach": 48.0,
+          "temp_walls": "Surfaces",
+          "temp_exterior_primary": true,
+          "temp_exterior_secondary": false,
+          "temp_interior_primary": true,
+          "temp_interior_secondary": true,
+          "temp_interior_centers": false,
+          "temp_inside_cad": true,
+          "temp_inside_terrain": true,
+          "auto_mark_centerlines": true,
+          "centerline_same_angle": true,
+          "centerline_offset": 3.0,
+          "layer_manual": "",
+          "layer_automatic": "",
+          "pole": {
+            "left": true,
+            "left_reach": 100,
+            "right": false,
+            "right_reach": 100,
+            "line_separation": 12.0,
+            "first_line_offset": 24.0,
+            "inner": true,
+            "between_markers": true,
+            "primary_ridges_only": true,
+            "primary_heights_only": true,
+            "marks": [
+              {
+                "kind": "TopOfSubfloor",
+                "name": "",
+                "outer": true
+              },
+              {
+                "kind": "TopOfPlate",
+                "name": "",
+                "outer": true
+              },
+              {
+                "kind": "Ceiling",
+                "name": "",
+                "outer": false
+              },
+              {
+                "kind": "Eave",
+                "name": "",
+                "outer": false
+              },
+              {
+                "kind": "Ridge",
+                "name": "",
+                "outer": true
+              }
+            ]
+          }
+        },
+        "locates": {
+          "manual": null,
+          "panels": {}
+        }
       }
     },
     {
@@ -673,6 +1584,30 @@
           "decimals": 2,
           "unit_indicators": true,
           "trailing_zeroes": true
+        },
+        "label": {
+          "second": {
+            "include": false,
+            "format": {
+              "unit": "Millimeters",
+              "fraction_denominator": 16,
+              "decimals": 0,
+              "unit_indicators": true,
+              "trailing_zeroes": false
+            }
+          },
+          "tolerance": {
+            "mode": "None",
+            "plus": 0.0,
+            "minus": 0.0
+          },
+          "rounding": "Grid",
+          "plus_minus_after": false,
+          "tilde_before": false,
+          "position": "Above",
+          "angle": null,
+          "angle_decimals": 1,
+          "angle_dms": false
         }
       },
       "auto": {
@@ -703,7 +1638,126 @@
         "locate_fixtures": "Sides",
         "interior_locates_interior_surfaces": true,
         "auto_strings": [],
-        "printed_size": false
+        "printed_size": false,
+        "setup": {
+          "text_position": null,
+          "label": {
+            "second": {
+              "include": false,
+              "format": {
+                "unit": "Millimeters",
+                "fraction_denominator": 16,
+                "decimals": 0,
+                "unit_indicators": true,
+                "trailing_zeroes": false
+              }
+            },
+            "tolerance": {
+              "mode": "None",
+              "plus": 0.0,
+              "minus": 0.0
+            },
+            "rounding": "Grid",
+            "plus_minus_after": false,
+            "tilde_before": false,
+            "position": "Above",
+            "angle": null,
+            "angle_decimals": 1,
+            "angle_dms": false
+          },
+          "label_angle_value": 0.0,
+          "leader_second_segment": false,
+          "leader_second_length": 12.0,
+          "leader_arrow": false,
+          "leader_arrow_style": "Match Dimension",
+          "leader_arrow_match_size": true,
+          "leader_arrow_size": 6.0,
+          "extend_extensions_3d": true,
+          "label_faces_camera": false,
+          "snap_line_separation": 1.0,
+          "layout_reach": 1.0,
+          "offset_from": "DimensionLayer",
+          "exterior_reach": 48.0,
+          "exterior_min_area": 0.0,
+          "exterior_height_3d": 36.0,
+          "exterior_vertical_labels": false,
+          "exterior_overall": true,
+          "exterior_inner": true,
+          "exterior_auto_refresh": false,
+          "room_min_area": 0.0,
+          "room_height_3d": 36.0,
+          "room_vertical_labels": false,
+          "room_overall": true,
+          "room_outer": false,
+          "room_auto_refresh": false,
+          "room_allow_duplicates": false,
+          "room_inside": true,
+          "elevation_overall": true,
+          "elevation_outer": false,
+          "elevation_auto_refresh": false,
+          "elevation_left": true,
+          "elevation_right": false,
+          "elevation_top": false,
+          "elevation_bottom": false,
+          "temp_row_limit": 2,
+          "temp_reach": 48.0,
+          "temp_walls": "Surfaces",
+          "temp_exterior_primary": true,
+          "temp_exterior_secondary": false,
+          "temp_interior_primary": true,
+          "temp_interior_secondary": true,
+          "temp_interior_centers": false,
+          "temp_inside_cad": true,
+          "temp_inside_terrain": true,
+          "auto_mark_centerlines": true,
+          "centerline_same_angle": true,
+          "centerline_offset": 3.0,
+          "layer_manual": "",
+          "layer_automatic": "",
+          "pole": {
+            "left": true,
+            "left_reach": 100,
+            "right": false,
+            "right_reach": 100,
+            "line_separation": 12.0,
+            "first_line_offset": 24.0,
+            "inner": true,
+            "between_markers": true,
+            "primary_ridges_only": true,
+            "primary_heights_only": true,
+            "marks": [
+              {
+                "kind": "TopOfSubfloor",
+                "name": "",
+                "outer": true
+              },
+              {
+                "kind": "TopOfPlate",
+                "name": "",
+                "outer": true
+              },
+              {
+                "kind": "Ceiling",
+                "name": "",
+                "outer": false
+              },
+              {
+                "kind": "Eave",
+                "name": "",
+                "outer": false
+              },
+              {
+                "kind": "Ridge",
+                "name": "",
+                "outer": true
+              }
+            ]
+          }
+        },
+        "locates": {
+          "manual": null,
+          "panels": {}
+        }
       }
     },
     {
@@ -717,6 +1771,30 @@
           "decimals": 2,
           "unit_indicators": true,
           "trailing_zeroes": true
+        },
+        "label": {
+          "second": {
+            "include": false,
+            "format": {
+              "unit": "Millimeters",
+              "fraction_denominator": 16,
+              "decimals": 0,
+              "unit_indicators": true,
+              "trailing_zeroes": false
+            }
+          },
+          "tolerance": {
+            "mode": "None",
+            "plus": 0.0,
+            "minus": 0.0
+          },
+          "rounding": "Grid",
+          "plus_minus_after": false,
+          "tilde_before": false,
+          "position": "Above",
+          "angle": null,
+          "angle_decimals": 1,
+          "angle_dms": false
         }
       },
       "auto": {
@@ -747,7 +1825,126 @@
         "locate_fixtures": "Sides",
         "interior_locates_interior_surfaces": true,
         "auto_strings": [],
-        "printed_size": false
+        "printed_size": false,
+        "setup": {
+          "text_position": null,
+          "label": {
+            "second": {
+              "include": false,
+              "format": {
+                "unit": "Millimeters",
+                "fraction_denominator": 16,
+                "decimals": 0,
+                "unit_indicators": true,
+                "trailing_zeroes": false
+              }
+            },
+            "tolerance": {
+              "mode": "None",
+              "plus": 0.0,
+              "minus": 0.0
+            },
+            "rounding": "Grid",
+            "plus_minus_after": false,
+            "tilde_before": false,
+            "position": "Above",
+            "angle": null,
+            "angle_decimals": 1,
+            "angle_dms": false
+          },
+          "label_angle_value": 0.0,
+          "leader_second_segment": false,
+          "leader_second_length": 12.0,
+          "leader_arrow": false,
+          "leader_arrow_style": "Match Dimension",
+          "leader_arrow_match_size": true,
+          "leader_arrow_size": 6.0,
+          "extend_extensions_3d": true,
+          "label_faces_camera": false,
+          "snap_line_separation": 1.0,
+          "layout_reach": 1.0,
+          "offset_from": "DimensionLayer",
+          "exterior_reach": 48.0,
+          "exterior_min_area": 0.0,
+          "exterior_height_3d": 36.0,
+          "exterior_vertical_labels": false,
+          "exterior_overall": true,
+          "exterior_inner": true,
+          "exterior_auto_refresh": false,
+          "room_min_area": 0.0,
+          "room_height_3d": 36.0,
+          "room_vertical_labels": false,
+          "room_overall": true,
+          "room_outer": false,
+          "room_auto_refresh": false,
+          "room_allow_duplicates": false,
+          "room_inside": true,
+          "elevation_overall": true,
+          "elevation_outer": false,
+          "elevation_auto_refresh": false,
+          "elevation_left": true,
+          "elevation_right": false,
+          "elevation_top": false,
+          "elevation_bottom": false,
+          "temp_row_limit": 2,
+          "temp_reach": 48.0,
+          "temp_walls": "Surfaces",
+          "temp_exterior_primary": true,
+          "temp_exterior_secondary": false,
+          "temp_interior_primary": true,
+          "temp_interior_secondary": true,
+          "temp_interior_centers": false,
+          "temp_inside_cad": true,
+          "temp_inside_terrain": true,
+          "auto_mark_centerlines": true,
+          "centerline_same_angle": true,
+          "centerline_offset": 3.0,
+          "layer_manual": "",
+          "layer_automatic": "",
+          "pole": {
+            "left": true,
+            "left_reach": 100,
+            "right": false,
+            "right_reach": 100,
+            "line_separation": 12.0,
+            "first_line_offset": 24.0,
+            "inner": true,
+            "between_markers": true,
+            "primary_ridges_only": true,
+            "primary_heights_only": true,
+            "marks": [
+              {
+                "kind": "TopOfSubfloor",
+                "name": "",
+                "outer": true
+              },
+              {
+                "kind": "TopOfPlate",
+                "name": "",
+                "outer": true
+              },
+              {
+                "kind": "Ceiling",
+                "name": "",
+                "outer": false
+              },
+              {
+                "kind": "Eave",
+                "name": "",
+                "outer": false
+              },
+              {
+                "kind": "Ridge",
+                "name": "",
+                "outer": true
+              }
+            ]
+          }
+        },
+        "locates": {
+          "manual": null,
+          "panels": {}
+        }
       }
     },
     {
@@ -761,6 +1958,30 @@
           "decimals": 2,
           "unit_indicators": true,
           "trailing_zeroes": true
+        },
+        "label": {
+          "second": {
+            "include": false,
+            "format": {
+              "unit": "Millimeters",
+              "fraction_denominator": 16,
+              "decimals": 0,
+              "unit_indicators": true,
+              "trailing_zeroes": false
+            }
+          },
+          "tolerance": {
+            "mode": "None",
+            "plus": 0.0,
+            "minus": 0.0
+          },
+          "rounding": "Grid",
+          "plus_minus_after": false,
+          "tilde_before": false,
+          "position": "Above",
+          "angle": null,
+          "angle_decimals": 1,
+          "angle_dms": false
         }
       },
       "auto": {
@@ -791,7 +2012,126 @@
         "locate_fixtures": "Sides",
         "interior_locates_interior_surfaces": true,
         "auto_strings": [],
-        "printed_size": false
+        "printed_size": false,
+        "setup": {
+          "text_position": null,
+          "label": {
+            "second": {
+              "include": false,
+              "format": {
+                "unit": "Millimeters",
+                "fraction_denominator": 16,
+                "decimals": 0,
+                "unit_indicators": true,
+                "trailing_zeroes": false
+              }
+            },
+            "tolerance": {
+              "mode": "None",
+              "plus": 0.0,
+              "minus": 0.0
+            },
+            "rounding": "Grid",
+            "plus_minus_after": false,
+            "tilde_before": false,
+            "position": "Above",
+            "angle": null,
+            "angle_decimals": 1,
+            "angle_dms": false
+          },
+          "label_angle_value": 0.0,
+          "leader_second_segment": false,
+          "leader_second_length": 12.0,
+          "leader_arrow": false,
+          "leader_arrow_style": "Match Dimension",
+          "leader_arrow_match_size": true,
+          "leader_arrow_size": 6.0,
+          "extend_extensions_3d": true,
+          "label_faces_camera": false,
+          "snap_line_separation": 1.0,
+          "layout_reach": 1.0,
+          "offset_from": "DimensionLayer",
+          "exterior_reach": 48.0,
+          "exterior_min_area": 0.0,
+          "exterior_height_3d": 36.0,
+          "exterior_vertical_labels": false,
+          "exterior_overall": true,
+          "exterior_inner": true,
+          "exterior_auto_refresh": false,
+          "room_min_area": 0.0,
+          "room_height_3d": 36.0,
+          "room_vertical_labels": false,
+          "room_overall": true,
+          "room_outer": false,
+          "room_auto_refresh": false,
+          "room_allow_duplicates": false,
+          "room_inside": true,
+          "elevation_overall": true,
+          "elevation_outer": false,
+          "elevation_auto_refresh": false,
+          "elevation_left": true,
+          "elevation_right": false,
+          "elevation_top": false,
+          "elevation_bottom": false,
+          "temp_row_limit": 2,
+          "temp_reach": 48.0,
+          "temp_walls": "Surfaces",
+          "temp_exterior_primary": true,
+          "temp_exterior_secondary": false,
+          "temp_interior_primary": true,
+          "temp_interior_secondary": true,
+          "temp_interior_centers": false,
+          "temp_inside_cad": true,
+          "temp_inside_terrain": true,
+          "auto_mark_centerlines": true,
+          "centerline_same_angle": true,
+          "centerline_offset": 3.0,
+          "layer_manual": "",
+          "layer_automatic": "",
+          "pole": {
+            "left": true,
+            "left_reach": 100,
+            "right": false,
+            "right_reach": 100,
+            "line_separation": 12.0,
+            "first_line_offset": 24.0,
+            "inner": true,
+            "between_markers": true,
+            "primary_ridges_only": true,
+            "primary_heights_only": true,
+            "marks": [
+              {
+                "kind": "TopOfSubfloor",
+                "name": "",
+                "outer": true
+              },
+              {
+                "kind": "TopOfPlate",
+                "name": "",
+                "outer": true
+              },
+              {
+                "kind": "Ceiling",
+                "name": "",
+                "outer": false
+              },
+              {
+                "kind": "Eave",
+                "name": "",
+                "outer": false
+              },
+              {
+                "kind": "Ridge",
+                "name": "",
+                "outer": true
+              }
+            ]
+          }
+        },
+        "locates": {
+          "manual": null,
+          "panels": {}
+        }
       }
     },
     {
@@ -805,6 +2145,30 @@
           "decimals": 2,
           "unit_indicators": true,
           "trailing_zeroes": true
+        },
+        "label": {
+          "second": {
+            "include": false,
+            "format": {
+              "unit": "Millimeters",
+              "fraction_denominator": 16,
+              "decimals": 0,
+              "unit_indicators": true,
+              "trailing_zeroes": false
+            }
+          },
+          "tolerance": {
+            "mode": "None",
+            "plus": 0.0,
+            "minus": 0.0
+          },
+          "rounding": "Grid",
+          "plus_minus_after": false,
+          "tilde_before": false,
+          "position": "Above",
+          "angle": null,
+          "angle_decimals": 1,
+          "angle_dms": false
         }
       },
       "auto": {
@@ -835,7 +2199,126 @@
         "locate_fixtures": "Sides",
         "interior_locates_interior_surfaces": true,
         "auto_strings": [],
-        "printed_size": false
+        "printed_size": false,
+        "setup": {
+          "text_position": null,
+          "label": {
+            "second": {
+              "include": false,
+              "format": {
+                "unit": "Millimeters",
+                "fraction_denominator": 16,
+                "decimals": 0,
+                "unit_indicators": true,
+                "trailing_zeroes": false
+              }
+            },
+            "tolerance": {
+              "mode": "None",
+              "plus": 0.0,
+              "minus": 0.0
+            },
+            "rounding": "Grid",
+            "plus_minus_after": false,
+            "tilde_before": false,
+            "position": "Above",
+            "angle": null,
+            "angle_decimals": 1,
+            "angle_dms": false
+          },
+          "label_angle_value": 0.0,
+          "leader_second_segment": false,
+          "leader_second_length": 12.0,
+          "leader_arrow": false,
+          "leader_arrow_style": "Match Dimension",
+          "leader_arrow_match_size": true,
+          "leader_arrow_size": 6.0,
+          "extend_extensions_3d": true,
+          "label_faces_camera": false,
+          "snap_line_separation": 1.0,
+          "layout_reach": 1.0,
+          "offset_from": "DimensionLayer",
+          "exterior_reach": 48.0,
+          "exterior_min_area": 0.0,
+          "exterior_height_3d": 36.0,
+          "exterior_vertical_labels": false,
+          "exterior_overall": true,
+          "exterior_inner": true,
+          "exterior_auto_refresh": false,
+          "room_min_area": 0.0,
+          "room_height_3d": 36.0,
+          "room_vertical_labels": false,
+          "room_overall": true,
+          "room_outer": false,
+          "room_auto_refresh": false,
+          "room_allow_duplicates": false,
+          "room_inside": true,
+          "elevation_overall": true,
+          "elevation_outer": false,
+          "elevation_auto_refresh": false,
+          "elevation_left": true,
+          "elevation_right": false,
+          "elevation_top": false,
+          "elevation_bottom": false,
+          "temp_row_limit": 2,
+          "temp_reach": 48.0,
+          "temp_walls": "Surfaces",
+          "temp_exterior_primary": true,
+          "temp_exterior_secondary": false,
+          "temp_interior_primary": true,
+          "temp_interior_secondary": true,
+          "temp_interior_centers": false,
+          "temp_inside_cad": true,
+          "temp_inside_terrain": true,
+          "auto_mark_centerlines": true,
+          "centerline_same_angle": true,
+          "centerline_offset": 3.0,
+          "layer_manual": "",
+          "layer_automatic": "",
+          "pole": {
+            "left": true,
+            "left_reach": 100,
+            "right": false,
+            "right_reach": 100,
+            "line_separation": 12.0,
+            "first_line_offset": 24.0,
+            "inner": true,
+            "between_markers": true,
+            "primary_ridges_only": true,
+            "primary_heights_only": true,
+            "marks": [
+              {
+                "kind": "TopOfSubfloor",
+                "name": "",
+                "outer": true
+              },
+              {
+                "kind": "TopOfPlate",
+                "name": "",
+                "outer": true
+              },
+              {
+                "kind": "Ceiling",
+                "name": "",
+                "outer": false
+              },
+              {
+                "kind": "Eave",
+                "name": "",
+                "outer": false
+              },
+              {
+                "kind": "Ridge",
+                "name": "",
+                "outer": true
+              }
+            ]
+          }
+        },
+        "locates": {
+          "manual": null,
+          "panels": {}
+        }
       }
     },
     {
@@ -849,6 +2332,30 @@
           "decimals": 2,
           "unit_indicators": true,
           "trailing_zeroes": true
+        },
+        "label": {
+          "second": {
+            "include": false,
+            "format": {
+              "unit": "Millimeters",
+              "fraction_denominator": 16,
+              "decimals": 0,
+              "unit_indicators": true,
+              "trailing_zeroes": false
+            }
+          },
+          "tolerance": {
+            "mode": "None",
+            "plus": 0.0,
+            "minus": 0.0
+          },
+          "rounding": "Grid",
+          "plus_minus_after": false,
+          "tilde_before": false,
+          "position": "Above",
+          "angle": null,
+          "angle_decimals": 1,
+          "angle_dms": false
         }
       },
       "auto": {
@@ -879,7 +2386,126 @@
         "locate_fixtures": "Sides",
         "interior_locates_interior_surfaces": true,
         "auto_strings": [],
-        "printed_size": false
+        "printed_size": false,
+        "setup": {
+          "text_position": null,
+          "label": {
+            "second": {
+              "include": false,
+              "format": {
+                "unit": "Millimeters",
+                "fraction_denominator": 16,
+                "decimals": 0,
+                "unit_indicators": true,
+                "trailing_zeroes": false
+              }
+            },
+            "tolerance": {
+              "mode": "None",
+              "plus": 0.0,
+              "minus": 0.0
+            },
+            "rounding": "Grid",
+            "plus_minus_after": false,
+            "tilde_before": false,
+            "position": "Above",
+            "angle": null,
+            "angle_decimals": 1,
+            "angle_dms": false
+          },
+          "label_angle_value": 0.0,
+          "leader_second_segment": false,
+          "leader_second_length": 12.0,
+          "leader_arrow": false,
+          "leader_arrow_style": "Match Dimension",
+          "leader_arrow_match_size": true,
+          "leader_arrow_size": 6.0,
+          "extend_extensions_3d": true,
+          "label_faces_camera": false,
+          "snap_line_separation": 1.0,
+          "layout_reach": 1.0,
+          "offset_from": "DimensionLayer",
+          "exterior_reach": 48.0,
+          "exterior_min_area": 0.0,
+          "exterior_height_3d": 36.0,
+          "exterior_vertical_labels": false,
+          "exterior_overall": true,
+          "exterior_inner": true,
+          "exterior_auto_refresh": false,
+          "room_min_area": 0.0,
+          "room_height_3d": 36.0,
+          "room_vertical_labels": false,
+          "room_overall": true,
+          "room_outer": false,
+          "room_auto_refresh": false,
+          "room_allow_duplicates": false,
+          "room_inside": true,
+          "elevation_overall": true,
+          "elevation_outer": false,
+          "elevation_auto_refresh": false,
+          "elevation_left": true,
+          "elevation_right": false,
+          "elevation_top": false,
+          "elevation_bottom": false,
+          "temp_row_limit": 2,
+          "temp_reach": 48.0,
+          "temp_walls": "Surfaces",
+          "temp_exterior_primary": true,
+          "temp_exterior_secondary": false,
+          "temp_interior_primary": true,
+          "temp_interior_secondary": true,
+          "temp_interior_centers": false,
+          "temp_inside_cad": true,
+          "temp_inside_terrain": true,
+          "auto_mark_centerlines": true,
+          "centerline_same_angle": true,
+          "centerline_offset": 3.0,
+          "layer_manual": "",
+          "layer_automatic": "",
+          "pole": {
+            "left": true,
+            "left_reach": 100,
+            "right": false,
+            "right_reach": 100,
+            "line_separation": 12.0,
+            "first_line_offset": 24.0,
+            "inner": true,
+            "between_markers": true,
+            "primary_ridges_only": true,
+            "primary_heights_only": true,
+            "marks": [
+              {
+                "kind": "TopOfSubfloor",
+                "name": "",
+                "outer": true
+              },
+              {
+                "kind": "TopOfPlate",
+                "name": "",
+                "outer": true
+              },
+              {
+                "kind": "Ceiling",
+                "name": "",
+                "outer": false
+              },
+              {
+                "kind": "Eave",
+                "name": "",
+                "outer": false
+              },
+              {
+                "kind": "Ridge",
+                "name": "",
+                "outer": true
+              }
+            ]
+          }
+        },
+        "locates": {
+          "manual": null,
+          "panels": {}
+        }
       }
     },
     {
@@ -893,6 +2519,30 @@
           "decimals": 2,
           "unit_indicators": true,
           "trailing_zeroes": true
+        },
+        "label": {
+          "second": {
+            "include": false,
+            "format": {
+              "unit": "Millimeters",
+              "fraction_denominator": 16,
+              "decimals": 0,
+              "unit_indicators": true,
+              "trailing_zeroes": false
+            }
+          },
+          "tolerance": {
+            "mode": "None",
+            "plus": 0.0,
+            "minus": 0.0
+          },
+          "rounding": "Grid",
+          "plus_minus_after": false,
+          "tilde_before": false,
+          "position": "Above",
+          "angle": null,
+          "angle_decimals": 1,
+          "angle_dms": false
         }
       },
       "auto": {
@@ -923,7 +2573,126 @@
         "locate_fixtures": "Sides",
         "interior_locates_interior_surfaces": true,
         "auto_strings": [],
-        "printed_size": false
+        "printed_size": false,
+        "setup": {
+          "text_position": null,
+          "label": {
+            "second": {
+              "include": false,
+              "format": {
+                "unit": "Millimeters",
+                "fraction_denominator": 16,
+                "decimals": 0,
+                "unit_indicators": true,
+                "trailing_zeroes": false
+              }
+            },
+            "tolerance": {
+              "mode": "None",
+              "plus": 0.0,
+              "minus": 0.0
+            },
+            "rounding": "Grid",
+            "plus_minus_after": false,
+            "tilde_before": false,
+            "position": "Above",
+            "angle": null,
+            "angle_decimals": 1,
+            "angle_dms": false
+          },
+          "label_angle_value": 0.0,
+          "leader_second_segment": false,
+          "leader_second_length": 12.0,
+          "leader_arrow": false,
+          "leader_arrow_style": "Match Dimension",
+          "leader_arrow_match_size": true,
+          "leader_arrow_size": 6.0,
+          "extend_extensions_3d": true,
+          "label_faces_camera": false,
+          "snap_line_separation": 1.0,
+          "layout_reach": 1.0,
+          "offset_from": "DimensionLayer",
+          "exterior_reach": 48.0,
+          "exterior_min_area": 0.0,
+          "exterior_height_3d": 36.0,
+          "exterior_vertical_labels": false,
+          "exterior_overall": true,
+          "exterior_inner": true,
+          "exterior_auto_refresh": false,
+          "room_min_area": 0.0,
+          "room_height_3d": 36.0,
+          "room_vertical_labels": false,
+          "room_overall": true,
+          "room_outer": false,
+          "room_auto_refresh": false,
+          "room_allow_duplicates": false,
+          "room_inside": true,
+          "elevation_overall": true,
+          "elevation_outer": false,
+          "elevation_auto_refresh": false,
+          "elevation_left": true,
+          "elevation_right": false,
+          "elevation_top": false,
+          "elevation_bottom": false,
+          "temp_row_limit": 2,
+          "temp_reach": 48.0,
+          "temp_walls": "Surfaces",
+          "temp_exterior_primary": true,
+          "temp_exterior_secondary": false,
+          "temp_interior_primary": true,
+          "temp_interior_secondary": true,
+          "temp_interior_centers": false,
+          "temp_inside_cad": true,
+          "temp_inside_terrain": true,
+          "auto_mark_centerlines": true,
+          "centerline_same_angle": true,
+          "centerline_offset": 3.0,
+          "layer_manual": "",
+          "layer_automatic": "",
+          "pole": {
+            "left": true,
+            "left_reach": 100,
+            "right": false,
+            "right_reach": 100,
+            "line_separation": 12.0,
+            "first_line_offset": 24.0,
+            "inner": true,
+            "between_markers": true,
+            "primary_ridges_only": true,
+            "primary_heights_only": true,
+            "marks": [
+              {
+                "kind": "TopOfSubfloor",
+                "name": "",
+                "outer": true
+              },
+              {
+                "kind": "TopOfPlate",
+                "name": "",
+                "outer": true
+              },
+              {
+                "kind": "Ceiling",
+                "name": "",
+                "outer": false
+              },
+              {
+                "kind": "Eave",
+                "name": "",
+                "outer": false
+              },
+              {
+                "kind": "Ridge",
+                "name": "",
+                "outer": true
+              }
+            ]
+          }
+        },
+        "locates": {
+          "manual": null,
+          "panels": {}
+        }
       }
     },
     {
@@ -937,6 +2706,30 @@
           "decimals": 2,
           "unit_indicators": true,
           "trailing_zeroes": true
+        },
+        "label": {
+          "second": {
+            "include": false,
+            "format": {
+              "unit": "Millimeters",
+              "fraction_denominator": 16,
+              "decimals": 0,
+              "unit_indicators": true,
+              "trailing_zeroes": false
+            }
+          },
+          "tolerance": {
+            "mode": "None",
+            "plus": 0.0,
+            "minus": 0.0
+          },
+          "rounding": "Grid",
+          "plus_minus_after": false,
+          "tilde_before": false,
+          "position": "Above",
+          "angle": null,
+          "angle_decimals": 1,
+          "angle_dms": false
         }
       },
       "auto": {
@@ -967,7 +2760,126 @@
         "locate_fixtures": "Sides",
         "interior_locates_interior_surfaces": true,
         "auto_strings": [],
-        "printed_size": false
+        "printed_size": false,
+        "setup": {
+          "text_position": null,
+          "label": {
+            "second": {
+              "include": false,
+              "format": {
+                "unit": "Millimeters",
+                "fraction_denominator": 16,
+                "decimals": 0,
+                "unit_indicators": true,
+                "trailing_zeroes": false
+              }
+            },
+            "tolerance": {
+              "mode": "None",
+              "plus": 0.0,
+              "minus": 0.0
+            },
+            "rounding": "Grid",
+            "plus_minus_after": false,
+            "tilde_before": false,
+            "position": "Above",
+            "angle": null,
+            "angle_decimals": 1,
+            "angle_dms": false
+          },
+          "label_angle_value": 0.0,
+          "leader_second_segment": false,
+          "leader_second_length": 12.0,
+          "leader_arrow": false,
+          "leader_arrow_style": "Match Dimension",
+          "leader_arrow_match_size": true,
+          "leader_arrow_size": 6.0,
+          "extend_extensions_3d": true,
+          "label_faces_camera": false,
+          "snap_line_separation": 1.0,
+          "layout_reach": 1.0,
+          "offset_from": "DimensionLayer",
+          "exterior_reach": 48.0,
+          "exterior_min_area": 0.0,
+          "exterior_height_3d": 36.0,
+          "exterior_vertical_labels": false,
+          "exterior_overall": true,
+          "exterior_inner": true,
+          "exterior_auto_refresh": false,
+          "room_min_area": 0.0,
+          "room_height_3d": 36.0,
+          "room_vertical_labels": false,
+          "room_overall": true,
+          "room_outer": false,
+          "room_auto_refresh": false,
+          "room_allow_duplicates": false,
+          "room_inside": true,
+          "elevation_overall": true,
+          "elevation_outer": false,
+          "elevation_auto_refresh": false,
+          "elevation_left": true,
+          "elevation_right": false,
+          "elevation_top": false,
+          "elevation_bottom": false,
+          "temp_row_limit": 2,
+          "temp_reach": 48.0,
+          "temp_walls": "Surfaces",
+          "temp_exterior_primary": true,
+          "temp_exterior_secondary": false,
+          "temp_interior_primary": true,
+          "temp_interior_secondary": true,
+          "temp_interior_centers": false,
+          "temp_inside_cad": true,
+          "temp_inside_terrain": true,
+          "auto_mark_centerlines": true,
+          "centerline_same_angle": true,
+          "centerline_offset": 3.0,
+          "layer_manual": "",
+          "layer_automatic": "",
+          "pole": {
+            "left": true,
+            "left_reach": 100,
+            "right": false,
+            "right_reach": 100,
+            "line_separation": 12.0,
+            "first_line_offset": 24.0,
+            "inner": true,
+            "between_markers": true,
+            "primary_ridges_only": true,
+            "primary_heights_only": true,
+            "marks": [
+              {
+                "kind": "TopOfSubfloor",
+                "name": "",
+                "outer": true
+              },
+              {
+                "kind": "TopOfPlate",
+                "name": "",
+                "outer": true
+              },
+              {
+                "kind": "Ceiling",
+                "name": "",
+                "outer": false
+              },
+              {
+                "kind": "Eave",
+                "name": "",
+                "outer": false
+              },
+              {
+                "kind": "Ridge",
+                "name": "",
+                "outer": true
+              }
+            ]
+          }
+        },
+        "locates": {
+          "manual": null,
+          "panels": {}
+        }
       }
     },
     {
@@ -981,6 +2893,30 @@
           "decimals": 2,
           "unit_indicators": true,
           "trailing_zeroes": true
+        },
+        "label": {
+          "second": {
+            "include": false,
+            "format": {
+              "unit": "Millimeters",
+              "fraction_denominator": 16,
+              "decimals": 0,
+              "unit_indicators": true,
+              "trailing_zeroes": false
+            }
+          },
+          "tolerance": {
+            "mode": "None",
+            "plus": 0.0,
+            "minus": 0.0
+          },
+          "rounding": "Grid",
+          "plus_minus_after": false,
+          "tilde_before": false,
+          "position": "Above",
+          "angle": null,
+          "angle_decimals": 1,
+          "angle_dms": false
         }
       },
       "auto": {
@@ -1011,7 +2947,126 @@
         "locate_fixtures": "Sides",
         "interior_locates_interior_surfaces": true,
         "auto_strings": [],
-        "printed_size": false
+        "printed_size": false,
+        "setup": {
+          "text_position": null,
+          "label": {
+            "second": {
+              "include": false,
+              "format": {
+                "unit": "Millimeters",
+                "fraction_denominator": 16,
+                "decimals": 0,
+                "unit_indicators": true,
+                "trailing_zeroes": false
+              }
+            },
+            "tolerance": {
+              "mode": "None",
+              "plus": 0.0,
+              "minus": 0.0
+            },
+            "rounding": "Grid",
+            "plus_minus_after": false,
+            "tilde_before": false,
+            "position": "Above",
+            "angle": null,
+            "angle_decimals": 1,
+            "angle_dms": false
+          },
+          "label_angle_value": 0.0,
+          "leader_second_segment": false,
+          "leader_second_length": 12.0,
+          "leader_arrow": false,
+          "leader_arrow_style": "Match Dimension",
+          "leader_arrow_match_size": true,
+          "leader_arrow_size": 6.0,
+          "extend_extensions_3d": true,
+          "label_faces_camera": false,
+          "snap_line_separation": 1.0,
+          "layout_reach": 1.0,
+          "offset_from": "DimensionLayer",
+          "exterior_reach": 48.0,
+          "exterior_min_area": 0.0,
+          "exterior_height_3d": 36.0,
+          "exterior_vertical_labels": false,
+          "exterior_overall": true,
+          "exterior_inner": true,
+          "exterior_auto_refresh": false,
+          "room_min_area": 0.0,
+          "room_height_3d": 36.0,
+          "room_vertical_labels": false,
+          "room_overall": true,
+          "room_outer": false,
+          "room_auto_refresh": false,
+          "room_allow_duplicates": false,
+          "room_inside": true,
+          "elevation_overall": true,
+          "elevation_outer": false,
+          "elevation_auto_refresh": false,
+          "elevation_left": true,
+          "elevation_right": false,
+          "elevation_top": false,
+          "elevation_bottom": false,
+          "temp_row_limit": 2,
+          "temp_reach": 48.0,
+          "temp_walls": "Surfaces",
+          "temp_exterior_primary": true,
+          "temp_exterior_secondary": false,
+          "temp_interior_primary": true,
+          "temp_interior_secondary": true,
+          "temp_interior_centers": false,
+          "temp_inside_cad": true,
+          "temp_inside_terrain": true,
+          "auto_mark_centerlines": true,
+          "centerline_same_angle": true,
+          "centerline_offset": 3.0,
+          "layer_manual": "",
+          "layer_automatic": "",
+          "pole": {
+            "left": true,
+            "left_reach": 100,
+            "right": false,
+            "right_reach": 100,
+            "line_separation": 12.0,
+            "first_line_offset": 24.0,
+            "inner": true,
+            "between_markers": true,
+            "primary_ridges_only": true,
+            "primary_heights_only": true,
+            "marks": [
+              {
+                "kind": "TopOfSubfloor",
+                "name": "",
+                "outer": true
+              },
+              {
+                "kind": "TopOfPlate",
+                "name": "",
+                "outer": true
+              },
+              {
+                "kind": "Ceiling",
+                "name": "",
+                "outer": false
+              },
+              {
+                "kind": "Eave",
+                "name": "",
+                "outer": false
+              },
+              {
+                "kind": "Ridge",
+                "name": "",
+                "outer": true
+              }
+            ]
+          }
+        },
+        "locates": {
+          "manual": null,
+          "panels": {}
+        }
       }
     }
   ],
@@ -1351,7 +3406,9 @@
       "ceiling_finish_thickness": 0.625,
       "default_room_type": "",
       "floor_material": "",
-      "ceiling_material": ""
+      "ceiling_material": "",
+      "wall_material": "",
+      "foundation": null
     }
   },
   "layers": {
@@ -1789,6 +3846,7 @@
       {
         "name": "Default Text Style",
         "font": "Arial",
+        "font_style": "",
         "height_in": 6.0,
         "bold": false,
         "italic": false,
@@ -1804,6 +3862,7 @@
       {
         "name": "1/4\" Text Style",
         "font": "Arial",
+        "font_style": "",
         "height_in": 6.0,
         "bold": false,
         "italic": false,
@@ -1819,6 +3878,7 @@
       {
         "name": "Room Label Style",
         "font": "Arial",
+        "font_style": "",
         "height_in": 6.0,
         "bold": true,
         "italic": false,
@@ -1834,6 +3894,7 @@
       {
         "name": "Schedule Style",
         "font": "Arial",
+        "font_style": "",
         "height_in": 4.5,
         "bold": false,
         "italic": false,
@@ -1849,6 +3910,7 @@
       {
         "name": "Default Label Style",
         "font": "Arial",
+        "font_style": "",
         "height_in": 4.5,
         "bold": false,
         "italic": false,
@@ -1864,6 +3926,7 @@
       {
         "name": "Dimension Text Style",
         "font": "Arial",
+        "font_style": "",
         "height_in": 4.5,
         "bold": false,
         "italic": false,
@@ -1920,8 +3983,10 @@
       "concentric_distance": 0.0,
       "concentric_copies": 1,
       "fillet_radius": 0.0,
+      "chamfer_distance": 0.0,
       "alternate_lock_axis": true,
-      "replicate_copies": 1
+      "replicate_copies": 1,
+      "replicate_dialog": false
     }
   },
   "opening_labels": {
@@ -2016,19 +4081,19 @@
       },
       {
         "style": "BayWindow",
-        "width": 96.0,
+        "width": 50.0,
         "height": 60.0,
         "sill_height": null
       },
       {
         "style": "BowWindow",
-        "width": 96.0,
+        "width": 70.0,
         "height": 60.0,
         "sill_height": null
       },
       {
         "style": "BoxWindow",
-        "width": 60.0,
+        "width": 50.0,
         "height": 60.0,
         "sill_height": null
       },
@@ -2045,6 +4110,8 @@
         "sill_height": 36.0
       }
     ],
+    "types": [],
+    "revision": 0,
     "widths": {
       "snap": false,
       "lists": [
@@ -2260,6 +4327,10 @@
       "casing_interior": true,
       "casing_exterior": true,
       "casing_in_plan": false,
+      "casing_exterior_size": null,
+      "casing_profile": "Flat",
+      "show_open_in_3d": false,
+      "open_fraction": 1.0,
       "lintel": {
         "exterior": false,
         "interior": false,
@@ -2304,7 +4375,148 @@
       "label_offset": [
         0.0,
         0.0
-      ]
+      ],
+      "swings_both": false,
+      "threshold": true,
+      "jamb_in_plan": true,
+      "size_includes_frame": true,
+      "recess_depth": null,
+      "recess_to": "Depth",
+      "indicators": {
+        "show_in_plan": false,
+        "swing_arrows": false
+      },
+      "schedule": {
+        "include": true,
+        "manufacturer": "",
+        "model": "",
+        "supplier": "",
+        "comment": ""
+      },
+      "door_swing": "Both",
+      "swings_from_center": false,
+      "curved_casing": "Radial",
+      "rough": {
+        "mode": "AdditionalSpace",
+        "add_width": 0.0,
+        "add_height": 0.0,
+        "gap_side": 0.25,
+        "gap_top": 0.5,
+        "gap_bottom": 0.0,
+        "concrete_each_side": 0.0,
+        "concrete_show_below": false,
+        "show_in_plan": false
+      },
+      "framing": {
+        "include_header": true,
+        "header_plies": null,
+        "header_depth": null,
+        "header_material": "Lumber",
+        "trimmers": null,
+        "king_studs": null,
+        "sill": true
+      },
+      "energy": {
+        "construction": "",
+        "u_factor": 0.3,
+        "shgc": 0.3
+      },
+      "layer": null,
+      "materials": {
+        "parts": []
+      },
+      "info": {
+        "id": "",
+        "description": ""
+      },
+      "shape": {
+        "kind": "Rectangle",
+        "left_height": null,
+        "right_height": null,
+        "top_left": {
+          "on": false,
+          "height": 12.0,
+          "offset": 12.0
+        },
+        "top_right": {
+          "on": false,
+          "height": 12.0,
+          "offset": 12.0
+        },
+        "bottom_left": {
+          "on": false,
+          "height": 12.0,
+          "offset": 12.0
+        },
+        "bottom_right": {
+          "on": false,
+          "height": 12.0,
+          "offset": 12.0
+        }
+      },
+      "treatments": {
+        "curtain": "None",
+        "curtain_color": [
+          196,
+          184,
+          160
+        ],
+        "curtain_off_floor": 18.0,
+        "curtain_above_casing": 2.0,
+        "blind": "None",
+        "blind_color": [
+          236,
+          232,
+          222
+        ],
+        "blind_lowered": 0.5,
+        "shutter": "None",
+        "shutter_color": [
+          246,
+          244,
+          238
+        ],
+        "shutter_closed": true,
+        "millwork_above": "None",
+        "millwork_above_height": 12.0,
+        "millwork_above_width": 0.0,
+        "millwork_below": "None",
+        "millwork_below_height": 12.0,
+        "millwork_below_extend": 0.0
+      },
+      "bay_roof": {
+        "kind": "Default",
+        "pitch": 6.0,
+        "overhang": 0.0
+      },
+      "window_type": "DoubleHung",
+      "component_size": 0.0,
+      "louver_size": 2.0,
+      "exterior_door": null,
+      "level": 0,
+      "mulled": null,
+      "bay": {
+        "angle_deg": 45.0,
+        "depth": 0.0,
+        "segments": 5,
+        "wall_type": null,
+        "lowered_ceiling": null,
+        "raised_floor": null,
+        "roof": {
+          "use_existing": false,
+          "extend_existing": false,
+          "rectangular": false
+        },
+        "standard_dimension": true,
+        "center_dimension": false,
+        "has_components": true,
+        "no_trimmers": false,
+        "no_framing_between": false,
+        "connect_outer_casing": false,
+        "recess": null,
+        "label": "Single",
+        "foundation": true
+      }
     },
     "window_spec": {
       "has_sash": true,
@@ -2318,6 +4530,10 @@
       "casing_interior": true,
       "casing_exterior": true,
       "casing_in_plan": false,
+      "casing_exterior_size": null,
+      "casing_profile": "Flat",
+      "show_open_in_3d": false,
+      "open_fraction": 1.0,
       "lintel": {
         "exterior": false,
         "interior": false,
@@ -2362,7 +4578,148 @@
       "label_offset": [
         0.0,
         0.0
-      ]
+      ],
+      "swings_both": false,
+      "threshold": true,
+      "jamb_in_plan": true,
+      "size_includes_frame": true,
+      "recess_depth": null,
+      "recess_to": "Depth",
+      "indicators": {
+        "show_in_plan": false,
+        "swing_arrows": false
+      },
+      "schedule": {
+        "include": true,
+        "manufacturer": "",
+        "model": "",
+        "supplier": "",
+        "comment": ""
+      },
+      "door_swing": "Both",
+      "swings_from_center": false,
+      "curved_casing": "Radial",
+      "rough": {
+        "mode": "AdditionalSpace",
+        "add_width": 0.0,
+        "add_height": 0.0,
+        "gap_side": 0.25,
+        "gap_top": 0.5,
+        "gap_bottom": 0.0,
+        "concrete_each_side": 0.0,
+        "concrete_show_below": false,
+        "show_in_plan": false
+      },
+      "framing": {
+        "include_header": true,
+        "header_plies": null,
+        "header_depth": null,
+        "header_material": "Lumber",
+        "trimmers": null,
+        "king_studs": null,
+        "sill": true
+      },
+      "energy": {
+        "construction": "",
+        "u_factor": 0.3,
+        "shgc": 0.3
+      },
+      "layer": null,
+      "materials": {
+        "parts": []
+      },
+      "info": {
+        "id": "",
+        "description": ""
+      },
+      "shape": {
+        "kind": "Rectangle",
+        "left_height": null,
+        "right_height": null,
+        "top_left": {
+          "on": false,
+          "height": 12.0,
+          "offset": 12.0
+        },
+        "top_right": {
+          "on": false,
+          "height": 12.0,
+          "offset": 12.0
+        },
+        "bottom_left": {
+          "on": false,
+          "height": 12.0,
+          "offset": 12.0
+        },
+        "bottom_right": {
+          "on": false,
+          "height": 12.0,
+          "offset": 12.0
+        }
+      },
+      "treatments": {
+        "curtain": "None",
+        "curtain_color": [
+          196,
+          184,
+          160
+        ],
+        "curtain_off_floor": 18.0,
+        "curtain_above_casing": 2.0,
+        "blind": "None",
+        "blind_color": [
+          236,
+          232,
+          222
+        ],
+        "blind_lowered": 0.5,
+        "shutter": "None",
+        "shutter_color": [
+          246,
+          244,
+          238
+        ],
+        "shutter_closed": true,
+        "millwork_above": "None",
+        "millwork_above_height": 12.0,
+        "millwork_above_width": 0.0,
+        "millwork_below": "None",
+        "millwork_below_height": 12.0,
+        "millwork_below_extend": 0.0
+      },
+      "bay_roof": {
+        "kind": "Default",
+        "pitch": 6.0,
+        "overhang": 0.0
+      },
+      "window_type": "DoubleHung",
+      "component_size": 0.0,
+      "louver_size": 2.0,
+      "exterior_door": null,
+      "level": 0,
+      "mulled": null,
+      "bay": {
+        "angle_deg": 45.0,
+        "depth": 0.0,
+        "segments": 5,
+        "wall_type": null,
+        "lowered_ceiling": null,
+        "raised_floor": null,
+        "roof": {
+          "use_existing": false,
+          "extend_existing": false,
+          "rectangular": false
+        },
+        "standard_dimension": true,
+        "center_dimension": false,
+        "has_components": true,
+        "no_trimmers": false,
+        "no_framing_between": false,
+        "connect_outer_casing": false,
+        "recess": null,
+        "label": "Single",
+        "foundation": true
+      }
     }
   },
   "roof_detail": {
@@ -2388,5 +4745,41 @@
     "lower_wall_type": "",
     "roof_cuts_wall_at_bottom": true,
     "baseline_at_plate": true
+  },
+  "code": {
+    "stair_riser": 7.5,
+    "stair_tread": 10.0,
+    "stair_width": 36.0,
+    "stair_headroom": 80.0,
+    "guard_height": 36.0,
+    "handrail_height": 36.0,
+    "baluster_opening": 4.0,
+    "bedroom_window": {
+      "width": 36.0,
+      "height": 60.0,
+      "sill_height": 36.0,
+      "window_type": "Single Casement",
+      "frame_width": 0.75,
+      "sash_width": 1.5,
+      "lites_across": 1,
+      "lites_vertical": 1,
+      "egress": true,
+      "tempered": false,
+      "min_separation": 2.0,
+      "mulled": {
+        "treat_as_door": false,
+        "single_hole": false,
+        "mullion_inside": 1.5,
+        "mullion_outside": 1.5,
+        "label": "Single",
+        "layer": null,
+        "arrangement": "Horizontal",
+        "revision": 0
+      },
+      "ignore_casing": false
+    },
+    "footing_width": 16.0,
+    "footing_thickness": 8.0,
+    "garage_wall_type": ""
   }
 }

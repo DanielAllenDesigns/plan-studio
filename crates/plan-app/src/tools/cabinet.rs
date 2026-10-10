@@ -663,7 +663,7 @@ fn island_and_peninsula(others: &[Cabinet], cab: &mut Cabinet, exclude: Id, u: P
                 continue;
             }
             let (t_cab, t_o) = (cab.position.dot(v), o.position.dot(v));
-            if (t_cab - t_o).abs() <= ISLAND_REACH {
+            if (t_cab - t_o).abs() <= ISLAND_REACH + 1e-6 {
                 cab.position = cab.position + v * (t_o - t_cab);
                 return;
             }

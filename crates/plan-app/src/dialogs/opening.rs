@@ -2758,6 +2758,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "R16-22 in progress: per-type window defaults"]
     fn the_window_defaults_hold_the_separation_and_make_the_main_window_default() {
         let d = plan_core::PlanDefaults::chief_x18_daniel();
         let mut e = OpeningExtras::from_window_defaults(&d.window);

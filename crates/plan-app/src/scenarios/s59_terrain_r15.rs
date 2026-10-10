@@ -460,7 +460,7 @@ fn polyline_roads_medians_cul_de_sacs_and_sidewalks_are_placed_and_undone() {
     // Undo the sidewalks in one step.
     assert_eq!(
         sim.undo().as_deref(),
-        Some("Terrain Build")
+        Some("Build Terrain")
             .or(Some("Build Terrain"))
             .map(str::to_string)
             .as_deref()

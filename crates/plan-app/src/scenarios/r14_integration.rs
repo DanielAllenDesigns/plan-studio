@@ -168,6 +168,37 @@ fn tools_rows() -> Vec<(&'static str, Action)> {
     vec![
         ("Display Options\u{2026}", Action::OpenLayerDisplay),
         (
+            "Calculate Materials for All Floors",
+            Action::Custom(crate::dialogs::materials_list::cmd::ALL),
+        ),
+        (
+            "Calculate Materials From Selection",
+            Action::Custom(crate::dialogs::materials_list::cmd::SELECTION),
+        ),
+        (
+            "Calculate Materials in Room",
+            Action::Custom(crate::dialogs::materials_list::cmd::ROOM),
+        ),
+        (
+            "Materials List Polyline",
+            Action::SetTool(ToolId::MaterialsPolyline),
+        ),
+        (
+            "Materials List Polyline Defaults\u{2026}",
+            Action::Custom(crate::dialogs::materials_list::cmd::POLYLINE_DEFAULTS),
+        ),
+        ("Master List", Action::Custom(crate::dialogs::materials_list::cmd::MASTER)),
+        ("Save Active View", Action::Custom(crate::dialogs::materials_list::cmd::SAVE)),
+        ("Save Active View As\u{2026}", Action::Custom(crate::dialogs::materials_list::cmd::SAVE_AS)),
+        ("Materials List Management\u{2026}", Action::Custom(crate::dialogs::materials_list::cmd::MANAGE)),
+        ("Generate a Report", Action::Custom(crate::dialogs::materials_list::cmd::REPORT)),
+        ("Open Materials List\u{2026}", Action::MaterialsList),
+        ("Edit Active View\u{2026}", Action::Custom(crate::dialogs::materials_list::cmd::EDIT_VIEW)),
+        ("Update From Master List", Action::Custom(crate::dialogs::materials_list::cmd::UPDATE_FROM)),
+        ("Update To Master List", Action::Custom(crate::dialogs::materials_list::cmd::UPDATE_TO)),
+        ("Export Materials List\u{2026}", Action::Custom(crate::dialogs::materials_list::cmd::EXPORT)),
+        ("Print Materials List\u{2026}", Action::Custom(crate::dialogs::materials_list::cmd::PRINT)),
+        (
             "Layer Set Management\u{2026}",
             Action::Custom(layer_sets::OPEN),
         ),

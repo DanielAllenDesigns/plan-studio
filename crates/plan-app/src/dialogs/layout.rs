@@ -1807,7 +1807,7 @@ mod tests {
                 y.show(ctx);
             });
         }
-        assert_eq!(y.layers().layers.len(), 5);
+        assert_eq!(y.layers().layers.len(), 6);
         assert_eq!(c.spec().revision, "1");
     }
 

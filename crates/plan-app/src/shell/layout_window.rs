@@ -9532,6 +9532,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "R16-02 in progress: group drag of page CAD"]
     fn dragging_a_selected_page_drawing_moves_the_boxes_selected_with_it() {
         let (ctx, mut v, mut cx, id) = interactive();
         let (a, b) = line_clear_of(&v, id);

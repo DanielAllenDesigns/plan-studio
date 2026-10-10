@@ -1513,12 +1513,53 @@ pub struct PageInfo {
     /// `(kind, key)` of each box's source: `("Camera", id)`,
     /// `("CadDetail", name)`, `("Schedule", kind name)`.
     pub sources: Vec<(String, String)>,
+    /// The page's label as Page Information gives it, its `#` numbered
+    /// (empty: the plain sheet number).
+    pub label: String,
 }
 
 impl PageInfo {
     pub fn label(&self) -> String {
-        format!("A-{}", self.number)
+        if self.label.is_empty() {
+            format!("A-{}", self.number)
+        } else {
+            self.label.clone()
+        }
     }
+}
+
+/// The labels of a layout file's pages in page order: a `#` takes the next
+/// number among the pages with the identical label (template pages count
+/// apart), a fixed label stays, an empty one is `A-{number}`. The same rule
+/// as plan-layout's `resolve_labels`.
+fn resolved_labels(pages: &[serde_json::Value]) -> Vec<String> {
+    let mut counts: Vec<((String, bool), u32)> = Vec::new();
+    pages
+        .iter()
+        .map(|p| {
+            let label = p.get("label").and_then(|l| l.as_str()).unwrap_or("").trim();
+            let template = p.get("template_page").and_then(|t| t.as_bool()) == Some(true);
+            let number = p.get("number").and_then(|n| n.as_u64()).unwrap_or(0);
+            if label.is_empty() {
+                return format!("A-{number}");
+            }
+            if !label.contains('#') {
+                return label.to_string();
+            }
+            let key = (label.to_string(), template);
+            let n = match counts.iter_mut().find(|(k, _)| *k == key) {
+                Some((_, c)) => {
+                    *c += 1;
+                    *c
+                }
+                None => {
+                    counts.push((key, 1));
+                    1
+                }
+            };
+            label.replace('#', &n.to_string())
+        })
+        .collect()
 }
 
 fn pages_of(file: &serde_json::Value) -> Vec<PageInfo> {
@@ -1530,9 +1571,11 @@ fn pages_of(file: &serde_json::Value) -> Vec<PageInfo> {
     let Some(pages) = file.get("pages").and_then(|p| p.as_array()) else {
         return Vec::new();
     };
+    let labels = resolved_labels(pages);
     pages
         .iter()
-        .map(|p| {
+        .zip(labels)
+        .map(|(p, label)| {
             let mut sources = Vec::new();
             for b in p
                 .get("boxes")
@@ -1569,6 +1612,7 @@ fn pages_of(file: &serde_json::Value) -> Vec<PageInfo> {
                     .unwrap_or("")
                     .to_string(),
                 sources,
+                label,
             }
         })
         .collect()

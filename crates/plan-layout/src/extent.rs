@@ -222,6 +222,22 @@ fn standard_schedule_for(kind: ScheduleKind, cx: &LayoutRenderContext) -> Schedu
 /// The table a schedule, placed schedule, Materials List or sheet index box
 /// shows (for Export CSV / Excel); `None` for every other box.
 pub fn box_table(b: &crate::model::LayoutBox, cx: &LayoutRenderContext) -> Option<Schedule> {
+    let mut t = box_table_plain(b, cx)?;
+    retitle_columns(&mut t, &b.view.column_titles);
+    Some(t)
+}
+
+/// Puts the typed column headings `titles` over the table's own; a blank
+/// one keeps the table's.
+pub fn retitle_columns(t: &mut Schedule, titles: &[String]) {
+    for (c, title) in t.columns.iter_mut().zip(titles) {
+        if !title.trim().is_empty() {
+            *c = title.trim().to_string();
+        }
+    }
+}
+
+fn box_table_plain(b: &crate::model::LayoutBox, cx: &LayoutRenderContext) -> Option<Schedule> {
     match &b.source {
         BoxSource::Schedule { kind } => Some(schedule_for(*kind, cx)),
         BoxSource::PlacedSchedule { floor, id } => placed_schedule_table(cx, *floor, *id),

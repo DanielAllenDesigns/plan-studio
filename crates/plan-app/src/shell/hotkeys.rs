@@ -1339,7 +1339,7 @@ mod tests {
                 .map(|u| u.name.as_str())
                 .collect::<Vec<_>>()
         );
-        assert_eq!(s.named, 143);
+        assert_eq!(s.named, 144);
         assert_eq!(s.mapped + s.unmapped, s.named);
         assert!(s.live > 15, "live mapped: {}", s.live);
         assert_eq!(map.unmapped().len(), s.unmapped);

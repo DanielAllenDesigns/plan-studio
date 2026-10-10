@@ -198,7 +198,11 @@ pub fn show(ctx: &egui::Context, cx: &mut EditorContext) {
             ui.strong("Start");
             ui.horizontal(|ui| {
                 ui.radio_value(&mut f.start, StartKind::Absolute, "Absolute");
-                ui.radio_value(&mut f.start, StartKind::Relative, "Relative to Current Point");
+                ui.radio_value(
+                    &mut f.start,
+                    StartKind::Relative,
+                    "Relative to Current Point",
+                );
                 ui.radio_value(&mut f.start, StartKind::Polar, "Polar");
             });
             if f.start == StartKind::Polar {

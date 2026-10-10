@@ -122,9 +122,13 @@ fn number_keys_are_aliases_for_select_wall_door_and_window() {
         press_all(&mut st, &[plain(Key::Num1)]),
         vec![Action::SetTool(ToolId::Select)]
     );
+    // Daniel's file binds 2 to Join Roof Planes (command 231), and his
+    // bindings win over Plan Studio's number-key extras (DECISIONS DT1).
     assert_eq!(
         press_all(&mut st, &[plain(Key::Num2)]),
-        vec![Action::CurrentWall]
+        vec![Action::SetTool(ToolId::RoofVariant(
+            crate::tools::roof::RoofMode::Join
+        ))]
     );
     assert_eq!(
         press_all(&mut st, &[plain(Key::Num3)]),
@@ -147,12 +151,12 @@ fn number_keys_are_aliases_for_select_wall_door_and_window() {
         }
         assert_eq!(sim.app.tools.active().name(), name, "{key:?}");
     }
-    // `2` is the current wall tool (exterior until another one is picked).
+    // `2` is Join Roof Planes, Daniel's binding (DECISIONS HK16).
     for a in press_all(&mut state(), &[plain(Key::Num2)]) {
         sim.action(a);
     }
     assert!(
-        sim.app.tools.active().name().contains("Wall"),
+        sim.app.tools.active().name().contains("Join"),
         "{}",
         sim.app.tools.active().name()
     );

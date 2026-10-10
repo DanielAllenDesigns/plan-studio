@@ -1724,12 +1724,15 @@ mod tests {
         let a = rect(&mut cx, 0.0, 0.0, 10.0, 10.0);
         select(&mut cx, &[a]);
         let table = cx.project.drawing_group_defaults.clone();
-        let before = cx.floor().drawing_group(&table, plan_core::ObjectRef::Cad(a));
+        let before = cx
+            .floor()
+            .drawing_group(&table, plan_core::ObjectRef::Cad(a));
         assert_eq!(drawing_group_step(&mut cx, true).unwrap(), 1);
         assert_eq!(cx.undo_label(), Some("Bring Forward"));
         let table = cx.project.drawing_group_defaults.clone();
         assert_eq!(
-            cx.floor().drawing_group(&table, plan_core::ObjectRef::Cad(a)),
+            cx.floor()
+                .drawing_group(&table, plan_core::ObjectRef::Cad(a)),
             before + 1
         );
         assert_eq!(drawing_group_step(&mut cx, false).unwrap(), 1);
@@ -1737,7 +1740,11 @@ mod tests {
         cx.undo();
         cx.undo();
         let table = cx.project.drawing_group_defaults.clone();
-        assert_eq!(cx.floor().drawing_group(&table, plan_core::ObjectRef::Cad(a)), before);
+        assert_eq!(
+            cx.floor()
+                .drawing_group(&table, plan_core::ObjectRef::Cad(a)),
+            before
+        );
         assert!(run_command(&mut cx, DG_FORWARD));
         assert!(edit_actions(&cx).len() >= 4);
     }

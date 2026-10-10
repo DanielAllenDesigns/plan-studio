@@ -101,10 +101,7 @@ fn caution(painter: &egui::Painter, c: Pos2, r: f32) {
     ];
     painter.add(Shape::convex_polygon(pts, AMBER, Stroke::new(1.0_f32, INK)));
     painter.line_segment(
-        [
-            Pos2::new(c.x, c.y - r * 0.4),
-            Pos2::new(c.x, c.y + r * 0.2),
-        ],
+        [Pos2::new(c.x, c.y - r * 0.4), Pos2::new(c.x, c.y + r * 0.2)],
         Stroke::new(1.4_f32, INK),
     );
     painter.circle_filled(Pos2::new(c.x, c.y + r * 0.45), 0.9, INK);
@@ -116,7 +113,10 @@ fn pointer(painter: &egui::Painter, c: Pos2, wall_dir: f32, target_dir: f32, r: 
     // The wall's own direction, and where it should point.
     let tip = |a: f32, len: f32| Pos2::new(c.x + a.cos() * len, c.y + a.sin() * len);
     painter.line_segment(
-        [tip(wall_dir + std::f32::consts::PI, r * 0.7), tip(wall_dir, r * 0.7)],
+        [
+            tip(wall_dir + std::f32::consts::PI, r * 0.7),
+            tip(wall_dir, r * 0.7),
+        ],
         Stroke::new(1.4_f32, Color32::from_rgb(200, 40, 40)),
     );
     painter.line_segment(
@@ -133,11 +133,17 @@ fn connect_mark(painter: &egui::Painter, c: Pos2, r: f32) {
     painter.circle_stroke(c, r, Stroke::new(1.2_f32, INK));
     let s = Stroke::new(1.6_f32, Color32::from_rgb(40, 100, 200));
     painter.line_segment(
-        [Pos2::new(c.x - r * 0.7, c.y), Pos2::new(c.x - r * 0.15, c.y)],
+        [
+            Pos2::new(c.x - r * 0.7, c.y),
+            Pos2::new(c.x - r * 0.15, c.y),
+        ],
         s,
     );
     painter.line_segment(
-        [Pos2::new(c.x + r * 0.15, c.y), Pos2::new(c.x + r * 0.7, c.y)],
+        [
+            Pos2::new(c.x + r * 0.15, c.y),
+            Pos2::new(c.x + r * 0.7, c.y),
+        ],
         s,
     );
     painter.text(
@@ -187,7 +193,10 @@ mod tests {
     fn a_slightly_turned_wall_and_a_loose_end_each_get_an_icon() {
         let mut cx = cx();
         // 2 degrees off horizontal, nothing touching it.
-        let end = Point::new(120.0 * 2f64.to_radians().cos(), 120.0 * 2f64.to_radians().sin());
+        let end = Point::new(
+            120.0 * 2f64.to_radians().cos(),
+            120.0 * 2f64.to_radians().sin(),
+        );
         let w = cx
             .project
             .add_wall(0, Point::new(0.0, 0.0), end, 6.0, 96.0, WallKind::Interior);
@@ -217,7 +226,10 @@ mod tests {
     #[test]
     fn ignored_icons_do_not_draw() {
         let mut cx = cx();
-        let end = Point::new(120.0 * 2f64.to_radians().cos(), 120.0 * 2f64.to_radians().sin());
+        let end = Point::new(
+            120.0 * 2f64.to_radians().cos(),
+            120.0 * 2f64.to_radians().sin(),
+        );
         let w = cx
             .project
             .add_wall(0, Point::new(0.0, 0.0), end, 6.0, 96.0, WallKind::Interior);

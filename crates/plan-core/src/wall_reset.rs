@@ -122,9 +122,8 @@ impl Project {
             }
             if o.gable_lines {
                 let before = f.roofs.len();
-                f.roofs.retain(|v| {
-                    v.get("kind").and_then(|k| k.as_str()) != Some("gable_line")
-                });
+                f.roofs
+                    .retain(|v| v.get("kind").and_then(|k| k.as_str()) != Some("gable_line"));
                 r.gable_lines += before - f.roofs.len();
             }
             let ceiling = f.ceiling_height;
@@ -208,7 +207,9 @@ mod tests {
             roof_group: 2,
             ..RoomName::default()
         });
-        p.floors[0].roofs.push(serde_json::json!({"kind": "gable_line", "id": 9}));
+        p.floors[0]
+            .roofs
+            .push(serde_json::json!({"kind": "gable_line", "id": 9}));
         p.floors[0].roofs.push(serde_json::json!({"kind": "other"}));
 
         let only_heights = ResetOptions {
@@ -230,7 +231,10 @@ mod tests {
         assert!(!p.floors[0].wall(a).unwrap().flags.lock_end);
         assert!(p.floors[0].wall(b).unwrap().roof.overhang.is_none());
         // Nothing left to do the second time.
-        assert_eq!(p.reset_plan_values(0, false, &ResetOptions::all()).total(), 0);
+        assert_eq!(
+            p.reset_plan_values(0, false, &ResetOptions::all()).total(),
+            0
+        );
     }
 
     #[test]

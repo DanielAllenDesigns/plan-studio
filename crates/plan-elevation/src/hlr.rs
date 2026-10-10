@@ -723,7 +723,9 @@ pub(crate) fn render(
             if l.kind != EdgeKind::Hidden && opts.depth_weights && *d < nearest - DEPTH_BAND {
                 l.weight = step_down(l.weight);
             }
-            if let (Some((start, end, opacity)), true) = (opts.depth_cue, l.kind != EdgeKind::Hidden) {
+            if let (Some((start, end, opacity)), true) =
+                (opts.depth_cue, l.kind != EdgeKind::Hidden)
+            {
                 l.weight = cue_weight(l.weight, camera_depth - *d, start, end, opacity);
             }
         }

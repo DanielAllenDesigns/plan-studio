@@ -606,7 +606,10 @@ fn move_to_be_coplanar_raises_a_parallel_plane_into_the_other() {
     let front = shed_plane(0.0, 240.0, 40.0, 60.0, 6.0, 100.0);
     // The back plane at y = 40 is 100 + (40 - 100) * 0.5 = 90.
     let shift = coplanar_shift(&front, &back).expect("coplanar");
-    assert!((shift - (90.0 - 100.0 - (120.0 - 120.0))).abs() < 1e-9, "{shift}");
+    assert!(
+        (shift - (90.0 - 100.0 - (120.0 - 120.0))).abs() < 1e-9,
+        "{shift}"
+    );
     // Moved, the front baseline lies in the back plane.
     let mut moved = front.clone();
     for v in &mut moved.polygon3d {
@@ -620,11 +623,17 @@ fn move_to_be_coplanar_raises_a_parallel_plane_into_the_other() {
 fn coplanar_moves_refuse_planes_that_cannot_be_one() {
     let a = shed_plane(0.0, 240.0, 0.0, 100.0, 6.0, 100.0);
     let steeper = shed_plane(0.0, 240.0, 200.0, 100.0, 9.0, 100.0);
-    assert_eq!(coplanar_shift(&a, &steeper), Err(PlacementError::DifferentPitch));
+    assert_eq!(
+        coplanar_shift(&a, &steeper),
+        Err(PlacementError::DifferentPitch)
+    );
     // Baselines at an angle.
     let mut turned = shed_plane(0.0, 240.0, 200.0, 100.0, 6.0, 100.0);
     turned.baseline.1 = Point::new(240.0, 260.0);
-    assert_eq!(coplanar_shift(&a, &turned), Err(PlacementError::NotParallel));
+    assert_eq!(
+        coplanar_shift(&a, &turned),
+        Err(PlacementError::NotParallel)
+    );
     // A plane that rises the other way (baseline at the back, polygon in front).
     let mut away = shed_plane(0.0, 240.0, 300.0, 100.0, 6.0, 100.0);
     for v in &mut away.polygon3d {
@@ -693,7 +702,10 @@ fn typed_edge_lengths_read_as_projected_or_actual() {
     let b = [120.0, 90.0, 0.0];
     let (plan, actual) = edge_length(a, b);
     assert!((plan - 120.0).abs() < 1e-9 && (actual - 150.0).abs() < 1e-9);
-    assert_eq!(plan_length_for_entry(a, b, 100.0, LengthEntry::Projected), 100.0);
+    assert_eq!(
+        plan_length_for_entry(a, b, 100.0, LengthEntry::Projected),
+        100.0
+    );
     assert!((plan_length_for_entry(a, b, 100.0, LengthEntry::Actual) - 80.0).abs() < 1e-9);
     // A level edge reads the same both ways.
     let c = [60.0, 0.0, 0.0];
@@ -720,7 +732,10 @@ fn make_parallel_and_perpendicular_turn_an_edge_the_short_way() {
     let t = turn_to_align(tilted, east, false);
     assert!((t + 0.1f64.atan()).abs() < 1e-9, "{t}");
     let u = turn_to_align(tilted, east, true);
-    assert!((u - (std::f64::consts::FRAC_PI_2 - 0.1f64.atan())).abs() < 1e-9, "{u}");
+    assert!(
+        (u - (std::f64::consts::FRAC_PI_2 - 0.1f64.atan())).abs() < 1e-9,
+        "{u}"
+    );
     // Already the other way round: no more than a quarter turn.
     let back = turn_to_align(Point::new(-1.0, 0.0), east, false);
     assert!(back.abs() < 1e-9 || (back.abs() - std::f64::consts::PI).abs() > 1e-9);

@@ -352,7 +352,12 @@ pub fn reference_direction(
 /// from floor `fi` to floor `fi + delta`. Its heights are absolute, so the
 /// 3D roof does not change; the plane becomes manual (a rebuild would not
 /// know where it went). Returns the floor index it landed on.
-pub fn move_display(project: &mut Project, fi: usize, id: Id, delta: isize) -> Result<usize, String> {
+pub fn move_display(
+    project: &mut Project,
+    fi: usize,
+    id: Id,
+    delta: isize,
+) -> Result<usize, String> {
     let to = fi as isize + delta;
     if to < 0 || to as usize >= project.floors.len() {
         return Err(if delta > 0 {
@@ -479,7 +484,9 @@ pub fn run_plane_command(cx: &mut EditorContext, id: &str) -> bool {
     };
     if let Some(m) = mode {
         cx.requests
-            .push(crate::editor::EditorRequest::SetTool(ToolId::RoofVariant(m)));
+            .push(crate::editor::EditorRequest::SetTool(ToolId::RoofVariant(
+                m,
+            )));
         return true;
     }
     let Some(ObjectRef::RoofPlane(plane)) = cx.selection.single() else {
@@ -543,7 +550,7 @@ pub fn hatch_segments(poly: &[Point], spacing: f64) -> Vec<(Point, Point)> {
             }
         }
         xs.sort_by(f64::total_cmp);
-        for pair in xs.chunks_exact(2) {
+        for pair in xs.as_chunks::<2>().0 {
             out.push((
                 Point::new(pair[0], pair[0] - c),
                 Point::new(pair[1], pair[1] - c),

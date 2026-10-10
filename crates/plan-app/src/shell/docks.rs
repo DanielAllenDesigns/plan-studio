@@ -1683,7 +1683,9 @@ mod tests {
     fn every_panel_and_dialog_draws_frames_without_panicking() {
         let ctx = egui::Context::default();
         let mut cx = cx();
-        cx.project.layers.add(plan_core::Layer::new("Extra", [10, 20, 30], 18));
+        cx.project
+            .layers
+            .add(plan_core::Layer::new("Extra", [10, 20, 30], 18));
         let mut st = DockState::default();
         st.layers.selected = Some("Doors".into());
         st.library.query = "toilet".into();

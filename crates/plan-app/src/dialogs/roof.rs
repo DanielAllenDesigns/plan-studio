@@ -859,6 +859,7 @@ impl PlanePages {
             "plane_edge10",
             "plane_edge11",
         ];
+        #[allow(clippy::needless_range_loop)]
         for i in 0..self.draft.polygon3d.len().min(KEYS.len()) {
             let Some((plan, actual)) = self.draft.edge_lengths(i) else {
                 continue;
@@ -2067,7 +2068,10 @@ impl SpecPages for BaselinePages {
         ui.radio_value(
             &mut self.choice,
             BaselineOver::ExistingPlane,
-            format!("Over the Existing Roof Plane ({})", fmt_short(self.existing)),
+            format!(
+                "Over the Existing Roof Plane ({})",
+                fmt_short(self.existing)
+            ),
         );
         ui.weak("A dormer vent or cricket sitting on the roof surface.");
     }
@@ -2078,7 +2082,10 @@ impl SpecPages for BaselinePages {
         let w = area.width() * 0.7;
         let wall = Stroke::new(1.5_f32, PV_INK);
         let left = c.x - w * 0.5;
-        p.line_segment([Pos2::new(left, c.y + 30.0), Pos2::new(left, c.y - 10.0)], wall);
+        p.line_segment(
+            [Pos2::new(left, c.y + 30.0), Pos2::new(left, c.y - 10.0)],
+            wall,
+        );
         p.line_segment(
             [Pos2::new(left, c.y - 10.0), Pos2::new(left + w, c.y - 50.0)],
             wall,
@@ -2251,7 +2258,8 @@ mod tests {
     fn typing_a_height_raises_the_plane_with_its_pitch_locked() {
         let mut d = sample_dialog();
         let before = d.pages.plane_heights();
-        d.pages.set_height(HeightLock::RidgeTop, before.ridge_top() + 6.0);
+        d.pages
+            .set_height(HeightLock::RidgeTop, before.ridge_top() + 6.0);
         let after = d.pages.plane_heights();
         assert_eq!(d.pages.draft.pitch, 8.0);
         assert!((after.baseline - before.baseline - 6.0).abs() < 1e-9);
@@ -2272,11 +2280,17 @@ mod tests {
         let (plan, actual) = d.pages.draft.edge_lengths(1).unwrap();
         assert!((plan - 144.0).abs() < 1e-9);
         assert!((actual - (144.0f64.powi(2) + 96.0f64.powi(2)).sqrt()).abs() < 1e-9);
-        assert!(d.pages.draft.set_edge_length(1, 72.0, LengthEntry::Projected));
+        assert!(d
+            .pages
+            .draft
+            .set_edge_length(1, 72.0, LengthEntry::Projected));
         assert!((d.pages.draft.edge_lengths(1).unwrap().0 - 72.0).abs() < 1e-6);
         // Typed along the slope.
         let (p, a) = d.pages.draft.edge_lengths(1).unwrap();
-        assert!(d.pages.draft.set_edge_length(1, a / 2.0, LengthEntry::Actual));
+        assert!(d
+            .pages
+            .draft
+            .set_edge_length(1, a / 2.0, LengthEntry::Actual));
         assert!((d.pages.draft.edge_lengths(1).unwrap().0 - p / 2.0).abs() < 1e-6);
         // The report adds up.
         let rep = d.pages.draft.report(6.0);

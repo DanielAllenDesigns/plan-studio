@@ -240,7 +240,9 @@ pub fn rig(
 /// The scale a camera's Ambient Occlusion amount puts on the look's own
 /// strength: the slider's middle (0.5) keeps it, 0 turns it off, 1 doubles it.
 pub fn ao_scale(view: Option<&CameraView>) -> f32 {
-    view.map_or(1.0, |v| (v.options.ambient_occlusion * 2.0).clamp(0.0, 2.0) as f32)
+    view.map_or(1.0, |v| {
+        (v.options.ambient_occlusion * 2.0).clamp(0.0, 2.0) as f32
+    })
 }
 
 /// The lens a camera's Depth of Field settings give the ray tracer:
@@ -249,8 +251,12 @@ pub fn ao_scale(view: Option<&CameraView>) -> f32 {
 /// as the Ray Trace window's own default lens (4 in).
 pub fn dof_lens(view: &CameraView) -> Option<(f32, f32)> {
     let o = &view.options;
-    o.dof_on
-        .then(|| ((24.0 / o.f_stop.max(1.0)) as f32, o.focus_distance.max(1.0) as f32))
+    o.dof_on.then(|| {
+        (
+            (24.0 / o.f_stop.max(1.0)) as f32,
+            o.focus_distance.max(1.0) as f32,
+        )
+    })
 }
 
 /// The near clip a camera's Clip Surfaces Within asks for: always for an
@@ -328,16 +334,8 @@ impl SliderClip {
         // Scene (x, up, -plan y) to the slider's (plan x, plan y, up).
         let to_plan = |p: [f32; 3]| [f64::from(p[0]), -f64::from(p[2]), f64::from(p[1])];
         let (lo, hi) = (
-            [
-                f64::from(lo[0]),
-                -f64::from(hi[2]),
-                f64::from(lo[1]),
-            ],
-            [
-                f64::from(hi[0]),
-                -f64::from(lo[2]),
-                f64::from(hi[1]),
-            ],
+            [f64::from(lo[0]), -f64::from(hi[2]), f64::from(lo[1])],
+            [f64::from(hi[0]), -f64::from(lo[2]), f64::from(hi[1])],
         );
         let slider = self.as_slider();
         let mut out = Scene::default();
@@ -413,10 +411,7 @@ pub fn hide_facing_from(c: &CameraObject) -> Option<plan_core::geometry::Point> 
 /// What a camera adds to the scope beyond floors: its slider planes and the
 /// plan position to hide camera-facing walls from.
 pub fn extra_scope_of(c: &CameraObject) -> (SliderClip, Option<plan_core::geometry::Point>) {
-    (
-        SliderClip::of(&c.view.slider),
-        hide_facing_from(c),
-    )
+    (SliderClip::of(&c.view.slider), hide_facing_from(c))
 }
 
 #[cfg(test)]

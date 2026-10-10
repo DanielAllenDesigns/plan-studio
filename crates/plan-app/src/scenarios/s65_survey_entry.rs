@@ -199,7 +199,9 @@ fn delete_removes_temporary_points_in_reverse_order_and_selecting_one_makes_it_c
     assert_eq!(survey::current_point(), Some(Point::new(50.0, 50.0)));
     // Selecting the first point makes it current (the refresh hook).
     let first_id = sim.app.cx.floor().cad[0].id;
-    sim.cx().selection.set(crate::editor::ObjectRef::Cad(first_id));
+    sim.cx()
+        .selection
+        .set(crate::editor::ObjectRef::Cad(first_id));
     sim.cx().refresh();
     assert_eq!(survey::current_point(), Some(Point::new(10.0, 10.0)));
     sim.cx().selection.clear();
@@ -278,7 +280,11 @@ fn new_cad_arcs_chain_with_next_and_undo_one_at_a_time() {
         },
     )
     .unwrap();
-    assert!(first.end.dist(Point::new(1200.0, 1200.0)) < 1e-6, "{:?}", first.end);
+    assert!(
+        first.end.dist(Point::new(1200.0, 1200.0)) < 1e-6,
+        "{:?}",
+        first.end
+    );
     // Next: leaves the end heading east, a compound curve to the left.
     let second = survey::enter_arc(
         sim.cx(),
@@ -293,7 +299,11 @@ fn new_cad_arcs_chain_with_next_and_undo_one_at_a_time() {
     )
     .unwrap();
     assert!(second.start.dist(first.end) < 1e-9);
-    assert!(second.end.dist(Point::new(1800.0, 1800.0)) < 1e-6, "{:?}", second.end);
+    assert!(
+        second.end.dist(Point::new(1800.0, 1800.0)) < 1e-6,
+        "{:?}",
+        second.end
+    );
     let arcs = |sim: &Sim| {
         sim.app
             .cx

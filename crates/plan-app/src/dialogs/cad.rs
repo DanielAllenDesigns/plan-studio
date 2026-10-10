@@ -22,6 +22,7 @@
 pub mod blocks;
 pub mod locks;
 
+use self::locks::{ArcEdit, ArcLock, ArcShape, LineEdit, LineLock};
 use super::{
     fmt_short, on, pv_text, row, section, Fields, Outcome, SpecDialog, SpecPages, Tab, PV_ACCENT,
     PV_FAINT, PV_INK,
@@ -29,7 +30,6 @@ use super::{
 use crate::editor::selection::cad_by_id;
 use crate::editor::{EditorContext, ObjectRef};
 use crate::tools::cad::{apply_hatch, plan_hatch, HATCHES};
-use self::locks::{ArcEdit, ArcLock, ArcShape, LineEdit, LineLock};
 use eframe::egui::{self, Align2, Color32, Painter, Pos2, Rect, Shape, Stroke, Ui, Vec2};
 use plan_core::cad::{ArrowStyle, CadAttrs, CadItem, FillAttr};
 use plan_core::geometry::{polygon_area, Point};

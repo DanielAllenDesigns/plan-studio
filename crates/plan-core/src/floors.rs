@@ -2127,7 +2127,11 @@ mod tests {
         let wall = p.floors[0].walls[0].id;
         let id = p.add_opening(0, wall, 60.0, OpeningKind::Window).unwrap();
         {
-            let o = p.floors[0].openings.iter_mut().find(|o| o.id == id).unwrap();
+            let o = p.floors[0]
+                .openings
+                .iter_mut()
+                .find(|o| o.id == id)
+                .unwrap();
             o.style = OpeningStyle::BayWindow;
             o.width = 50.0;
             o.extras.spec.bay = BayUnit::for_style(OpeningStyle::BayWindow);
@@ -2136,8 +2140,15 @@ mod tests {
         }
         p.build_foundation(FoundationKind::StemWall { height: 36.0 });
         let before = p.floors[0].walls.len();
-        p.floors[1].openings.iter_mut().find(|o| o.id == id).unwrap().extras.spec.bay.raised_floor =
-            None;
+        p.floors[1]
+            .openings
+            .iter_mut()
+            .find(|o| o.id == id)
+            .unwrap()
+            .extras
+            .spec
+            .bay
+            .raised_floor = None;
         p.build_foundation(FoundationKind::StemWall { height: 36.0 });
         // Three more walls, one per section, standing outside the first wall.
         let f = &p.floors[0];

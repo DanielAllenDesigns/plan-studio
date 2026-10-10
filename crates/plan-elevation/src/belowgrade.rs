@@ -40,7 +40,11 @@ pub fn override_below(drawing: &mut Drawing, limit: f64, style: &BelowGradeStyle
     let mut out = Vec::with_capacity(drawing.lines.len());
     let mut styled = Vec::new();
     for l in drawing.lines.drain(..) {
-        let (lo, hi) = if l.a.y <= l.b.y { (l.a, l.b) } else { (l.b, l.a) };
+        let (lo, hi) = if l.a.y <= l.b.y {
+            (l.a, l.b)
+        } else {
+            (l.b, l.a)
+        };
         if lo.y >= limit - 1e-9 {
             out.push(l);
             continue;
@@ -102,7 +106,11 @@ mod tests {
 
     #[test]
     fn a_line_across_grade_is_split_and_only_the_lower_part_changes() {
-        let mut d = Drawing::new(vec![line(-48.0, 48.0), line(10.0, 90.0), line(-30.0, -10.0)]);
+        let mut d = Drawing::new(vec![
+            line(-48.0, 48.0),
+            line(10.0, 90.0),
+            line(-30.0, -10.0),
+        ]);
         override_below(
             &mut d,
             0.0,

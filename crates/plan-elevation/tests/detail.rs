@@ -580,7 +580,11 @@ fn depth_cue_fades_lines_by_distance_behind_the_nearest() {
     );
     assert!(score(&flat, true) > 0);
     assert_eq!(score(&cued, true), 0, "the far box is all Light");
-    assert_eq!(score(&cued, false), score(&flat, false), "the near box is untouched");
+    assert_eq!(
+        score(&cued, false),
+        score(&flat, false),
+        "the near box is untouched"
+    );
     // Half-opaque fog never gets past one class.
     let half = elevation(
         &scene,

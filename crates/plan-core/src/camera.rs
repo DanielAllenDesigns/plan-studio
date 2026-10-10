@@ -426,7 +426,11 @@ impl CameraObject {
         let d = self.direction();
         let n = d.perp();
         // Plan Display's Camera Symbol Size is the glyph's length.
-        let len = self.view.plan.symbol_size.map_or(GLYPH_LENGTH, |s| s.max(1.0));
+        let len = self
+            .view
+            .plan
+            .symbol_size
+            .map_or(GLYPH_LENGTH, |s| s.max(1.0));
         let half_width = GLYPH_HALF_WIDTH * len / GLYPH_LENGTH;
         let tip = self.position + d * (len * 0.5);
         let back = self.position - d * (len * 0.5);

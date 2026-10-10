@@ -19,11 +19,11 @@ pub mod spec;
 
 pub use annot::{AnnotKind, DrawSurface, ViewAnnotation};
 pub use clip::{ClipVolume, SectionClip, StepPlane};
+use serde::{Deserialize, Serialize};
 pub use spec::{
     BelowGrade, BelowGradeLimit, CalloutArrow, CalloutPlacement, CameraOptions, CrossSectionSlider,
     DepthCue, PlanDisplay, SliderPlane, SliderSide, SuperResolution, ViewDefaults, ViewLayer,
 };
-use serde::{Deserialize, Serialize};
 
 /// Preview draws fast (no shadows, low quality); Final View is the full look:
 /// shadows, occlusion and anti-aliasing (Chief's "Final View" button).

@@ -1626,10 +1626,10 @@ impl CadTool {
                         current_arc_mode(),
                         ArcMode::CenterStartEnd | ArcMode::AboutCenter
                     ) {
-                        *pts.get(2)?
-                    } else {
-                        *pts.get(1)?
-                    };
+                    *pts.get(2)?
+                } else {
+                    *pts.get(1)?
+                };
                 arc_heading(arc, end).map(|d| (end, d))
             }
             _ => None,
@@ -1752,10 +1752,7 @@ impl CadTool {
         };
         self.typed = Some(Typed::new(
             TypedKind::Line,
-            vec![
-                ("Length", String::new(), false),
-                ("Angle", angle, true),
-            ],
+            vec![("Length", String::new(), false), ("Angle", angle, true)],
         ));
         set_typing(cx, true);
     }

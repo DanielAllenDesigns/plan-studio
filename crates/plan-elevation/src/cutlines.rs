@@ -156,7 +156,10 @@ mod tests {
 
     #[test]
     fn a_stepped_plane_numbers_the_edges_by_piece() {
-        let d = drawing(vec![cut(1, -50.0, -40.0, 0.0, 96.0), cut(2, 40.0, 50.0, 0.0, 96.0)]);
+        let d = drawing(vec![
+            cut(1, -50.0, -40.0, 0.0, 96.0),
+            cut(2, 40.0, 50.0, 0.0, 96.0),
+        ]);
         let lines = cross_section_lines(&d, &[0.0]);
         assert!(find_cut(&lines, 1, 0).is_some());
         assert!(find_cut(&lines, 2, 4).is_some());

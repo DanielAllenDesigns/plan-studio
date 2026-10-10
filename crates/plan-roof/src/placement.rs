@@ -87,9 +87,7 @@ pub fn coplanar_shift(moving: &RoofPlane, target: &RoofPlane) -> Result<f64, Pla
         return Err(PlacementError::DifferentPitch);
     }
     let here = moving.polygon3d.first().ok_or(PlacementError::Degenerate)?;
-    let want = target
-        .height_at(a0)
-        .ok_or(PlacementError::Degenerate)?;
+    let want = target.height_at(a0).ok_or(PlacementError::Degenerate)?;
     Ok(want - here[1])
 }
 

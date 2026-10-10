@@ -394,9 +394,7 @@ impl GenericPage {
                         }
                         // The Number Style and Angle Style belong to the plan
                         // (Round 16 brief 06).
-                        if spec.id == "general"
-                            && ui.button("Number Style...").clicked()
-                        {
+                        if spec.id == "general" && ui.button("Number Style...").clicked() {
                             crate::dialogs::number_style::open();
                         }
                     });

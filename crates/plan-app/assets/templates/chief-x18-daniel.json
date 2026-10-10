@@ -581,7 +581,7 @@
       "temp_reach": 48.0,
       "temp_walls": "Surfaces",
       "temp_exterior_primary": true,
-      "temp_exterior_secondary": false,
+      "temp_exterior_secondary": true,
       "temp_interior_primary": true,
       "temp_interior_secondary": true,
       "temp_interior_centers": false,
@@ -605,29 +605,52 @@
         "primary_heights_only": true,
         "marks": [
           {
+            "kind": "Grade",
+            "name": "",
+            "outer": false,
+            "included": false
+          },
+          {
             "kind": "TopOfSubfloor",
             "name": "",
-            "outer": true
+            "outer": true,
+            "included": true
           },
           {
             "kind": "TopOfPlate",
             "name": "",
-            "outer": true
+            "outer": true,
+            "included": true
           },
           {
             "kind": "Ceiling",
             "name": "",
-            "outer": false
+            "outer": false,
+            "included": true
           },
           {
             "kind": "Eave",
             "name": "",
-            "outer": false
+            "outer": false,
+            "included": true
           },
           {
             "kind": "Ridge",
             "name": "",
-            "outer": true
+            "outer": true,
+            "included": true
+          },
+          {
+            "kind": "OpeningSill",
+            "name": "",
+            "outer": false,
+            "included": false
+          },
+          {
+            "kind": "OpeningHead",
+            "name": "",
+            "outer": false,
+            "included": false
           }
         ]
       }
@@ -768,7 +791,7 @@
           "temp_reach": 48.0,
           "temp_walls": "Surfaces",
           "temp_exterior_primary": true,
-          "temp_exterior_secondary": false,
+          "temp_exterior_secondary": true,
           "temp_interior_primary": true,
           "temp_interior_secondary": true,
           "temp_interior_centers": false,
@@ -792,29 +815,52 @@
             "primary_heights_only": true,
             "marks": [
               {
+                "kind": "Grade",
+                "name": "",
+                "outer": false,
+                "included": false
+              },
+              {
                 "kind": "TopOfSubfloor",
                 "name": "",
-                "outer": true
+                "outer": true,
+                "included": true
               },
               {
                 "kind": "TopOfPlate",
                 "name": "",
-                "outer": true
+                "outer": true,
+                "included": true
               },
               {
                 "kind": "Ceiling",
                 "name": "",
-                "outer": false
+                "outer": false,
+                "included": true
               },
               {
                 "kind": "Eave",
                 "name": "",
-                "outer": false
+                "outer": false,
+                "included": true
               },
               {
                 "kind": "Ridge",
                 "name": "",
-                "outer": true
+                "outer": true,
+                "included": true
+              },
+              {
+                "kind": "OpeningSill",
+                "name": "",
+                "outer": false,
+                "included": false
+              },
+              {
+                "kind": "OpeningHead",
+                "name": "",
+                "outer": false,
+                "included": false
               }
             ]
           }
@@ -955,7 +1001,7 @@
           "temp_reach": 48.0,
           "temp_walls": "Surfaces",
           "temp_exterior_primary": true,
-          "temp_exterior_secondary": false,
+          "temp_exterior_secondary": true,
           "temp_interior_primary": true,
           "temp_interior_secondary": true,
           "temp_interior_centers": false,
@@ -979,29 +1025,52 @@
             "primary_heights_only": true,
             "marks": [
               {
+                "kind": "Grade",
+                "name": "",
+                "outer": false,
+                "included": false
+              },
+              {
                 "kind": "TopOfSubfloor",
                 "name": "",
-                "outer": true
+                "outer": true,
+                "included": true
               },
               {
                 "kind": "TopOfPlate",
                 "name": "",
-                "outer": true
+                "outer": true,
+                "included": true
               },
               {
                 "kind": "Ceiling",
                 "name": "",
-                "outer": false
+                "outer": false,
+                "included": true
               },
               {
                 "kind": "Eave",
                 "name": "",
-                "outer": false
+                "outer": false,
+                "included": true
               },
               {
                 "kind": "Ridge",
                 "name": "",
-                "outer": true
+                "outer": true,
+                "included": true
+              },
+              {
+                "kind": "OpeningSill",
+                "name": "",
+                "outer": false,
+                "included": false
+              },
+              {
+                "kind": "OpeningHead",
+                "name": "",
+                "outer": false,
+                "included": false
               }
             ]
           }
@@ -1142,7 +1211,7 @@
           "temp_reach": 48.0,
           "temp_walls": "Surfaces",
           "temp_exterior_primary": true,
-          "temp_exterior_secondary": false,
+          "temp_exterior_secondary": true,
           "temp_interior_primary": true,
           "temp_interior_secondary": true,
           "temp_interior_centers": false,
@@ -1166,29 +1235,52 @@
             "primary_heights_only": true,
             "marks": [
               {
+                "kind": "Grade",
+                "name": "",
+                "outer": false,
+                "included": false
+              },
+              {
                 "kind": "TopOfSubfloor",
                 "name": "",
-                "outer": true
+                "outer": true,
+                "included": true
               },
               {
                 "kind": "TopOfPlate",
                 "name": "",
-                "outer": true
+                "outer": true,
+                "included": true
               },
               {
                 "kind": "Ceiling",
                 "name": "",
-                "outer": false
+                "outer": false,
+                "included": true
               },
               {
                 "kind": "Eave",
                 "name": "",
-                "outer": false
+                "outer": false,
+                "included": true
               },
               {
                 "kind": "Ridge",
                 "name": "",
-                "outer": true
+                "outer": true,
+                "included": true
+              },
+              {
+                "kind": "OpeningSill",
+                "name": "",
+                "outer": false,
+                "included": false
+              },
+              {
+                "kind": "OpeningHead",
+                "name": "",
+                "outer": false,
+                "included": false
               }
             ]
           }
@@ -1329,7 +1421,7 @@
           "temp_reach": 48.0,
           "temp_walls": "Surfaces",
           "temp_exterior_primary": true,
-          "temp_exterior_secondary": false,
+          "temp_exterior_secondary": true,
           "temp_interior_primary": true,
           "temp_interior_secondary": true,
           "temp_interior_centers": false,
@@ -1353,29 +1445,52 @@
             "primary_heights_only": true,
             "marks": [
               {
+                "kind": "Grade",
+                "name": "",
+                "outer": false,
+                "included": false
+              },
+              {
                 "kind": "TopOfSubfloor",
                 "name": "",
-                "outer": true
+                "outer": true,
+                "included": true
               },
               {
                 "kind": "TopOfPlate",
                 "name": "",
-                "outer": true
+                "outer": true,
+                "included": true
               },
               {
                 "kind": "Ceiling",
                 "name": "",
-                "outer": false
+                "outer": false,
+                "included": true
               },
               {
                 "kind": "Eave",
                 "name": "",
-                "outer": false
+                "outer": false,
+                "included": true
               },
               {
                 "kind": "Ridge",
                 "name": "",
-                "outer": true
+                "outer": true,
+                "included": true
+              },
+              {
+                "kind": "OpeningSill",
+                "name": "",
+                "outer": false,
+                "included": false
+              },
+              {
+                "kind": "OpeningHead",
+                "name": "",
+                "outer": false,
+                "included": false
               }
             ]
           }
@@ -1516,7 +1631,7 @@
           "temp_reach": 48.0,
           "temp_walls": "Surfaces",
           "temp_exterior_primary": true,
-          "temp_exterior_secondary": false,
+          "temp_exterior_secondary": true,
           "temp_interior_primary": true,
           "temp_interior_secondary": true,
           "temp_interior_centers": false,
@@ -1540,29 +1655,52 @@
             "primary_heights_only": true,
             "marks": [
               {
+                "kind": "Grade",
+                "name": "",
+                "outer": false,
+                "included": false
+              },
+              {
                 "kind": "TopOfSubfloor",
                 "name": "",
-                "outer": true
+                "outer": true,
+                "included": true
               },
               {
                 "kind": "TopOfPlate",
                 "name": "",
-                "outer": true
+                "outer": true,
+                "included": true
               },
               {
                 "kind": "Ceiling",
                 "name": "",
-                "outer": false
+                "outer": false,
+                "included": true
               },
               {
                 "kind": "Eave",
                 "name": "",
-                "outer": false
+                "outer": false,
+                "included": true
               },
               {
                 "kind": "Ridge",
                 "name": "",
-                "outer": true
+                "outer": true,
+                "included": true
+              },
+              {
+                "kind": "OpeningSill",
+                "name": "",
+                "outer": false,
+                "included": false
+              },
+              {
+                "kind": "OpeningHead",
+                "name": "",
+                "outer": false,
+                "included": false
               }
             ]
           }
@@ -1703,7 +1841,7 @@
           "temp_reach": 48.0,
           "temp_walls": "Surfaces",
           "temp_exterior_primary": true,
-          "temp_exterior_secondary": false,
+          "temp_exterior_secondary": true,
           "temp_interior_primary": true,
           "temp_interior_secondary": true,
           "temp_interior_centers": false,
@@ -1727,29 +1865,52 @@
             "primary_heights_only": true,
             "marks": [
               {
+                "kind": "Grade",
+                "name": "",
+                "outer": false,
+                "included": false
+              },
+              {
                 "kind": "TopOfSubfloor",
                 "name": "",
-                "outer": true
+                "outer": true,
+                "included": true
               },
               {
                 "kind": "TopOfPlate",
                 "name": "",
-                "outer": true
+                "outer": true,
+                "included": true
               },
               {
                 "kind": "Ceiling",
                 "name": "",
-                "outer": false
+                "outer": false,
+                "included": true
               },
               {
                 "kind": "Eave",
                 "name": "",
-                "outer": false
+                "outer": false,
+                "included": true
               },
               {
                 "kind": "Ridge",
                 "name": "",
-                "outer": true
+                "outer": true,
+                "included": true
+              },
+              {
+                "kind": "OpeningSill",
+                "name": "",
+                "outer": false,
+                "included": false
+              },
+              {
+                "kind": "OpeningHead",
+                "name": "",
+                "outer": false,
+                "included": false
               }
             ]
           }
@@ -1890,7 +2051,7 @@
           "temp_reach": 48.0,
           "temp_walls": "Surfaces",
           "temp_exterior_primary": true,
-          "temp_exterior_secondary": false,
+          "temp_exterior_secondary": true,
           "temp_interior_primary": true,
           "temp_interior_secondary": true,
           "temp_interior_centers": false,
@@ -1914,29 +2075,52 @@
             "primary_heights_only": true,
             "marks": [
               {
+                "kind": "Grade",
+                "name": "",
+                "outer": false,
+                "included": false
+              },
+              {
                 "kind": "TopOfSubfloor",
                 "name": "",
-                "outer": true
+                "outer": true,
+                "included": true
               },
               {
                 "kind": "TopOfPlate",
                 "name": "",
-                "outer": true
+                "outer": true,
+                "included": true
               },
               {
                 "kind": "Ceiling",
                 "name": "",
-                "outer": false
+                "outer": false,
+                "included": true
               },
               {
                 "kind": "Eave",
                 "name": "",
-                "outer": false
+                "outer": false,
+                "included": true
               },
               {
                 "kind": "Ridge",
                 "name": "",
-                "outer": true
+                "outer": true,
+                "included": true
+              },
+              {
+                "kind": "OpeningSill",
+                "name": "",
+                "outer": false,
+                "included": false
+              },
+              {
+                "kind": "OpeningHead",
+                "name": "",
+                "outer": false,
+                "included": false
               }
             ]
           }
@@ -2077,7 +2261,7 @@
           "temp_reach": 48.0,
           "temp_walls": "Surfaces",
           "temp_exterior_primary": true,
-          "temp_exterior_secondary": false,
+          "temp_exterior_secondary": true,
           "temp_interior_primary": true,
           "temp_interior_secondary": true,
           "temp_interior_centers": false,
@@ -2101,29 +2285,52 @@
             "primary_heights_only": true,
             "marks": [
               {
+                "kind": "Grade",
+                "name": "",
+                "outer": false,
+                "included": false
+              },
+              {
                 "kind": "TopOfSubfloor",
                 "name": "",
-                "outer": true
+                "outer": true,
+                "included": true
               },
               {
                 "kind": "TopOfPlate",
                 "name": "",
-                "outer": true
+                "outer": true,
+                "included": true
               },
               {
                 "kind": "Ceiling",
                 "name": "",
-                "outer": false
+                "outer": false,
+                "included": true
               },
               {
                 "kind": "Eave",
                 "name": "",
-                "outer": false
+                "outer": false,
+                "included": true
               },
               {
                 "kind": "Ridge",
                 "name": "",
-                "outer": true
+                "outer": true,
+                "included": true
+              },
+              {
+                "kind": "OpeningSill",
+                "name": "",
+                "outer": false,
+                "included": false
+              },
+              {
+                "kind": "OpeningHead",
+                "name": "",
+                "outer": false,
+                "included": false
               }
             ]
           }
@@ -2264,7 +2471,7 @@
           "temp_reach": 48.0,
           "temp_walls": "Surfaces",
           "temp_exterior_primary": true,
-          "temp_exterior_secondary": false,
+          "temp_exterior_secondary": true,
           "temp_interior_primary": true,
           "temp_interior_secondary": true,
           "temp_interior_centers": false,
@@ -2288,29 +2495,52 @@
             "primary_heights_only": true,
             "marks": [
               {
+                "kind": "Grade",
+                "name": "",
+                "outer": false,
+                "included": false
+              },
+              {
                 "kind": "TopOfSubfloor",
                 "name": "",
-                "outer": true
+                "outer": true,
+                "included": true
               },
               {
                 "kind": "TopOfPlate",
                 "name": "",
-                "outer": true
+                "outer": true,
+                "included": true
               },
               {
                 "kind": "Ceiling",
                 "name": "",
-                "outer": false
+                "outer": false,
+                "included": true
               },
               {
                 "kind": "Eave",
                 "name": "",
-                "outer": false
+                "outer": false,
+                "included": true
               },
               {
                 "kind": "Ridge",
                 "name": "",
-                "outer": true
+                "outer": true,
+                "included": true
+              },
+              {
+                "kind": "OpeningSill",
+                "name": "",
+                "outer": false,
+                "included": false
+              },
+              {
+                "kind": "OpeningHead",
+                "name": "",
+                "outer": false,
+                "included": false
               }
             ]
           }
@@ -2451,7 +2681,7 @@
           "temp_reach": 48.0,
           "temp_walls": "Surfaces",
           "temp_exterior_primary": true,
-          "temp_exterior_secondary": false,
+          "temp_exterior_secondary": true,
           "temp_interior_primary": true,
           "temp_interior_secondary": true,
           "temp_interior_centers": false,
@@ -2475,29 +2705,52 @@
             "primary_heights_only": true,
             "marks": [
               {
+                "kind": "Grade",
+                "name": "",
+                "outer": false,
+                "included": false
+              },
+              {
                 "kind": "TopOfSubfloor",
                 "name": "",
-                "outer": true
+                "outer": true,
+                "included": true
               },
               {
                 "kind": "TopOfPlate",
                 "name": "",
-                "outer": true
+                "outer": true,
+                "included": true
               },
               {
                 "kind": "Ceiling",
                 "name": "",
-                "outer": false
+                "outer": false,
+                "included": true
               },
               {
                 "kind": "Eave",
                 "name": "",
-                "outer": false
+                "outer": false,
+                "included": true
               },
               {
                 "kind": "Ridge",
                 "name": "",
-                "outer": true
+                "outer": true,
+                "included": true
+              },
+              {
+                "kind": "OpeningSill",
+                "name": "",
+                "outer": false,
+                "included": false
+              },
+              {
+                "kind": "OpeningHead",
+                "name": "",
+                "outer": false,
+                "included": false
               }
             ]
           }
@@ -2638,7 +2891,7 @@
           "temp_reach": 48.0,
           "temp_walls": "Surfaces",
           "temp_exterior_primary": true,
-          "temp_exterior_secondary": false,
+          "temp_exterior_secondary": true,
           "temp_interior_primary": true,
           "temp_interior_secondary": true,
           "temp_interior_centers": false,
@@ -2662,29 +2915,52 @@
             "primary_heights_only": true,
             "marks": [
               {
+                "kind": "Grade",
+                "name": "",
+                "outer": false,
+                "included": false
+              },
+              {
                 "kind": "TopOfSubfloor",
                 "name": "",
-                "outer": true
+                "outer": true,
+                "included": true
               },
               {
                 "kind": "TopOfPlate",
                 "name": "",
-                "outer": true
+                "outer": true,
+                "included": true
               },
               {
                 "kind": "Ceiling",
                 "name": "",
-                "outer": false
+                "outer": false,
+                "included": true
               },
               {
                 "kind": "Eave",
                 "name": "",
-                "outer": false
+                "outer": false,
+                "included": true
               },
               {
                 "kind": "Ridge",
                 "name": "",
-                "outer": true
+                "outer": true,
+                "included": true
+              },
+              {
+                "kind": "OpeningSill",
+                "name": "",
+                "outer": false,
+                "included": false
+              },
+              {
+                "kind": "OpeningHead",
+                "name": "",
+                "outer": false,
+                "included": false
               }
             ]
           }
@@ -2825,7 +3101,7 @@
           "temp_reach": 48.0,
           "temp_walls": "Surfaces",
           "temp_exterior_primary": true,
-          "temp_exterior_secondary": false,
+          "temp_exterior_secondary": true,
           "temp_interior_primary": true,
           "temp_interior_secondary": true,
           "temp_interior_centers": false,
@@ -2849,29 +3125,52 @@
             "primary_heights_only": true,
             "marks": [
               {
+                "kind": "Grade",
+                "name": "",
+                "outer": false,
+                "included": false
+              },
+              {
                 "kind": "TopOfSubfloor",
                 "name": "",
-                "outer": true
+                "outer": true,
+                "included": true
               },
               {
                 "kind": "TopOfPlate",
                 "name": "",
-                "outer": true
+                "outer": true,
+                "included": true
               },
               {
                 "kind": "Ceiling",
                 "name": "",
-                "outer": false
+                "outer": false,
+                "included": true
               },
               {
                 "kind": "Eave",
                 "name": "",
-                "outer": false
+                "outer": false,
+                "included": true
               },
               {
                 "kind": "Ridge",
                 "name": "",
-                "outer": true
+                "outer": true,
+                "included": true
+              },
+              {
+                "kind": "OpeningSill",
+                "name": "",
+                "outer": false,
+                "included": false
+              },
+              {
+                "kind": "OpeningHead",
+                "name": "",
+                "outer": false,
+                "included": false
               }
             ]
           }
@@ -3012,7 +3311,7 @@
           "temp_reach": 48.0,
           "temp_walls": "Surfaces",
           "temp_exterior_primary": true,
-          "temp_exterior_secondary": false,
+          "temp_exterior_secondary": true,
           "temp_interior_primary": true,
           "temp_interior_secondary": true,
           "temp_interior_centers": false,
@@ -3036,29 +3335,52 @@
             "primary_heights_only": true,
             "marks": [
               {
+                "kind": "Grade",
+                "name": "",
+                "outer": false,
+                "included": false
+              },
+              {
                 "kind": "TopOfSubfloor",
                 "name": "",
-                "outer": true
+                "outer": true,
+                "included": true
               },
               {
                 "kind": "TopOfPlate",
                 "name": "",
-                "outer": true
+                "outer": true,
+                "included": true
               },
               {
                 "kind": "Ceiling",
                 "name": "",
-                "outer": false
+                "outer": false,
+                "included": true
               },
               {
                 "kind": "Eave",
                 "name": "",
-                "outer": false
+                "outer": false,
+                "included": true
               },
               {
                 "kind": "Ridge",
                 "name": "",
-                "outer": true
+                "outer": true,
+                "included": true
+              },
+              {
+                "kind": "OpeningSill",
+                "name": "",
+                "outer": false,
+                "included": false
+              },
+              {
+                "kind": "OpeningHead",
+                "name": "",
+                "outer": false,
+                "included": false
               }
             ]
           }
@@ -3977,6 +4299,10 @@
     "grid_snaps": true,
     "angle_snaps": true,
     "snap_angles": [],
+    "additional_angles": [],
+    "restrictive_angle_deg": 90.0,
+    "anchor_history": 6,
+    "angle_snap_grid": false,
     "behavior": {
       "mode": "Default",
       "resize_proportional": false,
@@ -3985,6 +4311,10 @@
       "fillet_radius": 0.0,
       "chamfer_distance": 0.0,
       "alternate_lock_axis": true,
+      "concentric_jump": 0.0,
+      "stop_when_connected": true,
+      "movement_polar": false,
+      "behavior_indicators": true,
       "replicate_copies": 1,
       "replicate_dialog": false
     }

@@ -25,6 +25,10 @@ use serde::{Deserialize, Serialize};
 
 pub use deck::{deck_edge_railing, Deck};
 pub use landing::polygon_slab;
+pub use landing_rules::{
+    adjacent_edges, adjacent_height, are_adjacent, auto_height, auto_thickness, short_edge,
+    ADJACENT_TOLERANCE, FREE_STANDING_THICKNESS, MIN_SHORT_EDGE,
+};
 pub use model3d::{meshes, tagged_meshes, tagged_meshes_skipping, StairPart};
 pub use options::{
     ArrowStyle, BreakStyle, DisplayRule, EdgeRail, Flare, HandrailOptions, PlanOptions,
@@ -38,10 +42,6 @@ pub use railing::{
     stair_railing_skipping, LandingGuard, NewelParams, PostPlacement, PostSkip, RailSide,
     RailStyle, RailingGeometry, RailingParams, StairPosts, StairRailingGeometry, GUARD_HEIGHT,
     MAX_BALUSTER_CLEAR, STAIR_RAIL_HEIGHT,
-};
-pub use landing_rules::{
-    adjacent_edges, adjacent_height, are_adjacent, auto_height, auto_thickness, short_edge,
-    ADJACENT_TOLERANCE, FREE_STANDING_THICKNESS, MIN_SHORT_EDGE,
 };
 pub use sections::{complete_break, disconnect, MIN_BREAK_LANDING};
 pub use spec::{

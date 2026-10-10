@@ -33,8 +33,8 @@
 pub mod arch_block;
 pub mod assemblies;
 pub mod bearing;
-pub mod calc;
 pub mod cad;
+pub mod calc;
 pub mod callout;
 pub mod camera;
 pub mod camera_view;

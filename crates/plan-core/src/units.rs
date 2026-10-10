@@ -375,7 +375,10 @@ mod tests {
         assert!(close(parse_length("-6", ft).unwrap(), -6.0));
         assert!(close(parse_length("-3 1/2", ft).unwrap(), -3.5));
         assert!(close(parse_length("-6", LengthUnit::Inches).unwrap(), -6.0));
-        assert!(close(parse_length("-2", LengthUnit::DecimalFeet).unwrap(), -24.0));
+        assert!(close(
+            parse_length("-2", LengthUnit::DecimalFeet).unwrap(),
+            -24.0
+        ));
         assert!(close(parse_length("-6in", ft).unwrap(), -6.0));
         assert!(close(parse_length("-5mm", ft).unwrap(), -5.0 / MM_PER_INCH));
         assert!(close(parse_length("10 + -6", ft).unwrap(), 4.0));

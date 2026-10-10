@@ -2175,7 +2175,10 @@ pub fn draw_camera_symbols(
     if cx.project.layers.is_visible(CAMERA_LAYER) {
         draw_light_symbols(cx, painter, cam);
     }
-    let Some(c) = selected.and_then(|id| cx.project.camera(id)).filter(|c| shown(c)) else {
+    let Some(c) = selected
+        .and_then(|id| cx.project.camera(id))
+        .filter(|c| shown(c))
+    else {
         return;
     };
     if c.floor != cx.floor {

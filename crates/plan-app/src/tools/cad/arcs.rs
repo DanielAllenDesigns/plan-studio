@@ -911,14 +911,14 @@ pub fn input_arc(
     extent: Extent,
 ) -> Result<InputArc, &'static str> {
     use std::f64::consts::TAU;
-    if !(radius > 1e-6) {
+    if radius.is_nan() || radius <= 1e-6 {
         return Err("The radius needs a distance above zero");
     }
     let sweep = match extent {
         Extent::Angle(deg) => deg.to_radians(),
         Extent::ArcLength(len) => len / radius,
         Extent::ChordLength(chord) => {
-            if !(chord > 1e-9) {
+            if chord.is_nan() || chord <= 1e-9 {
                 return Err("The chord length needs a distance above zero");
             }
             if chord > 2.0 * radius + 1e-9 {
@@ -927,7 +927,7 @@ pub fn input_arc(
             2.0 * (chord / (2.0 * radius)).min(1.0).asin()
         }
     };
-    if !(sweep > 1e-9) {
+    if sweep.is_nan() || sweep <= 1e-9 {
         return Err("The arc needs a length or angle above zero");
     }
     if sweep > TAU + 1e-9 {
@@ -1445,10 +1445,25 @@ mod tests {
 
     #[test]
     fn input_arc_extents_agree() {
-        let by_angle = input_arc(p(5.0, 5.0), 30.0, 120.0, Curve::Left, Extent::Angle(60.0)).unwrap();
+        let by_angle =
+            input_arc(p(5.0, 5.0), 30.0, 120.0, Curve::Left, Extent::Angle(60.0)).unwrap();
         let len = 120.0 * 60f64.to_radians();
-        let by_len = input_arc(p(5.0, 5.0), 30.0, 120.0, Curve::Left, Extent::ArcLength(len)).unwrap();
-        let by_chord = input_arc(p(5.0, 5.0), 30.0, 120.0, Curve::Left, Extent::ChordLength(120.0)).unwrap();
+        let by_len = input_arc(
+            p(5.0, 5.0),
+            30.0,
+            120.0,
+            Curve::Left,
+            Extent::ArcLength(len),
+        )
+        .unwrap();
+        let by_chord = input_arc(
+            p(5.0, 5.0),
+            30.0,
+            120.0,
+            Curve::Left,
+            Extent::ChordLength(120.0),
+        )
+        .unwrap();
         // A 60 degree arc has a chord equal to its radius.
         assert!(near(by_angle.end, by_len.end) && near(by_angle.end, by_chord.end));
         assert!((by_chord.sweep - 60.0).abs() < 1e-9);
@@ -1469,7 +1484,13 @@ mod tests {
     #[test]
     fn free_form_and_about_center_arcs() {
         // A dragged path bulging up from (0,0) to (100,0).
-        let path = [p(0.0, 0.0), p(25.0, 30.0), p(50.0, 40.0), p(75.0, 30.0), p(100.0, 0.0)];
+        let path = [
+            p(0.0, 0.0),
+            p(25.0, 30.0),
+            p(50.0, 40.0),
+            p(75.0, 30.0),
+            p(100.0, 0.0),
+        ];
         let CadItem::Arc { center, radius, .. } = free_form_arc(&path).unwrap() else {
             panic!()
         };
@@ -1509,7 +1530,10 @@ mod tests {
             panic!()
         };
         // Starts where the removed edge ended and runs round to where it began.
-        assert_eq!(rest.pts, vec![p(0.0, 100.0), p(0.0, 0.0), p(100.0, 0.0), p(100.0, 100.0)]);
+        assert_eq!(
+            rest.pts,
+            vec![p(0.0, 100.0), p(0.0, 0.0), p(100.0, 0.0), p(100.0, 100.0)]
+        );
         assert_eq!(rest.bulge, vec![None, None, Some(0.5), None]);
         assert!(!rest.closed);
         // The arc edge on its own is an arc object.
@@ -1520,7 +1544,13 @@ mod tests {
     #[test]
     fn disconnecting_in_an_open_polyline_splits_it_in_up_to_three() {
         let open = Logical {
-            pts: vec![p(0.0, 0.0), p(10.0, 0.0), p(10.0, 10.0), p(0.0, 10.0), p(0.0, 20.0)],
+            pts: vec![
+                p(0.0, 0.0),
+                p(10.0, 0.0),
+                p(10.0, 10.0),
+                p(0.0, 10.0),
+                p(0.0, 20.0),
+            ],
             bulge: vec![None; 5],
             closed: false,
         };
@@ -1573,7 +1603,10 @@ mod tests {
             panic!()
         };
         assert!(!closed);
-        assert_eq!(points, &vec![p(100.0, 100.0), p(0.0, 100.0), p(0.0, 0.0), p(100.0, 0.0)]);
+        assert_eq!(
+            points,
+            &vec![p(100.0, 100.0), p(0.0, 100.0), p(0.0, 0.0), p(100.0, 0.0)]
+        );
         // The edge is selected on its own; one undo puts the polyline back.
         assert!(cx.selection.contains(ObjectRef::Cad(id)));
         cx.undo();
@@ -1615,7 +1648,11 @@ mod tests {
         // Deleting a vertex forgets a hidden edge that is gone.
         let mut dt = tool(CadMode::DeleteBreak);
         click(&mut dt, &mut cx, 0.0, 100.0);
-        let hidden = cx.floor().cad_attrs(id).map(|a| a.hidden_edges).unwrap_or_default();
+        let hidden = cx
+            .floor()
+            .cad_attrs(id)
+            .map(|a| a.hidden_edges)
+            .unwrap_or_default();
         assert!(hidden.iter().all(|e| *e < 3), "{hidden:?}");
     }
 }

@@ -292,7 +292,11 @@ pub fn arc_edit(arc: ArcShape, lock: ArcLock, edit: ArcEdit) -> ArcShape {
                     let n = e.sub(s).normalized().perp();
                     // Keep the center on the side it was (a major arc has
                     // it on the same side as the bulge).
-                    let side = if n.dot(center.sub(mid)) >= 0.0 { 1.0 } else { -1.0 };
+                    let side = if n.dot(center.sub(mid)) >= 0.0 {
+                        1.0
+                    } else {
+                        -1.0
+                    };
                     let c = mid.add(n.scale(side * (r * r - half * half).max(0.0).sqrt()));
                     ArcShape {
                         center: c,
@@ -364,7 +368,10 @@ mod tests {
         assert!(near(s, p(25.0, 0.0)) && near(e, p(75.0, 0.0)));
         // Angle: the center turns the line about itself.
         let (s, e) = line_edit(a, b, LineLock::Center, LineEdit::Angle(90.0));
-        assert!(near(s, p(50.0, -50.0)) && near(e, p(50.0, 50.0)), "{s:?} {e:?}");
+        assert!(
+            near(s, p(50.0, -50.0)) && near(e, p(50.0, 50.0)),
+            "{s:?} {e:?}"
+        );
         let (s, e) = line_edit(a, b, LineLock::Start, LineEdit::Angle(90.0));
         assert!(near(s, a) && near(e, p(0.0, 100.0)));
     }
@@ -390,8 +397,14 @@ mod tests {
     #[test]
     fn end_points_follow_the_lock() {
         let (a, b) = (p(0.0, 0.0), p(100.0, 0.0));
-        assert_eq!(line_edit(a, b, LineLock::Start, LineEdit::Start(p(1.0, 1.0))), (a, b));
-        assert_eq!(line_edit(a, b, LineLock::End, LineEdit::End(p(1.0, 1.0))), (a, b));
+        assert_eq!(
+            line_edit(a, b, LineLock::Start, LineEdit::Start(p(1.0, 1.0))),
+            (a, b)
+        );
+        assert_eq!(
+            line_edit(a, b, LineLock::End, LineEdit::End(p(1.0, 1.0))),
+            (a, b)
+        );
         let (s, e) = line_edit(a, b, LineLock::End, LineEdit::Start(p(10.0, 10.0)));
         assert!(near(s, p(10.0, 10.0)) && near(e, b));
         // Center lock: the end is mirrored through the center.
@@ -435,7 +448,10 @@ mod tests {
         let arc = quarter();
         let moved = arc_edit(arc, ArcLock::Arc, ArcEdit::Center(p(10.0, 20.0)));
         assert!(near(moved.start(), p(110.0, 20.0)) && (moved.sweep() - arc.sweep()).abs() < 1e-12);
-        assert_eq!(arc_edit(arc, ArcLock::Center, ArcEdit::Center(p(1.0, 1.0))), arc);
+        assert_eq!(
+            arc_edit(arc, ArcLock::Center, ArcEdit::Center(p(1.0, 1.0))),
+            arc
+        );
         let s = arc_edit(arc, ArcLock::Start, ArcEdit::Center(p(0.0, 100.0)));
         assert!(near(s.start(), arc.start()) && near(s.center, p(0.0, 100.0)));
         let a = arc_edit(arc, ArcLock::Start, ArcEdit::StartAngle(0.5));

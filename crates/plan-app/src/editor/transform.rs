@@ -543,6 +543,10 @@ pub fn reflect_selection(cx: &mut EditorContext, a: Point, b: Point, copy: bool)
         cx.begin_change("Reflect Copy");
         let fresh = clip.paste(cx, Point::ZERO, false);
         let rep = apply_xform(cx, &fresh, &x);
+        if rep.changed == 0 {
+            cx.cancel_change();
+            return rep;
+        }
         cx.selection.items = fresh;
         cx.mark_dirty();
         return rep;
@@ -552,6 +556,11 @@ pub fn reflect_selection(cx: &mut EditorContext, a: Point, b: Point, copy: bool)
     }
     cx.begin_change("Reflect");
     let rep = apply_xform(cx, &items, &x);
+    if rep.changed == 0 {
+        // Nothing in the selection could be mirrored: no undo step.
+        cx.cancel_change();
+        return rep;
+    }
     cx.mark_dirty();
     rep
 }

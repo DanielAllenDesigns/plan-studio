@@ -91,14 +91,18 @@ pub fn layer_snap_candidates(
         if cross.abs() < 1e-3 {
             continue;
         }
+        // The other wall's centerline and every face of its layers.
+        let mut lats = vec![0.0];
         for ob in wall_layer_bands(o, ty_of(o)) {
-            for lat in [ob.outer, ob.inner] {
-                let q = o.start + o.normal() * lat;
-                // Distance along `outward` from `mid` to the line through q.
-                let t = (q - mid).cross(od) / cross;
-                if t.abs() <= reach {
-                    out.push(t);
-                }
+            lats.push(ob.outer);
+            lats.push(ob.inner);
+        }
+        for lat in lats {
+            let q = o.start + o.normal() * lat;
+            // Distance along `outward` from `mid` to the line through q.
+            let t = (q - mid).cross(od) / cross;
+            if t.abs() <= reach {
+                out.push(t);
             }
         }
     }
@@ -228,7 +232,10 @@ mod tests {
         assert!(p.set_layer_join(0, a, WallEnd::End, 0, 3.0));
         let slid = p.floors[0].walls.clone();
         let out = wall_layer_outlines(&slid, &types, 0.5);
-        let o = out.iter().find(|o| o.wall_id == a && o.layer_index == 0).unwrap();
+        let o = out
+            .iter()
+            .find(|o| o.wall_id == a && o.layer_index == 0)
+            .unwrap();
         // The corners of that layer on the end side moved 3 in along the wall.
         let moved = o
             .polygon

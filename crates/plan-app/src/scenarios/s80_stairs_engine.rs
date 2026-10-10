@@ -82,7 +82,7 @@ fn a_broken_stair_numbers_its_sections_and_lists_them_in_the_table() {
     let (lo, up) = broken_stair(&mut sim);
     let all = staircase::staircase(sim.app.cx.floor(), lo);
     assert_eq!(all.len(), 3, "flight, landing, flight");
-    assert_eq!(all[1].is_landing(), true);
+    assert!(all[1].is_landing());
     let rows = staircase::spec_table(sim.app.cx.floor(), up);
     assert_eq!(
         rows.iter().map(|r| r.number.as_str()).collect::<Vec<_>>(),
@@ -283,7 +283,7 @@ fn two_flights_end_to_end_merge_into_one_section_of_two_subsections() {
         .filter_map(|(_, mesh)| mesh.bounds())
         .map(|(_, hi)| f64::from(hi[1]))
         .fold(f64::MIN, f64::max);
-    assert!(top >= 105.0 - 1e-3 && top < 120.0, "{top}");
+    assert!((105.0 - 1e-3..120.0).contains(&top), "{top}");
     // One undo step puts both flights back.
     assert_eq!(sim.undo().as_deref(), Some("Merge Sections"));
     assert_eq!(stairs(&sim), start);

@@ -61,15 +61,15 @@ pub use gable::{
 };
 pub use group::{assign_roof_groups, has_groups, GroupedRoom, RoofAssignment};
 pub use halfhip::DEFAULT_CLIP_FRACTION;
+pub use heights::{
+    actual_length, birdsmouth_cut_for_seat, birdsmouth_seat_for_cut, independent_edges,
+    projected_length, seated_eave_elevation, vertical_structure_depth, HeightLock, HeightSettings,
+    PlaneHeights, RoofFraming, NO_BIRDSMOUTH_RAISE,
+};
 pub use hole::{
     ceiling_hole_outline, hole_pieces, move_shape_corner, rim_walls, roof_plane_with_holes,
     shape_outline, CeilingHole, HoleKind, HoleRim, RimWall, RoofHole, RoofPolygonWithHoles,
     Skylight, SkylightOptions, SkylightShape, SkylightSpec, DEFAULT_SKYLIGHT_SIZE, SKYLIGHT_FACETS,
-};
-pub use heights::{
-    actual_length, birdsmouth_cut_for_seat, birdsmouth_seat_for_cut, independent_edges,
-    projected_length, seated_eave_elevation, vertical_structure_depth, HeightLock,
-    HeightSettings, PlaneHeights, RoofFraming, NO_BIRDSMOUTH_RAISE,
 };
 pub use join::join_planes;
 pub use placement::{

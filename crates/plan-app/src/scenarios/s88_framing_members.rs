@@ -104,7 +104,10 @@ fn a_default_member_applies_type_and_role_and_keeps_the_size() {
         1
     );
     assert_eq!(steps(&sim), steps0 + 1);
-    assert_eq!(sim.app.cx.undo_label(), Some("Apply Framing Default Properties"));
+    assert_eq!(
+        sim.app.cx.undo_label(),
+        Some("Apply Framing Default Properties")
+    );
     let Some(Record::Manual(after)) = framing_view::find(sim.app.cx.floor(), id) else {
         panic!("still stored");
     };
@@ -163,7 +166,11 @@ fn the_reporting_dialog_totals_equal_the_takeoff_under_each_method() {
     framing_defaults::set_catalog(&mut sim.app.cx, &cat, "Structural Member Reporting");
     let r = member_reporting::active_report(&sim.app.cx);
     assert!(r.pieces() <= f64::from(pieces) + 0.5, "{}", r.pieces());
-    assert!(r.linear_feet() + 0.5 >= feet, "{} vs {feet}", r.linear_feet());
+    assert!(
+        r.linear_feet() + 0.5 >= feet,
+        "{} vs {feet}",
+        r.linear_feet()
+    );
 }
 
 #[test]

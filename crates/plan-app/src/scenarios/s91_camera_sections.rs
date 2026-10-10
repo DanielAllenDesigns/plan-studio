@@ -256,7 +256,11 @@ fn cut_walls_get_cross_section_lines_and_a_dimension_to_one_stays_on_it() {
     draw_shell(&mut sim, W, H);
     let id = through_walls(&mut sim);
     let lines = lines_of(&sim, id);
-    assert!(lines.len() >= 8, "four lines for each of the two cut walls: {}", lines.len());
+    assert!(
+        lines.len() >= 8,
+        "four lines for each of the two cut walls: {}",
+        lines.len()
+    );
     let face = lines
         .iter()
         .find(|l| l.edge == 0)
@@ -293,7 +297,11 @@ fn cut_walls_get_cross_section_lines_and_a_dimension_to_one_stays_on_it() {
     };
     assert_eq!(n, 1, "only the end that meets the line is attached");
     let c = camera(&sim, id);
-    assert_eq!(c.view.annotations.len(), 2, "the dimension and a Point Marker");
+    assert_eq!(
+        c.view.annotations.len(),
+        2,
+        "the dimension and a Point Marker"
+    );
     assert!(c
         .view
         .annotations
@@ -302,7 +310,9 @@ fn cut_walls_get_cross_section_lines_and_a_dimension_to_one_stays_on_it() {
     // Thicken the wall: its face moves and the dimension follows it.
     let wall = face.object;
     let before = lines_of(&sim, id);
-    let was = plan_elevation::find_cut(&before, wall, 0).unwrap().position();
+    let was = plan_elevation::find_cut(&before, wall, 0)
+        .unwrap()
+        .position();
     sim.app.cx.begin_change("Thicken");
     for f in &mut sim.app.cx.project.floors {
         for w in &mut f.walls {
@@ -312,7 +322,9 @@ fn cut_walls_get_cross_section_lines_and_a_dimension_to_one_stays_on_it() {
         }
     }
     let after = lines_of(&sim, id);
-    let now = plan_elevation::find_cut(&after, wall, 0).unwrap().position();
+    let now = plan_elevation::find_cut(&after, wall, 0)
+        .unwrap()
+        .position();
     assert!((now - was).abs() > 1.0, "the face moved: {was} -> {now}");
     let c = camera(&sim, id);
     let drawing = render_elevation_with(&sim.app.cx.project, c, &elevation_options(c));
@@ -366,7 +378,11 @@ fn depth_cue_fades_the_far_lines_and_below_grade_restyles_the_low_ones() {
         c.view.depth_cue.set_start(60.0);
         c.view.depth_cue.opacity = 1.0;
     });
-    assert!(heavy(&sim) < plain, "the far lines fade: {plain} -> {}", heavy(&sim));
+    assert!(
+        heavy(&sim) < plain,
+        "the far lines fade: {plain} -> {}",
+        heavy(&sim)
+    );
     // Below Grade: everything under 48 in is dashed and red.
     edit(&mut sim, id, "Below Grade", |c| {
         c.view.depth_cue.on = false;
@@ -378,10 +394,10 @@ fn depth_cue_fades_the_far_lines_and_below_grade_restyles_the_low_ones() {
     });
     let c = camera(&sim, id);
     let d = render_elevation_with(&sim.app.cx.project, c, &elevation_options(c));
-    assert!(d
-        .styled
-        .iter()
-        .any(|s| s.color == [200, 0, 0] && s.dashed && s.a.y <= 48.0 + 1e-6 && s.b.y <= 48.0 + 1e-6));
+    assert!(d.styled.iter().any(|s| s.color == [200, 0, 0]
+        && s.dashed
+        && s.a.y <= 48.0 + 1e-6
+        && s.b.y <= 48.0 + 1e-6));
     assert!(d
         .lines
         .iter()
@@ -398,13 +414,25 @@ fn a_stepped_plane_has_handles_in_the_plan_that_move_and_step_it() {
     let mut sim = Sim::new();
     let id = through_walls(&mut sim);
     let mut c = camera(&sim, id).clone();
-    assert!(!handles_of(&c).iter().any(|(h, _)| matches!(h, CamHandle::Break(_))));
+    assert!(!handles_of(&c)
+        .iter()
+        .any(|(h, _)| matches!(h, CamHandle::Break(_))));
     // Add Break at a plan point on the line.
     let at = plane_point(&c, 30.0, 0.0).unwrap();
     assert!(add_section_break(&mut c, at));
     let hs = handles_of(&c);
-    assert_eq!(hs.iter().filter(|(h, _)| matches!(h, CamHandle::Break(_))).count(), 1);
-    assert_eq!(hs.iter().filter(|(h, _)| matches!(h, CamHandle::Step(_))).count(), 2);
+    assert_eq!(
+        hs.iter()
+            .filter(|(h, _)| matches!(h, CamHandle::Break(_)))
+            .count(),
+        1
+    );
+    assert_eq!(
+        hs.iter()
+            .filter(|(h, _)| matches!(h, CamHandle::Step(_)))
+            .count(),
+        2
+    );
     // Drag the second piece's handle square to the line: a step of 24 in.
     let to = plane_point(&c, 100.0, 24.0).unwrap();
     apply_handle(&mut c, CamHandle::Step(1), to, false);
@@ -437,7 +465,10 @@ fn plan_display_places_labels_and_shows_the_camera_on_every_floor() {
     assert_eq!(cos.len(), 2, "a callout at each end");
     assert!(cos.iter().all(|c| c.number == "A" && c.radius == 15.0));
     assert!(cos.iter().all(|c| c.below.as_deref() == Some("SEE A-3")));
-    assert!(cos.iter().all(|c| c.arrows.len() == 1), "an arrow at each end");
+    assert!(
+        cos.iter().all(|c| c.arrows.len() == 1),
+        "an arrow at each end"
+    );
     // Display on All Floors puts the symbol on the other floors too.
     assert!(callouts_on(&sim.app.cx.project, 1, &style).is_empty());
     edit(&mut sim, id, "Display on All Floors", |c| {
@@ -459,7 +490,11 @@ fn auto_elevations_can_be_made_one_side_at_a_time() {
     let front = add_auto_elevations_for(p, 0, false, Some(AutoSide::Front));
     assert_eq!(front.len(), 1);
     assert_eq!(p.camera(front[0]).unwrap().name, "South Elevation");
-    assert_eq!(p.camera(front[0]).unwrap().direction_deg, 90.0, "looks north at the front");
+    assert_eq!(
+        p.camera(front[0]).unwrap().direction_deg,
+        90.0,
+        "looks north at the front"
+    );
     let right = add_auto_elevations_for(p, 0, false, Some(AutoSide::Right));
     assert_eq!(p.camera(right[0]).unwrap().name, "East Elevation");
     assert_eq!(p.cameras.len(), 2);
@@ -471,8 +506,14 @@ fn auto_elevations_can_be_made_one_side_at_a_time() {
     assert_eq!(add_auto_elevations_for(p, 0, false, None).len(), 4);
     assert_eq!(p.cameras.len(), 4);
     // The section layers exist for the views to draw.
-    assert!(p.layers.get(plan_core::camera_view::clip::CROSS_SECTION_LAYER).is_some_and(|l| l.locked));
-    assert!(p.layers.get(plan_core::camera_view::clip::CLIP_LINES_LAYER).is_some_and(|l| !l.display));
+    assert!(p
+        .layers
+        .get(plan_core::camera_view::clip::CROSS_SECTION_LAYER)
+        .is_some_and(|l| l.locked));
+    assert!(p
+        .layers
+        .get(plan_core::camera_view::clip::CLIP_LINES_LAYER)
+        .is_some_and(|l| !l.display));
 }
 
 #[test]
@@ -495,7 +536,11 @@ fn a_saved_overview_has_a_plan_symbol_that_places_its_view() {
     // The symbol looks along +Y for 200 in: the target is 200 in north of it.
     assert!((p.eye[0] - 100.0).abs() < 1e-9 && (p.eye[2] + 50.0).abs() < 1e-9);
     assert!((p.target[2] + 250.0).abs() < 1e-9);
-    assert_eq!((p.eye[1], p.target[1]), (300.0, 40.0), "the heights are kept");
+    assert_eq!(
+        (p.eye[1], p.target[1]),
+        (300.0, 40.0),
+        "the heights are kept"
+    );
     // Moving the symbol moves the view; a copy has its own place.
     c.position = Point::new(130.0, 80.0);
     let moved = c.overview_pose().unwrap();
@@ -508,4 +553,3 @@ fn a_saved_overview_has_a_plan_symbol_that_places_its_view() {
     });
     assert_eq!(c.overview_pose(), c.view.pose);
 }
-

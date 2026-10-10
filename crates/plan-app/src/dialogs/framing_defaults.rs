@@ -21,9 +21,7 @@ use super::{on, row, section, Outcome, SpecDialog, SpecPages, Tab, ERROR_RED};
 use crate::editor::{framing_view, EditorContext};
 use eframe::egui::{self, Align, Align2, Key, Layout, Modifiers, Ui};
 use plan_framing::catalog::{self, FramingCatalog, FramingMemberDef, Role};
-use plan_framing::{
-    AlignExterior, BeamPlacement, CatalogError, CategoryChoice, MaterialsCategory,
-};
+use plan_framing::{AlignExterior, BeamPlacement, CatalogError, CategoryChoice, MaterialsCategory};
 use std::cell::RefCell;
 
 pub use auto::AutoDialog;
@@ -451,7 +449,10 @@ impl MembersDialog {
     pub fn purge(&mut self) -> usize {
         let n = self.draft.purge_defs();
         self.selected.retain(|x| self.draft.def_named(x).is_some());
-        self.message = format!("Purged {n} unused definition{}", if n == 1 { "" } else { "s" });
+        self.message = format!(
+            "Purged {n} unused definition{}",
+            if n == 1 { "" } else { "s" }
+        );
         n
     }
 
@@ -528,7 +529,7 @@ impl MembersDialog {
                         }
                         ui.end_row();
                         let mut defs: Vec<&FramingMemberDef> = self.draft.defs.iter().collect();
-                        defs.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+                        defs.sort_by_key(|d| d.name.to_lowercase());
                         for d in defs {
                             let sel = self.selected.contains(&d.name);
                             let r = ui.selectable_label(sel, &d.name);
@@ -547,7 +548,11 @@ impl MembersDialog {
                             ui.label(&d.material);
                             ui.label(d.role.name());
                             ui.label(d.category.name());
-                            ui.label(if self.draft.def_in_use(&d.name) { "\u{2713}" } else { "" });
+                            ui.label(if self.draft.def_in_use(&d.name) {
+                                "\u{2713}"
+                            } else {
+                                ""
+                            });
                             ui.end_row();
                         }
                     });
@@ -570,7 +575,10 @@ impl MembersDialog {
                 self.message.clear();
                 self.copy_selected();
             }
-            if ui.add_enabled(one, egui::Button::new("Rename...")).clicked() {
+            if ui
+                .add_enabled(one, egui::Button::new("Rename..."))
+                .clicked()
+            {
                 self.message.clear();
                 self.prompt = self.selected.first().cloned();
             }
@@ -783,7 +791,13 @@ impl ManualForm {
     fn beams(&mut self, ui: &mut Ui) {
         let names = def_names(&self.draft);
         section(ui, "Floor/Ceiling Beams");
-        section_rows(ui, "mf_fb", &names, &mut self.draft.manual.floor_beam, false);
+        section_rows(
+            ui,
+            "mf_fb",
+            &names,
+            &mut self.draft.manual.floor_beam,
+            false,
+        );
         section(ui, "Roof Beams");
         section_rows(ui, "mf_rb", &names, &mut self.draft.manual.roof_beam, false);
         section(ui, "Options");
@@ -814,7 +828,13 @@ impl ManualForm {
         section(ui, "Posts");
         section_rows(ui, "mf_post", &names, &mut self.draft.manual.post, true);
         section(ui, "Post with Footings");
-        section_rows(ui, "mf_pwf", &names, &mut self.draft.manual.post_footing, true);
+        section_rows(
+            ui,
+            "mf_pwf",
+            &names,
+            &mut self.draft.manual.post_footing,
+            true,
+        );
         let m = &mut self.draft.manual;
         row(ui, "Footing Height Above Floor", |ui| {
             inches(ui, &mut m.footing_height, 0.0, 96.0)
@@ -826,8 +846,16 @@ impl ManualForm {
             inches(ui, &mut m.footing_width, 1.0, 240.0)
         });
         row(ui, "Footing Shape", |ui| {
-            ui.radio_value(&mut m.footing_shape, plan_framing::catalog::FootingShape::Square, "Square");
-            ui.radio_value(&mut m.footing_shape, plan_framing::catalog::FootingShape::Round, "Round");
+            ui.radio_value(
+                &mut m.footing_shape,
+                plan_framing::catalog::FootingShape::Square,
+                "Square",
+            );
+            ui.radio_value(
+                &mut m.footing_shape,
+                plan_framing::catalog::FootingShape::Round,
+                "Round",
+            );
         });
         row(ui, "Footing Rebar Size Number", |ui| {
             ui.add(egui::DragValue::new(&mut m.rebar_size).range(2..=18));
@@ -841,9 +869,18 @@ impl ManualForm {
         section(ui, "Materials");
         ui.weak("The material of a framing object affects only how it looks in 3D views and in framing schedules; the Materials List comes from its type.");
         for (label, con) in [
-            ("General Framing", self.draft.manual.general.construction.clone()),
-            ("Floor/Ceiling Beams", self.draft.manual.floor_beam.construction.clone()),
-            ("Roof Beams", self.draft.manual.roof_beam.construction.clone()),
+            (
+                "General Framing",
+                self.draft.manual.general.construction.clone(),
+            ),
+            (
+                "Floor/Ceiling Beams",
+                self.draft.manual.floor_beam.construction.clone(),
+            ),
+            (
+                "Roof Beams",
+                self.draft.manual.roof_beam.construction.clone(),
+            ),
             ("Posts", self.draft.manual.post.construction.clone()),
         ] {
             let mat = self
@@ -862,10 +899,16 @@ impl SpecPages for ManualForm {
 
     fn error(&self) -> Option<String> {
         let m = &self.draft.manual;
-        [&m.general, &m.floor_beam, &m.roof_beam, &m.post, &m.post_footing]
-            .iter()
-            .find(|s| self.draft.def_named(&s.construction).is_none())
-            .map(|s| format!("\"{}\" is not a Default Framing Member", s.construction))
+        [
+            &m.general,
+            &m.floor_beam,
+            &m.roof_beam,
+            &m.post,
+            &m.post_footing,
+        ]
+        .iter()
+        .find(|s| self.draft.def_named(&s.construction).is_none())
+        .map(|s| format!("\"{}\" is not a Default Framing Member", s.construction))
     }
 
     fn page(&mut self, ui: &mut Ui, tab: usize) {
@@ -1002,8 +1045,7 @@ pub fn commit_automatic(
     catalog: &FramingCatalog,
 ) {
     let settings_changed = framing_view::settings(&cx.project) != *settings;
-    let catalog_changed =
-        !catalog::project_has_catalog(&cx.project) || catalog_of(cx) != *catalog;
+    let catalog_changed = !catalog::project_has_catalog(&cx.project) || catalog_of(cx) != *catalog;
     if settings_changed {
         // Opens the step; the catalog joins it.
         framing_view::set_settings(cx, settings.clone());
@@ -1072,8 +1114,14 @@ mod tests {
         d.editor.as_mut().unwrap().def.framing_type = "PSL".into();
         d.editor_ok().unwrap();
         assert_eq!(d.draft.def_named("Posts").unwrap().framing_type, "PSL");
-        assert_eq!(d.draft.def_named("Posts - Steel").unwrap().framing_type, "PSL");
-        assert_eq!(d.draft.def_named("Posts - Steel").unwrap().name, "Posts - Steel");
+        assert_eq!(
+            d.draft.def_named("Posts - Steel").unwrap().framing_type,
+            "PSL"
+        );
+        assert_eq!(
+            d.draft.def_named("Posts - Steel").unwrap().name,
+            "Posts - Steel"
+        );
     }
 
     #[test]

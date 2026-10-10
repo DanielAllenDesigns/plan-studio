@@ -723,7 +723,8 @@ impl PlanApp {
             use plan_core::openings::types::DefaultKey;
             use plan_core::{OpeningKind, OpeningStyle};
             // The plain Door and Window keep the dialogs they always had.
-            let hinged = |exterior| DefaultKey::new(OpeningKind::Door, OpeningStyle::Hinged, exterior);
+            let hinged =
+                |exterior| DefaultKey::new(OpeningKind::Door, OpeningStyle::Hinged, exterior);
             self.open_defaults_entry(if key == DefaultKey::main_window() {
                 DefaultsEntry::Window
             } else if key == hinged(false) {
@@ -1622,7 +1623,11 @@ impl PlanApp {
                         .defaults
                         .opening_variants
                         .place(&base, key.style, key.exterior);
-                Some(opening_dialog(OpeningTarget::DefaultType(key), template, self))
+                Some(opening_dialog(
+                    OpeningTarget::DefaultType(key),
+                    template,
+                    self,
+                ))
             }
             DefaultsEntry::Dimensions => {
                 self.lists = Some(dialogs::DefaultsList::dimensions(&self.cx));

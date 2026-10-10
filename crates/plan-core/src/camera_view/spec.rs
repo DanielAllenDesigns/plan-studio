@@ -149,10 +149,7 @@ impl SliderSide {
 
     /// Does the plane move from the high end of its axis?
     fn starts_high(self) -> bool {
-        matches!(
-            self,
-            SliderSide::Right | SliderSide::Back | SliderSide::Top
-        )
+        matches!(self, SliderSide::Right | SliderSide::Back | SliderSide::Top)
     }
 }
 
@@ -395,7 +392,8 @@ pub enum CalloutArrow {
 }
 
 impl CalloutArrow {
-    pub const ALL: [CalloutArrow; 3] = [CalloutArrow::None, CalloutArrow::Small, CalloutArrow::Large];
+    pub const ALL: [CalloutArrow; 3] =
+        [CalloutArrow::None, CalloutArrow::Small, CalloutArrow::Large];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -697,7 +695,10 @@ mod tests {
         s.set_on(SliderSide::Right, true);
         s.set_position(SliderSide::Right, 40.0);
         assert!(s.removes([380.0, 100.0, 10.0], lo, hi));
-        assert_eq!(CrossSectionSlider::max_position(SliderSide::Back, lo, hi), 300.0);
+        assert_eq!(
+            CrossSectionSlider::max_position(SliderSide::Back, lo, hi),
+            300.0
+        );
     }
 
     #[test]

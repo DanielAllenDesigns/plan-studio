@@ -184,7 +184,11 @@ fn start_fields(ui: &mut egui::Ui, f: &mut Form) {
     ui.strong("Start");
     ui.horizontal(|ui| {
         ui.radio_value(&mut f.start, StartKind::Absolute, "Absolute");
-        ui.radio_value(&mut f.start, StartKind::Relative, "Relative to Current Point");
+        ui.radio_value(
+            &mut f.start,
+            StartKind::Relative,
+            "Relative to Current Point",
+        );
         ui.radio_value(&mut f.start, StartKind::Polar, "Polar");
     });
     match f.start {
@@ -205,7 +209,11 @@ fn end_fields(ui: &mut egui::Ui, f: &mut Form) {
         ui.radio_value(&mut f.end, EndKind::Absolute, "Absolute");
         ui.radio_value(&mut f.end, EndKind::Relative, "Relative to Start");
         ui.radio_value(&mut f.end, EndKind::Polar, "Polar");
-        ui.radio_value(&mut f.end, EndKind::FromPrevious, "Relative to Previous Line");
+        ui.radio_value(
+            &mut f.end,
+            EndKind::FromPrevious,
+            "Relative to Previous Line",
+        );
     });
     match f.end {
         EndKind::Absolute | EndKind::Relative => {

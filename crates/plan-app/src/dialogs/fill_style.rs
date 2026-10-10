@@ -839,7 +839,10 @@ pub fn open_for_layers(cx: &mut EditorContext, layers: &[String]) -> bool {
     let Some(first) = layers.first() else {
         return false;
     };
-    let targets: Vec<FillTarget> = layers.iter().map(|l| FillTarget::Layer(l.clone())).collect();
+    let targets: Vec<FillTarget> = layers
+        .iter()
+        .map(|l| FillTarget::Layer(l.clone()))
+        .collect();
     let style = cx
         .project
         .styles

@@ -43,6 +43,7 @@ pub fn is_command(id: &str) -> bool {
     id.starts_with("cad.survey.")
 }
 
+#[allow(clippy::collapsible_match)]
 pub fn run_command(cx: &mut EditorContext, id: &str) {
     match id {
         NUMBER_STYLE => crate::dialogs::number_style::open(),
@@ -300,7 +301,13 @@ fn sync_points(cx: &EditorContext) {
             let Some(first) = ids.first() else {
                 return false;
             };
-            match cx.floor().cad.iter().find(|o| o.id == *first).map(|o| &o.item) {
+            match cx
+                .floor()
+                .cad
+                .iter()
+                .find(|o| o.id == *first)
+                .map(|o| &o.item)
+            {
                 Some(CadItem::Line { a, b }) => {
                     *p = Point::lerp(*a, *b, 0.5);
                     true
@@ -504,7 +511,10 @@ pub fn enter_arc(cx: &mut EditorContext, spec: ArcSpec) -> Result<InputArc, Stri
     add_cad_items(cx, &layer, vec![arc.item.clone()], "Draw Arc")
         .ok_or_else(|| "The CAD layer is locked".to_string())?;
     set_current_point(Some(arc.end));
-    let heading = Point::new(arc.end_dir.to_radians().cos(), arc.end_dir.to_radians().sin());
+    let heading = Point::new(
+        arc.end_dir.to_radians().cos(),
+        arc.end_dir.to_radians().sin(),
+    );
     PREVIOUS.with(|c| c.set(Some((arc.end.sub(heading), arc.end))));
     Ok(arc)
 }
@@ -910,7 +920,9 @@ mod tests {
             ..CadLabels::default()
         };
         let rot = |a: Point, b: Point| {
-            edge_labels(&CadItem::Line { a, b }, &l, &st)[0].rotation.to_degrees()
+            edge_labels(&CadItem::Line { a, b }, &l, &st)[0]
+                .rotation
+                .to_degrees()
         };
         let o = Point::ZERO;
         assert!((rot(o, Point::new(100.0, 0.0))).abs() < 1e-9);

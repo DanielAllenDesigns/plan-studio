@@ -398,10 +398,15 @@ mod tests {
     #[ignore = "maintenance: regenerates assets/templates/chief-x18-daniel.json"]
     fn regenerate_embedded_template() {
         let text = PlanDefaults::chief_x18_daniel().to_json().expect("to_json");
-        let path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/assets/templates/chief-x18-daniel.json"
-        );
+        // `TEMPLATE_OUT` redirects the write when the repo is not writable
+        // from the test binary (sandboxes); copy the file over by hand then.
+        let path = std::env::var("TEMPLATE_OUT").unwrap_or_else(|_| {
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/assets/templates/chief-x18-daniel.json"
+            )
+            .to_string()
+        });
         std::fs::write(path, text).expect("write template");
     }
 

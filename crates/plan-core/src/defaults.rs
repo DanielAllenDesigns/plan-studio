@@ -31,7 +31,10 @@ pub struct WallLayer {
     pub material: String,
     /// Role, fill, extension, framing and line of the layer (Round 16, brief
     /// 12); an older plan's two-field layer loads with the default.
-    #[serde(default, skip_serializing_if = "crate::wall_types::WallLayerSpec::is_default")]
+    #[serde(
+        default,
+        skip_serializing_if = "crate::wall_types::WallLayerSpec::is_default"
+    )]
     pub spec: crate::wall_types::WallLayerSpec,
 }
 
@@ -57,7 +60,10 @@ pub struct WallTypeDef {
     pub layers: Vec<WallLayer>,
     pub kind: WallKind,
     /// Wall Properties, flags and alignment layers (Round 16, brief 12).
-    #[serde(default, skip_serializing_if = "crate::wall_types::WallTypeProps::is_default")]
+    #[serde(
+        default,
+        skip_serializing_if = "crate::wall_types::WallTypeProps::is_default"
+    )]
     pub props: crate::wall_types::WallTypeProps,
 }
 

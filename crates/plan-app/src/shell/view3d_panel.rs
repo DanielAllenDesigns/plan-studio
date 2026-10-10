@@ -1900,7 +1900,12 @@ impl View3dState {
                                     project.floors.iter().map(|f| f.name.clone()).collect(),
                                 )
                                 .with_layer_names(
-                                    project.layers.layers.iter().map(|l| l.name.clone()).collect(),
+                                    project
+                                        .layers
+                                        .layers
+                                        .iter()
+                                        .map(|l| l.name.clone())
+                                        .collect(),
                                 ),
                         );
                     }
@@ -3160,7 +3165,11 @@ impl View3dState {
             self.slider_dialog = false;
             if let Some(id) = self.active_camera {
                 let planes = self.cam_slider.clone();
-                if cx.project.camera(id).is_some_and(|c| c.view.slider != planes) {
+                if cx
+                    .project
+                    .camera(id)
+                    .is_some_and(|c| c.view.slider != planes)
+                {
                     cx.begin_change("Cross Section Slider");
                     cx.project.update_camera(id, |c| c.view.slider = planes);
                     cx.mark_dirty();
@@ -3557,7 +3566,8 @@ pub fn show(ui: &mut egui::Ui, cx: &mut EditorContext, st: &mut View3dState) {
     vp.lighting = view_settings::rig(&plan_lighting, view.as_ref(), sun, tv.flat);
     // The camera's own rendering options (C-147, C-150, C-151).
     vp.ao_scale = view_settings::ao_scale(view.as_ref());
-    vp.camera.near = view_settings::near_of(view.as_ref(), vp.camera.mode == CameraMode::FullCamera);
+    vp.camera.near =
+        view_settings::near_of(view.as_ref(), vp.camera.mode == CameraMode::FullCamera);
     if let Some(sky) = view.as_ref().and_then(view_settings::sky_color) {
         vp.background = sky;
     }
@@ -3577,9 +3587,10 @@ pub fn show(ui: &mut egui::Ui, cx: &mut EditorContext, st: &mut View3dState) {
         view.as_ref().and_then(|v| v.light_set.as_deref()),
     );
     // Automatic lighting uses at most the camera's Maximum Number of lights.
-    if let Some(v) = view.as_ref().filter(|v| {
-        v.options.light_choice == plan_core::camera_view::spec::LightChoice::Automatic
-    }) {
+    if let Some(v) = view
+        .as_ref()
+        .filter(|v| v.options.light_choice == plan_core::camera_view::spec::LightChoice::Automatic)
+    {
         lights.truncate(v.options.max_lights as usize);
     }
     vp.set_point_lights(&lights);
@@ -6061,10 +6072,18 @@ mod tests {
         st.open_parallel(ParallelOverview::Isometric(IsoCorner::SouthWest), 0);
         st.apply_setup(1.5);
         let cam = &st.viewport.as_ref().unwrap().camera;
-        assert!((cam.yaw + std::f32::consts::FRAC_PI_4).abs() < 1e-5, "{}", cam.yaw);
+        assert!(
+            (cam.yaw + std::f32::consts::FRAC_PI_4).abs() < 1e-5,
+            "{}",
+            cam.yaw
+        );
         assert!((cam.pitch - 30.0_f32.to_radians()).abs() < 1e-5);
         let ne = isometric_angles(IsoCorner::NorthEast);
-        assert!((ne.0 - 3.0 * std::f32::consts::FRAC_PI_4).abs() < 1e-5, "{}", ne.0);
+        assert!(
+            (ne.0 - 3.0 * std::f32::consts::FRAC_PI_4).abs() < 1e-5,
+            "{}",
+            ne.0
+        );
         // Any ordinary view is perspective again.
         st.open_mode(CameraMode::Orbit, None);
         st.apply_setup(1.5);
@@ -6096,7 +6115,10 @@ mod tests {
         let (derived, raw) = (saved.overview_pose().unwrap(), saved.view.pose.unwrap());
         for i in 0..3 {
             assert!((derived.eye[i] - raw.eye[i]).abs() < 1e-6, "eye {i}");
-            assert!((derived.target[i] - raw.target[i]).abs() < 1e-6, "target {i}");
+            assert!(
+                (derived.target[i] - raw.target[i]).abs() < 1e-6,
+                "target {i}"
+            );
         }
         let pose = saved.view.pose.expect("pose");
         for i in 0..3 {

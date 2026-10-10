@@ -381,11 +381,7 @@ fn view_layers(
             });
         }
     }
-    if let Some(layer) = project
-        .layers
-        .get(CLIP_LINES_LAYER)
-        .filter(|l| l.display)
-    {
+    if let Some(layer) = project.layers.get(CLIP_LINES_LAYER).filter(|l| l.display) {
         let (lo, hi) = drawing.bounds;
         let (x0, x1) = vol.x.unwrap_or((lo.x, hi.x));
         let (y0, y1) = vol.y.unwrap_or((lo.y, hi.y));
@@ -553,7 +549,12 @@ pub fn attach_cut_markers(c: &mut CameraObject, cut_lines: &[plan_elevation::Cut
             .map(|(_, cut, at)| (cut, at))
     };
     let mut attached = Vec::new();
-    for a in c.view.annotations.iter_mut().filter(|a| a.surface == surface) {
+    for a in c
+        .view
+        .annotations
+        .iter_mut()
+        .filter(|a| a.surface == surface)
+    {
         if let AnnotKind::Dimension {
             a: pa,
             b: pb,
@@ -576,9 +577,11 @@ pub fn attach_cut_markers(c: &mut CameraObject, cut_lines: &[plan_elevation::Cut
     }
     let n = attached.len();
     for (cut, at) in attached {
-        let has = c.view.annotations.iter().any(|a| {
-            matches!(&a.kind, AnnotKind::PointMarker { cut: k, .. } if *k == cut)
-        });
+        let has = c
+            .view
+            .annotations
+            .iter()
+            .any(|a| matches!(&a.kind, AnnotKind::PointMarker { cut: k, .. } if *k == cut));
         if has {
             continue;
         }
@@ -589,22 +592,21 @@ pub fn attach_cut_markers(c: &mut CameraObject, cut_lines: &[plan_elevation::Cut
             .iter()
             .find(|a| matches!(a.kind, AnnotKind::Dimension { .. }))
             .map_or_else(String::new, |a| a.layer.clone());
-        c.view.annotations.push(plan_core::camera_view::ViewAnnotation {
-            id,
-            kind: AnnotKind::PointMarker { at, cut },
-            surface,
-            layer,
-            weight: None,
-        });
+        c.view
+            .annotations
+            .push(plan_core::camera_view::ViewAnnotation {
+                id,
+                kind: AnnotKind::PointMarker { at, cut },
+                surface,
+                layer,
+                weight: None,
+            });
     }
     n
 }
 
 /// The Cross Section Lines of a section camera as the view draws them now.
-pub fn cross_section_lines_of(
-    project: &Project,
-    c: &CameraObject,
-) -> Vec<plan_elevation::CutLine> {
+pub fn cross_section_lines_of(project: &Project, c: &CameraObject) -> Vec<plan_elevation::CutLine> {
     if !cuts_model(c) {
         return Vec::new();
     }

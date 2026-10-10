@@ -770,7 +770,8 @@ impl RoofTool {
                 let perpendicular = mode == RoofMode::MakePerpendicular;
                 let Some(dir) = roof_view::reference_direction(cx.floor(), Some(first), at, tol)
                 else {
-                    cx.status = format!("{name}: click a wall, a line or the edge of another plane");
+                    cx.status =
+                        format!("{name}: click a wall, a line or the edge of another plane");
                     return None;
                 };
                 cx.begin_change(name);
@@ -3292,8 +3293,15 @@ mod tests {
         assert_eq!(planes(&cx).len(), 4, "nothing made until it is answered");
         // Over the existing roof plane: the baseline takes the roof's height.
         answer_baseline(&mut t, &mut cx, plan_roof::BaselineOver::ExistingPlane);
-        let on_roof = planes(&cx).into_iter().find(|r| !r.auto).expect("new plane");
-        assert!(on_roof.baseline_height() > plate + 1.0, "{}", on_roof.baseline_height());
+        let on_roof = planes(&cx)
+            .into_iter()
+            .find(|r| !r.auto)
+            .expect("new plane");
+        assert!(
+            on_roof.baseline_height() > plate + 1.0,
+            "{}",
+            on_roof.baseline_height()
+        );
         assert_eq!(cx.undo_label(), Some("Draw Roof Plane"));
         cx.undo();
         assert_eq!(planes(&cx).len(), 4);
@@ -3302,7 +3310,10 @@ mod tests {
         drag(&mut t, &mut cx, (100.0, 100.0), (200.0, 100.0));
         click(&mut t, &mut cx, 150.0, 160.0);
         answer_baseline(&mut t, &mut cx, plan_roof::BaselineOver::WallTop);
-        let on_wall = planes(&cx).into_iter().find(|r| !r.auto).expect("new plane");
+        let on_wall = planes(&cx)
+            .into_iter()
+            .find(|r| !r.auto)
+            .expect("new plane");
         assert!((on_wall.baseline_height() - plate).abs() < 1e-6);
     }
 
@@ -3341,7 +3352,10 @@ mod tests {
         let fi = cx.floor;
         let mut set = load(cx.floor());
         let ids = [cx.project.alloc_id(), cx.project.alloc_id()];
-        for (id, y, elev, pitch) in [(ids[0], 200.0, 140.0, 8.0), (ids[1], 0.0, 100.0, second_pitch)] {
+        for (id, y, elev, pitch) in [
+            (ids[0], 200.0, 140.0, 8.0),
+            (ids[1], 0.0, 100.0, second_pitch),
+        ] {
             let (base, poly) = manual_plane_geometry(
                 Point::new(0.0, y),
                 Point::new(240.0, y),
@@ -3415,7 +3429,8 @@ mod tests {
             0.0001,
         )
         .unwrap();
-        set.planes.push(RoofPlaneRecord::new(lid, poly, 0.0001, base));
+        set.planes
+            .push(RoofPlaneRecord::new(lid, poly, 0.0001, base));
         store(&mut cx.project, fi, &mut set);
         cx.refresh();
         let cad_before = cx.floor().cad.len();
@@ -3444,7 +3459,10 @@ mod tests {
         let id = cx.project.alloc_id();
         // A baseline tilted 20 degrees from the south wall.
         let a = Point::new(100.0, 120.0);
-        let b = Point::new(100.0 + 200.0 * 20f64.to_radians().cos(), 120.0 + 200.0 * 20f64.to_radians().sin());
+        let b = Point::new(
+            100.0 + 200.0 * 20f64.to_radians().cos(),
+            120.0 + 200.0 * 20f64.to_radians().sin(),
+        );
         let toward = Point::lerp(a, b, 0.5).add(Point::new(-30.0, 90.0));
         let (base, poly) = manual_plane_geometry(a, b, toward, 100.0, 8.0).unwrap();
         set.planes.push(RoofPlaneRecord::new(id, poly, 8.0, base));
@@ -3460,10 +3478,10 @@ mod tests {
         let d = r.baseline.1.sub(r.baseline.0);
         assert!(d.y.abs() < 1e-6, "{d:?}");
         assert_eq!(cx.undo_label(), Some("Make Parallel"));
-        // Now square to the same wall.
+        // Now square to the same wall. The plane is still the selected one,
+        // so the next click is the reference, as with Chief's edit buttons.
         t.set_mode(RoofMode::MakePerpendicular);
-        click(&mut t, &mut cx, 200.0, 120.0);
-        assert_eq!(t.pick_first, Some(id), "{}", cx.status);
+        assert_eq!(t.first_plane(&cx), Some(id), "{}", cx.status);
         click(&mut t, &mut cx, 300.0, 0.0);
         let r = load(cx.floor()).plane(id).cloned().unwrap();
         let d = r.baseline.1.sub(r.baseline.0);
@@ -3477,10 +3495,10 @@ mod tests {
         let (a, _) = two_parallel_planes(&mut cx, 8.0);
         // One floor only: there is nowhere to go.
         let fi = cx.floor;
-        assert!(roof_view::move_display(&mut cx.project, fi, a, 1).is_err());
+        assert!(roof_view::plane_extras::move_display(&mut cx.project, fi, a, 1).is_err());
         cx.project.build_new_floor(false);
         cx.begin_change("Display on Floor Above");
-        let to = roof_view::move_display(&mut cx.project, fi, a, 1).unwrap();
+        let to = roof_view::plane_extras::move_display(&mut cx.project, fi, a, 1).unwrap();
         assert_eq!(to, fi + 1);
         assert!(load(&cx.project.floors[fi]).plane(a).is_none());
         let moved = load(&cx.project.floors[to]).plane(a).cloned().unwrap();
@@ -3513,5 +3531,4 @@ mod tests {
             assert!(labels.iter().any(|l| l == want), "{want} in {labels:?}");
         }
     }
-
 }

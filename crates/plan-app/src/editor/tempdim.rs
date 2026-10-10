@@ -1693,6 +1693,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::field_reassign_with_default)]
     fn the_wall_options_choose_the_faces_other_walls_are_located_at() {
         let (p, _, mid) = plan();
         let mut loc = TempLocate::default();

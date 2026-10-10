@@ -30,10 +30,7 @@ pub fn selected_of(view: &plan_core::camera_view::ViewDefaults, plan: &Selected)
 
 /// The view's stored defaults for a panel draft: nothing when the draft is
 /// the plan's own active choice, so the view keeps following the plan.
-pub fn view_defaults_of(
-    sel: &Selected,
-    plan: &Selected,
-) -> plan_core::camera_view::ViewDefaults {
+pub fn view_defaults_of(sel: &Selected, plan: &Selected) -> plan_core::camera_view::ViewDefaults {
     // The panel adds an empty pick for every kind it lists; those are not a
     // choice.
     let picks = |s: &Selected| {
@@ -122,8 +119,12 @@ impl CameraDialog {
                     row(ui, "F-Stop", |ui| {
                         ui.add(egui::Slider::new(&mut o.f_stop, 1.0..=32.0).fixed_decimals(1))
                     });
-                    self.fields
-                        .length_row(ui, "Focus Distance", "dof_focus", &mut o.focus_distance);
+                    self.fields.length_row(
+                        ui,
+                        "Focus Distance",
+                        "dof_focus",
+                        &mut o.focus_distance,
+                    );
                 });
             }
         }
@@ -162,11 +163,14 @@ impl CameraDialog {
             "clip_within",
             &mut o.clip_surfaces_within,
         );
-        ui.checkbox(&mut o.hide_facing_walls, "Hide Camera-Facing Exterior Walls")
-            .on_hover_text(
-                "Leaves out the exterior walls that face a camera outside the house, \
+        ui.checkbox(
+            &mut o.hide_facing_walls,
+            "Hide Camera-Facing Exterior Walls",
+        )
+        .on_hover_text(
+            "Leaves out the exterior walls that face a camera outside the house, \
                  with their doors and windows, and the interior walls of an attic",
-            );
+        );
         o.clamp();
     }
 
@@ -184,10 +188,7 @@ impl CameraDialog {
                 d.set_keep_in_sync(sync);
             }
             let (mut start, mut end) = (d.start, d.end);
-            if self
-                .fields
-                .length_row(ui, "Start", "cue_start", &mut start)
-            {
+            if self.fields.length_row(ui, "Start", "cue_start", &mut start) {
                 d.set_start(start);
             }
             if self.fields.length_row(ui, "End", "cue_end", &mut end) {
@@ -314,8 +315,7 @@ impl CameraDialog {
             _ => {}
         }
         if let BelowGradeLimit::Absolute(h) = &mut b.limit {
-            self.fields
-                .length_row(ui, "Height", "below_height", h);
+            self.fields.length_row(ui, "Height", "below_height", h);
         }
         section(ui, "Affected Object Types");
         for name in plan_core::camera_view::spec::BELOW_GRADE_OBJECTS {
@@ -350,7 +350,9 @@ impl CameraDialog {
         section(ui, "Display on All Floors");
         let p = &mut self.draft.view.plan;
         ui.checkbox(&mut p.all_floors, "Display on All Floors")
-            .on_hover_text("Otherwise the symbol only shows on the floor the camera was created on");
+            .on_hover_text(
+                "Otherwise the symbol only shows on the floor the camera was created on",
+            );
         section(ui, "Display as Callout");
         let c = &mut self.draft.callout;
         ui.checkbox(&mut c.show, "Display as Callout")
@@ -588,7 +590,13 @@ mod tests {
         let mut cams = vec![
             CameraObject::new(CameraKind::FullCamera, Point::ZERO, 0.0, "full", 0),
             CameraObject::new(CameraKind::PerspectiveOverview, Point::ZERO, 0.0, "ov", 0),
-            CameraObject::new(CameraKind::CrossSection { back_clip: None }, Point::ZERO, 0.0, "x", 0),
+            CameraObject::new(
+                CameraKind::CrossSection { back_clip: None },
+                Point::ZERO,
+                0.0,
+                "x",
+                0,
+            ),
             CameraObject::walkthrough(vec![Point::ZERO, Point::new(100.0, 0.0)], 60.0, "walk", 0),
         ];
         for c in &mut cams {
@@ -599,9 +607,8 @@ mod tests {
             v.below_grade.override_weight = true;
             v.plan.all_floors = true;
             v.layer.drawing_group = Some(40);
-            let mut d = CameraDialog::new(c, "1st Floor", CameraExtras::default()).with_layer_names(
-                vec!["Cameras".into(), "Detail".into()],
-            );
+            let mut d = CameraDialog::new(c, "1st Floor", CameraExtras::default())
+                .with_layer_names(vec!["Cameras".into(), "Detail".into()]);
             d.set_defaults_env(
                 default_sets::Env {
                     names: Default::default(),
@@ -615,7 +622,10 @@ mod tests {
             let v = &d.draft().view;
             assert!(v.options.hide_facing_walls && v.depth_cue.on && v.plan.all_floors);
             assert_eq!(v.layer.drawing_group, Some(40));
-            assert!(v.selected.is_plan_default(), "drawing the panel changes nothing");
+            assert!(
+                v.selected.is_plan_default(),
+                "drawing the panel changes nothing"
+            );
             assert!(d.take_defaults_events().is_empty());
         }
     }

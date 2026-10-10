@@ -382,6 +382,19 @@ impl StairForm {
                 }
             });
         }
+        self.fields.length_row(
+            ui,
+            "Headroom",
+            "headroom",
+            &mut self.draft.stair.params.headroom_min,
+        );
+        code_notice(
+            ui,
+            "IRC R311.7.2 headroom",
+            &mut self.draft.stair.params.headroom_min,
+            code::active().stair_headroom_min,
+            LimitKind::Min,
+        );
         if !ramp {
             self.staircase_information(ui);
             section(ui, "Advanced Options");
@@ -414,19 +427,6 @@ impl StairForm {
             ui.weak("Locked values stay put when the heights or the number of risers change; the Lock End says which end of the section stays when its length changes.");
             self.specifications(ui);
         }
-        self.fields.length_row(
-            ui,
-            "Headroom",
-            "headroom",
-            &mut self.draft.stair.params.headroom_min,
-        );
-        code_notice(
-            ui,
-            "IRC R311.7.2 headroom",
-            &mut self.draft.stair.params.headroom_min,
-            code::active().stair_headroom_min,
-            LimitKind::Min,
-        );
 
         section(ui, "Shape");
         row(ui, "Stair Shape", |ui| {

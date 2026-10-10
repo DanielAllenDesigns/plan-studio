@@ -1788,6 +1788,7 @@ mod tests {
         assert!(alignment_anchors(&p.floors[0], &layers, &ids).is_empty());
     }
     #[test]
+    #[allow(clippy::field_reassign_with_default)]
     fn allowed_angles_list_the_increment_the_extras_and_their_opposites() {
         let mut e = EditingDefaults::default();
         let set = allowed_angle_set(&e, 90.0, false);

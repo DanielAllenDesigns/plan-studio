@@ -42,11 +42,11 @@ use plan_roof::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-mod plane_extras;
+pub(crate) mod plane_extras;
 pub use plane_extras::{
-    align_plane, attic_wall_above, build_when_room_closes, move_coplanar, move_display, place_intersection_point, reference_direction,
-    run_plane_command, snap_baseline, snap_edge_to_walls, FillKind, PlaneFill, PlaneStyle, SlopeArrow, LOCKS,
-    PLANE_COMMANDS,
+    align_plane, attic_wall_above, build_when_room_closes, move_coplanar, place_intersection_point,
+    reference_direction, run_plane_command, snap_baseline, snap_edge_to_walls, FillKind, PlaneFill,
+    PlaneStyle, SlopeArrow, LOCKS, PLANE_COMMANDS,
 };
 
 pub const LAYER_PLANES: &str = "Roof Planes";
@@ -4412,6 +4412,7 @@ fn styled_outline(painter: &egui::Painter, pts: &[Pos2], stroke: Stroke, style: 
 
 /// The outline of one roof plane polygon: eaves heavy, edges two planes share
 /// medium, the rest light.
+#[allow(clippy::too_many_arguments)]
 fn draw_plane_outline(
     painter: &egui::Painter,
     cam: &Camera,
@@ -4450,9 +4451,7 @@ fn draw_plane_outline(
             }
             LineStyle::Dashed => painter.extend(egui::Shape::dashed_line(&seg, stroke, 6.0, 4.0)),
             LineStyle::Dotted => painter.extend(egui::Shape::dashed_line(&seg, stroke, 2.0, 4.0)),
-            LineStyle::DashDot => {
-                painter.extend(egui::Shape::dashed_line(&seg, stroke, 10.0, 6.0))
-            }
+            LineStyle::DashDot => painter.extend(egui::Shape::dashed_line(&seg, stroke, 10.0, 6.0)),
         }
     }
 }
@@ -5834,7 +5833,11 @@ mod tests {
             .add_opening(0, wall, 240.0, plan_core::OpeningKind::Window)
             .unwrap();
         {
-            let o = p.floors[0].openings.iter_mut().find(|o| o.id == id).unwrap();
+            let o = p.floors[0]
+                .openings
+                .iter_mut()
+                .find(|o| o.id == id)
+                .unwrap();
             o.style = OpeningStyle::BayWindow;
             o.width = 50.0;
             o.extras.spec.bay = BayUnit::for_style(OpeningStyle::BayWindow);

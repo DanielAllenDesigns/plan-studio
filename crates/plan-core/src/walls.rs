@@ -19,20 +19,20 @@ use crate::model::{Id, Project, Wall, WallEnd, WallKind, DEFAULT_CEILING_HEIGHT}
 use serde::{Deserialize, Serialize};
 use std::f64::consts::PI;
 
-#[path = "wall_spec.rs"]
-pub mod spec;
-#[path = "wall_spec_tabs.rs"]
-pub mod spec_tabs;
+#[path = "wall_intersect.rs"]
+pub mod intersect;
 #[path = "wall_profile.rs"]
 pub mod profile;
 #[path = "wall_reset.rs"]
 pub mod reset;
-#[path = "wall_intersect.rs"]
-pub mod intersect;
+#[path = "wall_spec.rs"]
+pub mod spec;
+#[path = "wall_spec_tabs.rs"]
+pub mod spec_tabs;
 pub use spec::{
     default_cap_profiles, min_thickness, platform_adjust, CapPosition, CapProfile, CeilingPlatform,
-    DoubleWall, FloorPlatform, PlatformAdjust, PlatformContext, WallBox, WallCap, WallFoundation, WallSpec,
-    WallStructure,
+    DoubleWall, FloorPlatform, PlatformAdjust, PlatformContext, WallBox, WallCap, WallFoundation,
+    WallSpec, WallStructure,
 };
 pub use spec_tabs::{
     drawing_group_name, openings_area, wall_components, BalusterStyle, BandKind, CoveringBand,

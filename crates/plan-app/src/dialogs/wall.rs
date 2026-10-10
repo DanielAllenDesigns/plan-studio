@@ -2012,12 +2012,13 @@ impl WallForm {
             r.cuts_wall_at_bottom = Some(cuts);
         }
         ui.checkbox(&mut r.include_frieze, "Include Frieze")
-            .on_hover_text("The frieze molding of Build Roof runs along this wall at the roof line");
-        ui.checkbox(
-            &mut r.end_truss_above,
-            "Include Automatic End Truss Above",
-        )
-        .on_hover_text("An attic wall above gets a Reduced Gable End Truss with automatic trusses");
+            .on_hover_text(
+                "The frieze molding of Build Roof runs along this wall at the roof line",
+            );
+        ui.checkbox(&mut r.end_truss_above, "Include Automatic End Truss Above")
+            .on_hover_text(
+                "An attic wall above gets a Reduced Gable End Truss with automatic trusses",
+            );
         ui.add_enabled(
             self.attic_above,
             egui::Checkbox::new(&mut r.combine_with_above, "Combine with Above Wall"),

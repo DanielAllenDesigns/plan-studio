@@ -1280,7 +1280,8 @@ fn check_action(
     if s1 == s0 {
         if d1 != d0 {
             out.push(format!(
-                "{label}: changed nothing but left {} undo step(s)",
+                "{label} [{:?}]: changed nothing but left {} undo step(s)",
+                sim.app.tools.active_id(),
                 d1 as i64 - d0 as i64
             ));
             for _ in d0..d1 {
@@ -2394,7 +2395,9 @@ fn two_thousand_random_gestures_never_panic_and_every_unwind_returns_to_the_star
             if after == now {
                 if d_after != d_before {
                     problems.push(format!(
-                        "{label}: changed nothing but left {} undo step(s)",
+                        "{label} [{:?}, undo label {:?}]: changed nothing but left {} undo step(s)",
+                        sim.app.tools.active_id(),
+                        sim.app.cx.undo_label(),
                         d_after as i64 - d_before as i64
                     ));
                 }

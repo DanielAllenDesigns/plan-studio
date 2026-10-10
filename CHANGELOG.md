@@ -12,6 +12,12 @@ Test counts are the workspace totals the commit messages and manual state.
 
 ## [Unreleased]
 
+_Nothing yet; Round 16 continues on the `wip/round-14-partial` branch workflow._
+
+## [0.1.0] - 2026-10-09
+
+First tagged release: everything from Round 1 through Rounds 14-16 below, on macOS, Windows and Linux (see docs/release-checklist.md and the README's Download section). Chief Architect content is never bundled; Plan Studio reads your own Chief libraries, textures and templates at run time.
+
 ### Added (Plan Agent, 2026-10-09)
 - **Plan Agent** (`crates/plan-agent`, `shell/agent_panel.rs`): a dock where a change is described in plain words ("add a 24' x 30' garage on the right with a door into the mudroom"); Claude edits the plan through 23 strict tools (walls, rectangles, openings, room names, floors, foundations, a plan validator, measure, tunable parameters) and the result lands as ONE undo step with Fix Wall Connections applied. Streaming transcript, "Tweaks" sliders, effort selector, usage and cost footer; Preferences > Plan Agent holds the masked key (user preferences only). Manual: `docs/manual/plan-agent.md`; decisions AG1 to AG7; `cargo run -p plan-agent --example smoke` for a live check.
 

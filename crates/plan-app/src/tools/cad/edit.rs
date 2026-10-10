@@ -19,10 +19,11 @@ use super::*;
 use crate::dialogs::cad::blocks::{BlockEditDialog, BlockManager, BlockRow, ManagerAction};
 use crate::dialogs::Outcome as BlockOutcome;
 use plan_core::cad::{
-    break_polyline, break_segment, chamfer_lines_picked, chamfer_polyline_vertex, detail_items,
-    extend_segment, fillet_lines_picked, fillet_polyline_vertex, lines_to_polylines, make_parallel,
-    make_perpendicular, offset_polyline, offset_segment, polyline_to_lines, reverse_item,
-    trim_segment, CadAttrs, CadBlockInfo, CadObject, FillAttr,
+    break_polyline, break_segment, chamfer_lines_picked, chamfer_polyline_vertex, close_polyline,
+    detail_items, extend_segment, fillet_all_corners, fillet_lines_picked, fillet_polyline_vertex,
+    lines_to_polylines, make_parallel, make_perpendicular, offset_polyline, offset_segment,
+    polyline_to_lines, reverse_item, simplify_polyline, trim_segment, CadAttrs, CadBlockInfo,
+    CadObject, FillAttr,
 };
 use plan_core::geometry::{dist_to_segment, point_in_polygon};
 use plan_core::layers::Layer;
@@ -80,9 +81,15 @@ pub fn hatch_pattern(i: usize, spacing: f64) -> Option<Pattern> {
     })
 }
 
+/// Simplify Polyline: edges shorter than this many inches go.
+pub const SIMPLIFY_MIN_EDGE: f64 = 1.0;
+/// Simplify Polyline: a vertex this close to the line through its
+/// neighbours counts as straight.
+pub const SIMPLIFY_TOLERANCE: f64 = 0.25;
+
 /// The CAD edit tools as Edit toolbar commands: `(mode, command id)`. Run a
 /// command with [`run_edit_command`]; the ids are `EditActionKind::Custom` ids.
-pub const EDIT_COMMANDS: [(CadMode, &str); 15] = [
+pub const EDIT_COMMANDS: [(CadMode, &str); 21] = [
     (CadMode::Fillet, "cad.fillet"),
     (CadMode::Chamfer, "cad.chamfer"),
     (CadMode::Offset, "cad.offset"),
@@ -98,6 +105,12 @@ pub const EDIT_COMMANDS: [(CadMode, &str); 15] = [
     (CadMode::ConvertToPolyline, "cad.to_polyline"),
     (CadMode::ConvertToSpline, "cad.to_spline"),
     (CadMode::PolylineToLines, "cad.polyline_to_lines"),
+    (CadMode::JoinTwoLines, "cad.join_lines"),
+    (CadMode::ClosePolyline, "cad.close_polyline"),
+    (CadMode::SimplifyPolyline, "cad.simplify_polyline"),
+    (CadMode::FilletAllCorners, "cad.fillet_all"),
+    (CadMode::DisconnectEdges, "cad.disconnect_edges"),
+    (CadMode::HideShowEdge, "cad.hide_show_edge"),
 ];
 
 /// The Edit toolbar buttons of the CAD edit tools (Fillet, Chamfer, Offset,
@@ -488,7 +501,7 @@ impl CadTool {
     /// A click in one of the pick modes.
     pub(super) fn pick_click(&mut self, cx: &mut EditorContext, p: PointerEvent) -> ToolResult {
         match self.mode {
-            CadMode::Fillet | CadMode::Chamfer => self.corner_click(cx, &p),
+            CadMode::Fillet | CadMode::Chamfer | CadMode::JoinTwoLines => self.corner_click(cx, &p),
             CadMode::Offset => self.offset_click(cx, &p),
             CadMode::Trim => self.trim_click(cx, &p),
             CadMode::Extend => self.extend_click(cx, &p),
@@ -508,14 +521,24 @@ impl CadTool {
     }
 
     fn corner_click(&mut self, cx: &mut EditorContext, p: &PointerEvent) -> ToolResult {
+        let join = self.mode == CadMode::JoinTwoLines;
         let chamfer = self.mode == CadMode::Chamfer;
-        let label = if chamfer { "Chamfer" } else { "Fillet" };
+        let label = match (join, chamfer) {
+            (true, _) => "Intersect Two Lines",
+            (_, true) => "Chamfer",
+            _ => "Fillet",
+        };
+        let radius = if join { 0.0 } else { self.edit.radius };
         let Some(obj) = self.cad_hit(cx, p) else {
             cx.status = format!("{label}: click a line or a polyline corner");
             return ToolResult::consumed();
         };
         let (d0, d1) = self.edit.chamfer;
         match &obj.item {
+            CadItem::Polyline { .. } if join => {
+                cx.status = format!("{label}: click a line");
+                ToolResult::consumed()
+            }
             CadItem::Polyline { points, closed } => {
                 self.edit.pick = None;
                 let tol = cx.pick_tol() * 3.0;
@@ -526,7 +549,7 @@ impl CadTool {
                 let new = if chamfer {
                     chamfer_polyline_vertex(points, *closed, i, d0, d1)
                 } else {
-                    fillet_polyline_vertex(points, *closed, i, self.edit.radius, 15.0)
+                    fillet_polyline_vertex(points, *closed, i, radius, 15.0)
                 };
                 let Some(np) = new else {
                     cx.status = format!("{label}: that corner does not fit those dimensions");
@@ -572,7 +595,7 @@ impl CadTool {
                 let joined = if chamfer {
                     chamfer_lines_picked((a0, b0), first.at, (*a, *b), p.world, d0, d1)
                 } else {
-                    fillet_lines_picked((a0, b0), first.at, (*a, *b), p.world, self.edit.radius)
+                    fillet_lines_picked((a0, b0), first.at, (*a, *b), p.world, radius)
                 };
                 let Some(j) = joined else {
                     cx.status = format!("{label}: those lines cannot be joined that way");
@@ -1019,9 +1042,76 @@ impl CadTool {
             CadMode::ConvertToPolyline => self.convert_to_polyline(cx),
             CadMode::ConvertToSpline => self.convert_to_spline(cx),
             CadMode::PolylineToLines => self.polyline_to_lines_cmd(cx),
+            CadMode::ClosePolyline => {
+                self.rewrite_polylines(cx, "Close Polyline", |pts, closed, _| {
+                    if closed {
+                        return None;
+                    }
+                    close_polyline(pts).map(|p| (p, true))
+                })
+            }
+            CadMode::SimplifyPolyline => {
+                self.rewrite_polylines(cx, "Simplify Polyline", |pts, closed, _| {
+                    let out = simplify_polyline(pts, closed, SIMPLIFY_MIN_EDGE, SIMPLIFY_TOLERANCE);
+                    (out.len() < pts.len()).then_some((out, closed))
+                })
+            }
+            CadMode::FilletAllCorners => {
+                self.rewrite_polylines(cx, "Fillet All Corners", |pts, closed, radius| {
+                    fillet_all_corners(pts, closed, radius, 15.0).map(|p| (p, closed))
+                })
+            }
             CadMode::DetailFromView => self.detail_from_view(cx),
             _ => ToolResult::ignored(),
         }
+    }
+
+    /// Rewrites the points of every selected plain polyline (no arc or hidden
+    /// edges) with `f(points, closed, fillet radius)`, one undo step. Locked
+    /// objects stop the whole command.
+    fn rewrite_polylines(
+        &mut self,
+        cx: &mut EditorContext,
+        label: &str,
+        f: impl Fn(&[Point], bool, f64) -> Option<(Vec<Point>, bool)>,
+    ) -> ToolResult {
+        let mut changes = Vec::new();
+        let mut skipped = false;
+        for id in Self::selected_cad_ids(cx) {
+            let Some(CadItem::Polyline { points, closed }) =
+                cad_by_id(cx.floor(), id).map(|c| c.item.clone())
+            else {
+                continue;
+            };
+            let plain = cx
+                .floor()
+                .cad_attrs(id)
+                .is_none_or(|a| a.arc_edges.is_empty() && a.hidden_edges.is_empty());
+            if !plain {
+                skipped = true;
+                continue;
+            }
+            if let Some((np, nc)) = f(&points, closed, self.edit.radius) {
+                changes.push((id, np, nc));
+            }
+        }
+        if changes.is_empty() {
+            cx.status = if skipped {
+                format!("{label}: polylines with arc or hidden edges are left alone")
+            } else {
+                format!("{label}: nothing to change in the selected polylines")
+            };
+            return ToolResult::consumed();
+        }
+        if changes.iter().any(|c| !Self::lock_ok(cx, c.0)) {
+            return ToolResult::consumed();
+        }
+        cx.begin_change(label);
+        for (id, points, closed) in changes {
+            Self::set_item(cx, id, CadItem::Polyline { points, closed });
+        }
+        cx.status.clear();
+        Self::done(cx, label)
     }
 
     fn selected_cad_ids(cx: &EditorContext) -> Vec<Id> {

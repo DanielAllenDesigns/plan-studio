@@ -84,6 +84,7 @@ mod s66_construction_reference;
 mod s67_line_fill_poche;
 mod s68_layers;
 mod s69_edit_behaviours;
+mod s70_cad_edit_tools;
 mod s70_plan_agent;
 mod s71_wall_types;
 mod s73_wall_edit_tools;

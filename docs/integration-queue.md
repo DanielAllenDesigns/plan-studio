@@ -1313,3 +1313,10 @@ Survey tests (s65, survey.rs, bearing, dialogs::cad) pass; clippy clean for plan
 
 ## Round 16 brief 14 finish pass (walls)
 Verified: plan-core wall_intersect.rs, wall_profile.rs and wall_reset.rs are wired through `walls.rs` (`#[path]` modules `intersect`, `profile`, `reset`); do not declare them again in lib.rs. Notification icons are drawn (`wall_edit::draw_icons`, main.rs) and a right-click on one selects its wall. Added: Edit Wall Intersections handles drawn on selected walls, `wall_edit::slide_layer` (snaps to the other wall's layer lines, one undo step) and the Reset Wall Layer Intersections Edit button. Still open: dragging a layer handle with the mouse (Select tool should call `slide_layer` with the drag distance along the wall; the handles from `plan_core::walls::intersect::layer_handle` are the hit targets), Tools > Checks > Reset Notification Icons menu item (`wall_edit::reset_icons`), Edit Wall Intersections for pony parts and footing, a Reset Wall Layer Intersections menu entry beside Reset to Defaults.
+## Tutorial replays A (round 16, brief 34): leftovers for other owners
+
+- `scenarios/mod.rs` carries two mod lines (`tutorials_a`, `tutorials_support`); the brief named one, but the support file is a sibling module.
+- Ignored replay bodies call `assert_ignored_break(id)` (panics) because the feature has no driveable API yet. When a break lands, remove the `#[ignore]` and replace that call with the real steps from scenario-proposals.md.
+- Hook needed: a shared dialog tab accessor (`tab_names()` exists only on details/foundation dialogs); `assert_dialog_tabs` only asserts that the dialog opens and cancels cleanly.
+- Hook needed: a headless `Action::SaveCopy` (APP-93) for the Make a Copy step of every lesson.
+- Lesson 6 half-wall / railing / porch steps and the wall-type ids (layer fill, Role; the audit gives no single id) are not yet driven; the ignore tag uses the label `wall-type-layers`.

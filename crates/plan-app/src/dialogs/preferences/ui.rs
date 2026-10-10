@@ -449,6 +449,10 @@ pub(super) fn behaviors(ui: &mut egui::Ui, cx: &mut EditorContext) {
             .on_hover_text("0 uses the Snap Unit");
         });
         ui.checkbox(&mut b.behavior_indicators, "Behavior Indicators");
+        ui.checkbox(
+            &mut b.stair_sections_independent,
+            "Stair Sections Move Independently (Shift toggles for one drag)",
+        );
         ui.horizontal(|ui| {
             ui.label("Concentric");
             ui.add(

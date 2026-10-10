@@ -1449,13 +1449,19 @@ pub(crate) fn box_prims(
                 draw_table(&mut cv, &t, rect[0], rect[3]);
             }
             BoxSource::SheetIndex => {
-                draw_table(&mut cv, &cx.sheet_index_table(), rect[0], rect[3]);
+                let mut t = cx.sheet_index_table();
+                crate::extent::retitle_columns(&mut t, &b.view.column_titles);
+                draw_table(&mut cv, &t, rect[0], rect[3]);
             }
             BoxSource::PageTable => {
-                draw_table(&mut cv, &cx.page_table(), rect[0], rect[3]);
+                let mut t = cx.page_table();
+                crate::extent::retitle_columns(&mut t, &b.view.column_titles);
+                draw_table(&mut cv, &t, rect[0], rect[3]);
             }
             BoxSource::RevisionTable => {
-                draw_table(&mut cv, &cx.revision_table(), rect[0], rect[3]);
+                let mut t = cx.revision_table();
+                crate::extent::retitle_columns(&mut t, &b.view.column_titles);
+                draw_table(&mut cv, &t, rect[0], rect[3]);
             }
             BoxSource::Perspective { camera_id } => {
                 match cx.perspective_for(request_for(b, *camera_id)) {

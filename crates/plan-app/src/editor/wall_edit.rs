@@ -465,6 +465,80 @@ fn wall_types(cx: &EditorContext) -> Vec<plan_core::defaults::WallTypeDef> {
     }
 }
 
+/// The slide a layer handle dragged to `want` inches settles at: it snaps to
+/// the nearest layer line of the wall it meets (W-144, DECISIONS WR5).
+pub fn snap_layer_slide(cx: &EditorContext, id: Id, end: WallEnd, layer: usize, want: f64) -> f64 {
+    let types = wall_types(cx);
+    let cands = plan_core::walls::intersect::layer_snap_candidates(
+        &cx.floor().walls,
+        &types,
+        id,
+        end,
+        layer,
+        0.5,
+    );
+    plan_core::walls::intersect::snap_slide(&cands, want, 3.0)
+}
+
+/// The unit direction pointing out of the wall at `end`.
+fn outward(w: &plan_core::Wall, end: WallEnd) -> Point {
+    match end {
+        WallEnd::Start => -w.direction(),
+        WallEnd::End => w.direction(),
+    }
+}
+
+/// How far past the wall end a pointer at `at` is, along the wall: the
+/// `want` of [`slide_layer`] for a handle dragged there.
+pub fn layer_drag_amount(cx: &EditorContext, id: Id, end: WallEnd, at: Point) -> Option<f64> {
+    let w = cx.floor().wall(id)?;
+    let base = if end == WallEnd::Start {
+        w.start
+    } else {
+        w.end
+    };
+    Some((at - base).dot(outward(w, end)))
+}
+
+/// The Edit Wall Intersections handle under `at` on a selected straight
+/// multi-layer wall (W-144): the wall, its end and the layer. A press nearer
+/// to the wall's own end handle is left to the stretch drag.
+pub fn layer_handle_at(cx: &EditorContext, at: Point, tol: f64) -> Option<(Id, WallEnd, usize)> {
+    let types = wall_types(cx);
+    for id in selected_walls(cx) {
+        let Some(w) = cx.floor().wall(id) else {
+            continue;
+        };
+        if w.is_curved() {
+            continue;
+        }
+        let ty = w
+            .wall_type
+            .as_deref()
+            .and_then(|n| types.iter().find(|t| t.name == n));
+        let layers = plan_core::joins::wall_layer_bands(w, ty).len();
+        if layers < 2 {
+            continue;
+        }
+        for end in [WallEnd::Start, WallEnd::End] {
+            let tip = if end == WallEnd::Start {
+                w.start
+            } else {
+                w.end
+            };
+            for k in 0..layers {
+                let Some(h) = plan_core::walls::intersect::layer_handle(w, &types, end, k) else {
+                    continue;
+                };
+                if h.dist(at) <= tol && h.dist(at) < tip.dist(at) {
+                    return Some((id, end, k));
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Edit Wall Intersections (W-144): drags the handle of structural layer
 /// `layer` at `end` of wall `id` to `want` inches past its joined position;
 /// the slide snaps to the layer lines of the wall it meets (the magnet
@@ -477,16 +551,7 @@ pub fn slide_layer(
     want: f64,
 ) -> Option<f64> {
     let fl = cx.floor;
-    let types = wall_types(cx);
-    let cands = plan_core::walls::intersect::layer_snap_candidates(
-        &cx.floor().walls,
-        &types,
-        id,
-        end,
-        layer,
-        0.5,
-    );
-    let shift = plan_core::walls::intersect::snap_slide(&cands, want, 3.0);
+    let shift = snap_layer_slide(cx, id, end, layer, want);
     cx.begin_change("Edit Wall Intersections");
     if !cx.project.set_layer_join(fl, id, end, layer, shift) {
         cx.cancel_change();

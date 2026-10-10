@@ -62,6 +62,8 @@ enum Op {
     WallEnd(Id, WallEnd),
     /// The bulge handle of a curved wall (W-67).
     WallBulge(Id),
+    /// An Edit Wall Intersections layer handle (W-144): wall, end, layer.
+    LayerSlide(Id, WallEnd, usize),
     OpeningSlide(Id),
     /// A jamb of an opening: the other jamb stays (DW-26).
     OpeningResize(Id, Jamb),
@@ -115,6 +117,7 @@ impl Op {
             Op::WallMove(_) => "Move Wall",
             Op::WallEnd(..) => "Stretch Wall",
             Op::WallBulge(_) => "Curve Wall",
+            Op::LayerSlide(..) => "Edit Wall Intersections",
             Op::OpeningSlide(_) | Op::Swing(_) => "Move Opening",
             Op::OpeningResize(..) => "Resize Opening",
             Op::OpeningLabel(_) => "Move Opening Label",
@@ -941,6 +944,9 @@ impl SelectTool {
         if let Some((id, kind)) = crate::tools::text::annot_handle_at(cx, at, tol) {
             return Some(Op::CadVertex(id, kind));
         }
+        if let Some((id, end, layer)) = wall_edit::layer_handle_at(cx, at, tol) {
+            return Some(Op::LayerSlide(id, end, layer));
+        }
         match cx.selection.single()? {
             ObjectRef::Stair(id) => {
                 let o = stairs_view::find(cx.floor(), id)?;
@@ -1047,6 +1053,12 @@ impl SelectTool {
         }
         match a.op {
             Op::WallMove(id) => move_wall(cx, id, total, alt),
+            Op::LayerSlide(id, end, layer) => {
+                if let Some(want) = wall_edit::layer_drag_amount(cx, id, end, p.world) {
+                    let shift = wall_edit::snap_layer_slide(cx, id, end, layer, want);
+                    cx.project.set_layer_join(fl, id, end, layer, shift);
+                }
+            }
             Op::WallBulge(id) => {
                 let Some(w) = cx.floor().wall(id).cloned() else {
                     return;
@@ -1227,7 +1239,33 @@ impl SelectTool {
                     if kind == StairHandleKind::Move && !alt {
                         n.stair.origin = snap_to_grid(n.stair.origin, unit(cx));
                     }
-                    stairs_view::update(&mut cx.project, fl, id, |o| *o = n);
+                    let moved = n.stair.origin - orig.stair.origin;
+                    let stopped = if kind == StairHandleKind::Run {
+                        stairs_view::staircase::stairwell_stop(&cx.project, fl, &orig, n)
+                    } else {
+                        n
+                    };
+                    stairs_view::update(&mut cx.project, fl, id, |o| *o = stopped);
+                    if kind == StairHandleKind::Move {
+                        // Joined sections and landings travel with it
+                        // unless they move independently (CB-125, CB-126).
+                        let apart = cx.defaults.editing.behavior.stair_sections_independent;
+                        let group = stairs_view::staircase::move_group(
+                            &a.original.floors[fl],
+                            id,
+                            apart,
+                            p.modifiers.shift,
+                        );
+                        for oid in group.into_iter().filter(|i| *i != id) {
+                            if let Some(mut m) = stairs_view::find(&a.original.floors[fl], oid) {
+                                m.stair.origin = m.stair.origin + moved;
+                                for q in m.stair.params.outline.iter_mut() {
+                                    *q = *q + moved;
+                                }
+                                stairs_view::update(&mut cx.project, fl, oid, |o| *o = m);
+                            }
+                        }
+                    }
                 }
             }
             Op::Cabinet(id, kind) => {
@@ -1278,6 +1316,9 @@ impl SelectTool {
             Op::DeviceMove(id) => {
                 let unit = unit(cx);
                 let mut layer = site_view::load_electrical(&a.original.floors[fl]);
+                // A ganged block moves as one object (E-25, CB-428).
+                let gang = layer.gang_members(id);
+                let before = layer.device(id).map(|d| d.position);
                 if let Some(d) = layer.device_mut(id) {
                     match d.wall_id.and_then(|w| cx.floor().wall(w)).cloned() {
                         Some(w) => site_view::slide_on_wall(d, &w, p.world, unit),
@@ -1286,6 +1327,14 @@ impl SelectTool {
                                 snap_unit_round(d.position.x + total.x, unit),
                                 snap_unit_round(d.position.y + total.y, unit),
                             );
+                        }
+                    }
+                }
+                if let (Some(b), Some(now)) = (before, layer.device(id).map(|d| d.position)) {
+                    let (dx, dy) = (now.x - b.x, now.y - b.y);
+                    for m in gang.iter().filter(|m| **m != id) {
+                        if let Some(o) = layer.device_mut(*m) {
+                            o.position = Point::new(o.position.x + dx, o.position.y + dy);
                         }
                     }
                 }

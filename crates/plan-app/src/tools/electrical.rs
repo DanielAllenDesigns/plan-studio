@@ -846,6 +846,47 @@ pub fn counter_runs(floor: &plan_core::Floor) -> Vec<Vec<plan_core::Point>> {
         .collect()
 }
 
+/// The large appliances placed in the plan (library symbols and their
+/// footprints), for the outlets Auto Place Outlets puts behind them.
+pub fn appliance_spots(floor: &plan_core::Floor) -> Vec<plan_electrical::ApplianceSpot> {
+    floor
+        .symbols
+        .iter()
+        .filter_map(|s| {
+            let kind = plan_electrical::ApplianceKind::from_catalog(&s.catalog_id)?;
+            Some(plan_electrical::ApplianceSpot {
+                kind,
+                center: s.position,
+                depth: s.depth,
+            })
+        })
+        .collect()
+}
+
+/// The centres of the plan's sinks: sink holes in countertops and sink
+/// symbols from the library.
+pub fn sink_spots(floor: &plan_core::Floor) -> Vec<plan_core::Point> {
+    use plan_cabinets::CutoutKind;
+    let mut out: Vec<plan_core::Point> = Vec::new();
+    for c in crate::editor::placed::load_cabinets(floor) {
+        for hole in c.cutouts.iter().filter(|h| h.kind == CutoutKind::Sink) {
+            let n = hole.outline.len().max(1) as f64;
+            let (sx, sy) = hole
+                .outline
+                .iter()
+                .fold((0.0, 0.0), |a, p| (a.0 + p.x, a.1 + p.y));
+            out.push(c.to_plan(plan_core::Point::new(sx / n, sy / n)));
+        }
+    }
+    for s in &floor.symbols {
+        let id = s.catalog_id.to_ascii_lowercase();
+        if id.contains("sink") && !id.contains("cabinet") {
+            out.push(s.position);
+        }
+    }
+    out
+}
+
 /// Auto Place Outlets for every room of the current floor (CB-64). Returns the
 /// number of outlets added; outlets already in place are not duplicated.
 pub fn auto_place_floor_outlets(cx: &mut EditorContext) -> usize {
@@ -867,6 +908,10 @@ pub fn auto_place_floor_outlets(cx: &mut EditorContext) -> usize {
     crate::editor::code::outlet_options(&crate::editor::code::code_minimums(cx), &mut opts);
     // Counter outlets follow the base cabinets standing against the walls.
     opts.counter_runs = counter_runs(cx.floor());
+    // Ranges, dryers, refrigerators and dishwashers get an outlet behind
+    // them, sinks a light over them.
+    opts.appliances = appliance_spots(cx.floor());
+    opts.sinks = sink_spots(cx.floor());
     // Each room's electrical rules (manual p. 447): none in exterior rooms,
     // Porches and Open Below, fewer in hybrids, GFCI over base cabinets,
     // standard height outlets in kitchens.
@@ -2362,13 +2407,20 @@ pub mod cmd {
     pub const RESET_CURVATURE: &str = "electrical.reset_curvature";
     pub const TO_GFCI: &str = "electrical.to_gfci";
     pub const TO_110: &str = "electrical.to_110";
+    pub const MAKE_GANG: &str = "electrical.make_gang";
+    pub const EXPLODE_GANG: &str = "electrical.explode_gang";
 }
 
 /// Is `id` one of this module's Edit commands?
 pub fn is_command(id: &str) -> bool {
     matches!(
         id,
-        cmd::SET_DEFAULT | cmd::RESET_CURVATURE | cmd::TO_GFCI | cmd::TO_110
+        cmd::SET_DEFAULT
+            | cmd::RESET_CURVATURE
+            | cmd::TO_GFCI
+            | cmd::TO_110
+            | cmd::MAKE_GANG
+            | cmd::EXPLODE_GANG
     )
 }
 
@@ -2507,6 +2559,31 @@ pub fn run_command(cx: &mut EditorContext, id: &str) -> bool {
             edit_electrical(cx, "Reset Curvature", |layer, _| {
                 layer.reset_curvature(i, ratio);
             });
+        }
+        (cmd::MAKE_GANG, _) => {
+            let ids: Vec<Id> = cx
+                .selection
+                .items
+                .iter()
+                .filter_map(|o| match o {
+                    ObjectRef::Device(d) => Some(*d),
+                    _ => None,
+                })
+                .collect();
+            let mut layer = load_electrical(cx.floor());
+            match layer.make_gang(&ids) {
+                Ok(_) => edit_electrical(cx, "Make Ganged Electrical Block", |l, _| {
+                    let _ = l.make_gang(&ids);
+                }),
+                Err(why) => cx.status = format!("Make Ganged Block: {why}"),
+            }
+        }
+        (cmd::EXPLODE_GANG, Sel::Device(d)) => {
+            if load_electrical(cx.floor()).gang_members(d).len() > 1 {
+                edit_electrical(cx, "Explode Ganged Electrical Block", |l, _| {
+                    l.explode_gang(d);
+                });
+            }
         }
         (cmd::TO_GFCI | cmd::TO_110, Sel::Device(d)) => {
             let to = if id == cmd::TO_GFCI {

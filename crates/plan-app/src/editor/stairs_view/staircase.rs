@@ -657,3 +657,138 @@ pub fn best_fit_draft(o: &mut StairObj) -> bool {
     super::set_risers(o, best.risers);
     true
 }
+
+// ----- moving sections together or apart (CB-125, CB-126) -----
+
+/// The objects a drag of `id` moves: the whole staircase (its sections and
+/// landings) unless the Stair Sections Move Independently preference is on;
+/// Shift held for the drag flips that choice, so Shift on a section moves
+/// it apart from its neighbours (and with the preference on, Shift moves
+/// the whole staircase).
+pub fn move_group(floor: &Floor, id: Id, independent: bool, shift: bool) -> Vec<Id> {
+    if independent != shift {
+        return vec![id];
+    }
+    let mut ids: Vec<Id> = staircase(floor, id).iter().map(StairObj::id).collect();
+    if ids.is_empty() {
+        ids.push(id);
+    }
+    ids
+}
+
+// ----- the stairwell stops the top of a stair (CB-104) -----
+
+/// A dragged stair whose top would pass a wall of the floor above is held
+/// short of it when the stair opens to a stairwell there: the top stops at
+/// the wall's near face. Walls that belong to the stair's own stairwell are
+/// ignored. Only straight runs stop; `dragged` comes back as it is for any
+/// other case.
+pub fn stairwell_stop(
+    project: &Project,
+    fl: usize,
+    orig: &StairObj,
+    dragged: StairObj,
+) -> StairObj {
+    if orig.is_landing() || orig.is_curved() || orig.is_ramp() {
+        return dragged;
+    }
+    let Some(above) = project.floors.get(fl + 1) else {
+        return dragged;
+    };
+    if !open_to_floor_above(project, fl, orig) {
+        return dragged;
+    }
+    let (a, dir) = (orig.bottom_center(), orig.along());
+    let want = (top_point(&dragged.stair).0 - a).dot(dir);
+    let have = (top_point(&orig.stair).0 - a).dot(dir);
+    if want <= have + 1e-6 {
+        return dragged;
+    }
+    let mut limit = want;
+    for w in &above.walls {
+        if orig.x.stairwell_walls.contains(&w.id) || orig.x.guard_walls.contains(&w.id) {
+            continue;
+        }
+        // Where the centre line a -> a + dir * want meets the wall.
+        let e = w.end - w.start;
+        let denom = dir.cross(e);
+        if denom.abs() < 1e-9 {
+            continue;
+        }
+        let q = w.start - a;
+        let t = q.cross(e) / denom;
+        let u = q.cross(dir) / denom;
+        if (0.0..=1.0).contains(&u) && t > have - 1e-6 {
+            limit = limit.min((t - w.thickness / 2.0).max(have));
+        }
+    }
+    if limit >= want - 1e-9 {
+        return dragged;
+    }
+    let mut out = dragged;
+    set_run(&mut out, limit.max(MIN_SIZE));
+    out
+}
+
+// ----- Convert Polyline to Landing -----
+
+pub const CONVERT_POLYLINE: &str = "stairs.convert_polyline";
+
+fn selected_polyline(cx: &EditorContext) -> Option<(Id, Vec<Point>)> {
+    let ObjectRef::Cad(id) = cx.selection.single()? else {
+        return None;
+    };
+    cx.floor().cad.iter().find_map(|c| match &c.item {
+        plan_core::CadItem::Polyline { points, .. } if c.id == id && points.len() >= 3 => {
+            Some((id, points.clone()))
+        }
+        _ => None,
+    })
+}
+
+/// The Edit button for a selected closed-enough polyline.
+pub fn edit_buttons(cx: &EditorContext) -> Vec<crate::editor::EditAction> {
+    if selected_polyline(cx).is_none() {
+        return Vec::new();
+    }
+    vec![crate::editor::EditAction::new(
+        crate::editor::EditActionKind::Custom {
+            id: CONVERT_POLYLINE,
+            label: "Convert Polyline to Landing",
+            icon: "",
+        },
+    )]
+}
+
+/// Runs this module's Edit command; false when `id` is not one of them.
+pub fn run_command(cx: &mut EditorContext, id: &str) -> bool {
+    if id != CONVERT_POLYLINE {
+        return false;
+    }
+    match convert_polyline_to_landing(cx) {
+        Ok(msg) => cx.status = msg,
+        Err(e) => cx.status = e,
+    }
+    true
+}
+
+/// Turns the selected CAD polyline into a polygon landing of the current
+/// floor (one undo step); the polyline goes. The landing takes the
+/// polyline's corners, the default landing height and railing.
+pub fn convert_polyline_to_landing(cx: &mut EditorContext) -> Result<String, String> {
+    let (cad_id, pts) =
+        selected_polyline(cx).ok_or("Select a polyline of three or more corners")?;
+    if plan_core::geometry::polygon_area(&pts).abs() < 1.0 {
+        return Err("The polyline encloses no area".into());
+    }
+    let fl = cx.floor;
+    let obj = build_polygon_landing(&cx.project, fl, &pts);
+    cx.begin_change("Convert Polyline to Landing");
+    cx.project.floors[fl].cad.retain(|c| c.id != cad_id);
+    let id = add(&mut cx.project, fl, obj);
+    connect(&mut cx.project, fl, id);
+    adjust_landing(&mut cx.project, fl, id);
+    cx.selection.set(ObjectRef::Stair(id));
+    cx.mark_dirty();
+    Ok("Convert Polyline to Landing".into())
+}

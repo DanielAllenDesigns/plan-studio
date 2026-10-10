@@ -239,6 +239,8 @@ impl Serialize for ElectricalLayer {
 }
 
 /// Segments an arc is sampled into.
+/// The farthest apart two neighbours of a ganged block may be, inches.
+pub const GANG_REACH: f64 = 36.0;
 const ARC_SAMPLES: usize = 24;
 /// Samples per spline segment through vertices.
 const SPLINE_SAMPLES: usize = 10;
@@ -305,6 +307,93 @@ impl ElectricalLayer {
         } else {
             self.options.insert(id, options);
         }
+    }
+
+    // ----- ganged blocks (E-25) -----
+
+    /// The devices that move and copy together with `id`: its whole ganged
+    /// block, or just `id` when it is not ganged. Ascending ids.
+    pub fn gang_members(&self, id: Id) -> Vec<Id> {
+        let Some(gang) = self.options.get(&id).and_then(|o| o.gang) else {
+            return vec![id];
+        };
+        let mut v: Vec<Id> = self
+            .options
+            .iter()
+            .filter(|(i, o)| o.gang == Some(gang) && self.device(**i).is_some())
+            .map(|(i, _)| *i)
+            .collect();
+        v.sort_unstable();
+        v
+    }
+
+    /// Make Ganged Electrical Block: joins same-height switches and outlets
+    /// standing side by side on one wall (or cabinet), each within
+    /// [`GANG_REACH`] of the next, into one block. Returns the block's id.
+    pub fn make_gang(&mut self, ids: &[Id]) -> Result<Id, &'static str> {
+        let mut ids: Vec<Id> = ids.to_vec();
+        ids.sort_unstable();
+        ids.dedup();
+        if ids.len() < 2 {
+            return Err("Select two or more switches or outlets");
+        }
+        let mut devs: Vec<&Device> = Vec::new();
+        for id in &ids {
+            let Some(d) = self.device(*id) else {
+                return Err("One of the selected devices is gone");
+            };
+            if !(d.kind.is_switch() || d.kind.is_outlet()) {
+                return Err("Only switches and outlets can be ganged");
+            }
+            if self.options.get(id).is_some_and(|o| o.gang.is_some()) {
+                return Err("Explode the ganged block first");
+            }
+            devs.push(d);
+        }
+        let first = devs[0];
+        let host = self.options_of(first.id).host;
+        if devs.iter().any(|d| {
+            d.wall_id != first.wall_id
+                || self.options_of(d.id).host != host
+                || (d.height - first.height).abs() > 0.5
+                || (d.angle - first.angle).abs() > 1e-6
+        }) {
+            return Err("Ganged devices must be on one wall at the same height");
+        }
+        devs.sort_by(|a, b| {
+            a.position
+                .x
+                .total_cmp(&b.position.x)
+                .then(a.position.y.total_cmp(&b.position.y))
+        });
+        if devs
+            .windows(2)
+            .any(|w| w[0].position.dist(w[1].position) > GANG_REACH)
+        {
+            return Err("Ganged devices must be within 36 in of each other");
+        }
+        let gang = ids[0];
+        for id in ids {
+            let mut o = self.options_of(id);
+            o.gang = Some(gang);
+            self.set_options(id, o);
+        }
+        Ok(gang)
+    }
+
+    /// Explode Ganged Electrical Block: frees every member of `id`'s block.
+    /// Returns how many devices were freed (0 when `id` is not ganged).
+    pub fn explode_gang(&mut self, id: Id) -> usize {
+        let members = self.gang_members(id);
+        if members == [id] && self.options.get(&id).and_then(|o| o.gang).is_none() {
+            return 0;
+        }
+        for m in &members {
+            let mut o = self.options_of(*m);
+            o.gang = None;
+            self.set_options(*m, o);
+        }
+        members.len()
     }
 
     // ----- rope lights -----

@@ -270,23 +270,41 @@ fn auto_exterior_puts_three_strings_on_each_side_of_a_shell_with_a_window_per_si
         assert_eq!(lines.len(), 3, "{side}: {lines:?}");
     }
     assert!(all.iter().all(|d| side_of(d) != "inside"));
-    // The overall strings span the shell, outside face to outside face.
-    let t = sim.app.cx.wall_thickness(WallKind::Exterior);
+    // The overall strings span the shell, outside face to outside face. The
+    // exterior layers face out (DECISIONS DT3), so the faces come from the
+    // walls' footprints, not from half the thickness.
+    let (mut min_x, mut max_x, mut min_y, mut max_y) = (
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+    );
+    for p in sim.app.cx.floor().walls.iter().flat_map(|w| w.footprint()) {
+        min_x = min_x.min(p.x);
+        max_x = max_x.max(p.x);
+        min_y = min_y.min(p.y);
+        max_y = max_y.max(p.y);
+    }
     let longest = |side: &str| {
         all.iter()
             .filter(|d| side_of(d) == side)
             .map(Dimension::length)
             .fold(0.0, f64::max)
     };
+    // Setup Automatic's Offset From decides the located face (the main
+    // layer by default), so the overall lies between the centerline width
+    // and the finish-to-finish width of the shell.
+    let south = longest("south");
     assert!(
-        (longest("south") - (W + t)).abs() < 2.0,
-        "{}",
-        longest("south")
+        south > W && south <= max_x - min_x + 1e-6,
+        "{south} vs shell {}",
+        max_x - min_x
     );
+    let west = longest("west");
     assert!(
-        (longest("west") - (H + t)).abs() < 2.0,
-        "{}",
-        longest("west")
+        west > H && west <= max_y - min_y + 1e-6,
+        "{west} vs shell {}",
+        max_y - min_y
     );
     // A second run replaces the first; one undo step each.
     let n = all.len();

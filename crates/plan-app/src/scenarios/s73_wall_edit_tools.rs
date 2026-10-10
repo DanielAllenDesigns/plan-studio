@@ -407,3 +407,40 @@ fn reset_walls_to_defaults_restores_type_thickness_and_height_in_one_undo_step()
         cx.defaults.interior_wall.height
     );
 }
+
+#[test]
+fn the_select_tool_drags_a_layer_handle_into_slide_layer_in_one_undo_step() {
+    use crate::scenarios::Sim;
+    use crate::tools::ToolId;
+    let mut sim = Sim::new();
+    let a = typed(sim.cx(), (0.0, 0.0), (120.0, 0.0));
+    let _b = typed(sim.cx(), (120.0, 0.0), (120.0, 120.0));
+    sim.cx().refresh();
+    select(sim.cx(), &[a]);
+    sim.tool(ToolId::Select);
+    let types = plan_defaults::embedded().wall_types.clone();
+    let w = sim.app.cx.floor().wall(a).unwrap().clone();
+    // The outermost layer's handle at the end of the wall.
+    let h = plan_core::walls::intersect::layer_handle(&w, &types, WallEnd::End, 0).unwrap();
+    let tol = sim.app.cx.pick_tol();
+    assert_eq!(
+        wall_edit::layer_handle_at(&sim.app.cx, h, tol),
+        Some((a, WallEnd::End, 0))
+    );
+    // Pulling it 2 inches out of the wall end slides that layer.
+    sim.drag((h.x, h.y), (h.x + 2.0, h.y));
+    let joins = sim.app.cx.floor().wall(a).unwrap().spec.layer_joins.clone();
+    assert_eq!(joins.len(), 1, "{joins:?}");
+    assert!(joins[0].at_end && joins[0].layer == 0 && joins[0].shift > 0.5);
+    assert_eq!(sim.app.cx.undo_label(), Some("Edit Wall Intersections"));
+    sim.undo();
+    assert!(sim
+        .app
+        .cx
+        .floor()
+        .wall(a)
+        .unwrap()
+        .spec
+        .layer_joins
+        .is_empty());
+}

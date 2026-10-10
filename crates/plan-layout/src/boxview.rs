@@ -368,6 +368,10 @@ pub struct BoxView {
     pub fill: Option<FillStyle>,
     pub border: BorderStyle,
     pub label: BoxLabel,
+    /// Column headings typed over a Layout Page Table, Revision Table or
+    /// Sheet Index (empty or blank keeps the table's own).
+    #[serde(default)]
+    pub column_titles: Vec<String>,
 }
 
 impl Default for BoxView {
@@ -390,6 +394,7 @@ impl Default for BoxView {
             fill: None,
             border: BorderStyle::default(),
             label: BoxLabel::default(),
+            column_titles: Vec::new(),
         }
     }
 }
@@ -416,6 +421,7 @@ impl BoxView {
             &self.fill,
             &self.border,
             &self.label,
+            &self.column_titles,
         );
         format!("{small:?}{rest:?}").hash(&mut h);
         self.art

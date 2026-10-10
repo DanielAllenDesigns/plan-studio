@@ -36,6 +36,7 @@
 //!   the curved variants take a third click for the arc.
 
 use super::{KeyEvent, PointerEvent, Tool, ToolId, ToolResult};
+use crate::dialogs::polygon_room::{self, PolyKind, PolygonSpec, RoomWalls};
 use crate::editor::connect;
 use crate::editor::ops::{make_wall, JOIN_TOL};
 use crate::editor::snap::{self, Guide, GuideKind, SnapKind};
@@ -69,6 +70,10 @@ pub enum WallStyle {
     DeckRailing,
     DeckEdge,
     Fencing,
+    /// New Polygon Shaped Room: a dialog, then one click (W-123).
+    PolygonRoom,
+    /// New Polygon Shaped Deck with the size options (W-126).
+    PolygonDeck,
 }
 
 /// A wall flyout entry: a style, straight or curved.
@@ -139,6 +144,8 @@ impl WallVariant {
             (DeckEdge, true) => "Curved Deck Edge",
             (Fencing, false) => "Straight Fencing",
             (Fencing, true) => "Curved Fencing",
+            (PolygonRoom, _) => "Polygon Shaped Room",
+            (PolygonDeck, _) => "Regular Polygon Deck",
         }
     }
 
@@ -250,6 +257,12 @@ impl WallVariant {
                 &v.deck_edge_type,
                 v.deck_edge_height,
             ),
+            PolygonRoom => WallVariant::from_kind(WallKind::Exterior).spec(d),
+            PolygonDeck => WallVariant {
+                style: DeckRailing,
+                curved: false,
+            }
+            .spec(d),
             Fencing => plain(
                 WallKind::Exterior,
                 WallClass::Fencing {
@@ -795,6 +808,44 @@ impl WallTool {
         Some((id, next, rooms_after > rooms_before))
     }
 
+    /// Places the closed ring of a Polygon Shaped Room / Deck around
+    /// `center` as one undo step (W-123, W-126). A room takes exterior or
+    /// interior walls; a deck takes railing walls or, without the railing,
+    /// deck edges.
+    pub(crate) fn place_polygon(
+        &mut self,
+        cx: &mut EditorContext,
+        spec: &PolygonSpec,
+        center: Point,
+    ) -> ToolResult {
+        let ring = spec.corners(center);
+        let style = match (spec.kind, spec.walls, spec.include_railing) {
+            (PolyKind::Room, RoomWalls::Exterior, _) => WallStyle::Exterior,
+            (PolyKind::Room, RoomWalls::Interior, _) => WallStyle::Interior,
+            (PolyKind::Deck, _, true) => WallStyle::DeckRailing,
+            (PolyKind::Deck, _, false) => WallStyle::DeckEdge,
+        };
+        let label = match spec.kind {
+            PolyKind::Room => "Polygon Shaped Room",
+            PolyKind::Deck => "Polygon Shaped Deck",
+        };
+        let saved = self.variant;
+        self.variant = WallVariant {
+            style,
+            curved: false,
+        };
+        let made = cx.undo_group(|cx| {
+            cx.begin_change(label);
+            let n = ring.len();
+            (0..n)
+                .filter(|&i| self.create(cx, ring[i], ring[(i + 1) % n], None).is_some())
+                .count()
+        });
+        self.variant = saved;
+        cx.status = format!("{label}: {made} walls");
+        ToolResult::committed(label)
+    }
+
     /// The bulge for an arc whose chord is set, with the pointer at `world`:
     /// the arc passes through the pointer (W-64), its apex's distance from the
     /// chord, positive on the left, on the grid.
@@ -942,6 +993,7 @@ impl Tool for WallTool {
     }
 
     fn deactivate(&mut self, cx: &mut EditorContext) {
+        polygon_room::disarm();
         self.end_chain(cx);
         self.press = None;
         self.hover = None;
@@ -985,7 +1037,31 @@ impl Tool for WallTool {
         }
     }
 
+    fn activate(&mut self, _cx: &mut EditorContext) {
+        match self.variant.style {
+            WallStyle::PolygonRoom => polygon_room::open(PolyKind::Room),
+            WallStyle::PolygonDeck => polygon_room::open(PolyKind::Deck),
+            _ => {}
+        }
+    }
+
     fn pointer_down(&mut self, cx: &mut EditorContext, p: PointerEvent) -> ToolResult {
+        if matches!(
+            self.variant.style,
+            WallStyle::PolygonRoom | WallStyle::PolygonDeck
+        ) {
+            // One click places the polygon built in the dialog (W-123).
+            return match polygon_room::armed() {
+                Some(spec) => {
+                    let (s, _) = self.snap(cx, &p);
+                    self.place_polygon(cx, &spec, s.point)
+                }
+                None => {
+                    cx.status = "Fill in the polygon dialog, then click to place it".into();
+                    ToolResult::consumed()
+                }
+            };
+        }
         if let Some(arc) = self.arc {
             return self.finish_arc(cx, arc, p.world);
         }
@@ -2030,5 +2106,70 @@ mod tests {
         assert!(t.pending_start().is_none());
         assert!(!t.layers_reversed());
         assert_eq!(cx.floor().walls.len(), 2);
+    }
+
+    #[test]
+    fn a_polygon_room_is_one_click_one_ring_and_one_undo_step() {
+        use crate::dialogs::polygon_room as pr;
+        let mut cx = new_cx();
+        let mut t = WallTool::default();
+        t.set_variant(ToolId::WallVariant(WallVariant {
+            style: WallStyle::PolygonRoom,
+            curved: false,
+        }));
+        t.activate(&mut cx);
+        assert!(pr::is_open() && pr::armed().is_none());
+        // Before OK a click only asks for the dialog.
+        click(&mut t, &mut cx, 500.0, 500.0);
+        assert!(cx.floor().walls.is_empty());
+        let mut spec = pr::PolygonSpec::new(pr::PolyKind::Room);
+        spec.sides = 6;
+        spec.size = 96.0;
+        spec.walls = pr::RoomWalls::Interior;
+        pr::accept(spec);
+        click(&mut t, &mut cx, 480.0, 480.0);
+        cx.refresh();
+        assert_eq!(cx.floor().walls.len(), 6);
+        assert_eq!(cx.rooms.len(), 1, "the ring closes into a room");
+        assert!(cx
+            .floor()
+            .walls
+            .iter()
+            .all(|w| w.kind == WallKind::Interior));
+        for w in &cx.floor().walls {
+            assert!(
+                (w.start.dist(w.end) - 96.0).abs() < 0.5,
+                "{}",
+                w.start.dist(w.end)
+            );
+        }
+        assert_eq!(cx.undo_label(), Some("Polygon Shaped Room"));
+        cx.undo();
+        assert!(cx.floor().walls.is_empty(), "one undo removes the ring");
+        t.deactivate(&mut cx);
+        assert!(pr::armed().is_none());
+    }
+
+    #[test]
+    fn a_polygon_deck_takes_railing_or_deck_edge_walls() {
+        use crate::dialogs::polygon_room as pr;
+        for (railing, class) in [(true, WallClass::DeckRailing), (false, WallClass::DeckEdge)] {
+            let mut cx = new_cx();
+            let mut t = WallTool::default();
+            t.set_variant(ToolId::WallVariant(WallVariant {
+                style: WallStyle::PolygonDeck,
+                curved: false,
+            }));
+            let mut spec = pr::PolygonSpec::new(pr::PolyKind::Deck);
+            spec.sides = 5;
+            spec.size_by = pr::SizeBy::RadiusToCorner;
+            spec.size = 72.0;
+            spec.include_railing = railing;
+            pr::accept(spec);
+            click(&mut t, &mut cx, 300.0, 300.0);
+            assert_eq!(cx.floor().walls.len(), 5);
+            assert!(cx.floor().walls.iter().all(|w| w.class == class));
+            t.deactivate(&mut cx);
+        }
     }
 }

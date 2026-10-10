@@ -610,6 +610,7 @@ impl EditorContext {
         }
         v.extend(crate::dialogs::materials_list::edit_buttons(self));
         v.extend(super::camera_edit::edit_buttons(self));
+        v.extend(super::stairs_view::staircase::edit_buttons(self));
         if crate::tools::painters::can_match(self) {
             v.push(custom_button(
                 crate::tools::painters::MATCH_PROPERTIES,

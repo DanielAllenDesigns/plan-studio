@@ -26,6 +26,7 @@ mod boxview;
 mod cadattrs;
 mod canvas;
 mod clip;
+mod concentric;
 mod extent;
 mod hatch;
 mod layers;

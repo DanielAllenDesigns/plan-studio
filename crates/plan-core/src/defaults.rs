@@ -1125,7 +1125,7 @@ impl Default for WallConnectDefaults {
             split_on_tee: true,
             connect_distance_min: 6.0,
             auto_merge_collinear: true,
-            auto_reverse_layers: false,
+            auto_reverse_layers: true,
         }
     }
 }
@@ -1203,6 +1203,9 @@ pub struct EditBehaviorSettings {
     /// Concentric Jump: every edge moves in steps of this many inches; 0 uses
     /// the Snap Unit (manual p. 255).
     pub concentric_jump: f64,
+    /// Stair Sections Move Independently (manual p. 783): off, the sections
+    /// and landings joined to a stair move with it.
+    pub stair_sections_independent: bool,
     /// Stop When Connected: Alternate's continuous drawing halts when a
     /// closed shape forms (manual p. 149).
     pub stop_when_connected: bool,
@@ -1229,6 +1232,7 @@ impl Default for EditBehaviorSettings {
             chamfer_distance: 0.0,
             alternate_lock_axis: true,
             concentric_jump: 0.0,
+            stair_sections_independent: false,
             stop_when_connected: true,
             movement_polar: false,
             behavior_indicators: true,

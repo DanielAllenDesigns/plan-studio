@@ -125,6 +125,9 @@ pub struct DeviceOptions {
     pub auto_switch_type: bool,
     /// The cabinet or soffit the device is mounted on, if any.
     pub host: Option<Id>,
+    /// The ganged electrical block the device belongs to: the id of the
+    /// block's first device, shared by every member (E-25).
+    pub gang: Option<Id>,
 }
 
 impl Default for DeviceOptions {
@@ -138,6 +141,7 @@ impl Default for DeviceOptions {
             height_to: HeightTo::Center,
             auto_switch_type: true,
             host: None,
+            gang: None,
         }
     }
 }

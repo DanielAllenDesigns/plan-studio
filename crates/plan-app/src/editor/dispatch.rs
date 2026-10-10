@@ -346,6 +346,18 @@ impl EditorContext {
                 let kind = site_view::electrical_layer(self.floor, self.floor())
                     .device(id)
                     .map(|d| d.kind);
+                let ganged = site_view::electrical_layer(self.floor, self.floor())
+                    .gang_members(id)
+                    .len()
+                    > 1;
+                if ganged {
+                    v.push(custom(
+                        crate::tools::electrical::cmd::EXPLODE_GANG,
+                        "Explode Ganged Electrical Block",
+                        "",
+                        true,
+                    ));
+                }
                 match kind {
                     Some(plan_electrical::DeviceKind::Outlet110) => v.push(custom(
                         crate::tools::electrical::cmd::TO_GFCI,
@@ -385,7 +397,9 @@ impl EditorContext {
             self.run_edit_command(id);
             return;
         }
-        if super::camera_edit::run_command(self, id) {
+        if super::camera_edit::run_command(self, id)
+            || super::stairs_view::staircase::run_command(self, id)
+        {
             return;
         }
         // Tools > Materials List and the Calculate Materials buttons.
@@ -627,7 +641,7 @@ impl EditorContext {
                 }
                 ObjectRef::Camera(id) => {
                     self.project
-                        .update_camera(id, |c| c.position = c.position + d);
+                        .update_camera(id, |c| plan_core::transform::translate_camera(c, d));
                 }
                 _ => {}
             }

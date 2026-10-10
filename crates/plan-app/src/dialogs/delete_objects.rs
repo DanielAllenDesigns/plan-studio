@@ -7,6 +7,7 @@ use crate::editor::selection::{all_selectable, ObjectRef};
 use crate::editor::EditorContext;
 use eframe::egui;
 use plan_core::cad::CadItem;
+use plan_core::Point;
 use std::cell::RefCell;
 
 /// One row of the dialog.
@@ -124,6 +125,22 @@ pub fn counts(cx: &EditorContext) -> Vec<(Category, usize)> {
         .collect()
 }
 
+/// Where Delete Objects reaches.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DeleteScope {
+    /// The active floor.
+    #[default]
+    Floor,
+    /// Objects inside one room of the active floor (index into the detected
+    /// rooms). Walls and openings are on the room's edge, shared with the
+    /// next room, so this scope leaves them alone.
+    Room(usize),
+    /// Objects inside any room of the active floor.
+    AllRooms,
+    /// Every floor of the plan.
+    Plan,
+}
+
 /// Deletes every object of `categories` on the active floor (or all floors)
 /// as one undo step named "Delete Objects". Returns how many went.
 pub fn delete_by_category(
@@ -131,14 +148,37 @@ pub fn delete_by_category(
     categories: &[Category],
     all_floors: bool,
 ) -> usize {
+    let scope = if all_floors {
+        DeleteScope::Plan
+    } else {
+        DeleteScope::Floor
+    };
+    delete_by_scope(cx, categories, scope)
+}
+
+/// Deletes every object of `categories` within `scope` as one undo step named
+/// "Delete Objects". Returns how many went.
+pub fn delete_by_scope(
+    cx: &mut EditorContext,
+    categories: &[Category],
+    scope: DeleteScope,
+) -> usize {
     if categories.is_empty() {
         return 0;
     }
     let home = cx.floor;
-    let floors: Vec<usize> = if all_floors {
+    let floors: Vec<usize> = if scope == DeleteScope::Plan {
         (0..cx.project.floors.len()).collect()
     } else {
         vec![home]
+    };
+    let room: Option<Vec<Vec<Point>>> = match scope {
+        DeleteScope::Room(i) => match cx.rooms.get(i) {
+            Some(r) => Some(vec![r.polygon.clone()]),
+            None => return 0,
+        },
+        DeleteScope::AllRooms => Some(cx.rooms.iter().map(|r| r.polygon.clone()).collect()),
+        _ => None,
     };
     let mut total = 0;
     cx.as_one_step("Delete Objects", |cx| {
@@ -147,6 +187,10 @@ pub fn delete_by_category(
             let victims: Vec<ObjectRef> = all_selectable(cx)
                 .into_iter()
                 .filter(|o| Category::of(cx, *o).is_some_and(|c| categories.contains(&c)))
+                .filter(|o| match &room {
+                    None => true,
+                    Some(polys) => polys.iter().any(|poly| in_room(cx, *o, poly)),
+                })
                 .collect();
             if victims.is_empty() {
                 continue;
@@ -162,14 +206,83 @@ pub fn delete_by_category(
     total
 }
 
+/// Does the middle of the object lie inside the room? Walls and openings are
+/// never counted (see [`DeleteScope::Room`]).
+fn in_room(cx: &EditorContext, o: ObjectRef, poly: &[Point]) -> bool {
+    if matches!(o, ObjectRef::Wall(_) | ObjectRef::Opening(_)) {
+        return false;
+    }
+    let pts = crate::editor::transform::object_points(cx, o);
+    if pts.is_empty() {
+        return false;
+    }
+    let n = pts.len() as f64;
+    let mid = Point::new(
+        pts.iter().map(|p| p.x).sum::<f64>() / n,
+        pts.iter().map(|p| p.y).sum::<f64>() / n,
+    );
+    plan_core::geometry::point_in_polygon(mid, poly)
+}
+
+/// The room of the active floor that holds the selection's middle (the first
+/// room when nothing is selected, or `None` without rooms).
+pub fn default_room(cx: &EditorContext) -> Option<usize> {
+    if cx.rooms.is_empty() {
+        return None;
+    }
+    let pts: Vec<Point> = cx
+        .selection
+        .items
+        .iter()
+        .flat_map(|o| crate::editor::transform::object_points(cx, *o))
+        .collect();
+    if pts.is_empty() {
+        return Some(0);
+    }
+    let n = pts.len() as f64;
+    let mid = Point::new(
+        pts.iter().map(|p| p.x).sum::<f64>() / n,
+        pts.iter().map(|p| p.y).sum::<f64>() / n,
+    );
+    Some(
+        cx.rooms
+            .iter()
+            .position(|r| plan_core::geometry::point_in_polygon(mid, &r.polygon))
+            .unwrap_or(0),
+    )
+}
+
 /// The dialog's state.
 #[derive(Clone, Debug, Default)]
 pub struct DeleteObjectsDialog {
     pub checked: Vec<Category>,
     pub all_floors: bool,
+    /// Limits the deletion to one room of this floor (Room scope).
+    pub room: Option<usize>,
+    /// Limits it to objects inside any room of this floor.
+    pub all_rooms: bool,
 }
 
 impl DeleteObjectsDialog {
+    /// The scope the controls stand at.
+    pub fn scope(&self) -> DeleteScope {
+        match (self.all_floors, self.room) {
+            (true, _) => DeleteScope::Plan,
+            (false, Some(r)) => DeleteScope::Room(r),
+            (false, None) if self.all_rooms => DeleteScope::AllRooms,
+            (false, None) => DeleteScope::Floor,
+        }
+    }
+
+    pub fn set_scope(&mut self, s: DeleteScope) {
+        self.all_rooms = s == DeleteScope::AllRooms;
+        (self.all_floors, self.room) = match s {
+            DeleteScope::Floor | DeleteScope::AllRooms => (false, None),
+            DeleteScope::Room(r) => (false, Some(r)),
+            DeleteScope::Plan => (true, None),
+        };
+    }
+
     /// Draws the window; false once it is closed.
     pub fn show(&mut self, ctx: &egui::Context, cx: &mut EditorContext) -> bool {
         let mut open = true;
@@ -203,8 +316,40 @@ impl DeleteObjectsDialog {
                             }
                         }
                     });
+                ui.horizontal(|ui| {
+                    if ui.button("Select All").clicked() {
+                        self.checked = counts.iter().map(|(c, _)| *c).collect();
+                    }
+                    if ui.button("Clear All").clicked() {
+                        self.checked.clear();
+                    }
+                });
                 ui.separator();
-                ui.checkbox(&mut self.all_floors, "On all floors");
+                ui.horizontal(|ui| {
+                    ui.label("Scope");
+                    let mut scope = self.scope();
+                    ui.radio_value(&mut scope, DeleteScope::Floor, "This floor");
+                    if let Some(r) = default_room(cx) {
+                        let r = self.room.unwrap_or(r);
+                        ui.radio_value(&mut scope, DeleteScope::Room(r), "One room");
+                        if let DeleteScope::Room(_) = scope {
+                            let mut i = r;
+                            egui::ComboBox::from_id_salt("delete_objects_room")
+                                .selected_text(
+                                    cx.rooms.get(i).map_or(String::new(), |x| x.label.clone()),
+                                )
+                                .show_ui(ui, |ui| {
+                                    for (k, room) in cx.rooms.iter().enumerate() {
+                                        ui.selectable_value(&mut i, k, room.label.clone());
+                                    }
+                                });
+                            scope = DeleteScope::Room(i);
+                        }
+                    }
+                    ui.radio_value(&mut scope, DeleteScope::AllRooms, "All rooms");
+                    ui.radio_value(&mut scope, DeleteScope::Plan, "All floors");
+                    self.set_scope(scope);
+                });
                 ui.horizontal(|ui| {
                     ok = ui
                         .add_enabled(!self.checked.is_empty(), egui::Button::new("Delete"))
@@ -213,7 +358,7 @@ impl DeleteObjectsDialog {
                 });
             });
         if ok {
-            let n = delete_by_category(cx, &self.checked, self.all_floors);
+            let n = delete_by_scope(cx, &self.checked, self.scope());
             cx.status = format!("Deleted {n} object{}", if n == 1 { "" } else { "s" });
             return false;
         }

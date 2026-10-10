@@ -9,6 +9,7 @@
 //! Y up, Z = -plan y (see `plan-3d`).
 
 mod deck;
+mod finish;
 mod landing;
 mod landing_rules;
 mod layout;
@@ -24,6 +25,10 @@ use plan_core::{Id, Point};
 use serde::{Deserialize, Serialize};
 
 pub use deck::{deck_edge_railing, Deck};
+pub use finish::{
+    bracket_stations, custom_stringer_boards, junction_step, transition_profile, trim_sides,
+    CustomStringer, Finish, RailTransition, Stations, StringerBoard, TrimAgainstWall,
+};
 pub use landing::polygon_slab;
 pub use landing_rules::{
     adjacent_edges, adjacent_height, are_adjacent, auto_height, auto_thickness, short_edge,
@@ -355,6 +360,9 @@ pub struct StairParams {
     pub landing_auto_height: bool,
     /// Landings: Auto Adjust Thickness (one riser plus the floor finish).
     pub landing_auto_thickness: bool,
+    /// Round 17: custom stringers, trim against a wall, rail transitions
+    /// and brackets.
+    pub finish: Finish,
 }
 
 /// The shortest run of one stair or ramp section, inches (Chief: 6").
@@ -419,6 +427,7 @@ impl Default for StairParams {
             subsections: Vec::new(),
             landing_auto_height: true,
             landing_auto_thickness: true,
+            finish: Finish::default(),
         }
     }
 }
@@ -851,3 +860,6 @@ mod tests_sections;
 
 #[cfg(test)]
 mod tests_engine;
+
+#[cfg(test)]
+mod tests_r17;

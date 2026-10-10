@@ -292,6 +292,23 @@ pub fn xform_camera(c: &mut CameraObject, x: &Xform) {
     for p in c.path.iter_mut() {
         *p = x.apply(*p);
     }
+    if let Some(sec) = c.section.as_mut() {
+        sec.a = x.apply(sec.a);
+        sec.b = x.apply(sec.b);
+    }
+}
+
+/// Shifts a camera by `d`: eye, walkthrough path and the cut line of a
+/// section all move together.
+pub fn translate_camera(c: &mut CameraObject, d: Point) {
+    c.position = c.position + d;
+    for p in c.path.iter_mut() {
+        *p = *p + d;
+    }
+    if let Some(sec) = c.section.as_mut() {
+        sec.a = sec.a + d;
+        sec.b = sec.b + d;
+    }
 }
 
 impl Project {

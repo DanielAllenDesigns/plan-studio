@@ -45,8 +45,8 @@ use serde_json::{json, Value};
 pub(crate) mod plane_extras;
 pub use plane_extras::{
     align_plane, attic_wall_above, build_when_room_closes, move_coplanar, place_intersection_point,
-    reference_direction, run_plane_command, snap_baseline, snap_edge_to_walls, FillKind, PlaneFill,
-    PlaneStyle, SlopeArrow, LOCKS, PLANE_COMMANDS,
+    plane_beneath, reference_direction, run_plane_command, set_baseline_over, snap_baseline,
+    snap_edge_to_walls, FillKind, PlaneFill, PlaneStyle, SlopeArrow, LOCKS, PLANE_COMMANDS,
 };
 
 pub const LAYER_PLANES: &str = "Roof Planes";
@@ -612,6 +612,8 @@ pub struct RoofPlaneRecord {
     pub plate_top: Option<f64>,
     /// Width of that plate, the birdsmouth seat of the automatic cut.
     pub plate_width: f64,
+    /// How far the shadow board top stands above the fascia top, inches.
+    pub shadow_rise: f64,
     /// Plan Line Style, Fill Style and slope Arrow of the plane (RF-88,
     /// RF-89, RF-91).
     pub style: PlaneStyle,
@@ -649,6 +651,7 @@ impl RoofPlaneRecord {
             curved: None,
             plate_top: None,
             plate_width: DEFAULT_PLATE_WIDTH,
+            shadow_rise: 0.0,
             style: PlaneStyle::default(),
             in_schedule: true,
             special_snapping: true,
@@ -866,6 +869,9 @@ impl RoofPlaneRecord {
                 m.insert("plate_top".into(), json!(t));
                 m.insert("plate_width".into(), json!(self.plate_width));
             }
+            if self.shadow_rise != 0.0 {
+                m.insert("shadow_rise".into(), json!(self.shadow_rise));
+            }
             if self.style != PlaneStyle::default() {
                 if let Ok(e) = serde_json::to_value(&self.style) {
                     m.insert("style".into(), e);
@@ -918,6 +924,7 @@ impl RoofPlaneRecord {
         r.curved = field!(v, "curved", plan_roof::CurvedSpec);
         r.plate_top = field!(v, "plate_top", f64);
         r.plate_width = field!(v, "plate_width", f64).unwrap_or(DEFAULT_PLATE_WIDTH);
+        r.shadow_rise = field!(v, "shadow_rise", f64).unwrap_or(0.0);
         r.style = field!(v, "style", PlaneStyle).unwrap_or_default();
         r.in_schedule = field!(v, "in_schedule", bool).unwrap_or(true);
         r.special_snapping = field!(v, "special_snapping", bool).unwrap_or(true);
@@ -2280,7 +2287,7 @@ pub fn wall_edit_actions(cx: &EditorContext) -> Vec<EditAction> {
         || !walls.iter().any(|id| {
             cx.floor()
                 .wall(*id)
-                .is_some_and(|w| w.kind == WallKind::Exterior)
+                .is_some_and(|w| matches!(w.kind, WallKind::Exterior | WallKind::Interior))
         })
     {
         return Vec::new();
@@ -3608,6 +3615,7 @@ pub fn apply_edits(old: &mut RoofPlaneRecord, new: &RoofPlaneRecord) {
     old.layers = new.layers.clone();
     old.plate_top = new.plate_top;
     old.plate_width = new.plate_width;
+    old.shadow_rise = new.shadow_rise;
     old.style = new.style.clone();
     old.in_schedule = new.in_schedule;
     old.special_snapping = new.special_snapping;

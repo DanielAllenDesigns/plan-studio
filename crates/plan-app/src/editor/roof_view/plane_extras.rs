@@ -157,6 +157,7 @@ impl RoofPlaneRecord {
             thickness,
             plate_top,
             plate_width: self.plate_width,
+            shadow_rise: self.shadow_rise,
         }
     }
 
@@ -168,6 +169,7 @@ impl RoofPlaneRecord {
         }
         self.set_baseline_height(h.fascia_top());
         self.plate_top = Some(h.plate_top);
+        self.shadow_rise = h.shadow_rise;
     }
 
     /// Perimeter, areas and volume for a structure `thickness` thick.
@@ -455,15 +457,17 @@ pub const CMD_PARALLEL: &str = "roof.plane_parallel";
 pub const CMD_PERPENDICULAR: &str = "roof.plane_perpendicular";
 pub const CMD_FLOOR_ABOVE: &str = "roof.display_above";
 pub const CMD_FLOOR_BELOW: &str = "roof.display_below";
+pub const CMD_BASELINE_HEIGHT: &str = "roof.baseline_height";
 
 /// `(command, label)` of the edit buttons a selected roof plane offers.
-pub const PLANE_COMMANDS: [(&str, &str); 6] = [
+pub const PLANE_COMMANDS: [(&str, &str); 7] = [
     (CMD_COPLANAR, "Move to be Coplanar"),
     (CMD_INTERSECTION, "Place Roof Plane Intersection Point"),
     (CMD_PARALLEL, "Make Parallel"),
     (CMD_PERPENDICULAR, "Make Perpendicular"),
     (CMD_FLOOR_ABOVE, "Display on Floor Above"),
     (CMD_FLOOR_BELOW, "Display on Floor Below"),
+    (CMD_BASELINE_HEIGHT, "Set Baseline Height"),
 ];
 
 /// Runs a plane command on the selected roof plane. Returns whether `id` was
@@ -480,6 +484,7 @@ pub fn run_plane_command(cx: &mut EditorContext, id: &str) -> bool {
         CMD_INTERSECTION => Some(RoofMode::IntersectionPoint),
         CMD_PARALLEL => Some(RoofMode::MakeParallel),
         CMD_PERPENDICULAR => Some(RoofMode::MakePerpendicular),
+        CMD_BASELINE_HEIGHT => Some(RoofMode::SetBaseline),
         _ => None,
     };
     if let Some(m) = mode {
@@ -508,6 +513,52 @@ pub fn run_plane_command(cx: &mut EditorContext, id: &str) -> bool {
         }
     }
     true
+}
+
+/// The plane (other than `id`) that lies under the start of plane `id`'s
+/// baseline: the one Set Baseline Height asks about.
+pub fn plane_beneath(set: &RoofSet, id: Id) -> Option<Id> {
+    let a = set.plane(id)?.baseline.0;
+    set.planes
+        .iter()
+        .rev()
+        .find(|p| p.id != id && p.contains(a))
+        .map(|p| p.id)
+}
+
+/// Set Baseline Height on an existing plane (RF-114): lifts plane `id` so
+/// its baseline sits over the wall top or on the plane `under`. Returns the
+/// lift. The plane becomes manual.
+pub fn set_baseline_over(
+    project: &mut Project,
+    fi: usize,
+    id: Id,
+    under: Id,
+    choice: plan_roof::BaselineOver,
+    wall_top: f64,
+) -> Result<f64, String> {
+    let mut set = load(&project.floors[fi]);
+    let below = set
+        .plane(under)
+        .ok_or_else(|| "pick a roof plane under the baseline".to_string())?
+        .to_roof_plane(0);
+    let start = set
+        .plane(id)
+        .ok_or_else(|| "select a roof plane first".to_string())?
+        .baseline
+        .0;
+    let elev = plan_roof::baseline_height_over(choice, wall_top, &below, start);
+    let r = set
+        .plane_mut(id)
+        .ok_or_else(|| "select a roof plane".to_string())?;
+    let lift = elev - r.baseline_height();
+    if lift.abs() < 1e-6 {
+        return Err("the baseline is there already".into());
+    }
+    r.set_baseline_height(elev);
+    r.auto = false;
+    store(project, fi, &mut set);
+    Ok(lift)
 }
 
 /// Height lock radio labels in the order the specification lists them.

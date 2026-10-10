@@ -185,6 +185,9 @@ pub struct PlaneHeights {
     pub plate_top: f64,
     /// Width of the plate, the birdsmouth seat of the automatic cut.
     pub plate_width: f64,
+    /// How far the top of the shadow board stands above the fascia top (the
+    /// board hangs on the face of the fascia; zero is flush).
+    pub shadow_rise: f64,
 }
 
 /// Which height a pitch change keeps fixed, or a height edit sets.
@@ -193,6 +196,8 @@ pub enum HeightLock {
     RidgeTop,
     Baseline,
     FasciaTop,
+    /// Top of the shadow board on the fascia (manual p. 846).
+    ShadowBoardTop,
     TopOfPlate,
 }
 
@@ -207,6 +212,11 @@ impl PlaneHeights {
 
     pub fn fascia_top(&self) -> f64 {
         self.baseline - self.overhang * slope(self.pitch)
+    }
+
+    /// Top of the shadow board: the fascia top plus the board's rise.
+    pub fn shadow_board_top(&self) -> f64 {
+        self.fascia_top() + self.shadow_rise
     }
 
     /// Elevation of the structure's underside on the baseline.
@@ -231,6 +241,7 @@ impl PlaneHeights {
             HeightLock::RidgeTop => self.ridge_top(),
             HeightLock::Baseline => self.baseline,
             HeightLock::FasciaTop => self.fascia_top(),
+            HeightLock::ShadowBoardTop => self.shadow_board_top(),
             HeightLock::TopOfPlate => self.plate_top,
         }
     }
@@ -246,6 +257,9 @@ impl PlaneHeights {
             HeightLock::RidgeTop => out.baseline = value - self.run * k,
             HeightLock::Baseline => out.baseline = value,
             HeightLock::FasciaTop => out.baseline = value + self.overhang * k,
+            HeightLock::ShadowBoardTop => {
+                out.baseline = value - self.shadow_rise + self.overhang * k
+            }
             HeightLock::TopOfPlate => out.plate_top = value,
         }
         out
@@ -263,7 +277,11 @@ impl PlaneHeights {
         out.baseline = match lock {
             HeightLock::RidgeTop => self.ridge_top() - self.run * k1,
             HeightLock::Baseline => self.baseline,
-            HeightLock::FasciaTop => self.fascia_top() + self.overhang * k1,
+            // The shadow board hangs on the fascia, so both pivot about the
+            // same plan position.
+            HeightLock::FasciaTop | HeightLock::ShadowBoardTop => {
+                self.fascia_top() + self.overhang * k1
+            }
             HeightLock::TopOfPlate => {
                 let v1 = out.vertical_depth();
                 if auto_birdsmouth {

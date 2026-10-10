@@ -576,8 +576,82 @@ fn lock_key(lock: HeightLock) -> &'static str {
         HeightLock::RidgeTop => "plane_ridge_top",
         HeightLock::Baseline => "baseline",
         HeightLock::FasciaTop => "plane_fascia_top",
+        HeightLock::ShadowBoardTop => "plane_shadow_top",
         HeightLock::TopOfPlate => "plane_top_of_plate",
     }
+}
+
+/// The Shadow Board Top row of the General panel, listed after the four
+/// heights of `LOCKS` when the roof has shadow boards.
+const SHADOW_LOCK: (HeightLock, &str) = (HeightLock::ShadowBoardTop, "Shadow Board Top Height");
+
+/// Where the pivot of `lock` sits in the lock diagram, as fractions of its
+/// box (x to the right, y down): the side of a wall with the plane rising
+/// from the eave at the left to the ridge at the right (RF-117).
+pub fn lock_point(lock: HeightLock, trusses: bool) -> (f32, f32) {
+    match lock {
+        HeightLock::RidgeTop => (0.90, 0.14),
+        HeightLock::Baseline => (0.30, 0.50),
+        HeightLock::FasciaTop => (0.08, 0.62),
+        HeightLock::ShadowBoardTop => (0.08, 0.54),
+        // Rafters bear on the inside edge of the plate with the automatic
+        // birdsmouth; trusses sit on the plate at the heel.
+        HeightLock::TopOfPlate => {
+            if trusses {
+                (0.30, 0.70)
+            } else {
+                (0.38, 0.70)
+            }
+        }
+    }
+}
+
+/// The diagram beside the Height/Pitch settings: the wall, the plate, the
+/// plane with its structure, and a dot on the point the chosen lock holds.
+fn lock_diagram(ui: &mut Ui, lock: HeightLock, trusses: bool) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(180.0, 96.0), egui::Sense::hover());
+    let p = ui.painter_at(rect);
+    let at = |x: f32, y: f32| {
+        Pos2::new(
+            rect.left() + x * rect.width(),
+            rect.top() + y * rect.height(),
+        )
+    };
+    let ink = Stroke::new(1.5_f32, PV_INK);
+    // Wall and top plate.
+    p.line_segment([at(0.30, 0.70), at(0.30, 1.0)], ink);
+    p.line_segment([at(0.45, 0.70), at(0.45, 1.0)], ink);
+    p.rect_stroke(
+        Rect::from_min_max(at(0.30, 0.66), at(0.45, 0.70)),
+        0.0,
+        ink,
+        egui::StrokeKind::Inside,
+    );
+    // Top surface of the plane, eave to ridge, and its underside.
+    p.line_segment([at(0.08, 0.62), at(0.90, 0.14)], ink);
+    p.line_segment(
+        [at(0.08, 0.68), at(0.90, 0.20)],
+        Stroke::new(1.0_f32, PV_INK),
+    );
+    p.line_segment([at(0.08, 0.62), at(0.08, 0.68)], ink);
+    if trusses {
+        // A truss: bottom chord and a web.
+        p.line_segment(
+            [at(0.30, 0.68), at(0.90, 0.20)],
+            Stroke::new(0.8_f32, PV_INK),
+        );
+        p.line_segment(
+            [at(0.30, 0.68), at(0.62, 0.20)],
+            Stroke::new(0.8_f32, PV_INK),
+        );
+    }
+    let (x, y) = lock_point(lock, trusses);
+    p.circle_filled(at(x, y), 4.0, PV_ACCENT);
+    ui.weak(if trusses {
+        "Diagram: trusses. The dot marks the locked height."
+    } else {
+        "Diagram: rafters. The dot marks the locked height."
+    });
 }
 
 struct PlanePages {
@@ -598,6 +672,9 @@ struct PlanePages {
     heights: HeightSettings,
     /// How typed edge lengths are read (RF-97).
     entry: LengthEntry,
+    /// The roof's trim has shadow boards, so the Shadow Board Top height
+    /// applies (manual p. 846).
+    shadow_boards: bool,
 }
 
 impl PlanePages {
@@ -612,6 +689,7 @@ impl PlanePages {
             lock: HeightLock::Baseline,
             heights: HeightSettings::default(),
             entry: LengthEntry::Projected,
+            shadow_boards: false,
         }
     }
 
@@ -668,6 +746,25 @@ impl PlanePages {
                 self.set_height(lock, v);
             }
         }
+        if self.shadow_boards {
+            let (lock, label) = SHADOW_LOCK;
+            let mut v = shown.height(lock);
+            let radio = &mut self.lock;
+            let fields = &mut self.fields;
+            if row(ui, label, |ui| {
+                ui.radio_value(radio, lock, "");
+                fields.length(ui, lock_key(lock), &mut v)
+            }) {
+                self.set_height(lock, v);
+            }
+        } else if self.lock == HeightLock::ShadowBoardTop {
+            self.lock = HeightLock::Baseline;
+        }
+        lock_diagram(
+            ui,
+            self.lock,
+            self.heights.framing == plan_roof::RoofFraming::Trusses,
+        );
         section(ui, "Measurements");
         let ph = self.plane_heights();
         row(ui, "Structure Thickness", |ui| {
@@ -1281,6 +1378,13 @@ impl RoofPlaneDialog {
 
     /// The roof's Roof Height settings: the framing and birdsmouth the
     /// General panel's lock arithmetic and read-outs follow.
+    /// Shadow boards are on in the roof's trim: the Shadow Board Top height
+    /// can be typed and locked.
+    pub fn with_shadow_boards(mut self, on: bool) -> Self {
+        self.pages.shadow_boards = on;
+        self
+    }
+
     pub fn with_heights(mut self, heights: HeightSettings) -> Self {
         self.pages.heights = heights;
         self
@@ -2311,5 +2415,40 @@ mod tests {
         assert_eq!(back.plate_top, Some(98.0));
         // A plane that was never styled writes no style at all.
         assert!(sample_plane().to_json_for_test().get("style").is_none());
+    }
+
+    #[test]
+    fn the_lock_diagram_puts_each_pivot_in_its_own_place() {
+        let locks = [
+            HeightLock::RidgeTop,
+            HeightLock::Baseline,
+            HeightLock::FasciaTop,
+            HeightLock::ShadowBoardTop,
+            HeightLock::TopOfPlate,
+        ];
+        for (i, a) in locks.iter().enumerate() {
+            for b in &locks[i + 1..] {
+                assert_ne!(lock_point(*a, false), lock_point(*b, false));
+            }
+        }
+        // The plate pivot differs between rafters and trusses.
+        assert_ne!(
+            lock_point(HeightLock::TopOfPlate, false),
+            lock_point(HeightLock::TopOfPlate, true)
+        );
+    }
+
+    #[test]
+    fn the_shadow_board_top_is_typed_and_locked_only_with_shadow_boards() {
+        let mut d = sample_dialog().with_shadow_boards(true);
+        d.pages.draft.shadow_rise = 1.5;
+        let h = d.pages.plane_heights();
+        assert!((h.shadow_board_top() - (h.fascia_top() + 1.5)).abs() < 1e-9);
+        d.pages
+            .set_height(HeightLock::ShadowBoardTop, h.shadow_board_top() + 6.0);
+        let after = d.pages.plane_heights();
+        assert!((after.shadow_board_top() - (h.shadow_board_top() + 6.0)).abs() < 1e-9);
+        assert!((d.pages.draft.shadow_rise - 1.5).abs() < 1e-9);
+        assert!(!sample_dialog().pages.shadow_boards);
     }
 }

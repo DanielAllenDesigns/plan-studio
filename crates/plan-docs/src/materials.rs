@@ -50,10 +50,12 @@ const STUD_SPACING: f64 = 16.0;
 const BUNDLES_PER_SQUARE: f64 = 3.0;
 
 /// Chief's Materials List categories, in the order they are listed.
-pub const CATEGORIES: [&str; 11] = [
+pub const CATEGORIES: [&str; 15] = [
     "Foundation",
     "Framing",
+    "Subfloor",
     "Roofing",
+    "Decks-Walks",
     "Siding",
     "Windows",
     "Doors",
@@ -61,6 +63,8 @@ pub const CATEGORIES: [&str; 11] = [
     "Electrical",
     "Fixtures",
     "Interior Finishes",
+    "Interior Trim",
+    "Exterior Trim",
     "Landscaping",
 ];
 
@@ -278,6 +282,10 @@ fn number_rows(lines: &mut [MaterialLine]) {
             "Electrical" => "EL",
             "Fixtures" => "FX",
             "Interior Finishes" => "INT",
+            "Interior Trim" => "ITR",
+            "Exterior Trim" => "ETR",
+            "Subfloor" => "SUB",
+            "Decks-Walks" => "DW",
             "Landscaping" => "LS",
             _ => "MISC",
         };

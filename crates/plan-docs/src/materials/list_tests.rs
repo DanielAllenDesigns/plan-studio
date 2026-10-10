@@ -1129,3 +1129,176 @@ fn every_column_of_a_materials_list_has_its_cell() {
     // All 21 columns are covered between the table and the line above.
     assert_eq!(want.len() + 1, MlColumn::ALL.len());
 }
+
+// ---- Round 17 brief 04: reported framing and trim ----
+
+fn catalogued_frame() -> Project {
+    let mut p = framed();
+    plan_framing::catalog::store(
+        &mut p.floors[0].framing,
+        &plan_framing::catalog::FramingCatalog::default(),
+    );
+    p
+}
+
+#[test]
+fn a_catalogued_plan_lists_the_structural_member_report_by_category() {
+    let p = catalogued_frame();
+    let (auto, manual) = framing_members(&p.floors[0]);
+    let mut cat = plan_framing::catalog::of_project(&p);
+    // The active default decides the rows: Buy List, then Cut List.
+    for cut in [false, true] {
+        if cut {
+            let d = cat
+                .reporting
+                .active_default()
+                .converted("Cuts", plan_framing::reporting::ReportMethod::CutList);
+            cat.reporting.defaults.push(d);
+            assert!(cat.reporting.set_active("Cuts"));
+            let mut q = p.clone();
+            plan_framing::catalog::store(&mut q.floors[0].framing, &cat);
+            check_report(&q, &auto, &manual, &cat);
+        } else {
+            check_report(&p, &auto, &manual, &cat);
+        }
+    }
+}
+
+fn check_report(
+    p: &Project,
+    auto: &[plan_framing::Member],
+    manual: &[plan_framing::FramingMember],
+    cat: &plan_framing::catalog::FramingCatalog,
+) {
+    let want = plan_framing::reporting::report_members(auto, manual, cat, false);
+    assert!(!want.lines.is_empty());
+    let got = all(p);
+    for l in &want.lines {
+        let row = got
+            .iter()
+            .find(|g| g.line.category == l.category.name() && g.line.item == l.description)
+            .unwrap_or_else(|| panic!("no row for {}", l.description));
+        assert!((row.line.net - l.qty).abs() < 1e-6, "{}", l.description);
+        assert_eq!(row.line.unit, l.unit);
+    }
+    // The old per-style names are gone.
+    assert!(!got.iter().any(|g| g.line.item.ends_with("linear feet")));
+}
+
+fn trim_house() -> Project {
+    use plan_core::details::DetailsLayer;
+    use plan_core::moldings::{builtin_profiles, MoldingTable, MoldingType};
+    let mut p = Project::new("t");
+    rect_walls(&mut p, 240.0, 180.0, 6.5, WallKind::Exterior);
+    p.floors[0].room_names.push(plan_core::model::RoomName::new(
+        Point::new(120.0, 90.0),
+        "Kitchen",
+        "Kitchen",
+    ));
+    let crown = builtin_profiles()
+        .into_iter()
+        .find(|x| x.kind == MoldingType::Crown)
+        .unwrap();
+    let mut table = MoldingTable::default();
+    table.add_new(crown);
+    let mut layer = DetailsLayer::default();
+    layer.room_moldings_mut(Point::new(120.0, 90.0)).table = table;
+    let floor = p.floors[0].clone();
+    let rooms = plan_core::detect_rooms(&floor.walls, 0.5);
+    let mut next = 100;
+    layer.auto_corner_boards(&floor, &rooms, &mut || {
+        next += 1;
+        next
+    });
+    layer.store(&mut p.floors[0]);
+    p
+}
+
+fn trim_total(lines: &[ListLine], category: &str) -> f64 {
+    lines
+        .iter()
+        .filter(|l| l.line.category == category && l.line.unit == "lf")
+        .map(|l| l.line.net)
+        .sum()
+}
+
+#[test]
+fn crown_and_corner_boards_list_as_interior_and_exterior_trim() {
+    let p = trim_house();
+    let lines = all(&p);
+    let rooms = plan_core::detect_rooms(&p.floors[0].walls, 0.5);
+    let ring = &rooms[0].inner_polygon;
+    let perimeter: f64 = (0..ring.len())
+        .map(|i| ring[i].dist(ring[(i + 1) % ring.len()]))
+        .sum();
+    let crown = trim_total(&lines, "Interior Trim");
+    assert!((crown - (perimeter / 12.0).ceil()).abs() <= 1.0, "{crown}");
+    let boards = find_prefix(&lines, "Exterior Trim", "Corner Board");
+    let h = p.floors[0].walls[0].height;
+    assert_eq!(boards.line.net, (4.0 * 2.0 * h / 12.0 - 1e-9).ceil());
+    // Rows are numbered with the trim prefixes and sort after the finishes.
+    assert!(boards.line.id.starts_with("ETR-"), "{}", boards.line.id);
+    let spec = ListSpec::new("L", ListScope::AllFloors);
+    let csv = String::from_utf8(export::export(
+        &lines,
+        &spec,
+        &ExportOptions::default(),
+        "T",
+    ))
+    .unwrap();
+    assert!(csv.contains("ITR-001") && csv.contains("ETR-001"), "{csv}");
+    let flat = to_csv(&take_off(&p, MaterialsScope::AllFloors, None, &plain()));
+    assert!(flat.contains("Interior Trim") && flat.contains("Exterior Trim"));
+}
+
+fn find_prefix<'a>(lines: &'a [ListLine], category: &str, item: &str) -> &'a ListLine {
+    lines
+        .iter()
+        .find(|l| l.line.category == category && l.line.item.starts_with(item))
+        .unwrap_or_else(|| panic!("no {category} row {item}"))
+}
+
+#[test]
+fn selection_and_room_scopes_count_the_trim_of_what_they_pick() {
+    let p = trim_house();
+    let floors = [0usize];
+    let run = |filter: Filter| {
+        engine::take_off_raw(
+            &p,
+            &floors,
+            None,
+            &plain(),
+            &Options {
+                filter,
+                ..Options::default()
+            },
+        )
+    };
+    let trim_rows = |raws: &[engine::Raw]| {
+        raws.iter()
+            .filter(|r| r.line.category.ends_with("Trim"))
+            .map(|r| r.line.category.clone())
+            .collect::<Vec<_>>()
+    };
+    // One corner board selected: its two boards, no crown.
+    let one = run(Filter::Selection(
+        [(0, "corner_board:101".to_string())].into_iter().collect(),
+    ));
+    assert_eq!(trim_rows(&one), vec!["Exterior Trim".to_string()]);
+    let h = p.floors[0].walls[0].height;
+    assert_eq!(one[0].line.net, (2.0 * h / 12.0 - 1e-9).ceil());
+    // The room selected: its crown, no corner boards.
+    let rooms = plan_core::detect_rooms(&p.floors[0].walls, 1.0);
+    let key = engine::room_key(0, &rooms[0]);
+    let sel = run(Filter::Selection([(0, key.clone())].into_iter().collect()));
+    assert!(trim_rows(&sel).iter().all(|c| c == "Interior Trim"));
+    assert!(!trim_rows(&sel).is_empty());
+    // In Room counts the room's crown and leaves the outside boards out.
+    let room = run(Filter::Room {
+        floor: 0,
+        key,
+        polygon: rooms[0].polygon.clone(),
+    });
+    assert!(trim_rows(&room).iter().all(|c| c == "Interior Trim"));
+    assert!(!trim_rows(&room).is_empty());
+}

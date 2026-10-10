@@ -22,6 +22,7 @@ use plan_core::schedules::ScheduleKind;
 use plan_core::units::fmt_ft_in;
 use plan_core::{detect_rooms, Floor, OpeningKind, Project, Room, WallKind};
 use plan_electrical::ElectricalLayer;
+use plan_framing::reporting::{auto_inputs, manual_inputs, report};
 use plan_framing::{FramingMember, MaterialList, Member};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -702,14 +703,19 @@ pub fn take_off_raw(
         }
     }
     if !framing_auto.is_empty() || !framing_manual.is_empty() {
-        framing_rows(
-            &mut out,
-            &framing_auto,
-            &framing_manual,
-            master,
-            opts.framing,
-        );
+        if plan_framing::catalog::project_has_catalog(project) {
+            catalog_framing_rows(&mut out, project, &framing_auto, &framing_manual);
+        } else {
+            framing_rows(
+                &mut out,
+                &framing_auto,
+                &framing_manual,
+                master,
+                opts.framing,
+            );
+        }
     }
+    trim_rows(&mut out, project, &floors, filter);
     {
         let mut acc = Acc::default();
         for (fl, k, v) in t.exterior.0.iter().map(|((f, k), v)| (f, k, v)) {
@@ -1262,4 +1268,97 @@ fn framing_rows(
         &bf,
         Rule::Ceil,
     );
+}
+
+/// The framing rows of a plan that has a framing catalogue: the lines of
+/// Structural Member Reporting under the Currently Active Default (Buy List,
+/// Cut List, Linear Length or Mixed), one row per line in the category the
+/// member belongs to (Framing, Subfloor, Roofing, Decks-Walks). The totals
+/// are those the dialog shows.
+fn catalog_framing_rows(
+    out: &mut Vec<Raw>,
+    project: &Project,
+    auto: &[(usize, String, Member)],
+    manual: &[(usize, String, FramingMember)],
+) {
+    let catalog = plan_framing::catalog::of_project(project);
+    let members: Vec<Member> = auto.iter().map(|(_, _, m)| m.clone()).collect();
+    let manuals: Vec<FramingMember> = manual.iter().map(|(_, _, m)| m.clone()).collect();
+    let mut inputs = auto_inputs(&members, &catalog, 0);
+    inputs.extend(manual_inputs(&manuals, &catalog, members.len()));
+    // Source index -> (floor, object key).
+    let owners: Vec<(usize, &str)> = auto
+        .iter()
+        .map(|(f, k, _)| (*f, k.as_str()))
+        .chain(manual.iter().map(|(f, k, _)| (*f, k.as_str())))
+        .collect();
+    let cut_headers = project
+        .floors
+        .first()
+        .is_some_and(|f| plan_framing::catalog::list_cut_headers(&f.framing));
+    let r = report(&inputs, catalog.reporting.active_default(), cut_headers);
+    for l in &r.lines {
+        let mut acc = Acc::default();
+        for (src, share) in &l.sources {
+            if let Some((f, k)) = owners.get(*src) {
+                acc.add(*f, k, *share);
+            }
+        }
+        emit(
+            out,
+            l.category.name(),
+            &l.description,
+            l.description.clone(),
+            &l.size,
+            l.unit,
+            &acc,
+            Rule::Sum,
+        );
+    }
+}
+
+/// Moldings, corner boards and quoins: linear feet under Interior Trim and
+/// Exterior Trim, plus a count row for counted pieces (quoin blocks).
+fn trim_rows(out: &mut Vec<Raw>, project: &Project, floors: &[usize], filter: &Filter) {
+    let lines = plan_core::moldings::trim_takeoff_for(project, floors, |fi, key, centre| {
+        filter.counts(fi, key, || Bounds::at(centre))
+    });
+    for l in lines {
+        let item = if l.material.trim().is_empty() {
+            l.item.clone()
+        } else {
+            format!("{} ({})", l.item, l.material)
+        };
+        let (mut feet, mut blocks) = (Acc::default(), Acc::default());
+        for (f, k, inches) in &l.sources {
+            feet.add(*f, k, inches / 12.0);
+            if l.length > 0.0 {
+                blocks.add(*f, k, l.count as f64 * inches / l.length);
+            }
+        }
+        if feet.total() > 0.0 {
+            emit(
+                out,
+                l.category,
+                &l.item,
+                item.clone(),
+                "",
+                "lf",
+                &feet,
+                Rule::Ceil,
+            );
+        }
+        if l.count > 0 {
+            emit(
+                out,
+                l.category,
+                &format!("{} blocks", l.item),
+                format!("{item}, blocks"),
+                "",
+                "ea",
+                &blocks,
+                Rule::Ceil,
+            );
+        }
+    }
 }

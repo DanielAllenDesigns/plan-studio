@@ -312,8 +312,21 @@ impl SpecDialogs {
             cx.layers().layers.iter().map(|l| l.name.clone()).collect()
         };
         let dialog = match o {
-            ObjectRef::Stair(id) => stairs_view::find(cx.floor(), id)
-                .map(|s| Active::Stair(Box::new(StairDialog::new(s)))),
+            ObjectRef::Stair(id) => stairs_view::find(cx.floor(), id).map(|mut s| {
+                // Which end the click on the stair locks (Lock Top near the
+                // bottom, Lock Bottom near the top).
+                if let Some(end) = stairs_view::staircase::noted_lock_end(id) {
+                    s.x.lock_end = end;
+                }
+                // The table and counts cover the whole staircase, not just
+                // the object that was opened.
+                let sections = stairs_view::staircase::sections(cx.floor(), id);
+                let landings =
+                    stairs_view::staircase::staircase(cx.floor(), id).len() - sections.len();
+                Active::Stair(Box::new(
+                    StairDialog::new(s).with_staircase(sections, landings),
+                ))
+            }),
             ObjectRef::Cabinet(id) => match Self::selected_cabinets(cx).filter(|v| v.contains(&id))
             {
                 // Open Object over several cabinets: one dialog, No Change

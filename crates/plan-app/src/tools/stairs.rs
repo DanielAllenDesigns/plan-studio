@@ -279,9 +279,38 @@ impl StairsTool {
         self.add_object(cx, obj, "Landing")
     }
 
+    /// The 39 inch square of a single click (CB-136), from the one corner.
+    fn click_square(&mut self, cx: &mut EditorContext) -> ToolResult {
+        let a = self.corners.pop().unwrap_or_default();
+        self.corners.clear();
+        self.press = None;
+        cx.readout = None;
+        let far = Point::new(a.x + view::CLICK_LANDING, a.y + view::CLICK_LANDING);
+        let obj = view::build(
+            &cx.project,
+            cx.floor,
+            StairKind::Landing,
+            Turn::Left,
+            a,
+            Some(far),
+        );
+        self.add_object(cx, obj, "Landing")
+    }
+
     /// A click of the Landing tool: another corner (a click on the first
     /// corner closes the polygon).
     fn landing_click(&mut self, cx: &mut EditorContext, at: Point) -> ToolResult {
+        // A click between two sections fills the gap between them (CB-136).
+        if self.corners.is_empty() {
+            if let Some(quad) = view::staircase::landing_between(cx.floor(), at) {
+                let obj = view::build_polygon_landing(&cx.project, cx.floor, &quad);
+                return self.add_object(cx, obj, "Landing");
+            }
+        }
+        // A second click on the one corner places the single-click square.
+        if self.corners.len() == 1 && self.corners[0].dist(at) < 0.5 {
+            return self.click_square(cx);
+        }
         if self.corners.len() >= 3 && at.dist(self.corners[0]) <= cx.pick_tol() {
             return self.finish_landing(cx);
         }
@@ -503,6 +532,9 @@ impl Tool for StairsTool {
                 }
             }
             return ToolResult::ignored();
+        }
+        if k.is(egui::Key::Enter) && self.corners.len() == 1 {
+            return self.click_square(cx);
         }
         if k.is(egui::Key::Enter) && !self.corners.is_empty() {
             return self.finish_landing(cx);
@@ -2081,5 +2113,126 @@ mod tests {
         assert!(view::symbol_strokes(&o).len() > strokes);
         // A left Handrail does not count as a guard for the plan checker.
         assert!(!o.stair.params.left_side.is_guard());
+    }
+
+    #[test]
+    fn a_single_click_then_enter_places_a_39_inch_square_landing() {
+        let mut cx = new_cx();
+        let mut t = StairsTool::new(StairKind::Landing);
+        click(&mut t, &mut cx, 100.0, 100.0);
+        assert!(all(&cx).is_empty(), "the click alone only marks the corner");
+        let r = t.key(&mut cx, KeyEvent::key(egui::Key::Enter));
+        assert_eq!(r.commit.as_deref(), Some("Landing"));
+        let o = only_stair(&cx);
+        assert!(o.is_landing());
+        assert!((view::footprint_area(&o) - 39.0 * 39.0).abs() < 1e-6);
+        assert!(t.corners().is_empty());
+        // A second click on the same corner does the same.
+        click(&mut t, &mut cx, 300.0, 300.0);
+        click(&mut t, &mut cx, 300.0, 300.0);
+        assert_eq!(all(&cx).len(), 2);
+        assert_eq!(cx.undo().as_deref(), Some("Landing"));
+        assert_eq!(all(&cx).len(), 1);
+    }
+
+    fn straight_at(cx: &mut EditorContext, origin: Point) -> Id {
+        let st = plan_stairs::Stair::new(
+            0,
+            origin,
+            0.0,
+            plan_stairs::StairParams {
+                total_rise: 52.5,
+                riser_height_target: 7.5,
+                tread_depth: 10.0,
+                ..plan_stairs::StairParams::default()
+            },
+        );
+        let o = StairObj {
+            stair: st,
+            x: view::StairExtras::default(),
+        };
+        let fl = cx.floor;
+        view::add(&mut cx.project, fl, o)
+    }
+
+    #[test]
+    fn a_click_between_two_sections_places_a_landing_that_fills_the_gap() {
+        let mut cx = new_cx();
+        let a = straight_at(&mut cx, Point::new(0.0, 0.0));
+        let oa = view::find(cx.floor(), a).unwrap();
+        let len = view::section_length(&oa);
+        let width = oa.stair.params.width;
+        let _b = straight_at(&mut cx, Point::new(len + 48.0, 0.0));
+        let mut t = StairsTool::new(StairKind::Landing);
+        click(&mut t, &mut cx, len + 24.0, -width / 2.0);
+        let landings: Vec<_> = all(&cx).into_iter().filter(StairObj::is_landing).collect();
+        assert_eq!(landings.len(), 1, "one landing placed");
+        let area = view::footprint_area(&landings[0]);
+        assert!((area - 48.0 * width).abs() < 1.0, "area {area}");
+        // A click far from both sections is only a corner.
+        let mut t2 = StairsTool::new(StairKind::Landing);
+        click(&mut t2, &mut cx, 900.0, 900.0);
+        assert_eq!(t2.corners().len(), 1);
+    }
+
+    #[test]
+    fn add_break_splits_a_landing_edge_and_keeps_its_area_and_railing() {
+        let mut cx = new_cx();
+        let mut t = StairsTool::new(StairKind::Landing);
+        drag(&mut t, &mut cx, (0.0, 0.0), (100.0, 60.0));
+        let mut o = only_stair(&cx);
+        let area = view::footprint_area(&o);
+        let edge = view::staircase::longest_edge(&o);
+        assert!(view::staircase::add_break_to(&mut o, edge, 0.5));
+        assert_eq!(o.stair.params.outline.len(), 5);
+        assert_eq!(o.stair.params.edge_rails.len(), 5);
+        assert!((view::footprint_area(&o) - area).abs() < 1e-6);
+        assert!(!view::staircase::add_break_to(&mut o, 9, 0.5));
+        // The command is one undo step.
+        let id = o.id();
+        assert!(view::staircase::add_landing_break(&mut cx, id, edge, 0.5));
+        assert_eq!(
+            view::find(cx.floor(), id)
+                .unwrap()
+                .stair
+                .params
+                .outline
+                .len(),
+            5
+        );
+        assert_eq!(cx.undo().as_deref(), Some("Add Break"));
+        assert!(view::find(cx.floor(), id)
+            .unwrap()
+            .stair
+            .params
+            .outline
+            .is_empty());
+    }
+
+    #[test]
+    fn a_click_on_a_stair_remembers_which_end_it_locks() {
+        let mut cx = new_cx();
+        let a = straight_at(&mut cx, Point::new(0.0, 0.0));
+        let o = view::find(cx.floor(), a).unwrap();
+        let len = view::section_length(&o);
+        let y = o.stair.params.width / 2.0;
+        let near_bottom = Point::new(len * 0.2, -y);
+        let near_top = Point::new(len * 0.8, -y);
+        assert_eq!(
+            view::staircase::click_lock_end(&o, near_bottom),
+            plan_stairs::LockEnd::Top
+        );
+        assert_eq!(
+            view::staircase::click_lock_end(&o, near_top),
+            plan_stairs::LockEnd::Bottom
+        );
+        assert_eq!(
+            view::staircase::pick_noting_end(cx.floor(), near_top, 1.0),
+            Some(a)
+        );
+        assert_eq!(
+            view::staircase::noted_lock_end(a),
+            Some(plan_stairs::LockEnd::Bottom)
+        );
     }
 }

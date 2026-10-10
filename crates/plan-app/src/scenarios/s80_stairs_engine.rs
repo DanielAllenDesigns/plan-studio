@@ -390,3 +390,30 @@ fn the_specification_dialog_shows_the_best_fit_and_the_table() {
     assert_eq!(landing_rule, plan_stairs::DisplayRule::Automatic);
     let _ = StairShape::Straight;
 }
+
+#[test]
+fn the_dialog_table_covers_the_whole_staircase_and_follows_the_draft() {
+    let mut sim = house();
+    let (lo, _) = broken_stair(&mut sim);
+    let fl = sim.app.cx.floor();
+    let secs = staircase::sections(fl, lo);
+    let landings = staircase::staircase(fl, lo).len() - secs.len();
+    assert!(secs.len() >= 2 && landings >= 1);
+    let o = view::find(fl, lo).unwrap();
+    let alone = StairDialog::new(o.clone()).table_rows();
+    let mut d = StairDialog::new(o).with_staircase(secs.clone(), landings);
+    let whole = d.table_rows();
+    assert!(
+        whole.len() > alone.len(),
+        "{} vs {}",
+        whole.len(),
+        alone.len()
+    );
+    assert_eq!(
+        whole,
+        plan_stairs::spec_rows(&secs.iter().map(|s| &s.stair).collect::<Vec<_>>())
+    );
+    // An edit of the draft shows in its own lines of the table.
+    d.draft_mut().stair.params.width += 6.0;
+    assert_ne!(d.table_rows(), whole);
+}

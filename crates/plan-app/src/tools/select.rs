@@ -1227,7 +1227,33 @@ impl SelectTool {
                     if kind == StairHandleKind::Move && !alt {
                         n.stair.origin = snap_to_grid(n.stair.origin, unit(cx));
                     }
-                    stairs_view::update(&mut cx.project, fl, id, |o| *o = n);
+                    let moved = n.stair.origin - orig.stair.origin;
+                    let stopped = if kind == StairHandleKind::Run {
+                        stairs_view::staircase::stairwell_stop(&cx.project, fl, &orig, n)
+                    } else {
+                        n
+                    };
+                    stairs_view::update(&mut cx.project, fl, id, |o| *o = stopped);
+                    if kind == StairHandleKind::Move {
+                        // Joined sections and landings travel with it
+                        // unless they move independently (CB-125, CB-126).
+                        let apart = cx.defaults.editing.behavior.stair_sections_independent;
+                        let group = stairs_view::staircase::move_group(
+                            &a.original.floors[fl],
+                            id,
+                            apart,
+                            p.modifiers.shift,
+                        );
+                        for oid in group.into_iter().filter(|i| *i != id) {
+                            if let Some(mut m) = stairs_view::find(&a.original.floors[fl], oid) {
+                                m.stair.origin = m.stair.origin + moved;
+                                for q in m.stair.params.outline.iter_mut() {
+                                    *q = *q + moved;
+                                }
+                                stairs_view::update(&mut cx.project, fl, oid, |o| *o = m);
+                            }
+                        }
+                    }
                 }
             }
             Op::Cabinet(id, kind) => {

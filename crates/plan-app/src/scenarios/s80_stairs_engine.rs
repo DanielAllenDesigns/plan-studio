@@ -417,3 +417,118 @@ fn the_dialog_table_covers_the_whole_staircase_and_follows_the_draft() {
     d.draft_mut().stair.params.width += 6.0;
     assert_ne!(d.table_rows(), whole);
 }
+
+// ---- Round 17: sections apart, stairwell stop, Convert Polyline ----
+
+#[test]
+fn a_joined_staircase_moves_as_one_unless_a_section_is_moved_apart() {
+    let mut sim = house();
+    let (lo, up) = broken_stair(&mut sim);
+    let fl = sim.app.cx.floor();
+    let all = staircase::staircase(fl, lo);
+    assert!(all.len() >= 3, "two sections and the landing between them");
+    // Default: the whole staircase. Shift (or the preference) moves one.
+    let mut together = staircase::move_group(fl, lo, false, false);
+    together.sort_unstable();
+    let mut every: Vec<u64> = all.iter().map(StairObj::id).collect();
+    every.sort_unstable();
+    assert_eq!(together, every);
+    assert_eq!(staircase::move_group(fl, up, false, true), vec![up]);
+    assert_eq!(staircase::move_group(fl, up, true, false), vec![up]);
+    assert_eq!(staircase::move_group(fl, up, true, true).len(), every.len());
+
+    // A drag of one section carries the others the same distance.
+    let before = stairs(&sim);
+    let c = plan_core::geometry::polygon_centroid(&view::find(sim.app.cx.floor(), lo).unwrap().footprint());
+    sim.tool(ToolId::Select);
+    sim.drag((c.x, c.y), (c.x + 24.0, c.y));
+    let after = stairs(&sim);
+    for b in &before {
+        let a = after.iter().find(|o| o.id() == b.id()).unwrap();
+        assert!(
+            close(a.stair.origin.x - b.stair.origin.x, 24.0)
+                && close(a.stair.origin.y, b.stair.origin.y),
+            "object {} moved with its staircase",
+            b.id()
+        );
+    }
+    assert_eq!(sim.undo().as_deref(), Some("Move Stairs"));
+
+    // With the preference on, only the dragged section moves.
+    sim.app.cx.defaults.editing.behavior.stair_sections_independent = true;
+    sim.drag((c.x, c.y), (c.x + 24.0, c.y));
+    let moved = stairs(&sim)
+        .iter()
+        .zip(&before)
+        .filter(|(a, b)| a.stair.origin != b.stair.origin)
+        .count();
+    assert_eq!(moved, 1);
+}
+
+#[test]
+fn the_top_of_a_stair_stops_at_a_wall_of_the_stairwell_above() {
+    let mut sim = house();
+    sim.app.cx.project.floors.push(plan_core::Floor::new("Second", 108.0));
+    let id = flight(&mut sim, Point::new(60.0, 100.0), 0.0);
+    let fl = sim.app.cx.floor;
+    view::update(&mut sim.app.cx.project, fl, id, |o| {
+        o.stair.params.plan.floor_above = plan_stairs::DisplayRule::Always;
+    });
+    let orig = view::find(sim.app.cx.floor(), id).unwrap();
+    // A wall across the path, 90 inches past the bottom, on the floor above.
+    let mut w = sim.app.cx.project.floors[0].walls[0].clone();
+    w.id = 9001;
+    w.thickness = 6.0;
+    w.start = Point::new(150.0, 0.0);
+    w.end = Point::new(150.0, 400.0);
+    sim.app.cx.project.floors[1].walls.push(w);
+    let mut far = orig.clone();
+    staircase::set_length(&mut far, 160.0);
+    assert!(staircase::section_length(&far) > 150.0);
+    let held = staircase::stairwell_stop(&sim.app.cx.project, fl, &orig, far.clone());
+    let reach = staircase::section_length(&held);
+    assert!(reach < 150.0 - 60.0 + 1e-6 + 0.0 || reach < 100.0, "stopped at the wall: {reach}");
+    assert!(reach > 40.0);
+    // A drag that stays short of the wall is untouched.
+    let mut near = orig.clone();
+    staircase::set_length(&mut near, 85.0);
+    assert_eq!(staircase::stairwell_stop(&sim.app.cx.project, fl, &orig, near.clone()), near);
+    // Never display on the floor above: no stairwell, no stop.
+    view::update(&mut sim.app.cx.project, fl, id, |o| {
+        o.stair.params.plan.floor_above = plan_stairs::DisplayRule::Never;
+    });
+    let orig = view::find(sim.app.cx.floor(), id).unwrap();
+    assert_eq!(staircase::stairwell_stop(&sim.app.cx.project, fl, &orig, far.clone()), far);
+}
+
+#[test]
+fn convert_polyline_to_landing_replaces_the_polyline_in_one_undo_step() {
+    let mut sim = house();
+    let fl = sim.app.cx.floor;
+    let pts = vec![
+        Point::new(100.0, 100.0),
+        Point::new(200.0, 100.0),
+        Point::new(200.0, 180.0),
+        Point::new(100.0, 180.0),
+    ];
+    sim.app.cx.begin_change("Test polyline");
+    sim.app.cx.project.floors[fl].cad.push(plan_core::CadObject {
+        id: 777,
+        layer: "CAD, Default".into(),
+        item: plan_core::CadItem::Polyline { points: pts, closed: true },
+    });
+    sim.app.cx.selection.set(ObjectRef::Cad(777));
+    assert_eq!(staircase::edit_buttons(&sim.app.cx).len(), 1);
+    let n = sim.app.cx.floor().cad.len();
+    sim.app.cx.run_custom(staircase::CONVERT_POLYLINE);
+    assert_eq!(sim.app.cx.floor().cad.len(), n - 1);
+    let landings: Vec<_> = stairs(&sim).into_iter().filter(StairObj::is_landing).collect();
+    assert_eq!(landings.len(), 1);
+    assert_eq!(landings[0].stair.params.outline.len(), 4);
+    assert_eq!(sim.undo().as_deref(), Some("Convert Polyline to Landing"));
+    assert_eq!(sim.app.cx.floor().cad.len(), n);
+    assert!(stairs(&sim).iter().all(|o| !o.is_landing()));
+    // Nothing to convert once something else is selected.
+    sim.app.cx.selection.clear();
+    assert!(staircase::edit_buttons(&sim.app.cx).is_empty());
+}

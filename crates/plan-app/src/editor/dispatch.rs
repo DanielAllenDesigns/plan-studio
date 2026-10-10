@@ -385,7 +385,9 @@ impl EditorContext {
             self.run_edit_command(id);
             return;
         }
-        if super::camera_edit::run_command(self, id) {
+        if super::camera_edit::run_command(self, id)
+            || super::stairs_view::staircase::run_command(self, id)
+        {
             return;
         }
         // Tools > Materials List and the Calculate Materials buttons.

@@ -2007,15 +2007,35 @@ impl eframe::App for PlanApp {
             .show(ctx, |ui| {
                 shell::docks::set_central_rect(ctx, ui.max_rect());
                 if shell::layout_window::is_active() {
+                    self.tools.set_drawing_view(&mut self.cx, None);
                     shell::layout_window::show_central(ctx, ui, &mut self.cx);
                 } else if self.tiled_central(ctx, ui) {
                     // Window > Tile: the plan and the 3D view share the window.
+                    self.tools.set_drawing_view(&mut self.cx, None);
                 } else if self.view3d.frame(ctx, &mut self.cx) {
+                    // A section or elevation drawn as vectors is annotated by
+                    // the tools (R17-01).
+                    let cam = self.view3d.vector_camera(&self.cx.project).map(|c| c.id);
+                    self.view3d.annotate = cam.is_some();
+                    self.tools.set_drawing_view(&mut self.cx, cam);
                     // Dragging a selected object in the 3D view needs the
                     // Select tool.
                     self.view3d.select_tool = self.tools.active_id().base() == ToolId::Select;
                     shell::view3d_panel::show(ui, &mut self.cx, &mut self.view3d);
+                    for e in std::mem::take(&mut self.view3d.annot_events) {
+                        use shell::view3d_panel::ViewPtr;
+                        let ev = tools::PointerEvent::at(&self.cx, e.at).with_down(e.down);
+                        let t = self.tools.active_mut();
+                        let res = match e.kind {
+                            ViewPtr::Move => t.pointer_move(&mut self.cx, ev),
+                            ViewPtr::Down => t.pointer_down(&mut self.cx, ev),
+                            ViewPtr::Up => t.pointer_up(&mut self.cx, ev),
+                            ViewPtr::Double => t.double_click(&mut self.cx, ev),
+                        };
+                        self.finish_tool_call(ctx, &res);
+                    }
                 } else {
+                    self.tools.set_drawing_view(&mut self.cx, None);
                     self.canvas(ctx, ui);
                 }
             });

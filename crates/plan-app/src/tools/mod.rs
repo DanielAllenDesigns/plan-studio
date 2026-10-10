@@ -11,7 +11,7 @@
 use crate::editor::{Camera, EditAction, EditorContext, SnapResult};
 use eframe::egui::{self, Key, Modifiers, PointerButton, Pos2, Vec2};
 use plan_core::geometry::Point;
-use plan_core::WallKind;
+use plan_core::{Id, WallKind};
 
 pub mod arch_block;
 pub mod cabinet;
@@ -47,6 +47,7 @@ pub mod terrain;
 pub mod text;
 pub mod tray_ceiling;
 pub mod underlay;
+pub mod view_annot;
 pub mod wall;
 
 /// Identifies a tool. Wall flavors share one tool object (so a chain survives
@@ -407,6 +408,9 @@ pub fn registry() -> Vec<Box<dyn Tool>> {
 pub struct ToolSet {
     tools: Vec<Box<dyn Tool>>,
     active: usize,
+    /// Annotation tools of a section or elevation view (R17-01): stands in
+    /// for the active tool while `hosted.view` is set.
+    pub hosted: view_annot::ViewAnnotHost,
     /// The id the active tool was last picked with (carries its variant).
     picked: ToolId,
 }
@@ -416,6 +420,7 @@ impl ToolSet {
         Self {
             tools: registry(),
             active: 0,
+            hosted: view_annot::ViewAnnotHost::default(),
             picked: ToolId::Select,
         }
     }
@@ -464,11 +469,28 @@ impl ToolSet {
     }
 
     pub fn active(&self) -> &dyn Tool {
+        if self.hosted.view.is_some() {
+            return &self.hosted;
+        }
         self.tools[self.active].as_ref()
     }
 
     pub fn active_mut(&mut self) -> &mut dyn Tool {
+        if self.hosted.view.is_some() {
+            self.hosted.picked = self.active_id();
+            return &mut self.hosted;
+        }
         self.tools[self.active].as_mut()
+    }
+
+    /// Makes `view` (a section or elevation camera) the drawing the tools
+    /// annotate, or `None` to return to the plan.
+    pub fn set_drawing_view(&mut self, cx: &mut EditorContext, view: Option<Id>) {
+        if self.hosted.view != view {
+            self.hosted.finish(cx);
+            self.hosted.selected = None;
+            self.hosted.view = view;
+        }
     }
 
     /// Makes `id` the active tool. Switching between variants of one tool
@@ -477,6 +499,7 @@ impl ToolSet {
         let Some(next) = self.tools.iter().position(|t| t.id().same_tool(id)) else {
             return;
         };
+        self.hosted.finish(cx);
         self.picked = id;
         if next == self.active {
             self.tools[next].set_variant(id);

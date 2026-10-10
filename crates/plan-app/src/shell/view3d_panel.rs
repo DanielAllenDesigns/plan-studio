@@ -1705,7 +1705,28 @@ struct Slider {
     offset: f64,
 }
 
+/// A pointer event in drawing space for the annotation tools of a vector view.
+#[derive(Clone, Copy, Debug)]
+pub struct ViewPointer {
+    pub kind: ViewPtr,
+    pub at: Point,
+    pub down: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ViewPtr {
+    Move,
+    Down,
+    Up,
+    Double,
+}
+
 pub struct View3dState {
+    /// The vector view is annotated: the primary button drives the tools, the
+    /// middle button pans (R17-01).
+    pub annotate: bool,
+    /// Pointer events the vector view collected for the tools this frame.
+    pub annot_events: Vec<ViewPointer>,
     /// A 3D view replaces the plan canvas.
     pub active: bool,
     pub viewport: Option<Viewport3d>,
@@ -1822,6 +1843,8 @@ impl View3dState {
             last_project_hash: 0,
             scope_floor: None,
             section: None,
+            annotate: false,
+            annot_events: Vec::new(),
             active_camera: None,
             raytrace: RayTraceDialog::default(),
             show_defaults: false,
@@ -3996,7 +4019,34 @@ fn show_vector(ui: &mut egui::Ui, cx: &mut EditorContext, st: &mut View3dState) 
     let resp = ui.allocate_rect(rect, egui::Sense::click_and_drag());
     ui.painter()
         .rect_filled(rect, 0.0, egui::Color32::from_rgb(0xFA, 0xFA, 0xF8));
-    if resp.dragged() {
+    let xform = st.vector.transform(rect).filter(|_| st.annotate);
+    if let Some(xf) = xform {
+        let (pressed, released, dbl, held, pos) = ctx.input(|i| {
+            (
+                i.pointer.button_pressed(egui::PointerButton::Primary),
+                i.pointer.button_released(egui::PointerButton::Primary),
+                i.pointer.button_double_clicked(egui::PointerButton::Primary),
+                i.pointer.button_down(egui::PointerButton::Primary),
+                i.pointer.latest_pos(),
+            )
+        });
+        if let Some(at) = pos.filter(|_| resp.hovered() || held).map(|p| xf.to_drawing(p)) {
+            let mk = |kind, down| ViewPointer { kind, at, down };
+            if pressed && resp.hovered() {
+                if dbl {
+                    st.annot_events.push(mk(ViewPtr::Double, true));
+                }
+                st.annot_events.push(mk(ViewPtr::Down, true));
+            } else if released {
+                st.annot_events.push(mk(ViewPtr::Up, false));
+            } else {
+                st.annot_events.push(mk(ViewPtr::Move, held));
+            }
+        }
+        if resp.dragged_by(egui::PointerButton::Middle) {
+            st.vector.pan += resp.drag_delta();
+        }
+    } else if resp.dragged() {
         st.vector.pan += resp.drag_delta();
     }
     if resp.hovered() {
@@ -4005,7 +4055,7 @@ fn show_vector(ui: &mut egui::Ui, cx: &mut EditorContext, st: &mut View3dState) 
             st.vector.zoom_about(rect, at, (scroll / 240.0).exp());
         }
     }
-    if resp.double_clicked() {
+    if resp.double_clicked() && !st.annotate {
         st.vector.reset_view();
     }
     paint_vector(ui.painter(), rect, &st.vector, st.technique);

@@ -420,6 +420,25 @@ impl WallTypeDialog {
         self.go_to_last();
     }
 
+    /// Gives the current type a new name (the Name field of the dialog); a
+    /// name another type already has is refused. True when it changed.
+    pub fn rename_current(&mut self, name: &str) -> bool {
+        self.commit_table();
+        let taken = self
+            .types
+            .iter()
+            .enumerate()
+            .any(|(i, t)| i != self.current && t.name == name);
+        if name.trim().is_empty() || taken {
+            return false;
+        }
+        match self.types.get_mut(self.current) {
+            Some(t) => t.name = name.trim().to_string(),
+            None => return false,
+        }
+        true
+    }
+
     fn go_to_last(&mut self) {
         let last = self.types.len() - 1;
         self.current = last;

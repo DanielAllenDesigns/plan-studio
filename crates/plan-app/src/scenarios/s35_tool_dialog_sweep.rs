@@ -1306,7 +1306,8 @@ fn edit_spec_draft(sim: &mut Sim) -> bool {
             Fd::Hole(h) => h.with_footing = !h.with_footing,
             Fd::Pad(p) => p.thickness += 1.0,
             Fd::Pier(p) => p.height += 1.0,
-            Fd::Platform(_) => return false,
+            // The platform hole's own fields are text slots: edit its material.
+            Fd::Platform(h) => h.material.push('x'),
         }
     } else if let Some(d) = sim.app.spec.details_draft_mut() {
         match d {

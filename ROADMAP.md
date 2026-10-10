@@ -7,6 +7,10 @@ that exist as an engine in a crate but have no screen yet say so. The detail
 behind every line is in the [manual](docs/manual/00-index.md) (each feature
 carries a status mark) and in `docs/integration-queue.md`.
 
+## Finish plan (set 2026-10-10 with Daniel: parity with Chief first)
+
+Three bars, in order: (1) every Tutorial Guide lesson replays green (`cargo test -p plan-app scenarios::tutorials`; 101 of 155 steps still ignored); (2) the manual gap list (`docs/chief-manual-coverage/master-gaps.md`) is closed and every dialog has Chief's tab set (`docs/tool-dialog-sweep.md`, 58 dialogs short); (3) one real project is drawn start to finish in Plan Studio only and its sheets, schedules and materials list match Chief's. Round 18 onward works these in order, five to seven single-pass builders a day in isolated worktrees, a gate per wave; new-look features (detail style libraries, IngeTrazo or Rayon bridges) wait until the bars are met. Verification against Chief: the tutorial replays are the acceptance suite; the "verify in Chief" decisions are listed in `docs/verify-in-chief.md` for a checking session; a golden comparison of Daniel's real projects (import with plan-chiefplan, diff areas, schedules, materials list and printed sheets against Chief's exports) is the last bar.
+
 ## Rounds
 
 The work lands in numbered rounds, one commit each. The phases below show the feature inventory; this section shows

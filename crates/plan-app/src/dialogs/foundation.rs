@@ -37,13 +37,31 @@ const SLAB_TABS: &[Tab] = &[
     on("Line Style"),
     on("Materials"),
     on("Layer"),
+    on("Label"),
+    on("Schedule"),
 ];
-// TODO parity: Chief's Label and Schedule tabs need label and schedule slots
-// on Slab, SlabHole, Pad, Pier and PlatformHole (plan-core foundation.rs); a
-// slab hole and a platform hole have no material of their own either.
-const HOLE_TABS: &[Tab] = &[on("General"), on("Line Style"), on("Layer")];
-const PAD_TABS: &[Tab] = &[on("General"), on("Materials"), on("Layer")];
-const PLATFORM_TABS: &[Tab] = &[on("General")];
+const HOLE_TABS: &[Tab] = &[
+    on("General"),
+    on("Line Style"),
+    on("Materials"),
+    on("Layer"),
+    on("Label"),
+    on("Schedule"),
+];
+const PAD_TABS: &[Tab] = &[
+    on("General"),
+    on("Materials"),
+    on("Layer"),
+    on("Label"),
+    on("Schedule"),
+];
+const PLATFORM_TABS: &[Tab] = &[
+    on("General"),
+    on("Materials"),
+    on("Layer"),
+    on("Label"),
+    on("Schedule"),
+];
 
 /// Materials the 3D concrete mesh understands.
 pub const MATERIALS: [&str; 3] = ["Concrete", "Stone", "Brick"];
@@ -153,6 +171,22 @@ impl Draft {
             Draft::Pad(_) => "Square Pad Specification",
             Draft::Pier(_) => "Round Pier Specification",
             Draft::Platform(_) => "Platform Hole Specification",
+        }
+    }
+
+    /// The Label and Schedule panels of the object.
+    fn panels_mut(
+        &mut self,
+    ) -> (
+        &mut plan_core::object_pages::LabelPage,
+        &mut plan_core::object_pages::SchedulePage,
+    ) {
+        match self {
+            Draft::Slab(o) => (&mut o.label, &mut o.schedule),
+            Draft::Hole(o) => (&mut o.label, &mut o.schedule),
+            Draft::Pad(o) => (&mut o.label, &mut o.schedule),
+            Draft::Pier(o) => (&mut o.label, &mut o.schedule),
+            Draft::Platform(o) => (&mut o.label, &mut o.schedule),
         }
     }
 
@@ -886,6 +920,9 @@ impl Form {
                     with_footing: s.footing.is_some(),
                     layer: s.layer.clone(),
                     line_style: s.line_style,
+                    material: s.material.clone(),
+                    label: s.label.clone(),
+                    schedule: s.schedule.clone(),
                 });
             }
             (Draft::Hole(h), false) => {
@@ -894,6 +931,9 @@ impl Form {
                         outline: h.outline.clone(),
                         layer: h.layer.clone(),
                         line_style: h.line_style,
+                        material: h.material.clone(),
+                        label: h.label.clone(),
+                        schedule: h.schedule.clone(),
                         footing: h.with_footing.then(|| orig.footing.unwrap_or_default()),
                         ..orig.clone()
                     }),
@@ -903,6 +943,9 @@ impl Form {
                         footing: h.with_footing.then(Footing::default),
                         layer: h.layer.clone(),
                         line_style: h.line_style,
+                        material: h.material.clone(),
+                        label: h.label.clone(),
+                        schedule: h.schedule.clone(),
                         ..Slab::default()
                     }),
                 };
@@ -925,6 +968,8 @@ impl Form {
                     footing: None,
                     material: p.material.clone(),
                     layer: p.layer.clone(),
+                    label: p.label.clone(),
+                    schedule: p.schedule.clone(),
                 });
             }
             (Draft::Pier(p), false) => {
@@ -936,6 +981,8 @@ impl Form {
                     elevation: p.elevation,
                     material: p.material.clone(),
                     layer: p.layer.clone(),
+                    label: p.label.clone(),
+                    schedule: p.schedule.clone(),
                 });
             }
             _ => {}
@@ -1183,8 +1230,37 @@ impl SpecPages for Form {
                 Draft::Slab(s) => materials_page(ui, "slab_material_tab", &mut s.material),
                 Draft::Pad(p) => materials_page(ui, "pad_material_tab", &mut p.material),
                 Draft::Pier(p) => materials_page(ui, "pier_material_tab", &mut p.material),
-                _ => {}
+                Draft::Hole(h) => materials_page(ui, "hole_material_tab", &mut h.material),
+                Draft::Platform(h) => materials_page(ui, "platform_material_tab", &mut h.material),
             },
+            "Label" => {
+                let auto = self
+                    .draft
+                    .title()
+                    .trim_end_matches(" Specification")
+                    .to_string();
+                let (label, _) = self.draft.panels_mut();
+                let facts = plan_core::object_pages::LabelFacts {
+                    automatic: auto,
+                    ..Default::default()
+                };
+                super::common_pages::label_panel(
+                    ui,
+                    label,
+                    &facts,
+                    super::common_pages::Kind::Foundation,
+                    super::common_pages::Placement::Tab,
+                    &[],
+                );
+            }
+            "Schedule" => {
+                let (_, schedule) = self.draft.panels_mut();
+                super::common_pages::schedule_panel(
+                    ui,
+                    schedule,
+                    super::common_pages::Placement::Tab,
+                );
+            }
             "Layer" => {
                 let layers = self.layers.clone();
                 match &mut self.draft {
@@ -1192,7 +1268,7 @@ impl SpecPages for Form {
                     Draft::Hole(h) => layer_page(ui, &layers, &mut h.layer),
                     Draft::Pad(p) => layer_page(ui, &layers, &mut p.layer),
                     Draft::Pier(p) => layer_page(ui, &layers, &mut p.layer),
-                    Draft::Platform(_) => {}
+                    Draft::Platform(h) => layer_page(ui, &layers, &mut h.layer),
                 }
             }
             _ => {}
@@ -1331,22 +1407,71 @@ mod tests {
         let tabs = |r| FoundationDialog::new(&l, r, names()).unwrap().tab_names();
         assert_eq!(
             tabs(FoundationRef::Slab(1)),
-            ["General", "Fill Style", "Line Style", "Materials", "Layer"]
+            [
+                "General",
+                "Fill Style",
+                "Line Style",
+                "Materials",
+                "Layer",
+                "Label",
+                "Schedule"
+            ]
         );
         assert_eq!(
             tabs(FoundationRef::SlabHole(2)),
-            ["General", "Line Style", "Layer"]
+            [
+                "General",
+                "Line Style",
+                "Materials",
+                "Layer",
+                "Label",
+                "Schedule"
+            ]
         );
-        assert_eq!(
-            tabs(FoundationRef::Pad(3)),
-            ["General", "Materials", "Layer"]
-        );
-        assert_eq!(
-            tabs(FoundationRef::Pier(4)),
-            ["General", "Materials", "Layer"]
-        );
-        assert_eq!(tabs(FoundationRef::PlatformHole(5)), ["General"]);
+        let basic = ["General", "Materials", "Layer", "Label", "Schedule"];
+        assert_eq!(tabs(FoundationRef::Pad(3)), basic);
+        assert_eq!(tabs(FoundationRef::Pier(4)), basic);
+        assert_eq!(tabs(FoundationRef::PlatformHole(5)), basic);
         assert!(FoundationDialog::new(&l, FoundationRef::Pad(99), names()).is_none());
+    }
+
+    #[test]
+    fn label_and_schedule_pages_draw_and_apply_for_every_kind() {
+        let mut l = layer();
+        for (i, r) in [
+            FoundationRef::Slab(1),
+            FoundationRef::SlabHole(2),
+            FoundationRef::Pad(3),
+            FoundationRef::Pier(4),
+            FoundationRef::PlatformHole(5),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut d = open(&l, r);
+            let names = d.tab_names();
+            for t in ["Materials", "Layer", "Label", "Schedule"] {
+                draw(&mut d, names.iter().position(|n| *n == t).unwrap());
+            }
+            let (label, schedule) = d.form.draft.panels_mut();
+            label.suppress = true;
+            schedule.include = !schedule.include;
+            let want = (label.clone(), schedule.clone());
+            assert!(d.draft().apply(&mut l), "kind {i} applies");
+            let d2 = open(&l, r);
+            let mut draft = d2.draft().clone();
+            let (label, schedule) = draft.panels_mut();
+            assert_eq!(
+                (label.clone(), schedule.clone()),
+                want,
+                "kind {i} keeps its panels"
+            );
+        }
+        // A plan that never touched the panels stores nothing for them.
+        let json = serde_json::to_string(&Slab::default()).unwrap();
+        assert!(!json.contains("\"label\"") && !json.contains("\"schedule\""));
+        let back: Pad = serde_json::from_str("{\"id\":7}").unwrap();
+        assert_eq!(back.label, Default::default());
     }
 
     #[test]

@@ -112,6 +112,29 @@ pub fn info_panel(ui: &mut Ui, ex: &mut ObjectExtras) {
     }
 }
 
+/// Components panel: the names of the components that make the object.
+pub fn components_panel(ui: &mut Ui, ex: &mut ObjectExtras) {
+    section(ui, "Components");
+    let mut remove = None;
+    for (i, c) in ex.components.iter_mut().enumerate() {
+        ui.horizontal(|ui| {
+            ui.add(egui::TextEdit::singleline(c).desired_width(200.0));
+            if ui.small_button("\u{2212}").clicked() {
+                remove = Some(i);
+            }
+        });
+    }
+    if let Some(i) = remove {
+        ex.components.remove(i);
+    }
+    if ui.button("Add Component").clicked() {
+        ex.components.push(String::new());
+    }
+    if ex.components.is_empty() {
+        ui.weak("No components. They are listed in the Materials List.");
+    }
+}
+
 /// The schedule category an object belongs to until its Schedule panel says otherwise.
 pub fn default_category(obj: &TerrainObject) -> Option<ScheduleCategory> {
     Some(match obj {

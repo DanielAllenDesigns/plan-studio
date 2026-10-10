@@ -103,7 +103,19 @@ fn closing_arc_lock_chord() {
 }
 
 #[test]
-#[ignore = "T7-22: PR-31 (CAD Defaults: decimal feet, 2 places, quadrant bearing display for the plot plan view)"]
-fn cad_defaults_number_style() {
-    assert_ignored_break("PR-31");
+fn the_survey_number_style_shows_decimal_feet_and_quadrant_bearings() {
+    let sim = enter();
+    let l = lines(&sim);
+    let (a, b) = l[0];
+    let st = NumberStyle::survey();
+    let len = ((b.x - a.x).powi(2) + (b.y - a.y).powi(2)).sqrt();
+    assert_eq!(st.format_length(len), "155.69'");
+    let az = plan_core::bearing::azimuth_of(a, b);
+    let text = st.format_angle(plan_core::bearing::azimuth_to_math(az));
+    assert!(
+        text.starts_with("N 61\u{b0}25'") && text.ends_with(" E"),
+        "{text}"
+    );
+    // The house default style is untouched.
+    assert_ne!(NumberStyle::default().format_length(len), "155.69'");
 }

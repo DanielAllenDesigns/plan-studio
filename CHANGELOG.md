@@ -12,6 +12,16 @@ Test counts are the workspace totals the commit messages and manual state.
 
 ## [Unreleased]
 
+### Round 18 wave A - 2026-10-10 (parity first: tutorial replays and dialog tabs)
+
+#### Added
+- **Dialog tabs**: Slab, Slab Hole, Pad, Pier and Platform Hole gained Label and Schedule tabs (typed slots), the holes a Materials tab and the platform hole a Layer tab; Framing Member and Truss a real Materials tab; Terrain Hole a Layer tab; Terrain Specification a Components tab; camera placeholders for Chief's remaining panels. Dialogs short of Chief's tab set: 58 to 22.
+- **Tutorial replays**: 30 more Tutorial Guide steps replay green with no new product code needed (lessons 1, 2, 5, 7, 10, 12, 14, 15, 16, 17, 22, 24), lesson 10 fully green; wall-type rename in the Wall Type Definitions dialog. Ignored steps: 101 to about 70.
+
+#### Known gaps found
+- Interior Dimension anchors on the wall surface where Chief reads to the main layer (lesson 2 "11 inches shorter" stays ignored; fix queued).
+- Sticky Mode, soffit crown wrap, countertop extension, fixture schedule rows for library symbols, offset gable, Extension Snap markers, cabinet split widths: the remaining ignored steps name them.
+
 ### Round 17 wave B - 2026-10-10 (five single-pass builders in isolated worktrees)
 
 #### Added

@@ -1,7 +1,9 @@
 //! Lesson 14, Cabinet Styles (pp. 237-260).
-use crate::editor::placed::load_cabinets;
+use crate::editor::placed::{add_cabinet, load_cabinets};
+use crate::editor::ObjectRef;
 use crate::scenarios::tutorials_support::*;
 use crate::scenarios::Sim;
+use crate::tools::cabinet::default_cabinet;
 use crate::tools::ToolId;
 use plan_cabinets::CabinetKind;
 
@@ -34,9 +36,23 @@ fn door_style_and_pull_from_the_library() {
 }
 
 #[test]
-#[ignore = "T7-14: DS-27 (Set as Default changes the next cabinet)"]
-fn set_as_default() {
-    assert_ignored_break("DS-27");
+fn set_as_default_changes_the_next_cabinet() {
+    let mut sim = cottage();
+    let mut c = default_cabinet(&sim.app.cx, CabinetKind::Base);
+    // This one was given its own toe kick height in the guide's style step.
+    c.toe_kick.as_mut().unwrap().height = 6.0;
+    c.position = plan_core::geometry::Point::new(60.0, 20.0);
+    let id = add_cabinet(&mut sim.app.cx.project, 0, c).unwrap();
+    sim.app.cx.mark_dirty();
+    sim.app.cx.selection.set(ObjectRef::Cabinet(id));
+    assert_ne!(sim.app.cx.defaults.cabinets.base.toe_kick_height, 6.0);
+    assert!(crate::tools::cabinet::set_as_default(&mut sim.app.cx));
+    assert_eq!(sim.app.cx.defaults.cabinets.base.toe_kick_height, 6.0);
+    // The next base cabinet drawn takes it.
+    place(&mut sim, CabinetKind::Base, 200.0, 20.0);
+    let cabs = load_cabinets(sim.app.cx.floor());
+    let next = cabs.iter().find(|c| c.id != id).expect("a second cabinet");
+    assert_eq!(next.toe_kick.as_ref().unwrap().height, 6.0);
 }
 
 #[test]

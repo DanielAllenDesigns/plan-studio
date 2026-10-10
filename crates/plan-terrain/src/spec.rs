@@ -252,6 +252,8 @@ pub struct ObjectExtras {
     /// Schedule category chosen by hand; empty takes the object's own.
     pub schedule_category: String,
     pub info: ObjectInfo,
+    /// Names on the Components tab (listed in the Materials List).
+    pub components: Vec<String>,
     /// Elevation Region: only the outline is held, not the interior (the
     /// "Interior is Flat" box unchecked).
     pub interior_open: bool,

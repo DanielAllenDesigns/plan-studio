@@ -52,9 +52,44 @@ fn auto_exterior_dimensions_are_one_undo_step() {
 }
 
 #[test]
-#[ignore = "T7-01: wall-type-layers (Stone-6 layer fill, Select Material; parity rank 6)"]
 fn stone_6_wall_type_with_a_3_inch_layer() {
-    assert_ignored_break("wall-type-layers");
+    // Lesson 1: the exterior default becomes Stone-6 and its stone layer is
+    // made 3 in thick with a library material and a solid fill.
+    use crate::dialogs::wall_types::{self, with_host, APPLY, OPEN};
+    use plan_core::fill_styles::FillStyle;
+    let mut sim = Sim::new();
+    sim.app.cx.defaults.exterior_wall.wall_type = "stone-6".into();
+    chic_cottage(&mut sim);
+    let thick = |sim: &Sim| sim.app.cx.floor().walls[0].thickness;
+    assert_eq!(
+        sim.app.cx.floor().walls[0].wall_type.as_deref(),
+        Some("stone-6")
+    );
+    let before = thick(&sim);
+    wall_types::close_host();
+    sim.app.cx.run_custom(OPEN);
+    with_host(|d| {
+        assert_eq!(d.selected_name(), Some("stone-6"));
+        let t = d.table_mut();
+        t.selected = 0;
+        t.rows[0].thickness = 3.0;
+        t.rows[0].material = "Stone Veneer".into();
+        t.rows[0].spec.fill = Some(FillStyle::solid([150, 150, 150]));
+    })
+    .expect("the dialog is open");
+    let depth = sim.app.cx.undo_depth();
+    sim.app.cx.run_custom(APPLY);
+    assert_eq!(sim.app.cx.undo_depth(), depth + 1, "one OK, one undo step");
+    assert!((thick(&sim) - before - 1.5).abs() < 1e-9, "1.5 -> 3 in");
+    assert_eq!(
+        sim.app.cx.project.wall_layer_fill("stone-6", 0),
+        Some(&FillStyle::solid([150, 150, 150]))
+    );
+    // The main (framing) layer keeps no fill of its own.
+    assert!(sim.app.cx.project.wall_layer_fill("stone-6", 2).is_none());
+    sim.undo();
+    assert!((thick(&sim) - before).abs() < 1e-9);
+    assert!(sim.app.cx.project.wall_layer_fill("stone-6", 0).is_none());
 }
 
 #[test]

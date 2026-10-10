@@ -109,6 +109,8 @@ mod s92_floors_foundation;
 mod s92_terrain_site;
 mod s94_text_macros_rescheck;
 mod s97_saved_defaults_views;
+mod tutorials_a;
+mod tutorials_support;
 
 use crate::editor::{EditorContext, EditorRequest, ObjectRef};
 use crate::tools::{KeyEvent, PointerEvent, ToolId, ToolResult};

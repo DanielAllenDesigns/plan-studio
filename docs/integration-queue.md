@@ -1307,3 +1307,11 @@ Built: staircase-wide table and counts in the dialog (`StairDialog::with_stairca
 Brief 32 camera finish (round 16): queue item 2 above is built: `editor/camera_edit.rs` adds the Add Break edit button for a selected section camera and Make Parallel / Make Perpendicular for the break handle last pressed (hooked in `selection_edit_actions`, `run_custom_ungrouped` and the Select tool press; scenario `s91_camera_sections`, DECISIONS CS17). Left: Add Break at a clicked point (the tool-style click flow) instead of the middle of the widest piece.
 ## Round 16 brief 10, finish pass
 Done: Preferences > Behaviors now shows Primary Movement Method, Stop When Connected, Concentric Jump and Behavior Indicators (the retired Alternate lock-axis checkbox is gone); Snap Properties shows Shift Restricts To, Objects in History and Display Angle Snap Grid (`dialogs/preferences/ui.rs`). `snap::draw_angle_rays` now draws hatch marks at the Snap Unit along each ray (only when they are 6 px or more apart) and `snap::draw_anchor_markers` draws the blue anchor squares; both Wall and CAD tools call them. Still open: Rotate Jump has no settings field yet, so no Preferences row; other line-based tools (stairs, roof, rectangles) do not call `draw_angle_rays` / `draw_anchor_markers` yet; the Preferences window clips below Shift Restricts To in the headless test, so the rows under it are covered by eye only.
+
+## Tutorial replays A (round 16, brief 34): leftovers for other owners
+
+- `scenarios/mod.rs` carries two mod lines (`tutorials_a`, `tutorials_support`); the brief named one, but the support file is a sibling module.
+- Ignored replay bodies call `assert_ignored_break(id)` (panics) because the feature has no driveable API yet. When a break lands, remove the `#[ignore]` and replace that call with the real steps from scenario-proposals.md.
+- Hook needed: a shared dialog tab accessor (`tab_names()` exists only on details/foundation dialogs); `assert_dialog_tabs` only asserts that the dialog opens and cancels cleanly.
+- Hook needed: a headless `Action::SaveCopy` (APP-93) for the Make a Copy step of every lesson.
+- Lesson 6 half-wall / railing / porch steps and the wall-type ids (layer fill, Role; the audit gives no single id) are not yet driven; the ignore tag uses the label `wall-type-layers`.

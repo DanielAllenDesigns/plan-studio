@@ -179,3 +179,26 @@ Replays live in `crates/plan-app/src/scenarios/tutorials_a/` with the shared `ch
 | 12 | ignored | none | R-117, R-106, R-110, S-170 |
 | 13 | ignored | none | CB-427, CB-436, S-118, S-195, L-234 |
 | 14 | partial | base, wall, full-height cabinets, one step each | CB-395, DS-27, CB-631, CB-632, CB-344, DS-26 |
+
+---
+
+## Status of lessons 15 to 28 (round 16, brief 35)
+
+Implemented in `crates/plan-app/src/scenarios/tutorials_b/` (one file per lesson, `support_b.rs` for the framing/terrain/layout helpers). `cargo test -p plan-app --bin plan-studio scenarios::tutorials_b` runs the green replays; add `-- --ignored` for the open work in lesson order (each ignore carries `T7-<lesson>: <id>`).
+
+| Lesson | Real replay (green) | Still ignored |
+|---|---|---|
+| 15 | butting row of base cabinets, filler, wall cabinet | S-137, CB-427, CB-634, CB-633, R-113 |
+| 16 | partition and wall cabinet, one undo step each | CB-635, CB-434, CB-636, L-233, S-118, DIM-63 |
+| 17 | lights on a 40 in pitch, wall light on its wall | E-33, R-105, TXT-65, E-31 |
+| 18 | outlet family, three switches | E-32, E-25, CB-428 |
+| 19 | floor 2 framing, one step, floor 1 untouched | CB-283, S-137, CB-638 |
+| 20 | wall framing studs, one step | W-138, CB-645, DIM-46, DS-32 |
+| 21 | roof rafters from Build Framing | CB-283, RF-115, CB-644 |
+| 22 | survey courses of the guide chain at the bearings | S-172, CAD-22, PR-31 |
+| 23 | two elevation lines, slope | CB-530, CAD-22, CB-512 |
+| 24 | road, driveway, sidewalk strips | CB-628, CB-629, CB-630, CB-588 |
+| 25 | polyline garden bed | CAD-22, S-170, CB-649, CB-427, CB-617 |
+| 26 | patterned labels (A0.1, A1.1, A1.2, E1.1), template pages not printed, insert page | L-190 (template boxes repeat), L-192 |
+| 27 | page on its own sheet and back | L-230, L-231, L-189, L-195, L-236, L-193 |
+| 28 | site plan at 1:1200, PDF one ARCH D page per content page | L-229, L-155, L-232, L-161 |

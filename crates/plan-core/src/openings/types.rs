@@ -892,7 +892,10 @@ mod tests {
             id: "chief.u.9".into(),
             name: "Colonial".into(),
         });
-        v.set_type_default(DefaultKey::new(OpeningKind::Door, OpeningStyle::Hinged, true), def);
+        v.set_type_default(
+            DefaultKey::new(OpeningKind::Door, OpeningStyle::Hinged, true),
+            def,
+        );
         assert_eq!(p.follow_type_defaults(&v), 1);
         let o = &p.floors[0].openings[0];
         assert_eq!(o.extras.spec.door_style, DoorLeafStyle::Library);

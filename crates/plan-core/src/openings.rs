@@ -28,9 +28,8 @@ pub use bay::{BayUnit, MIN_UNIT_WIDTH};
 pub use mull::{MulledArrangement, MulledLabel, MulledSpec};
 pub use spec::{
     door_panel_count, Arch, ArchType, BayRoof, BayRoofKind, CasingProfile, DoorLeafStyle,
-    ExteriorSill, LibraryDoor,
-    HandleStyle, Hardware, Lintel, LintelStyle, LiteStyle, OpeningSpec, OpeningView3d, RecessTo,
-    ShutterSides, ShutterStyle, Shutters, StandardWidths, StyleWidths,
+    ExteriorSill, HandleStyle, Hardware, LibraryDoor, Lintel, LintelStyle, LiteStyle, OpeningSpec,
+    OpeningView3d, RecessTo, ShutterSides, ShutterStyle, Shutters, StandardWidths, StyleWidths,
 };
 pub use types::{
     copy_group, group_eq, release_edited_groups, DefaultKey, DynGroup, OpenMode, TypeDefault,

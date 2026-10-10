@@ -1,20 +1,19 @@
 //! Door and Window Specification (docs/chief-x18-dialogs.md).
 
 use super::{
-    dis_check, dis_radio, fmt_short, off, on, pv_text, row, section, session_check,
-    Fields, Outcome, SpecDialog, SpecPages, Tab, PV_ACCENT, PV_BG, PV_FAINT, PV_GLASS, PV_INK,
-    PV_WALL,
+    dis_check, dis_radio, fmt_short, off, on, pv_text, row, section, session_check, Fields,
+    Outcome, SpecDialog, SpecPages, Tab, PV_ACCENT, PV_BG, PV_FAINT, PV_GLASS, PV_INK, PV_WALL,
 };
+use crate::tools::library::door_library::{self, DoorEntry};
 use eframe::egui::{
     self, Align2, Color32, Painter, Pos2, Rect, Shape, Stroke, StrokeKind, Ui, Vec2,
 };
 use plan_core::defaults::{OpeningDefaults, WindowDefaults};
 use plan_core::extras::OpeningExtras as StoredExtras;
-use crate::tools::library::door_library::{self, DoorEntry};
-use plan_core::openings::DoorLeafStyle;
 use plan_core::opening_symbol::{bifold_panels, plan_symbol, sliding_panels, PartKind};
 use plan_core::openings::mull::MulledSpec;
 use plan_core::openings::types::{DefaultKey, DynGroup};
+use plan_core::openings::DoorLeafStyle;
 use plan_core::openings::{
     door_panel_count, ArchType, CasingProfile, HandleStyle, LintelStyle, LiteStyle, OpenMode,
     OpeningSpec, RecessTo, ShutterSides, ShutterStyle, StandardWidths, WindowType,
@@ -1098,7 +1097,13 @@ impl OpeningForm {
         let placed = matches!(self.target, OpeningTarget::Placed(_));
         let use_default = placed && self.draft.extras.spec.dynamic.window_type;
         let style = self.draft.extras.spec.door_style;
-        let name = self.draft.extras.spec.library_door.as_ref().map(|l| l.name.clone());
+        let name = self
+            .draft
+            .extras
+            .spec
+            .library_door
+            .as_ref()
+            .map(|l| l.name.clone());
         let text = if use_default {
             "Use Default".to_string()
         } else if style == DoorLeafStyle::Library {
@@ -1122,12 +1127,18 @@ impl OpeningForm {
                         default_on = true;
                     }
                     for s in DoorLeafStyle::BUILTIN {
-                        if ui.selectable_label(!use_default && style == s, s.name()).clicked() {
+                        if ui
+                            .selectable_label(!use_default && style == s, s.name())
+                            .clicked()
+                        {
                             pick = Some(s);
                         }
                     }
                     if ui
-                        .selectable_label(!use_default && style == DoorLeafStyle::Library, "Library")
+                        .selectable_label(
+                            !use_default && style == DoorLeafStyle::Library,
+                            "Library",
+                        )
                         .clicked()
                     {
                         pick = Some(DoorLeafStyle::Library);
@@ -1141,7 +1152,11 @@ impl OpeningForm {
                         }
                     }
                 });
-            if ui.button("Library").on_hover_text("Select Library Object: a door").clicked() {
+            if ui
+                .button("Library")
+                .on_hover_text("Select Library Object: a door")
+                .clicked()
+            {
                 self.door_picker = true;
                 self.door_choices = door_library::available();
             }
@@ -1223,14 +1238,23 @@ impl OpeningForm {
                 .id_salt("door_picker")
                 .show(ui, |ui| {
                     let mut last = String::new();
-                    for e in self.door_choices.iter().filter(|e| {
-                        f.is_empty() || e.name.to_lowercase().contains(&f)
-                    }) {
+                    for e in self
+                        .door_choices
+                        .iter()
+                        .filter(|e| f.is_empty() || e.name.to_lowercase().contains(&f))
+                    {
                         if e.folder != last {
-                            ui.weak(if e.folder.is_empty() { "Doors" } else { e.folder.as_str() });
+                            ui.weak(if e.folder.is_empty() {
+                                "Doors"
+                            } else {
+                                e.folder.as_str()
+                            });
                             last = e.folder.clone();
                         }
-                        if ui.selectable_label(false, format!("{}  ({})", e.name, e.source)).clicked() {
+                        if ui
+                            .selectable_label(false, format!("{}  ({})", e.name, e.source))
+                            .clicked()
+                        {
                             chosen = Some(e.clone());
                         }
                     }
@@ -2965,10 +2989,20 @@ mod tests {
         d.sync_stored_for_test();
         let o = d.draft();
         assert!(o.extras.spec.is_library_door());
-        assert_eq!(o.extras.spec.library_door.as_ref().unwrap().id, "chief.fixture.5");
+        assert_eq!(
+            o.extras.spec.library_door.as_ref().unwrap().id,
+            "chief.fixture.5"
+        );
         assert_eq!(o.extras.style_name.as_deref(), Some("Fixture Six Panel"));
-        assert!(!o.extras.spec.dynamic.window_type, "an edit leaves Use Default");
-        assert_eq!(d.form.door_picked.len(), 1, "its name joins the Door Style list");
+        assert!(
+            !o.extras.spec.dynamic.window_type,
+            "an edit leaves Use Default"
+        );
+        assert_eq!(
+            d.form.door_picked.len(),
+            1,
+            "its name joins the Door Style list"
+        );
         // The dialog draws with the library door chosen (Reverse is enabled).
         let ctx = egui::Context::default();
         let _ = ctx.run(Default::default(), |ctx| {

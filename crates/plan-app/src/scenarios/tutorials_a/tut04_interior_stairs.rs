@@ -11,7 +11,9 @@ fn draw_stairs_between_floors_reaches_the_next_floor_in_one_undo_step() {
     sim.ok();
     sim.action(Action::FloorDown);
     sim.tool(ToolId::StairsVariant(StairKind::Draw));
-    let r = assert_one_undo_step(&mut sim, "Draw Stairs", |s| s.drag((100.0, 100.0), (250.0, 100.0)));
+    let r = assert_one_undo_step(&mut sim, "Draw Stairs", |s| {
+        s.drag((100.0, 100.0), (250.0, 100.0))
+    });
     assert_eq!(r.commit.as_deref(), Some("Draw Stairs"));
     let all = stairs_view::load(&sim.app.cx.project.floors[0]);
     assert_eq!(all.len(), 1);

@@ -128,8 +128,9 @@ fn room_front_shows_only_the_near_wall_outline() {
     assert!(near(w, 246.5), "width {w}");
     assert!(h < WALL_H + 3.0, "height {h}");
     // Bottom and top outline, the 1" ceiling-slab strip above the wall top, and
-    // four verticals: both outer ends and the two near-wall ends.
-    let expected = 2.0 * 246.5 + 240.0 + 4.0 * WALL_H;
+    // two verticals at the outer corners. The near wall's own ends mitre into
+    // the side walls' layers (W-156), so they draw no line of their own.
+    let expected = 2.0 * 246.5 + 240.0 + 2.0 * WALL_H;
     let total = d.total_length();
     assert!(
         (total - expected).abs() < 0.1 * expected,

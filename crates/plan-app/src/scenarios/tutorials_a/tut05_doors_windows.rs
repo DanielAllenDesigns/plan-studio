@@ -12,7 +12,13 @@ fn door_and_window_clicks_are_one_undo_step_each() {
     assert_eq!(sim.app.cx.floor().openings.len(), 2);
     // Both sit on the south exterior wall.
     let wall = sim.app.cx.floor().walls[0].id;
-    assert!(sim.app.cx.floor().openings.iter().all(|o| o.wall_id == wall));
+    assert!(sim
+        .app
+        .cx
+        .floor()
+        .openings
+        .iter()
+        .all(|o| o.wall_id == wall));
     // The shell is still one room.
     assert_eq!(sim.app.cx.rooms.len(), 1);
 }

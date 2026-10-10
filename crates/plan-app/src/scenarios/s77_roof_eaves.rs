@@ -207,9 +207,9 @@ fn locking_the_ridge_and_changing_the_pitch_keeps_the_ridge_where_it_was() {
 
 #[test]
 fn a_roof_directive_typed_over_several_walls_builds_a_gambrel_in_one_undo_step() {
+    use crate::editor::selection::ObjectRef;
     use crate::tools::ToolId as T;
     use plan_core::defaults::RoofWallKind;
-    use crate::editor::selection::ObjectRef;
     let mut sim = Sim::new();
     draw_shell(&mut sim, W, H);
     let long: Vec<_> = sim

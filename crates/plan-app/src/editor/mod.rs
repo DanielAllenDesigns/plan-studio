@@ -9,6 +9,7 @@ pub mod actions;
 pub mod behaviors;
 pub mod cabinet_edit;
 pub mod camera;
+pub mod camera_edit;
 pub mod clipboard;
 pub mod code;
 pub mod connect;
@@ -44,7 +45,6 @@ pub mod tempdim;
 pub mod transform;
 pub mod typed_input;
 pub mod wall_edit;
-pub mod camera_edit;
 
 pub use actions::{Clipboard, EditAction, EditActionKind};
 pub use camera::Camera;

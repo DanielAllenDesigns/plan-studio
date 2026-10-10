@@ -28,8 +28,8 @@ use plan_terrain::{
     RoadKind, WallKind,
 };
 
-// TODO parity: a Terrain Hole has no Layer tab; its `style` is not drawn from yet.
-const GENERAL_ONLY: &[Tab] = &[on("General")];
+// TODO parity: a Terrain Hole's `style` (layer) is not drawn from yet.
+const GENERAL_ONLY: &[Tab] = &[on("General"), on("Layer")];
 const POINT_TABS: &[Tab] = &[
     on("General"),
     on("Display"),
@@ -286,7 +286,7 @@ fn material_combo(ui: &mut Ui, salt: &str, value: &mut String, options: &[&str])
 impl Form {
     fn style_mut(&mut self) -> Option<&mut ObjectStyle> {
         match &mut self.draft {
-            TerrainObject::Feature(f) if f.kind != FeatureKind::Hole => Some(&mut f.style),
+            TerrainObject::Feature(f) => Some(&mut f.style),
             TerrainObject::Break(b) => Some(&mut b.style),
             TerrainObject::Wall(w) => Some(&mut w.style),
             TerrainObject::Landscape(l) => Some(&mut l.style),
@@ -295,7 +295,6 @@ impl Form {
             TerrainObject::Point(_, x)
             | TerrainObject::Region(_, x)
             | TerrainObject::Modifier(_, x) => Some(&mut x.style),
-            _ => None,
         }
     }
 
@@ -315,7 +314,7 @@ impl Form {
             TerrainObject::Feature(f) if f.kind == FeatureKind::Hole => {
                 section(ui, "General");
                 ui.label("The terrain surface is cut away inside the outline.");
-                ui.weak("Terrain Holes have no other settings; delete the hole to fill it.");
+                ui.weak("Terrain Holes have no other settings but their layer; delete the hole to fill it.");
             }
             TerrainObject::Feature(f) => {
                 section(ui, "General");
@@ -1153,7 +1152,7 @@ mod tests {
                     );
                 }
                 TerrainObject::Feature(f) if f.kind == FeatureKind::Hole => {
-                    assert_eq!(tabs, ["General"]);
+                    assert_eq!(tabs, ["General", "Layer"]);
                 }
                 TerrainObject::Feature(_) | TerrainObject::Wall(_) => {
                     assert!(has("Fill Style") && has("Polyline") && has("Layer"));

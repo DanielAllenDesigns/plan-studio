@@ -21,6 +21,7 @@ use crate::cad::{CadItem, CadObject};
 use crate::geometry::{point_in_polygon, polygon_area, polygon_centroid, Point};
 use crate::layers::LineStyle;
 use crate::model::{Floor, Id, Project};
+use crate::object_pages::{LabelPage, SchedulePage};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::f64::consts::PI;
@@ -76,6 +77,14 @@ impl Default for Footing {
     }
 }
 
+fn is_default_label(l: &LabelPage) -> bool {
+    *l == LabelPage::default()
+}
+
+fn is_default_schedule(s: &SchedulePage) -> bool {
+    *s == SchedulePage::default()
+}
+
 /// A slab (Slab, Slab with Footing).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -103,6 +112,12 @@ pub struct Slab {
     /// Plan fill pattern name (`None`, `Solid`, `Hatch`, `Cross Hatch`, `Grid`).
     pub fill_pattern: String,
     pub line_style: LineStyle,
+    /// The Label panel (Chief's Label tab); defaults are not stored.
+    #[serde(skip_serializing_if = "is_default_label")]
+    pub label: LabelPage,
+    /// The Schedule panel (Chief's Schedule tab); defaults are not stored.
+    #[serde(skip_serializing_if = "is_default_schedule")]
+    pub schedule: SchedulePage,
 }
 
 impl Default for Slab {
@@ -121,6 +136,8 @@ impl Default for Slab {
             fill_color: [190, 190, 185],
             fill_pattern: "Hatch".to_string(),
             line_style: LineStyle::Solid,
+            label: LabelPage::default(),
+            schedule: SchedulePage::default(),
         }
     }
 }
@@ -208,6 +225,14 @@ pub struct SlabHole {
     pub with_footing: bool,
     pub layer: String,
     pub line_style: LineStyle,
+    /// Material of the hole's edge (Materials tab).
+    pub material: String,
+    /// The Label panel (Chief's Label tab); defaults are not stored.
+    #[serde(skip_serializing_if = "is_default_label")]
+    pub label: LabelPage,
+    /// The Schedule panel (Chief's Schedule tab); defaults are not stored.
+    #[serde(skip_serializing_if = "is_default_schedule")]
+    pub schedule: SchedulePage,
 }
 
 impl Default for SlabHole {
@@ -218,6 +243,9 @@ impl Default for SlabHole {
             with_footing: false,
             layer: SLAB_LAYER.to_string(),
             line_style: LineStyle::Dashed,
+            material: DEFAULT_MATERIAL.to_string(),
+            label: LabelPage::default(),
+            schedule: SchedulePage::default(),
         }
     }
 }
@@ -280,6 +308,12 @@ pub struct Pad {
     pub elevation: f64,
     pub material: String,
     pub layer: String,
+    /// The Label panel (Chief's Label tab); defaults are not stored.
+    #[serde(skip_serializing_if = "is_default_label")]
+    pub label: LabelPage,
+    /// The Schedule panel (Chief's Schedule tab); defaults are not stored.
+    #[serde(skip_serializing_if = "is_default_schedule")]
+    pub schedule: SchedulePage,
 }
 
 impl Default for Pad {
@@ -292,6 +326,8 @@ impl Default for Pad {
             elevation: 0.0,
             material: DEFAULT_MATERIAL.to_string(),
             layer: PIER_LAYER.to_string(),
+            label: LabelPage::default(),
+            schedule: SchedulePage::default(),
         }
     }
 }
@@ -344,6 +380,12 @@ pub struct Pier {
     pub footing: Option<Footing>,
     pub material: String,
     pub layer: String,
+    /// The Label panel (Chief's Label tab); defaults are not stored.
+    #[serde(skip_serializing_if = "is_default_label")]
+    pub label: LabelPage,
+    /// The Schedule panel (Chief's Schedule tab); defaults are not stored.
+    #[serde(skip_serializing_if = "is_default_schedule")]
+    pub schedule: SchedulePage,
 }
 
 impl Default for Pier {
@@ -357,6 +399,8 @@ impl Default for Pier {
             footing: None,
             material: DEFAULT_MATERIAL.to_string(),
             layer: PIER_LAYER.to_string(),
+            label: LabelPage::default(),
+            schedule: SchedulePage::default(),
         }
     }
 }
@@ -441,6 +485,16 @@ pub struct PlatformHole {
     /// hole is removed with it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub owner: Option<Id>,
+    pub material: String,
+    /// Layer picked on the Layer tab; empty means the layer of `kind`.
+    // TODO parity: nothing draws or hides by this layer yet.
+    pub layer: String,
+    /// The Label panel (Chief's Label tab); defaults are not stored.
+    #[serde(skip_serializing_if = "is_default_label")]
+    pub label: LabelPage,
+    /// The Schedule panel (Chief's Schedule tab); defaults are not stored.
+    #[serde(skip_serializing_if = "is_default_schedule")]
+    pub schedule: SchedulePage,
 }
 
 impl Default for PlatformHole {
@@ -450,6 +504,10 @@ impl Default for PlatformHole {
             outline: Vec::new(),
             kind: PlatformKind::Floor,
             owner: None,
+            material: DEFAULT_MATERIAL.to_string(),
+            layer: String::new(),
+            label: LabelPage::default(),
+            schedule: SchedulePage::default(),
         }
     }
 }
@@ -461,6 +519,7 @@ impl PlatformHole {
             outline,
             kind,
             owner: None,
+            ..Self::default()
         }
     }
 
@@ -472,6 +531,7 @@ impl PlatformHole {
             outline,
             kind: PlatformKind::Floor,
             owner: Some(stair),
+            ..Self::default()
         }
     }
 

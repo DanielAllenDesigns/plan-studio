@@ -51,8 +51,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 /// Chief's Camera Specification panels (manual pp. 1186 to 1194).
 // TODO parity: Chief's pattern also lists General, Materials, Components,
-// Object Information and Schedule; the camera has no model data for them yet
-// (docs/tool-dialog-sweep.md, Camera Specification row).
+// Object Information and Schedule; the camera has no model data for them yet,
+// so those five tabs (the last ones) only say so (`not_modelled_tab`).
 const TABS: &[Tab] = &[
     Tab {
         name: "Camera",
@@ -86,7 +86,34 @@ const TABS: &[Tab] = &[
         name: "Label",
         enabled: true,
     },
+    Tab {
+        name: "General",
+        enabled: true,
+    },
+    Tab {
+        name: "Materials",
+        enabled: true,
+    },
+    Tab {
+        name: "Components",
+        enabled: true,
+    },
+    Tab {
+        name: "Object Information",
+        enabled: true,
+    },
+    Tab {
+        name: "Schedule",
+        enabled: true,
+    },
 ];
+
+/// A tab of Chief's pattern list the camera has no model data for yet.
+fn not_modelled_tab(ui: &mut egui::Ui, name: &str) {
+    ui.heading(name);
+    // TODO parity: no camera data behind this tab; verify in Chief.
+    ui.weak("A camera has no settings on this page yet.");
+}
 
 /// The index of the Selected Defaults tab.
 const TAB_SELECTED_DEFAULTS: usize = 3;
@@ -1547,7 +1574,8 @@ impl SpecPages for CameraDialog {
             4 => self.plan_display_tab(ui),
             5 => self.backdrop(ui),
             6 => self.layer_tab(ui),
-            _ => self.label_tab(ui),
+            7 => self.label_tab(ui),
+            n => not_modelled_tab(ui, TABS[n].name),
         }
         self.sync_section();
         self.sync_walkthrough();
@@ -4168,7 +4196,14 @@ mod tests {
                 "Plan Display",
                 "Backdrop",
                 "Layer",
-                "Label"
+                "Label",
+                // Chief's remaining camera panels, placeholders until their
+                // fields exist (TODO parity).
+                "General",
+                "Materials",
+                "Components",
+                "Object Information",
+                "Schedule",
             ]
         );
         assert!(d.tabs().iter().all(|t| t.enabled));

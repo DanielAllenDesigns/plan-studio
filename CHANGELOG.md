@@ -12,7 +12,30 @@ Test counts are the workspace totals the commit messages and manual state.
 
 ## [Unreleased]
 
-_Nothing yet; Round 16 continues on the `wip/round-14-partial` branch workflow._
+### Round 16 - 2026-10-10 (branch `wip/round-16`, gate green: all workspace tests, clippy `-Dwarnings`, rustfmt)
+
+#### Added
+- **Schedules**: Chief's placement-order numbering, Renumber Schedule closes gaps, Layer Set Defaults row (DECISIONS SC14).
+- **Floors and foundation**: foundation walls split where a partition meets a long wall, so garage steps and door cutouts land where Chief puts them; deck draw order; Build New Floor fixtures (FF17-FF19).
+- **Roofs**: baseline snap fix, Build Roof re-applies gable lines and trim (RB15); roof heights module with the four height locks and birdsmouth math, eave alignment for mixed pitches, Roof Height group in Build Roof (RH1-RH4); plane placement commands (Move to be Coplanar, Intersection Point, Make Parallel/Perpendicular, Display on Floor Above/Below).
+- **Doors and windows**: Single Wall Hole, level-0 pick order and Tab cycling, bay depth handle, Extend Existing Roof Over, foundation under bay units, per-type opening defaults with double-click (OM7-OM10).
+- **Electrical**: Auto Place Outlets follows room-function rules (EL12).
+- **Dimensions**: Layer panel, Setup Temporary options, Auto Refresh, story-pole elevation markers (DM20-DM24); Auto Interior Dimensions run through the whole plan in the upper and right thirds of rooms, 45-degree architectural ticks (DM25).
+- **Framing**: framing defaults, framing types and structural member reporting dialogs wired into Build > Framing (FM1-FM2); detail windows, truss rows and Retain Roof Plane Framing (FL17).
+- **Terrain**: perimeter fill style, click-once terrain regions, site scenario (TS1).
+- **Stairs**: ramp options, section length limit, arc-centre marks (ST16-1..3); staircase engine first pass: Best Fit, tread modes, Lock Top/Bottom, specification table, landing auto height and thickness (ST21-1..4).
+- **Survey entry**: quadrant and azimuth bearings, traverse closure, typed bearing entry, Number Style, New CAD Line/Arc and Move Point dialogs (SV1-SV5).
+- **Layers**: New/Copy/Merge/Delete/Reset Names, Layer Set Defaults, Select Layer panel, Object Layer Properties, Layer Hider, Find Objects on Layer, wall system layers (LS1-LS11).
+- **Walls**: off-angle and unconnected-end detection, Fix Off Angle Wall, Connect Walls with Auto Connect locks, Align With Wall Above/Below, acute junctions, layer intersection magnets (WR1-WR4).
+- **Cameras**: section clipping and annotations wired in, Scene Clipping and Navigation groups, per-camera steps, cross section lines, clip lines, Depth Cue, Below Grade, overview symbols; new cameras start at 60 in and 55 degrees (CS1-CS5).
+- **Edit behaviours and keys**: Chief's edit behaviour modes with Alt/Ctrl per DECISIONS DT2; hotkey 2 is Join Roof Planes per Daniel's file (HK16).
+- **Saved defaults and plan views** seeded from Daniel's x17 template (DT1); saved defaults manager.
+
+#### Changed
+- Test and build hygiene: tool-dialog sweep camera panic fixed; gesture test names the tool and undo label of a no-op step; Reflect leaves no undo step when nothing could be mirrored.
+
+#### Known gaps
+- `plan-app` keeps a crate-level `allow(dead_code)` for dialogs built but not yet reachable; finish passes for briefs 06, 09, 10, 14, 18, 21, 32, the tool-dialog sweep, brief 11, 3D wall joins (40) and door styles from the library (41) are queued in `~/plan-studio-dev/briefs/r16/finish/`.
 
 ## [0.1.0] - 2026-10-09
 

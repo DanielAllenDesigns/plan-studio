@@ -8,7 +8,8 @@
 //! tool behind the [`Tool`] trait); see `docs/architecture-tools.md`.
 
 // Round 16 landed partially (see docs/integration-queue.md); several dialogs and
-// commands are built but not yet reachable from the UI. Remove at the Round 16 gate.
+// commands are built but not yet reachable from the UI (78 dead-code warnings at
+// the Round 16 gate, 2026-10-10). Remove once the finish passes wire them.
 #![allow(dead_code)]
 mod chief_link;
 mod dialogs;

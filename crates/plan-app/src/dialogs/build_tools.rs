@@ -794,6 +794,8 @@ pub fn show_all(ctx: &egui::Context, cx: &mut EditorContext, cam: &mut Camera) {
     // Schedule Defaults, Select Location, Manage Custom Schedule Categories
     // and the other windows of the schedule commands.
     super::schedule_spec::show_extras(ctx, cx, cam);
+    // Fix Off Angle Wall (W-133).
+    super::fix_connections::show(ctx, cx);
 }
 
 /// Tools > Checks > Plan Check Settings: opens the Plan Check window (running

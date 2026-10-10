@@ -304,6 +304,87 @@ fn rooms_at_different_floor_heights_get_a_stepped_foundation_with_s_markers() {
     let _ = STEP_TOLERANCE;
 }
 
+/// A shell of four long exterior walls with a partition that ends on the
+/// front and back walls (they are not split there).
+fn unsplit_house() -> Project {
+    let mut p = Project::new("unsplit");
+    let c = [(0.0, 0.0), (240.0, 0.0), (240.0, 120.0), (0.0, 120.0)];
+    for i in 0..4 {
+        let (a, b) = (c[i], c[(i + 1) % 4]);
+        p.add_wall(
+            0,
+            Point::new(a.0, a.1),
+            Point::new(b.0, b.1),
+            6.5,
+            WALL_H,
+            WallKind::Exterior,
+        );
+    }
+    p.add_wall(
+        0,
+        Point::new(120.0, 0.0),
+        Point::new(120.0, 120.0),
+        4.5,
+        WALL_H,
+        WallKind::Interior,
+    );
+    p
+}
+
+#[test]
+fn a_long_wall_is_cut_where_a_partition_meets_it_so_the_foundation_steps_there() {
+    let mut p = unsplit_house();
+    name(&mut p, LEFT, "Den");
+    let r = name(&mut p, RIGHT, "Den");
+    p.floors[0].room_names[r].floor_height_offset = 24.0;
+    p.build_foundation_with(&stem(36.0));
+    let f = &p.floors[0];
+    // Front and back walls became two pieces each; the side walls and the
+    // partition stay whole.
+    assert_eq!(f.walls.iter().filter(|w| w.flags.foundation).count(), 7);
+    let marks = step_markers(f);
+    assert_eq!(marks.len(), 2, "{marks:?}");
+    assert!(marks.iter().all(|m| (m.high - m.low - 24.0).abs() < 1e-9));
+    assert!(marks.iter().all(|m| m.at.x == 120.0));
+    // A level plan keeps its long walls whole.
+    let mut q = unsplit_house();
+    name(&mut q, LEFT, "Den");
+    name(&mut q, RIGHT, "Den");
+    q.build_foundation_with(&stem(36.0));
+    let long = q.floors[0]
+        .walls
+        .iter()
+        .filter(|w| w.flags.foundation && (w.length() - 240.0).abs() < 1e-6)
+        .count();
+    assert_eq!(long, 2, "no cut where nothing changes");
+}
+
+#[test]
+fn a_door_in_a_cut_wall_keeps_its_place_in_the_piece_it_stands_in() {
+    let mut p = unsplit_house();
+    name(&mut p, LEFT, "Den");
+    name(&mut p, RIGHT, "Garage");
+    let front = p.floors[0]
+        .walls
+        .iter()
+        .find(|w| w.start.x == 0.0 && w.end.x == 240.0 && w.start.y == 0.0)
+        .unwrap()
+        .id;
+    // The door stands 180 in along the wall: 60 in into the garage piece.
+    let door = p.add_opening(0, front, 180.0, OpeningKind::Door).unwrap();
+    let o = p.floors[0]
+        .openings
+        .iter_mut()
+        .find(|o| o.id == door)
+        .unwrap();
+    o.style = OpeningStyle::Garage;
+    o.width = 108.0;
+    p.build_foundation_with(&stem(48.0));
+    let f = &p.floors[0];
+    assert_eq!(f.openings.len(), 1);
+    assert_eq!(f.openings[0].center_offset, 60.0);
+}
+
 #[test]
 fn a_room_stem_wall_height_overrides_the_default() {
     let mut p = two_rooms();

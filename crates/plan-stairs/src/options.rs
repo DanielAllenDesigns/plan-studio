@@ -148,6 +148,9 @@ pub struct PlanOptions {
     pub draw_balusters: bool,
     /// Draw the rails in plan.
     pub draw_rails: bool,
+    /// Mark the centre of a curved section and its two ends (a cross at the
+    /// centre and a line out to each end of the walking line).
+    pub show_arc_centers: bool,
 }
 
 impl Default for PlanOptions {
@@ -166,6 +169,7 @@ impl Default for PlanOptions {
             draw_newels: true,
             draw_balusters: false,
             draw_rails: true,
+            show_arc_centers: false,
         }
     }
 }
@@ -258,6 +262,45 @@ impl Default for StringerOptions {
             large_base: false,
             extend_top: true,
             thickness: 1.5,
+        }
+    }
+}
+
+/// The Options and Tread Surface rows of Chief's Ramp Specification (General
+/// panel). A plain ramp is a sloped slab of `StairParams::slab_thickness`
+/// with nothing under it; these rows close the underside and lay a separate
+/// walking surface on top.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RampOptions {
+    /// Open underneath. Off fills the space under the slab down to the floor,
+    /// no deeper than `max_thickness`.
+    pub open_underneath: bool,
+    /// Deepest the ramp may get when it is closed underneath, inches.
+    pub max_thickness: f64,
+    /// Lay a walking surface on top of the slab ("Has Tread Surface").
+    pub has_surface: bool,
+    /// How far the surface reaches past the slab at the sides and ends.
+    pub surface_overhang: f64,
+    /// Thickness of the surface, inches.
+    pub surface_thickness: f64,
+}
+
+impl RampOptions {
+    /// The deepest closed ramp the options allow, never less than the slab.
+    pub fn depth_cap(&self, slab: f64) -> f64 {
+        self.max_thickness.max(slab)
+    }
+}
+
+impl Default for RampOptions {
+    fn default() -> Self {
+        Self {
+            open_underneath: true,
+            max_thickness: 12.0,
+            has_surface: false,
+            surface_overhang: 0.0,
+            surface_thickness: 1.0,
         }
     }
 }

@@ -598,8 +598,27 @@ pub fn preview(
     layer_rgb: [u8; 3],
     width: f64,
 ) {
-    let size = Vec2::new(210.0, 130.0);
-    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+    preview_sized(
+        ui,
+        style,
+        patterns,
+        layer_rgb,
+        width,
+        Vec2::new(210.0, 130.0),
+    );
+}
+
+/// [`preview`] in a swatch of `size` points (the Fill column of the layer
+/// table uses a small one). Returns the swatch's response.
+pub fn preview_sized(
+    ui: &mut egui::Ui,
+    style: &FillStyle,
+    patterns: &[CustomPattern],
+    layer_rgb: [u8; 3],
+    width: f64,
+    size: Vec2,
+) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
     let painter = ui.painter_at(rect);
     let bg = Color32::from_rgb(0xEC, 0xEA, 0xE3);
     painter.rect_filled(rect, 2.0, bg);
@@ -634,6 +653,7 @@ pub fn preview(
         [0xEC, 0xEA, 0xE3],
         1.0,
     );
+    response
 }
 
 // ---------------------------------------------------------------------------
@@ -806,6 +826,35 @@ pub fn open_for_selection(cx: &mut EditorContext) -> bool {
         preview_width: 48.0,
         patterns: cx.project.styles.all_patterns(),
         layer_rgb: [0, 0, 0],
+        add_to_library: false,
+    };
+    HOST.with(|h| *h.borrow_mut() = Some(d));
+    true
+}
+
+/// Opens the Fill Style dialog for the fill of the display layers `layers`
+/// (the Fill column of Layer Display Options, LAY-67). The dialog starts from
+/// the first layer's fill.
+pub fn open_for_layers(cx: &mut EditorContext, layers: &[String]) -> bool {
+    let Some(first) = layers.first() else {
+        return false;
+    };
+    let targets: Vec<FillTarget> = layers.iter().map(|l| FillTarget::Layer(l.clone())).collect();
+    let style = cx
+        .project
+        .styles
+        .fill_for(&FillTarget::Layer(first.clone()))
+        .cloned()
+        .unwrap_or_else(|| FillStyle::hatch(45.0, 6.0, [0, 0, 0]));
+    let layer_rgb = cx.layers().get(first).map_or([0, 0, 0], |l| l.color);
+    let d = FillDialog {
+        name: String::new(),
+        named: false,
+        style,
+        targets,
+        preview_width: 48.0,
+        patterns: cx.project.styles.all_patterns(),
+        layer_rgb,
         add_to_library: false,
     };
     HOST.with(|h| *h.borrow_mut() = Some(d));

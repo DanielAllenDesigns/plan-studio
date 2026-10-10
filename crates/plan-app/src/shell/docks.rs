@@ -30,7 +30,7 @@ use crate::toolbar::{Action, Dock};
 use crate::tools::ToolId;
 use eframe::egui::{self, Key, Modifiers, Sense, Stroke, Vec2};
 use plan_core::layer_sets::LayerEdit;
-use plan_core::{DimensionKind, Layer, Project};
+use plan_core::{DimensionKind, Project};
 use std::collections::HashMap;
 
 /// Something a dock panel needs the application to do.
@@ -508,18 +508,10 @@ pub fn set_layer_reference(cx: &mut EditorContext, name: &str, on: bool) -> bool
 
 /// Adds a layer with a fresh name; returns the name.
 pub fn add_layer(cx: &mut EditorContext) -> String {
-    let mut n = cx.project.layers.layers.len() + 1;
-    let name = loop {
-        let candidate = format!("New Layer {n}");
-        if cx.project.layers.get(&candidate).is_none() {
-            break candidate;
-        }
-        n += 1;
-    };
+    let name = cx.project.free_layer_name_for_new();
     cx.begin_change("New Layer");
-    cx.project
-        .layers
-        .add(Layer::new(name.clone(), [0, 0, 0], 18));
+    // In every layer set, hidden in all but the active one (LAY-67).
+    let _ = cx.project.new_layer(&name);
     cx.mark_dirty();
     name
 }
@@ -626,7 +618,9 @@ fn camera_label(cam: &plan_core::CameraObject) -> String {
 pub fn browser_nodes(cx: &EditorContext) -> Vec<(BrowserNode, Vec<BrowserEntry>)> {
     let p = &cx.project;
     let entry = |item, label: String| BrowserEntry { item, label };
-    let several = p.floors.len() > 1;
+    // Detail drawings (CAD and Wall Details) are floors of the project but not
+    // storeys: they do not make the building a several-floor one.
+    let several = p.floors.iter().filter(|f| !f.is_cad_detail()).count() > 1;
     let tag = |floor: &plan_core::Floor, text: String| {
         if several {
             format!("{} \u{2013} {}", floor.name, text)
@@ -1689,7 +1683,7 @@ mod tests {
     fn every_panel_and_dialog_draws_frames_without_panicking() {
         let ctx = egui::Context::default();
         let mut cx = cx();
-        cx.project.layers.add(Layer::new("Extra", [10, 20, 30], 18));
+        cx.project.layers.add(plan_core::Layer::new("Extra", [10, 20, 30], 18));
         let mut st = DockState::default();
         st.layers.selected = Some("Doors".into());
         st.library.query = "toilet".into();

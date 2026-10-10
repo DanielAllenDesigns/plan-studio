@@ -419,9 +419,11 @@ fn open_hits(
         if lateral.abs() > w.thickness * 0.5 + tol * 0.5 {
             continue;
         }
-        for o in floor.openings_on(w.id) {
-            let r = ObjectRef::Opening(o.id);
-            if along >= o.start_offset() && along <= o.end_offset() && visible(r) {
+        // Stacked openings come in the order a click picks them: Window
+        // Level 0 first, then the others (manual p. 611), so Tab walks them.
+        for id in plan_core::openings::mull::pick_order(&floor.openings, w.id, along) {
+            let r = ObjectRef::Opening(id);
+            if visible(r) {
                 out.push(r);
             }
         }

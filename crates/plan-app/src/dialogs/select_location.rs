@@ -25,6 +25,9 @@ pub enum Target {
     },
     /// A floor view of the plan.
     Floor(usize),
+    /// The objects on some layers on a floor (Find Objects on Layer(s)):
+    /// goes to the floor and selects them.
+    LayerObjects { floor: usize, layers: Vec<String> },
 }
 
 /// One place in the list.
@@ -116,6 +119,9 @@ pub fn go(cx: &mut EditorContext, target: &Target) {
                 cx.reset_view_state();
                 cx.refresh();
             }
+        }
+        Target::LayerObjects { floor, layers } => {
+            crate::dialogs::object_layers::go_to(cx, *floor, layers);
         }
     }
 }

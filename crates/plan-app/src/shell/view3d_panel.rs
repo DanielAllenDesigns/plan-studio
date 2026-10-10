@@ -231,6 +231,81 @@ pub enum View3dCommand {
     Refresh,
     /// 3D > Export > 360 Panorama (C-77).
     ExportPanorama,
+    /// Create Orthographic View: the Full, Floor and Framing Overviews and
+    /// the Isometric Views in parallel projection (C-15).
+    Parallel(ParallelOverview),
+    /// Front, Back, Left or Right Elevation: the Auto Elevation tool for one
+    /// side of the building (manual p. 1151).
+    AutoSide(camera_tool::AutoSide),
+}
+
+/// The corner an Isometric View looks from.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum IsoCorner {
+    SouthWest,
+    SouthEast,
+    NorthEast,
+    NorthWest,
+}
+
+impl IsoCorner {
+    pub const ALL: [IsoCorner; 4] = [
+        IsoCorner::SouthWest,
+        IsoCorner::SouthEast,
+        IsoCorner::NorthEast,
+        IsoCorner::NorthWest,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            IsoCorner::SouthWest => "Isometric View SW",
+            IsoCorner::SouthEast => "Isometric View SE",
+            IsoCorner::NorthEast => "Isometric View NE",
+            IsoCorner::NorthWest => "Isometric View NW",
+        }
+    }
+
+    /// The plan direction the view looks along: from the corner toward the
+    /// middle of the building.
+    pub fn look(self) -> Point {
+        match self {
+            IsoCorner::SouthWest => Point::new(1.0, 1.0),
+            IsoCorner::SouthEast => Point::new(-1.0, 1.0),
+            IsoCorner::NorthEast => Point::new(-1.0, -1.0),
+            IsoCorner::NorthWest => Point::new(1.0, -1.0),
+        }
+    }
+}
+
+/// Which parallel-projection overview a [`View3dCommand::Parallel`] opens.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ParallelOverview {
+    /// Orthographic Full Overview.
+    Full,
+    /// Orthographic Floor Overview of the active floor.
+    Floor,
+    /// Orthographic Framing Overview.
+    Framing,
+    Isometric(IsoCorner),
+}
+
+impl ParallelOverview {
+    pub fn label(self) -> &'static str {
+        match self {
+            ParallelOverview::Full => "Orthographic Full Overview",
+            ParallelOverview::Floor => "Orthographic Floor Overview",
+            ParallelOverview::Framing => "Orthographic Framing Overview",
+            ParallelOverview::Isometric(c) => c.label(),
+        }
+    }
+}
+
+/// The yaw and pitch of an Isometric View: 45 degrees round and 30 degrees
+/// down, the conventional angles (manual p. 1153; DECISIONS CS6).
+pub fn isometric_angles(corner: IsoCorner) -> (f32, f32) {
+    let d = corner.look().normalized();
+    let yaw = (-d.x).atan2(d.y) as f32;
+    (yaw, 30.0_f32.to_radians())
 }
 
 /// Runs a [`View3dCommand`]: the one match arm `main.rs` needs.
@@ -255,7 +330,16 @@ pub fn dispatch(
                 state.open_mode(CameraMode::Orbit, None);
             }
         }
-        View3dCommand::CrossSectionSlider => state.toggle_slider(),
+        View3dCommand::CrossSectionSlider => {
+            // In a camera view or overview the command opens the Cross
+            // Section Slider dialog (several planes, saved with the camera);
+            // elsewhere it opens the elevation slider.
+            if state.active && state.section.is_none() && state.slider.is_none() {
+                state.slider_dialog = true;
+            } else {
+                state.toggle_slider();
+            }
+        }
         View3dCommand::Technique(t) => state.set_technique(t),
         View3dCommand::Rebuild => {
             state.rebuild();
@@ -293,6 +377,12 @@ pub fn dispatch(
             cx.status = "Refreshed the 3D view".into();
         }
         View3dCommand::ExportPanorama => state.panorama_dialog(cx),
+        View3dCommand::Parallel(p) => state.open_parallel(p, cx.floor),
+        View3dCommand::AutoSide(side) => {
+            camera_tool::set_next_auto_side(Some(side));
+            state.active = false;
+            tools.set_active(cx, ToolId::CameraVariant(CameraVariant::AutoElevation));
+        }
     }
 }
 
@@ -555,6 +645,13 @@ pub struct ViewScope {
     pub clip_above: Option<f64>,
     /// Nothing centred below this height (the lowest floor a camera picks).
     pub clip_below: Option<f64>,
+    /// The camera's Cross Section Slider planes (C-141).
+    pub slider: view_settings::SliderClip,
+    /// Hide the exterior walls that face a camera at this plan point
+    /// (C-151).
+    pub hide_from: Option<Point>,
+    /// Show Color is off: draw everything in grey (C-146).
+    pub gray: bool,
 }
 
 /// The scene a view shows: the scoped floors, any section cut, and the
@@ -634,6 +731,22 @@ pub fn build_view_scene(project: &Project, scope: &ViewScope) -> Scene {
         Some(y) => view_settings::clip_below(&scene, y),
         None => scene,
     };
+    let scene = match scope.hide_from {
+        Some(eye) => {
+            let hidden = plan_core::camera_view::facing::facing_exterior(project, eye);
+            if hidden.is_empty() {
+                scene
+            } else {
+                view_settings::without_objects(&scene, &hidden)
+            }
+        }
+        None => scene,
+    };
+    let scene = if scope.slider.is_active() {
+        scope.slider.apply(&scene)
+    } else {
+        scene
+    };
     let mut scene = match &scope.section {
         Some(cut) => clip_scene(&scene, cut),
         None => scene,
@@ -642,6 +755,9 @@ pub fn build_view_scene(project: &Project, scope: &ViewScope) -> Scene {
     crate::tools::materials::apply_overrides(project, &mut scene);
     if let Some(m) = scope.fill {
         apply_fill(&mut scene, m);
+    }
+    if scope.gray {
+        view_settings::gray_scene(&mut scene);
     }
     scene
 }
@@ -1296,6 +1412,23 @@ fn paint_vector(
             painter.line_segment([a, b], stroke);
         }
     }
+    // Lines with their own colour: Cross Section Lines, Clip Lines and the
+    // Below Grade colour override.
+    for l in &d.styled {
+        let (a, b) = (xf.to_screen(l.a), xf.to_screen(l.b));
+        if !view_rect.intersects(egui::Rect::from_two_pos(a, b)) {
+            continue;
+        }
+        let stroke = egui::Stroke::new(
+            l.width as f32,
+            egui::Color32::from_rgb(l.color[0], l.color[1], l.color[2]),
+        );
+        if l.dashed {
+            painter.extend(egui::Shape::dashed_line(&[a, b], stroke, 5.0, 3.0));
+        } else {
+            painter.line_segment([a, b], stroke);
+        }
+    }
     let size = ((DRAWING_TEXT_IN * xf.scale) as f32).clamp(7.0, 26.0);
     for (at, text) in &d.texts {
         painter.text(
@@ -1428,12 +1561,16 @@ impl Recording {
         technique: RenderingTechnique,
     ) -> Self {
         let scope = view_settings::scope_of(project, cam);
+        let (slider, hide_from) = view_settings::extra_scope_of(cam);
         let scene = build_view_scene(
             project,
             &ViewScope {
                 floor: scope.floor,
                 clip_above: scope.clip_above,
                 clip_below: scope.clip_below,
+                slider,
+                hide_from,
+                gray: !cam.view.options.show_color,
                 ..ViewScope::default()
             },
         );
@@ -1525,6 +1662,12 @@ impl Recording {
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Setup {
     Mode(CameraMode),
+    /// An orbit-like overview drawn in parallel projection (C-15); an
+    /// isometric view also fixes the yaw and pitch.
+    Parallel {
+        mode: CameraMode,
+        iso: Option<(f32, f32)>,
+    },
     Camera {
         position: Point,
         direction_deg: f64,
@@ -1602,6 +1745,18 @@ pub struct View3dState {
     pub clip_above: Option<f64>,
     /// Nothing centred below this height (the lowest floor a camera picks).
     pub clip_below: Option<f64>,
+    /// The planes of the Cross Section Slider of the view (C-141): the active
+    /// camera's, loaded when it is shown, or a live overview's own.
+    pub cam_slider: plan_core::camera_view::CrossSectionSlider,
+    /// Hide Camera-Facing Exterior Walls looks from this plan point (C-151).
+    pub hide_from: Option<Point>,
+    /// Show Color is off for the camera on show (C-146).
+    pub gray: bool,
+    /// The Cross Section Slider dialog is open.
+    slider_dialog: bool,
+    slider_fields: crate::dialogs::Fields,
+    /// The model's extent (plan X, plan Y, height) before any cut, inches.
+    model_bounds: Option<([f64; 3], [f64; 3])>,
     /// Save Camera was asked for by a request; done at the next frame.
     save_requested: bool,
     /// The backdrop picture last loaded, by file name.
@@ -1681,6 +1836,12 @@ impl View3dState {
             quality_applied: None,
             clip_above: None,
             clip_below: None,
+            cam_slider: plan_core::camera_view::CrossSectionSlider::default(),
+            hide_from: None,
+            gray: false,
+            slider_dialog: false,
+            slider_fields: crate::dialogs::Fields::default(),
+            model_bounds: None,
             save_requested: false,
             backdrop_cache: None,
             aspect: 1.5,
@@ -1737,6 +1898,9 @@ impl View3dState {
                                 .with_plan_lighting(project.lighting.clone())
                                 .with_floor_names(
                                     project.floors.iter().map(|f| f.name.clone()).collect(),
+                                )
+                                .with_layer_names(
+                                    project.layers.layers.iter().map(|l| l.name.clone()).collect(),
                                 ),
                         );
                     }
@@ -1755,10 +1919,27 @@ impl View3dState {
         self.active_camera = None;
         self.clip_above = None;
         self.clip_below = None;
+        self.hide_from = None;
+        self.gray = false;
         self.walk = None;
         self.zoom.clear();
         self.final_view.clear();
         self.setup = Some(Setup::Mode(mode));
+    }
+
+    /// Opens an overview in parallel projection (C-15): the Orthographic
+    /// Full, Floor or Framing Overview, or an Isometric View.
+    pub fn open_parallel(&mut self, kind: ParallelOverview, floor: usize) {
+        let floor = (kind == ParallelOverview::Floor).then_some(floor);
+        self.open_mode(CameraMode::Orbit, floor);
+        let iso = match kind {
+            ParallelOverview::Isometric(c) => Some(isometric_angles(c)),
+            _ => None,
+        };
+        self.setup = Some(Setup::Parallel {
+            mode: CameraMode::Orbit,
+            iso,
+        });
     }
 
     /// Opens the Glass House overview: the Perspective Overview drawn with
@@ -1783,13 +1964,21 @@ impl View3dState {
         self.scope_floor = scope.floor;
         self.clip_above = scope.clip_above;
         self.clip_below = scope.clip_below;
+        self.cam_slider = c.view.slider.clone();
+        self.hide_from = view_settings::hide_facing_from(c);
+        self.gray = !c.view.options.show_color;
+        // Depth of Field of the camera sets the Ray Trace window's lens.
+        if let Some((aperture, focus)) = view_settings::dof_lens(&c.view) {
+            self.raytrace.aperture_in = aperture;
+            self.raytrace.focus_in = focus;
+        }
         self.section = None;
         if c.kind != CameraKind::Walkthrough {
             self.walk = None;
         }
         self.quality = c.view.quality;
         self.quality_applied = None;
-        let saved_pose = c.view.pose.map(|p| Setup::Pose {
+        let saved_pose = c.overview_pose().map(|p| Setup::Pose {
             mode: if c.kind == CameraKind::DollHouse {
                 CameraMode::DollHouse
             } else {
@@ -1903,7 +2092,11 @@ impl View3dState {
             cx.status = "Opened the 3D view; use the camera command again".into();
             return;
         };
-        if !nudge::apply(&mut vp.camera, n) {
+        let steps = self
+            .active_camera
+            .and_then(|id| cx.project.camera(id))
+            .map_or_else(nudge::Steps::default, |c| nudge::Steps::of(&c.view));
+        if !nudge::apply_with(&mut vp.camera, n, steps) {
             cx.status = "This view looks in a fixed direction; switch to a perspective view".into();
         }
     }
@@ -1916,6 +2109,8 @@ impl View3dState {
         self.active_camera = None;
         self.clip_above = None;
         self.clip_below = None;
+        self.hide_from = None;
+        self.gray = false;
         self.walk = None;
         if let Some(vp) = &mut self.viewport {
             vp.set_mode(mode);
@@ -2252,14 +2447,23 @@ impl View3dState {
                 } else {
                     CameraKind::PerspectiveOverview
                 };
-                let at = Point::new(f64::from(target[0]), -f64::from(target[2]));
-                let mut o = CameraObject::new(kind, at, 90.0, name, floor);
+                // The overview's symbol stands at its eye and looks toward its
+                // target, so it can be selected, moved, aimed and copied in the
+                // plan (manual pp. 1153, 1157; DECISIONS 166).
+                let at = Point::new(f64::from(eye[0]), -f64::from(eye[2]));
+                let aim = Point::new(f64::from(target[0]), -f64::from(target[2])) - at;
+                let (deg, len) = if aim.length() > 1.0 {
+                    (aim.angle().to_degrees().rem_euclid(360.0), aim.length())
+                } else {
+                    (90.0, plan_core::camera::DEFAULT_CONE_LENGTH)
+                };
+                let mut o = CameraObject::new(kind, at, deg, name, floor);
                 o.fov_deg = horizontal_fov(cam.fov_deg, self.aspect);
-                // An overview has no place in the plan.
-                o.view.show_in_plan = false;
+                o.clip_distance = Some(len);
                 o.view.pose = Some(ViewPose {
                     eye: eye.map(f64::from),
                     target: target.map(f64::from),
+                    symbol: true,
                 });
                 o
             }
@@ -2453,6 +2657,9 @@ impl View3dState {
             no_images: true,
             clip_above: self.clip_above,
             clip_below: self.clip_below,
+            slider: view_settings::SliderClip::of(&self.cam_slider),
+            hide_from: self.hide_from,
+            gray: self.gray,
         }
     }
 
@@ -2471,6 +2678,11 @@ impl View3dState {
         self.scope().fill.hash(&mut h);
         self.clip_above.map(f64::to_bits).hash(&mut h);
         self.clip_below.map(f64::to_bits).hash(&mut h);
+        view_settings::SliderClip::of(&self.cam_slider).hash_into(&mut h);
+        self.hide_from
+            .map(|p| (p.x.to_bits(), p.y.to_bits()))
+            .hash(&mut h);
+        self.gray.hash(&mut h);
         self.textures_on.hash(&mut h);
         // A painted object shows its material as it is now.
         if !project.object_materials.is_empty() || !project.material_defaults.is_empty() {
@@ -2496,6 +2708,12 @@ impl View3dState {
                 ..ViewScope::default()
             },
         );
+        self.model_bounds = base.bounds().map(|(lo, hi)| {
+            (
+                [lo[0].into(), (-hi[2]).into(), lo[1].into()],
+                [hi[0].into(), (-lo[2]).into(), hi[1].into()],
+            )
+        });
         self.plan_bounds = base.bounds().map(|(lo, hi)| {
             (
                 Point::new(lo[0].into(), (-hi[2]).into()),
@@ -2726,6 +2944,15 @@ impl View3dState {
                 vp.set_mode(m);
                 vp.fit_view();
             }
+            Setup::Parallel { mode, iso } => {
+                vp.set_mode(mode);
+                vp.fit_view();
+                if let Some((yaw, pitch)) = iso {
+                    vp.camera.yaw = yaw;
+                    vp.camera.pitch = pitch;
+                }
+                vp.camera.make_parallel();
+            }
             Setup::Camera {
                 position,
                 direction_deg,
@@ -2792,10 +3019,29 @@ impl View3dState {
 
     fn windows(&mut self, ctx: &egui::Context, cx: &mut EditorContext) {
         if let Some(mut d) = self.camera_dialog.take() {
+            if d.wants_defaults_env() {
+                let env = crate::dialogs::default_sets::Env::of(cx);
+                let plan = crate::dialogs::default_sets::Selected::current(cx);
+                d.set_defaults_env(env, plan);
+            }
             match d.show(ctx) {
                 Outcome::Open => {
                     if d.take_export_request() {
                         cx.status = crate::dialogs::camera::save_camera_dxf(&cx.project, d.draft());
+                    }
+                    // Add, Edit, Rename and Delete of the Selected Defaults
+                    // panel act on the plan's lists.
+                    let events = d.take_defaults_events();
+                    if !events.is_empty() {
+                        let mut sel = d.selected_draft();
+                        for ev in events {
+                            if let Some(msg) =
+                                crate::dialogs::default_sets::handle_event(cx, ev, &mut sel)
+                            {
+                                cx.status = msg;
+                            }
+                        }
+                        d.set_selected_draft(&sel);
                     }
                     self.camera_dialog = Some(d);
                 }
@@ -2803,6 +3049,7 @@ impl View3dState {
                 Outcome::Ok => self.apply_camera_dialog(cx, &d),
             }
         }
+        self.slider_window(ctx, cx);
         self.lights_window(ctx, cx);
         self.lighting_window(ctx, cx);
         self.record_window(ctx, cx);
@@ -2890,6 +3137,36 @@ impl View3dState {
             rec.cancel();
         }
         ctx.request_repaint_after(std::time::Duration::from_millis(200));
+    }
+
+    /// The Cross Section Slider dialog (C-141): it works on the view's planes
+    /// while it is open; Done saves them with the camera on show, one undo
+    /// step.
+    fn slider_window(&mut self, ctx: &egui::Context, cx: &mut EditorContext) {
+        if !self.slider_dialog {
+            return;
+        }
+        let (lo, hi) = self
+            .model_bounds
+            .unwrap_or(([0.0; 3], [1200.0, 1200.0, 300.0]));
+        let (done, _changed) = crate::dialogs::camera::slider::show(
+            ctx,
+            &mut self.slider_fields,
+            &mut self.cam_slider,
+            lo,
+            hi,
+        );
+        if done {
+            self.slider_dialog = false;
+            if let Some(id) = self.active_camera {
+                let planes = self.cam_slider.clone();
+                if cx.project.camera(id).is_some_and(|c| c.view.slider != planes) {
+                    cx.begin_change("Cross Section Slider");
+                    cx.project.update_camera(id, |c| c.view.slider = planes);
+                    cx.mark_dirty();
+                }
+            }
+        }
     }
 
     fn apply_camera_dialog(&mut self, cx: &mut EditorContext, d: &CameraDialog) {
@@ -3278,6 +3555,9 @@ pub fn show(ui: &mut egui::Ui, cx: &mut EditorContext, st: &mut View3dState) {
     vp.drag_locked = st.obj_drag.is_some();
     apply_to_viewport(vp, &tv, sun);
     vp.lighting = view_settings::rig(&plan_lighting, view.as_ref(), sun, tv.flat);
+    // The camera's own rendering options (C-147, C-150, C-151).
+    vp.ao_scale = view_settings::ao_scale(view.as_ref());
+    vp.camera.near = view_settings::near_of(view.as_ref(), vp.camera.mode == CameraMode::FullCamera);
     if let Some(sky) = view.as_ref().and_then(view_settings::sky_color) {
         vp.background = sky;
     }
@@ -3288,13 +3568,21 @@ pub fn show(ui: &mut egui::Ui, cx: &mut EditorContext, st: &mut View3dState) {
         vp.settings = view_settings::settings_for(
             quality,
             vp.settings.exposure,
-            view.as_ref().is_none_or(|v| v.shadows),
+            view.as_ref()
+                .is_none_or(|v| v.shadows && v.options.use_sunlight),
         );
     }
-    vp.set_point_lights(&crate::dialogs::camera::render_lights_in(
+    let mut lights = crate::dialogs::camera::render_lights_in(
         &cx.project,
         view.as_ref().and_then(|v| v.light_set.as_deref()),
-    ));
+    );
+    // Automatic lighting uses at most the camera's Maximum Number of lights.
+    if let Some(v) = view.as_ref().filter(|v| {
+        v.options.light_choice == plan_core::camera_view::spec::LightChoice::Automatic
+    }) {
+        lights.truncate(v.options.max_lights as usize);
+    }
+    vp.set_point_lights(&lights);
     vp.textures_enabled = st.textures_on && technique_shows_textures(st.technique);
     if let Some((position, yaw)) = walk_pose {
         vp.camera.position = position;
@@ -3335,6 +3623,13 @@ pub fn show(ui: &mut egui::Ui, cx: &mut EditorContext, st: &mut View3dState) {
     st.refresh_overlay(&cx.project, &cx.selection);
     stand_in::paint(ui.painter(), &stand_cam, resp.rect, &cx.project);
     st.final_view_frame(ui, cx, resp.rect);
+    if view.as_ref().is_some_and(|v| v.options.show_watermark) {
+        extras::paint_watermark(
+            ui.painter(),
+            resp.rect,
+            &cx.project.print_setup.watermark.spec,
+        );
+    }
     if let Some(text) = view_label {
         ui.painter().text(
             resp.rect.left_bottom() + egui::vec2(12.0, -10.0),
@@ -4117,7 +4412,7 @@ mod tests {
         // Facing plan north is scene -Z.
         let f = c.forward();
         assert!(f[2] < -0.99 && f[0].abs() < 1e-4);
-        assert!((c.fov_deg - vertical_fov(60.0, 4.0 / 3.0)).abs() < 1e-4);
+        assert!((c.fov_deg - vertical_fov(55.0, 4.0 / 3.0)).abs() < 1e-4);
         // East-facing camera looks along +X.
         p.update_camera(id, |c| c.direction_deg = 0.0);
         st.show_camera(&p, id);
@@ -4228,8 +4523,8 @@ mod tests {
     #[test]
     fn camera_defaults_roundtrip() {
         reset_camera_defaults();
-        assert_eq!(camera_defaults().eye_height, 66.0);
-        assert_eq!(camera_defaults().fov_deg, 60.0);
+        assert_eq!(camera_defaults().eye_height, 60.0);
+        assert_eq!(camera_defaults().fov_deg, 55.0);
     }
 
     #[test]
@@ -5755,6 +6050,31 @@ mod tests {
     }
 
     #[test]
+    fn orthographic_overviews_and_isometric_views_are_parallel_orbits() {
+        let mut st = View3dState::with_inbox(Outbox::default());
+        st.open_parallel(ParallelOverview::Full, 0);
+        st.apply_setup(1.5);
+        let cam = &st.viewport.as_ref().unwrap().camera;
+        assert!(cam.parallel && cam.is_parallel());
+        assert_eq!(cam.mode, CameraMode::Orbit, "it still orbits");
+        // An Isometric View looks from a corner, 45 degrees round, 30 down.
+        st.open_parallel(ParallelOverview::Isometric(IsoCorner::SouthWest), 0);
+        st.apply_setup(1.5);
+        let cam = &st.viewport.as_ref().unwrap().camera;
+        assert!((cam.yaw + std::f32::consts::FRAC_PI_4).abs() < 1e-5, "{}", cam.yaw);
+        assert!((cam.pitch - 30.0_f32.to_radians()).abs() < 1e-5);
+        let ne = isometric_angles(IsoCorner::NorthEast);
+        assert!((ne.0 - 3.0 * std::f32::consts::FRAC_PI_4).abs() < 1e-5, "{}", ne.0);
+        // Any ordinary view is perspective again.
+        st.open_mode(CameraMode::Orbit, None);
+        st.apply_setup(1.5);
+        assert!(!st.viewport.as_ref().unwrap().camera.parallel);
+        // The Floor Overview is limited to the active floor.
+        st.open_parallel(ParallelOverview::Floor, 2);
+        assert_eq!(st.scope_floor, Some(2));
+    }
+
+    #[test]
     fn save_camera_keeps_an_overviews_pose_and_restore_brings_it_back() {
         let mut cx = EditorContext::new(plan_defaults::embedded());
         cx.project = house();
@@ -5770,9 +6090,14 @@ mod tests {
         let saved = cx.project.cameras.last().unwrap().clone();
         assert_eq!(saved.kind, CameraKind::DollHouse);
         assert!(
-            !saved.view.show_in_plan,
-            "an overview has no symbol in the plan"
+            saved.view.show_in_plan,
+            "an overview has a symbol in the plan (DECISIONS 166)"
         );
+        let (derived, raw) = (saved.overview_pose().unwrap(), saved.view.pose.unwrap());
+        for i in 0..3 {
+            assert!((derived.eye[i] - raw.eye[i]).abs() < 1e-6, "eye {i}");
+            assert!((derived.target[i] - raw.target[i]).abs() < 1e-6, "target {i}");
+        }
         let pose = saved.view.pose.expect("pose");
         for i in 0..3 {
             assert!((pose.eye[i] - f64::from(eye[i])).abs() < 0.01);

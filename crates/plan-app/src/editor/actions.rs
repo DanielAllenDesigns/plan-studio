@@ -170,6 +170,15 @@ impl EditorContext {
         if self.selection.is_empty() {
             return;
         }
+        // In a Wall Detail the drawn boxes stand for framing members: deleting
+        // them deletes the members from the wall's framing (one undo step), and
+        // the drawing follows.
+        if super::framing_view::in_wall_detail(self)
+            && !super::framing_view::details::selected_wall_members(self).is_empty()
+        {
+            super::framing_view::run_command(self, super::framing_view::cmd::WALL_MEMBER_DELETE);
+            return;
+        }
         let (locked, free): (Vec<ObjectRef>, Vec<ObjectRef>) = self
             .selection
             .items

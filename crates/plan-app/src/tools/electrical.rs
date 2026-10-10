@@ -69,10 +69,11 @@ use plan_core::geometry::{dist_to_segment, project_on_segment, Point};
 use plan_core::OpeningKind;
 use plan_core::{Floor, Id, Room, Wall};
 use plan_electrical::{
-    auto_place_exterior_outlets, auto_place_outlets, auto_place_room_light, auto_place_switch,
-    connect_drawn, connect_with, face_is_exterior, kind_for_setting, place_free, place_on_wall,
-    AutoOutletOptions, ConnEnd, Device, DeviceKind, DeviceOptions, ElectricalDefaults,
-    ElectricalLayer, HeightContext, Mount, RoomFunction, RopeLightPath, WallSide,
+    auto_place_exterior_outlets, auto_place_outlets_by_rules, auto_place_room_light,
+    auto_place_switch, connect_drawn, connect_with, face_is_exterior, kind_for_setting, place_free,
+    place_on_wall, AutoOutletOptions, ConnEnd, Device, DeviceKind, DeviceOptions,
+    ElectricalDefaults, ElectricalLayer, HeightContext, Mount, RoomFunction, RopeLightPath,
+    WallSide,
 };
 use std::cell::{Cell, RefCell};
 use std::f64::consts::{FRAC_PI_2, PI};
@@ -866,7 +867,14 @@ pub fn auto_place_floor_outlets(cx: &mut EditorContext) -> usize {
     crate::editor::code::outlet_options(&crate::editor::code::code_minimums(cx), &mut opts);
     // Counter outlets follow the base cabinets standing against the walls.
     opts.counter_runs = counter_runs(cx.floor());
-    let mut placed = auto_place_outlets(cx.floor(), &rooms, &types, &opts);
+    // Each room's electrical rules (manual p. 447): none in exterior rooms,
+    // Porches and Open Below, fewer in hybrids, GFCI over base cabinets,
+    // standard height outlets in kitchens.
+    let rules: Vec<(String, plan_core::rooms::ElectricalRules)> = rooms
+        .iter()
+        .map(|r| (r.label.clone(), room_rules(cx, r)))
+        .collect();
+    let mut placed = auto_place_outlets_by_rules(cx.floor(), &rooms, &types, &rules, &opts);
     if opts.exterior_wp {
         // NEC 210.52(E): weatherproof GFCI receptacles outside, front and back.
         placed.extend(auto_place_exterior_outlets(cx.floor(), &rooms, &opts));

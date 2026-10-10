@@ -1061,7 +1061,7 @@ impl CabinetTool {
     fn placed_with_room(&self, cx: &EditorContext, p: &PointerEvent) -> (Cabinet, bool) {
         let kind = self.kind();
         let mut cab = self.new_cabinet(cx);
-        let alt = p.modifiers.alt;
+        let alt = p.overrides();
         if kind.is_filler() {
             settle_filler(cx, &mut cab, p.world, p.snapped, WALL_REACH, true, alt, 0);
             return (cab, true);
@@ -1486,7 +1486,7 @@ pub fn apply_edit_mode(
     };
     let mut pushed: Vec<Cabinet> = Vec::new();
     let mut c = orig.clone();
-    let alt = p.modifiers.alt;
+    let alt = p.overrides();
     let (step, min_w) = (width_step(cx), min_width(cx));
     let u = Point::new(orig.angle.cos(), orig.angle.sin());
     let local_center = Point::new(orig.width * 0.5, orig.depth * 0.5);
@@ -1497,7 +1497,7 @@ pub fn apply_edit_mode(
             let unit = cx.snap_unit();
             let center = Point::new(snap_to(anchor.x, unit, alt), snap_to(anchor.y, unit, alt));
             c.position = orig.position + delta;
-            let ctrl = p.modifiers.command || p.modifiers.ctrl;
+            let ctrl = p.overrides();
             if orig.kind.is_custom() {
                 // Free-form tops move as they are: no wall or neighbour snapping.
                 c.position = Point::new(
@@ -1791,7 +1791,7 @@ impl Tool for CabinetTool {
                         center,
                         WALL_REACH,
                         true,
-                        p.modifiers.alt,
+                        p.overrides(),
                         0,
                     );
                     cx.readout = Some(format!("Width: {}", cx.fmt_dim(width)));
@@ -3329,7 +3329,7 @@ mod tests {
         // A wider tolerance in the preferences closes it; Alt never fits.
         set_fit_tolerance(5.0);
         let mut alt = p;
-        alt.modifiers.alt = true;
+        alt.modifiers.ctrl = true;
         assert_eq!(t.placed_at(&cx, &alt).width, 30.0);
         assert!((t.placed_at(&cx, &p).width - 34.0).abs() < 1e-9);
         set_fit_tolerance(FIT_TOLERANCE);
@@ -3706,7 +3706,7 @@ mod tests {
             .unwrap();
         let orig = cabinet_by_id(cx.floor(), a).unwrap();
         let mut ev = PointerEvent::at(&cx, Point::new(59.0, 10.0));
-        ev.modifiers.alt = true;
+        ev.modifiers.ctrl = true;
         let free = apply_edit(&cx, HandleKind::ResizeEnd, &orig, h.pos, &ev);
         assert_eq!(free.width, 39.0);
         set_fit_to_gap(true);

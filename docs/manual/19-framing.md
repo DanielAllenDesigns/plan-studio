@@ -164,3 +164,14 @@ quantity, type, span, pitch, plies, members) of the framing schedule.
 - Jack, hip, girder and subgirder trusses and the Truss Base specification are Round 17. The Truss Detail is not linked back to the trusses (deleting a drawing deletes
   nothing). Trim Framing To Soffits and End Profile do not change the 3D shape yet. Posts under beams do not cut the top plates.
 - The dialog layout, the checkbox wording, the plan dash patterns and the Double Fink and Double Howe webs are marked verify in Chief (DECISIONS 112 to 115, FL1 to FL16).
+
+## 19.13 Framing Member Defaults, Framing Types and Structural Member Reporting
+
+Build > Framing now lists Automatic Framing Defaults, Manual Framing Defaults, Framing Member Defaults, Framing Types and Structural Member Reporting. They are stored with the plan (the catalogue sits in the first floor's framing slot), and each OK is one undo step.
+
+- **Framing Member Defaults** name a type, a material and a Role (Floor Joist, Header, Plate, Rafter and so on) and never a size. The list shows an In Use column and offers Edit (several at once), Copy, Rename, Delete (refused while in use), Merge, Purge and Apply to selected members. Applying a default to hand-drawn members changes their type, Role and material and keeps their size and place.
+- **Framing Types** are Wood (lumber, I-joist, glulam, engineered lumber, LVL, PSL, VSL), Steel (I, box, C, U channel; Steel C names a supporting U channel type), Concrete and Other. A type's shape is stamped on every automatic member, so editing Lumber to I-Joist redraws the floor joists at once. Display Nominal Sizes and Include Name in Labels decide how the framing schedule and Materials List describe it.
+- **Automatic Framing Defaults** has panels for Foundation, the floor levels, Deck, Deck Support, Wall, Openings (header sizes by opening width, List Cut Header Lengths), Fireplaces, Roof and Trusses. **Manual Framing Defaults** shape new general framing, beams (With Joists or Under Joists, Align Exterior), posts and posts with footings.
+- **Structural Member Reporting** counts framing as a Buy List (boards from the Board Sizes table, in priority order, with the saw kerf), a Cut List (one line per cut), Linear Length, or Mixed (studs counted, plates and headers in feet; one Mixed per plan). Saved defaults can be edited, copied or converted, renamed, deleted, imported and exported. The dialog's totals come from the same members as the framing takeoff, so a Cut List's feet equal the takeoff's.
+
+Not done: the Materials List still counts framing with its own Buy List / Cut List / Linear Feet switch rather than the active reporting default; the Default Settings tree still opens the saved-defaults list for Framing Types and Structural Member Reporting; the Build Framing dialog's own Automatic Framing Defaults button and the tool double-click do not open the new dialogs yet (docs/integration-queue.md).

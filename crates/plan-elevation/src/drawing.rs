@@ -157,9 +157,36 @@ pub struct Drawing {
     /// as annotation lines and text.
     #[serde(default)]
     pub dims: Vec<crate::dims::ElevDim>,
+    /// Lines that carry their own colour, style and width, drawn over the
+    /// weighted lines in the 3D view only: Clip Lines, Cross Section Lines
+    /// and the Below Grade colour override. DXF and layout do not use them.
+    #[serde(default)]
+    pub styled: Vec<StyledLine>,
+}
+
+/// A line with its own look (see [`Drawing::styled`]).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct StyledLine {
+    pub a: Point,
+    pub b: Point,
+    /// Width in points.
+    pub width: f64,
+    pub color: [u8; 3],
+    pub dashed: bool,
 }
 
 impl Drawing {
+    /// Add everything of `other` (the pieces of a stepped section, annotations
+    /// laid over a drawing) and recompute the bounds.
+    pub fn append(&mut self, other: Drawing) {
+        self.lines.extend(other.lines);
+        self.regions.extend(other.regions);
+        self.texts.extend(other.texts);
+        self.dims.extend(other.dims);
+        self.styled.extend(other.styled);
+        self.update_bounds();
+    }
+
     /// Wrap `lines`, computing the bounds.
     pub fn new(lines: Vec<Line2>) -> Drawing {
         let mut d = Drawing {
@@ -168,6 +195,7 @@ impl Drawing {
             regions: Vec::new(),
             texts: Vec::new(),
             dims: Vec::new(),
+            styled: Vec::new(),
         };
         d.update_bounds();
         d

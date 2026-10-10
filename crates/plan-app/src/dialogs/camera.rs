@@ -49,10 +49,26 @@ use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
-/// Chief's Camera Specification tabs.
+/// Chief's Camera Specification panels (manual pp. 1186 to 1194).
 const TABS: &[Tab] = &[
     Tab {
         name: "Camera",
+        enabled: true,
+    },
+    Tab {
+        name: "Positioning",
+        enabled: true,
+    },
+    Tab {
+        name: "Below Grade",
+        enabled: true,
+    },
+    Tab {
+        name: "Selected Defaults",
+        enabled: true,
+    },
+    Tab {
+        name: "Plan Display",
         enabled: true,
     },
     Tab {
@@ -60,7 +76,7 @@ const TABS: &[Tab] = &[
         enabled: true,
     },
     Tab {
-        name: "Rendering",
+        name: "Layer",
         enabled: true,
     },
     Tab {
@@ -68,6 +84,12 @@ const TABS: &[Tab] = &[
         enabled: true,
     },
 ];
+
+/// The index of the Selected Defaults tab.
+const TAB_SELECTED_DEFAULTS: usize = 3;
+
+mod panels;
+pub mod slider;
 
 /// Smallest and largest angle of view Chief accepts (C-7).
 pub const MIN_FOV_DEG: f64 = 5.0;
@@ -250,11 +272,60 @@ pub fn annotate_options(c: &CameraObject) -> AnnotateOptions {
 /// roof pitch symbols; its Vector View options add dimensions, material labels
 /// and per-layer line weights.
 pub fn render_elevation_with(project: &Project, c: &CameraObject, opts: &Options) -> Drawing {
+    render_elevation_parts(project, c, opts).0
+}
+
+/// [`render_elevation_with`] and the Cross Section Lines found in the cut
+/// (before the poché is dropped, so they exist with Poche off too).
+pub fn render_elevation_parts(
+    project: &Project,
+    c: &CameraObject,
+    opts: &Options,
+) -> (Drawing, Vec<plan_elevation::CutLine>) {
     let scene = crate::editor::framing_view::elevation_scene(project);
-    let view = free_view(c);
+    let mut view = free_view(c);
     let cut = cuts_model(c);
     let weights = c.vector.layer_weights.then(|| layer_weights(project));
-    let mut drawing = plan_elevation::render_free(&scene, &view, cut, opts, weights.as_ref());
+    let vol = project.clip_volume(c);
+    let mut opts = *opts;
+    if opts.depth_cue.is_none() {
+        // Depth Cue fogs the lines of a section or elevation (C-140).
+        opts.depth_cue = c.view.depth_cue.ramp();
+    }
+    if cut && c.view.clip.clip_to_room {
+        opts.section_depth = vol.back;
+    }
+    // The Clip Sides switch: off draws the whole width of the model.
+    if cut && !c.view.clip.clip_sides && !c.view.clip.clip_to_room {
+        view.half_width = None;
+    }
+    let mut drawing = if cut && vol.plane.is_stepped() {
+        render_stepped(&scene, &view, &vol, &opts, weights.as_ref())
+    } else {
+        plan_elevation::render_free(&scene, &view, cut, &opts, weights.as_ref())
+    };
+    let mut cut_lines = Vec::new();
+    if cut {
+        apply_clip(&mut drawing, &vol);
+        cut_lines = plan_elevation::cross_section_lines(&drawing, &vol.plane.breaks);
+        if !c.view.clip.poche {
+            drawing
+                .regions
+                .retain(|r| r.kind != plan_elevation::RegionKind::Cut);
+        }
+    }
+    if c.view.below_grade.is_active() {
+        let bg = &c.view.below_grade;
+        plan_elevation::override_below(
+            &mut drawing,
+            bg.height(grade_height(project, c)),
+            &plan_elevation::BelowGradeStyle {
+                color: bg.override_color.then_some(bg.color),
+                dashed: bg.dashed(),
+                weight: bg.override_weight.then_some(bg.weight),
+            },
+        );
+    }
     let notes = annotate_options(c);
     if notes.title || notes.dimensions.is_some() || notes.materials {
         let title = (!c.name.trim().is_empty() && (cut || c.kind == CameraKind::Elevation))
@@ -268,7 +339,278 @@ pub fn render_elevation_with(project: &Project, c: &CameraObject, opts: &Options
             &notes,
         );
     }
-    drawing
+    drawing.append(annotation_layer_at(c, &cut_lines));
+    if cut {
+        view_layers(&mut drawing, project, &vol, &cut_lines);
+    }
+    (drawing, cut_lines)
+}
+
+/// The height of the terrain's top surface at the camera, inches: what Below
+/// Grade's Terrain Perimeter limit means (the terrain's own elevation at the
+/// camera when there is one, else the first floor's level).
+pub fn grade_height(project: &Project, c: &CameraObject) -> f64 {
+    crate::editor::site_view::terrain_elevation_at(project, c.position)
+        .or_else(|| project.floors.first().map(|f| f.elevation))
+        .unwrap_or(0.0)
+}
+
+/// The Cross Section Lines and Clip Lines of a view as coloured lines, when
+/// their layers are on (manual pp. 1167, 1171). They belong to the 3D view
+/// only: the Cross Section Lines do not go to layout and neither do the Clip
+/// Lines, which are an editing aid.
+fn view_layers(
+    drawing: &mut Drawing,
+    project: &Project,
+    vol: &plan_core::camera_view::ClipVolume,
+    cut_lines: &[plan_elevation::CutLine],
+) {
+    use plan_core::camera_view::clip::{CLIP_LINES_LAYER, CROSS_SECTION_LAYER};
+    if project.layers.is_visible(CROSS_SECTION_LAYER) {
+        let color = project
+            .layers
+            .get(CROSS_SECTION_LAYER)
+            .map_or([0x7A, 0x2E, 0x2E], |l| l.color);
+        for l in cut_lines {
+            drawing.styled.push(plan_elevation::StyledLine {
+                a: l.a,
+                b: l.b,
+                width: 0.5,
+                color,
+                dashed: false,
+            });
+        }
+    }
+    if let Some(layer) = project
+        .layers
+        .get(CLIP_LINES_LAYER)
+        .filter(|l| l.display)
+    {
+        let (lo, hi) = drawing.bounds;
+        let (x0, x1) = vol.x.unwrap_or((lo.x, hi.x));
+        let (y0, y1) = vol.y.unwrap_or((lo.y, hi.y));
+        for (a, b) in clip_line_segments(vol, (x0, x1), (y0, y1)) {
+            drawing.styled.push(plan_elevation::StyledLine {
+                a,
+                b,
+                width: 0.8,
+                color: layer.color,
+                dashed: true,
+            });
+        }
+    }
+}
+
+/// The Clip Lines of a view: a vertical line at each side clip and a level
+/// line at the bottom and top clip elevations (C-136).
+pub fn clip_line_segments(
+    vol: &plan_core::camera_view::ClipVolume,
+    xs: (f64, f64),
+    ys: (f64, f64),
+) -> Vec<(Point, Point)> {
+    let mut v = Vec::new();
+    if vol.x.is_some() {
+        for x in [xs.0, xs.1] {
+            v.push((Point::new(x, ys.0), Point::new(x, ys.1)));
+        }
+    }
+    if vol.y.is_some() {
+        for y in [ys.0, ys.1] {
+            v.push((Point::new(xs.0, y), Point::new(xs.1, y)));
+        }
+    }
+    v
+}
+
+/// Cut a section drawing off at its clip volume: the sides of Clip Sides or
+/// the room, and Clip Elevation (C-136, C-138).
+pub fn apply_clip(drawing: &mut Drawing, vol: &plan_core::camera_view::ClipVolume) {
+    if let Some((lo, hi)) = vol.x {
+        plan_elevation::clip_x(drawing, lo, hi);
+    }
+    if let Some((lo, hi)) = vol.y {
+        plan_elevation::clip_y(drawing, lo, hi);
+    }
+}
+
+/// A stepped cutting plane (C-137): each piece of the plane is its own cut,
+/// moved ahead by its offset with its back clip shortened to match, kept to
+/// the piece's span of the line, and the pieces share one drawing.
+fn render_stepped(
+    scene: &plan_3d::Scene,
+    view: &FreeView,
+    vol: &plan_core::camera_view::ClipVolume,
+    opts: &Options,
+    weights: Option<&ObjectWeights>,
+) -> Drawing {
+    let reach = view.half_width.unwrap_or(1.0e5);
+    let (lo, hi) = vol.x.unwrap_or((-reach, reach));
+    let mut out = Drawing::default();
+    for (x0, x1, offset) in vol.spans(lo, hi) {
+        let mut piece = *view;
+        piece.origin = piece.origin + piece.dir() * offset;
+        piece.half_width = None;
+        let mut o = *opts;
+        o.section_depth = vol.back.map(|b| (b - offset).max(1.0));
+        let mut d = plan_elevation::render_free(scene, &piece, true, &o, weights);
+        plan_elevation::clip_x(&mut d, x0, x1);
+        out.append(d);
+    }
+    out
+}
+
+/// The annotations saved with the view that sit on the drawing itself,
+/// as lines and texts of the drawing's own frame (C-129).
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn annotation_layer(c: &CameraObject) -> Drawing {
+    annotation_layer_at(c, &[])
+}
+
+/// [`annotation_layer`] with the dimensions that locate a Cross Section Line
+/// (and the Point Markers they left) moved to where `cut_lines` stand now.
+pub fn annotation_layer_at(c: &CameraObject, cut_lines: &[plan_elevation::CutLine]) -> Drawing {
+    let mut d = Drawing::default();
+    let drawing_surface = plan_core::camera_view::DrawSurface::drawing();
+    for a in c
+        .view
+        .annotations
+        .iter()
+        .filter(|a| a.surface == drawing_surface)
+    {
+        let mut kind = a.kind.clone();
+        relocate_on_cut_lines(&mut kind, cut_lines);
+        let marks = kind.marks();
+        for (p, q) in marks.lines {
+            d.lines.push(plan_elevation::Line2 {
+                a: Point::new(p[0], p[1]),
+                b: Point::new(q[0], q[1]),
+                weight: plan_elevation::LineWeight::Light,
+                kind: plan_elevation::EdgeKind::Annotation,
+            });
+        }
+        for (at, text, _size) in marks.texts {
+            d.texts.push((Point::new(at[0], at[1]), text));
+        }
+    }
+    d.update_bounds();
+    d
+}
+
+/// Moves the points of `kind` that locate a Cross Section Line to where the
+/// line stands now.
+fn relocate_on_cut_lines(
+    kind: &mut plan_core::camera_view::AnnotKind,
+    cut_lines: &[plan_elevation::CutLine],
+) {
+    if cut_lines.is_empty() {
+        return;
+    }
+    kind.relocate(&|c| plan_elevation::find_cut(cut_lines, c.object, c.edge).map(|l| l.position()));
+}
+
+/// How close a dimension end must be to a Cross Section Line to locate it,
+/// drawing inches.
+pub const CUT_SNAP: f64 = 1.5;
+
+/// A dimension that meets a Cross Section Line locates the line through a
+/// Point Marker, so it stays attached when the lines are made again (manual
+/// pp. 1167, 1173; C-131). Looks at every dimension of the camera's drawing
+/// that is not yet attached, snaps an end that lies within [`CUT_SNAP`] of a
+/// line onto it and adds the marker. Returns how many ends were attached.
+pub fn attach_cut_markers(c: &mut CameraObject, cut_lines: &[plan_elevation::CutLine]) -> usize {
+    use plan_core::camera_view::annot::CutRef;
+    use plan_core::camera_view::AnnotKind;
+    let surface = plan_core::camera_view::DrawSurface::drawing();
+    let nearest = |p: [f64; 2]| -> Option<(CutRef, [f64; 2])> {
+        cut_lines
+            .iter()
+            .filter_map(|l| {
+                let (lo, hi) = (l.a.x.min(l.b.x), l.a.x.max(l.b.x));
+                let (ylo, yhi) = (l.a.y.min(l.b.y), l.a.y.max(l.b.y));
+                let (off, along_ok, snapped) = if l.is_vertical() {
+                    (
+                        (p[0] - l.a.x).abs(),
+                        p[1] >= ylo - CUT_SNAP && p[1] <= yhi + CUT_SNAP,
+                        [l.a.x, p[1]],
+                    )
+                } else {
+                    (
+                        (p[1] - l.a.y).abs(),
+                        p[0] >= lo - CUT_SNAP && p[0] <= hi + CUT_SNAP,
+                        [p[0], l.a.y],
+                    )
+                };
+                (off <= CUT_SNAP && along_ok).then_some((
+                    off,
+                    CutRef {
+                        object: l.object,
+                        edge: l.edge,
+                    },
+                    snapped,
+                ))
+            })
+            .min_by(|x, y| x.0.total_cmp(&y.0))
+            .map(|(_, cut, at)| (cut, at))
+    };
+    let mut attached = Vec::new();
+    for a in c.view.annotations.iter_mut().filter(|a| a.surface == surface) {
+        if let AnnotKind::Dimension {
+            a: pa,
+            b: pb,
+            a_cut,
+            b_cut,
+            ..
+        } = &mut a.kind
+        {
+            for (p, slot) in [(pa, a_cut), (pb, b_cut)] {
+                if slot.is_some() {
+                    continue;
+                }
+                if let Some((cut, at)) = nearest(*p) {
+                    *p = at;
+                    *slot = Some(cut);
+                    attached.push((cut, at));
+                }
+            }
+        }
+    }
+    let n = attached.len();
+    for (cut, at) in attached {
+        let has = c.view.annotations.iter().any(|a| {
+            matches!(&a.kind, AnnotKind::PointMarker { cut: k, .. } if *k == cut)
+        });
+        if has {
+            continue;
+        }
+        let id = c.view.annotations.iter().map(|a| a.id).max().unwrap_or(0) + 1;
+        let layer = c
+            .view
+            .annotations
+            .iter()
+            .find(|a| matches!(a.kind, AnnotKind::Dimension { .. }))
+            .map_or_else(String::new, |a| a.layer.clone());
+        c.view.annotations.push(plan_core::camera_view::ViewAnnotation {
+            id,
+            kind: AnnotKind::PointMarker { at, cut },
+            surface,
+            layer,
+            weight: None,
+        });
+    }
+    n
+}
+
+/// The Cross Section Lines of a section camera as the view draws them now.
+pub fn cross_section_lines_of(
+    project: &Project,
+    c: &CameraObject,
+) -> Vec<plan_elevation::CutLine> {
+    if !cuts_model(c) {
+        return Vec::new();
+    }
+    // The same options the view draws with, so a dimension that locates a
+    // line lands exactly where the view puts it.
+    render_elevation_parts(project, c, &elevation_options(c)).1
 }
 
 /// The camera's drawing as a DXF with its lines on layers by weight (named
@@ -368,6 +710,16 @@ pub struct CameraDialog {
     /// "Export DXF" was clicked; the host takes it with
     /// [`CameraDialog::take_export_request`] (the dialog has no project).
     export_requested: bool,
+    /// The lists of the Selected Defaults panel, filled by the host.
+    defaults_env: Option<super::default_sets::Env>,
+    /// The plan's own active defaults (what a view that chose none uses).
+    plan_selected: super::default_sets::Selected,
+    /// What the Selected Defaults panel asked the host to do.
+    defaults_events: Vec<super::default_sets::Ev>,
+    /// The plan's layer names, for the Layer panel.
+    layer_names: Vec<String>,
+    /// The tab drawn last.
+    last_tab: usize,
 }
 
 impl CameraDialog {
@@ -389,6 +741,11 @@ impl CameraDialog {
             plan_lighting: plan_core::camera_view::Lighting::default(),
             floor_names: Vec::new(),
             export_requested: false,
+            defaults_env: None,
+            plan_selected: super::default_sets::Selected::default(),
+            defaults_events: Vec::new(),
+            layer_names: Vec::new(),
+            last_tab: 0,
             extras,
             floor_name: floor_name.to_string(),
             fields: Fields::default(),
@@ -601,57 +958,14 @@ impl CameraDialog {
         });
         row(ui, "Camera Type", |ui| ui.label(self.kind_label()));
         row(ui, "Floor", |ui| ui.label(&self.floor_name));
+        self.general_options(ui);
         if self.draft.kind == CameraKind::Walkthrough {
             self.walkthrough_page(ui);
             self.display_options(ui);
             return;
         }
-        let section_cam = self.is_section();
-        section(
-            ui,
-            if section_cam {
-                "Cut Line"
-            } else {
-                "Camera Position"
-            },
-        );
-        let f = &mut self.fields;
-        let d = &mut self.draft;
-        f.length_row(
-            ui,
-            if section_cam {
-                "Center X"
-            } else {
-                "Position X"
-            },
-            "x",
-            &mut d.position.x,
-        );
-        f.length_row(
-            ui,
-            if section_cam {
-                "Center Y"
-            } else {
-                "Position Y"
-            },
-            "y",
-            &mut d.position.y,
-        );
-        f.degrees_row(ui, "View Direction", "deg_dir", &mut d.direction_deg);
-        if section_cam {
-            f.length_row(ui, "Section Length", "width", &mut self.section_len);
-        } else {
-            f.length_row(ui, "Height Above Floor", "eye", &mut d.eye_height);
-            f.degrees_row(ui, "Angle of View", "deg_fov", &mut d.fov_deg);
-            let level = d.kind.is_eye_level();
-            ui.add_enabled_ui(level, |ui| {
-                f.degrees_row(ui, "Tilt (up is +)", "deg_tilt", &mut d.view.tilt_deg);
-            });
-            if !level {
-                ui.weak("An overview orbits the building; only a Full or Floor Camera tilts.");
-            }
-        }
         self.clipping(ui);
+        self.depth_cue_group(ui);
         if !self.is_section() {
             section(ui, "Floors Displayed");
             row(ui, "Show", |ui| {
@@ -665,6 +979,9 @@ impl CameraDialog {
                 self.floors_range(ui);
             }
         }
+        self.rendering(ui);
+        self.render_extras(ui);
+        self.view_options(ui);
         self.display_options(ui);
     }
 
@@ -741,6 +1058,104 @@ impl CameraDialog {
                 self.fields.length_row(ui, "Far Clip Distance", "clip", v);
             }
         }
+        if is_elevation_camera(&self.draft) {
+            self.scene_clipping(ui);
+        }
+    }
+
+    /// The Scene Clipping group of a section or elevation (C-136..C-138,
+    /// C-152, C-157): Poche, Framing Back Clip, Clip Sides, Clip Elevation,
+    /// Clip to Room and the stepped cutting plane.
+    fn scene_clipping(&mut self, ui: &mut egui::Ui) {
+        section(ui, "Scene Clipping");
+        let clip = &mut self.draft.view.clip;
+        ui.checkbox(&mut clip.poche, "Poche");
+        ui.checkbox(&mut clip.framing_back_clip, "Framing Back Clip");
+        if clip.framing_back_clip {
+            self.fields.length_row(
+                ui,
+                "Back Clip Framing After",
+                "fback",
+                &mut clip.framing_back_after,
+            );
+        }
+        ui.checkbox(&mut clip.clip_sides, "Clip Sides")
+            .on_hover_text("The view is as wide as the cross section line");
+        ui.checkbox(&mut clip.clip_elevation, "Clip Elevation");
+        if clip.clip_elevation {
+            self.fields
+                .length_row(ui, "Bottom Elevation", "cbot", &mut clip.bottom);
+            self.fields
+                .length_row(ui, "Top Elevation", "ctop", &mut clip.top);
+            if clip.top < clip.bottom {
+                std::mem::swap(&mut clip.top, &mut clip.bottom);
+            }
+        }
+        ui.checkbox(&mut clip.clip_to_room, "Clip to Room");
+        if clip.clip_to_room {
+            ui.checkbox(
+                &mut clip.ignore_railings,
+                "Ignore Railings and Invisible Walls",
+            );
+            ui.checkbox(&mut clip.ignore_walls_above, "Ignore Walls Above");
+        }
+        ui.horizontal(|ui| {
+            if ui.button("Add Break").clicked() {
+                // A break goes in the middle of the widest piece.
+                let half = self.section_len * 0.5;
+                let (x0, x1, _) = clip
+                    .plane
+                    .spans(-half, half)
+                    .into_iter()
+                    .max_by(|a, b| (a.1 - a.0).total_cmp(&(b.1 - b.0)))
+                    .unwrap_or((-half, half, 0.0));
+                clip.plane.add_break((x0 + x1) * 0.5);
+            }
+            ui.weak(format!("{} cutting plane piece(s)", clip.plane.pieces()));
+        });
+        const KEYS: [&str; 8] = [
+            "piece0", "piece1", "piece2", "piece3", "piece4", "piece5", "piece6", "piece7",
+        ];
+        for (i, key) in KEYS.iter().enumerate().take(clip.plane.pieces()) {
+            let mut off = clip.plane.offsets.get(i).copied().unwrap_or(0.0);
+            self.fields
+                .length_row(ui, &format!("Piece {} Offset", i + 1), key, &mut off);
+            clip.plane.set_offset(i, off);
+        }
+        if clip.plane.is_stepped() {
+            ui.horizontal(|ui| {
+                if ui.button("Make Parallel").clicked() {
+                    clip.plane.make_parallel(0);
+                }
+                if ui.button("Make Perpendicular").clicked() {
+                    clip.plane.make_perpendicular(0);
+                }
+                if ui.button("Remove Break").clicked() {
+                    clip.plane.remove_break(0);
+                }
+            });
+        }
+    }
+
+    /// The Navigation group (C-121, DECISIONS 41): the steps this camera's
+    /// pan, dolly, orbit, tilt and keyboard commands take.
+    fn navigation(&mut self, ui: &mut egui::Ui) {
+        section(ui, "Navigation");
+        let v = &mut self.draft.view;
+        self.fields.length_row(
+            ui,
+            "Incremental Move Distance",
+            "movestep",
+            &mut v.move_step,
+        );
+        self.fields.degrees_row(
+            ui,
+            "Incremental Rotate Angle",
+            "deg_rotstep",
+            &mut v.rotate_step,
+        );
+        v.move_step = v.move_step.max(1.0);
+        v.rotate_step = v.rotate_step.clamp(1.0, 90.0);
     }
 
     fn display_options(&mut self, ui: &mut egui::Ui) {
@@ -1118,10 +1533,15 @@ impl SpecPages for CameraDialog {
     }
 
     fn page(&mut self, ui: &mut egui::Ui, tab: usize) {
+        self.last_tab = tab;
         match tab {
             0 => self.general(ui),
-            1 => self.backdrop(ui),
-            2 => self.rendering(ui),
+            1 => self.positioning_tab(ui),
+            2 => self.below_grade_tab(ui),
+            3 => self.selected_defaults_tab(ui),
+            4 => self.plan_display_tab(ui),
+            5 => self.backdrop(ui),
+            6 => self.layer_tab(ui),
             _ => self.label_tab(ui),
         }
         self.sync_section();
@@ -3729,11 +4149,23 @@ mod tests {
     }
 
     #[test]
-    fn the_tabs_are_chiefs_camera_backdrop_rendering_and_label() {
+    fn the_tabs_are_the_manuals_camera_panels() {
         let cam = CameraObject::new(CameraKind::FullCamera, Point::ZERO, 0.0, "C", 0);
         let d = CameraDialog::new(&cam, "1st Floor", CameraExtras::default());
         let names: Vec<_> = d.tabs().iter().map(|t| t.name).collect();
-        assert_eq!(names, ["Camera", "Backdrop", "Rendering", "Label"]);
+        assert_eq!(
+            names,
+            [
+                "Camera",
+                "Positioning",
+                "Below Grade",
+                "Selected Defaults",
+                "Plan Display",
+                "Backdrop",
+                "Layer",
+                "Label"
+            ]
+        );
         assert!(d.tabs().iter().all(|t| t.enabled));
     }
 

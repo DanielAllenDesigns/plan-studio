@@ -31,6 +31,7 @@
 
 use super::{KeyEvent, PointerEvent, Tool, ToolId, ToolResult};
 use crate::editor::roof_view::{self, RoofPlaneRecord, RoofSettings};
+use crate::editor::snap::SnapKind;
 use crate::editor::{Camera, EditAction, EditActionKind, EditorContext, ObjectRef};
 use eframe::egui::{self, Align2, Color32, FontId, Key, Pos2, Stroke};
 use plan_core::cad::{CadItem, CadObject};
@@ -410,7 +411,7 @@ pub fn default_height(cx: &EditorContext) -> f64 {
         .map(|w| w.height)
         .fold(0.0, f64::max);
     let top = if top > 0.0 { top } else { f.ceiling_height };
-    top + current_settings(cx).raise_off_plate
+    top + current_settings(cx).plate_raise()
 }
 
 /// Draws a roof baseline polyline over `points` on the active floor. One undo
@@ -673,6 +674,17 @@ pub struct RoofBaselineTool {
 }
 
 impl RoofBaselineTool {
+    /// The corner a pointer event means. A polyline runs along the outside
+    /// face of a wall, so the snap to a wall's centerline (Anywhere on a
+    /// wall) is not used: the point stays where it was clicked.
+    fn corner(p: &PointerEvent) -> Point {
+        if p.snap.kind == SnapKind::OnObject {
+            p.world
+        } else {
+            p.snapped
+        }
+    }
+
     /// The corners clicked so far.
     pub fn pending(&self) -> &[Point] {
         &self.pts
@@ -747,7 +759,7 @@ impl Tool for RoofBaselineTool {
     }
 
     fn pointer_move(&mut self, _cx: &mut EditorContext, p: PointerEvent) -> ToolResult {
-        self.hover = Some(p.snapped);
+        self.hover = Some(Self::corner(&p));
         ToolResult {
             repaint: !self.pts.is_empty(),
             ..ToolResult::default()
@@ -755,7 +767,7 @@ impl Tool for RoofBaselineTool {
     }
 
     fn pointer_down(&mut self, cx: &mut EditorContext, p: PointerEvent) -> ToolResult {
-        let at = p.snapped;
+        let at = Self::corner(&p);
         if self.pts.is_empty() {
             // A click on an existing baseline selects it.
             let tol = cx.pick_tol();

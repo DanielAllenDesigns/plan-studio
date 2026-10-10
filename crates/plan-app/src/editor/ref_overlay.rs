@@ -160,9 +160,20 @@ fn row_walls(
     active: &LayerSet,
     this_plan: bool,
 ) -> Vec<RefWall> {
+    // A row of this plan that names no layer set starts with the layer set
+    // chosen for the reference floor in Layer Set Defaults (LAY-70).
+    let default_set = (this_plan && row.layer_set.is_none())
+        .then(|| {
+            source
+                .layer_set_defaults
+                .choice(plan_core::layer_sets::ViewKind::ReferenceFloor)
+        })
+        .flatten()
+        .filter(|n| source.layer_sets.get(n).is_some());
     let set_layers = row
         .layer_set
         .as_deref()
+        .or(default_set)
         .map(|n| source.layer_sets.effective_for(n, &source.layers));
     let layers: &LayerSet = match (&set_layers, this_plan) {
         (Some(l), _) => l,

@@ -27,6 +27,7 @@ pub fn bar(
     // Windows the menu commands open (Replace Fonts, Export to REScheck).
     crate::dialogs::find_replace::show_prompts(ui.ctx(), out);
     crate::dialogs::text::rescheck::show_windows(ui.ctx(), out);
+    crate::dialogs::wall_types::show_windows(ui.ctx(), out);
     ui.menu_button("File", |ui| file_menu(ui, state, out));
     ui.menu_button("Edit", |ui| edit_menu(ui, state, out));
     ui.menu_button("Build", |ui| build_menu(ui, state, out));
@@ -734,6 +735,16 @@ fn edit_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
         Action::EditBehaviors,
         out,
     );
+    // Whether CAD segments of one kind snap end to end into polylines
+    // (manual p. 256).
+    live(
+        ui,
+        "Connect CAD Segments",
+        "",
+        state.flags.contains(&ViewFlag::ConnectCad),
+        Action::ToggleFlag(ViewFlag::ConnectCad),
+        out,
+    );
     ui.menu_button("Arc Creation Modes", |ui| {
         let current = crate::tools::cad::current_arc_mode();
         for m in crate::tools::cad::ArcMode::ALL {
@@ -1094,6 +1105,22 @@ fn edit_select_rows(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) 
         edit_row(
             ui,
             state,
+            "Bring Forward",
+            "Bring Forward",
+            ops::DG_FORWARD,
+            out,
+        );
+        edit_row(
+            ui,
+            state,
+            "Send Backward",
+            "Send Backward",
+            ops::DG_BACKWARD,
+            out,
+        );
+        edit_row(
+            ui,
+            state,
             "Set Drawing Group\u{2026}",
             "Set Drawing Group",
             ops::DG_SET,
@@ -1132,6 +1159,17 @@ fn build_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
                     }
                     if name == "Framing" {
                         framing_rows(ui, state, out);
+                    }
+                    if name == "Wall" {
+                        ui.separator();
+                        live(
+                            ui,
+                            "Define Wall Types\u{2026}",
+                            "",
+                            false,
+                            Action::Custom(crate::dialogs::wall_types::OPEN),
+                            out,
+                        );
                     }
                 });
             }
@@ -1172,6 +1210,24 @@ fn framing_rows(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
     ] {
         live(ui, label, "", false, Action::Custom(id), out);
     }
+    // The edit commands of the Edit toolbar (manual pp. 914 to 943): they act on
+    // the selection and say so in the status bar when it does not fit.
+    {
+        use crate::editor::framing_view::cmd;
+        ui.separator();
+        for (label, id) in [
+            ("Build Framing for Selected Object(s)", cmd::BUILD_SELECTED),
+            ("Build Framing for Parent Object(s)", cmd::BUILD_PARENT),
+            ("Open Wall Detail", cmd::OPEN_WALL_DETAIL),
+            ("Open Truss Detail", cmd::OPEN_TRUSS_DETAIL),
+            ("Truss Detail Window\u{2026}", cmd::TRUSS_WINDOW),
+            ("Find Trusses", cmd::FIND_TRUSSES),
+            ("Move to Framing Ref", cmd::MOVE_TO_REF),
+        ] {
+            live(ui, label, "", false, Action::Custom(id), out);
+        }
+        ui.separator();
+    }
     live(
         ui,
         "Framing Defaults\u{2026}",
@@ -1180,6 +1236,31 @@ fn framing_rows(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
         Action::Custom(crate::dialogs::defaults::FRAMING),
         out,
     );
+    // Brief 29: the catalogue dialogs and the member reporting.
+    for (label, id) in [
+        (
+            "Automatic Framing Defaults\u{2026}",
+            crate::dialogs::framing_defaults::AUTOMATIC,
+        ),
+        (
+            "Manual Framing Defaults\u{2026}",
+            crate::dialogs::framing_defaults::MANUAL,
+        ),
+        (
+            "Framing Member Defaults\u{2026}",
+            crate::dialogs::framing_defaults::MEMBERS,
+        ),
+        (
+            "Framing Types\u{2026}",
+            crate::dialogs::framing_defaults::TYPES,
+        ),
+        (
+            "Structural Member Reporting\u{2026}",
+            crate::dialogs::framing_defaults::REPORTING,
+        ),
+    ] {
+        live(ui, label, "", false, Action::Custom(id), out);
+    }
     live(
         ui,
         "Framing Overview",
@@ -1334,7 +1415,22 @@ fn three_d_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
         ui.separator();
         live(ui, "Ray Trace\u{2026}", "", false, cmd(C::RayTrace), out);
     });
+    ui.menu_button("Create Orthographic View", |ui| {
+        use crate::shell::view3d_panel::{IsoCorner, ParallelOverview as P};
+        for p in [P::Full, P::Floor, P::Framing] {
+            live(ui, p.label(), "", false, cmd(C::Parallel(p)), out);
+        }
+        ui.separator();
+        for corner in IsoCorner::ALL {
+            let p = P::Isometric(corner);
+            live(ui, p.label(), "", false, cmd(C::Parallel(p)), out);
+        }
+    });
     ui.menu_button("Create Auto Elevations", |ui| {
+        for side in crate::tools::camera::AutoSide::ALL {
+            live(ui, side.label(), "", false, cmd(C::AutoSide(side)), out);
+        }
+        ui.separator();
         for (name, v) in [
             ("Auto Elevations", V::AutoElevation),
             ("Auto Back-Clipped Elevations", V::AutoBackclipped),
@@ -1656,6 +1752,12 @@ fn cad_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
     );
     cad_mode(ui, "Revision Cloud", CadMode::RevisionCloud, out);
     cad_mode(ui, "Spline", CadMode::Spline, out);
+    // Typing lines and arcs by bearing and distance, and the Number Style.
+    ui.menu_button("Survey Entry", |ui| {
+        for (label, cmd) in crate::tools::cad::survey::MENU {
+            live(ui, label, "", false, Action::Custom(cmd), out);
+        }
+    });
     ui.separator();
     toolbar::flyout_menu(ui, &toolbar::dimensions(), state, out);
     toolbar::flyout_menu(ui, &toolbar::auto_dimensions(), state, out);
@@ -1727,6 +1829,8 @@ fn cad_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
             CadMode::BreakLine,
             CadMode::ChangeLineArc,
             CadMode::DeleteBreak,
+            CadMode::DisconnectEdges,
+            CadMode::HideShowEdge,
             CadMode::MakeArcTangent,
             CadMode::ReverseDirection,
             CadMode::MakeParallel,
@@ -1888,6 +1992,14 @@ fn tools_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
             "",
             false,
             Action::Custom(crate::dialogs::layer_sets::ACTIVE_LAYERS),
+            out,
+        );
+        live(
+            ui,
+            "Layer Set Defaults\u{2026}",
+            "",
+            false,
+            Action::Custom(crate::dialogs::layer_sets::DEFAULTS),
             out,
         );
     });
@@ -2320,7 +2432,7 @@ fn tools_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
     });
     ui.menu_button("Layer Painter", |ui| {
         use crate::tools::painters::PainterMode as P;
-        for m in [P::LayerPaint, P::LayerEyedropper] {
+        for m in [P::LayerPaint, P::LayerEyedropper, P::LayerHider] {
             let id = ToolId::PainterVariant(m);
             live(ui, m.name(), "", state.tool == id, Action::SetTool(id), out);
         }

@@ -807,9 +807,11 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "R16-17 in progress: RoofChoice availability"]
     fn move_roof_up_needs_roof_planes_and_no_auto_rebuild() {
         let mut cx = cx_with_house();
+        // The test plan's Preferences start with Auto Rebuild Roofs on; this
+        // test turns it off where it checks the roof's own switch.
+        crate::dialogs::preferences::pages::update(|p| p.architectural.auto_rebuild_roofs = false);
         // No roof built: not available.
         let none = RoofChoice::of(&cx.project);
         assert!(!none.available && none.reason.contains("No roof"));

@@ -1402,11 +1402,23 @@ impl crate::Project {
     }
 
     /// The fill style of wall layer `index` of type `wall_type`.
+    ///
+    /// A fill assigned through the Fill Style dialog wins; otherwise the fill
+    /// the Wall Type Definitions dialog gave the layer (`WallLayerSpec::fill`,
+    /// Round 16 brief 12) draws it.
     pub fn wall_layer_fill(&self, wall_type: &str, index: usize) -> Option<&FillStyle> {
-        self.styles.fill_for(&FillTarget::WallLayer {
-            wall_type: wall_type.to_string(),
-            index,
-        })
+        self.styles
+            .fill_for(&FillTarget::WallLayer {
+                wall_type: wall_type.to_string(),
+                index,
+            })
+            .or_else(|| {
+                self.wall_types
+                    .iter()
+                    .find(|t| t.name == wall_type)
+                    .and_then(|t| t.layers.get(index))
+                    .and_then(|l| l.spec.fill.as_ref())
+            })
     }
 }
 

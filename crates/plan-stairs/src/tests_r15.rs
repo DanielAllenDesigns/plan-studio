@@ -1082,3 +1082,202 @@ fn each_landing_edge_can_force_or_drop_its_railing() {
     assert!(posts(&forced) >= 4);
     assert!(EdgeRail::ALL.iter().all(|e| !e.name().is_empty()));
 }
+
+// ----- the Options and Tread Surface rows of the Ramp Specification -----
+
+fn ramp_with(o: RampOptions) -> Stair {
+    stair(StairParams {
+        shape: StairShape::Ramp { slope_1_in: 12.0 },
+        ramp: o,
+        ..params(30.0)
+    })
+}
+
+fn only(parts: &[(StairPart, plan_3d::Mesh)], part: StairPart) -> Vec<(StairPart, plan_3d::Mesh)> {
+    parts.iter().filter(|(p, _)| *p == part).cloned().collect()
+}
+
+#[test]
+fn a_ramp_is_open_underneath_unless_the_options_close_it() {
+    let open = tagged_meshes(&ramp_with(RampOptions::default()));
+    let (lo, hi) = bounds(&only(&open, StairPart::Ramp));
+    assert!(
+        close(lo[1], -3.5),
+        "slab hangs 3.5 under the low end: {}",
+        lo[1]
+    );
+    assert!(close(hi[1], 30.0), "{}", hi[1]);
+    assert_eq!(count(&open, StairPart::Tread), 0);
+
+    let closed = tagged_meshes(&ramp_with(RampOptions {
+        open_underneath: false,
+        max_thickness: 40.0,
+        ..RampOptions::default()
+    }));
+    let (lo, hi) = bounds(&only(&closed, StairPart::Ramp));
+    assert!(lo[1] >= -1e-6, "closed ramp stops at the floor: {}", lo[1]);
+    assert!(close(hi[1], 30.0), "{}", hi[1]);
+    assert_eq!(count(&closed, StairPart::Ramp), 1);
+}
+
+#[test]
+fn the_max_thickness_caps_how_deep_a_closed_ramp_gets() {
+    let mesh_volume_points = |o: RampOptions| {
+        let parts = only(&tagged_meshes(&ramp_with(o)), StairPart::Ramp);
+        parts[0].1.vertices.len()
+    };
+    let tall = RampOptions {
+        open_underneath: false,
+        max_thickness: 10.0,
+        ..RampOptions::default()
+    };
+    // The cap meets the floor part way along, so the underside bends.
+    let capped = mesh_volume_points(tall);
+    let uncapped = mesh_volume_points(RampOptions {
+        max_thickness: 100.0,
+        ..tall
+    });
+    assert!(capped > uncapped, "{capped} vs {uncapped}");
+    assert!(
+        RampOptions {
+            max_thickness: 1.0,
+            ..tall
+        }
+        .depth_cap(3.5)
+            >= 3.5
+    );
+}
+
+#[test]
+fn a_tread_surface_lies_on_the_ramp_and_overhangs_its_edges() {
+    let plain = tagged_meshes(&ramp_with(RampOptions::default()));
+    let with = tagged_meshes(&ramp_with(RampOptions {
+        has_surface: true,
+        surface_overhang: 4.0,
+        surface_thickness: 1.5,
+        ..RampOptions::default()
+    }));
+    assert_eq!(count(&with, StairPart::Tread), 1);
+    let surface = only(&with, StairPart::Tread);
+    let (lo, hi) = bounds(&surface);
+    assert!(close(lo[0], 100.0 - 4.0), "{}", lo[0]);
+    assert!(close(hi[0], 100.0 + 360.0 + 4.0), "{}", hi[0]);
+    // The walking height is unchanged: the slab gives way to the plate.
+    let (_, slab_hi) = bounds(&only(&with, StairPart::Ramp));
+    let (_, plain_hi) = bounds(&only(&plain, StairPart::Ramp));
+    assert!(close(slab_hi[1], plain_hi[1] - 1.5), "{}", slab_hi[1]);
+    assert!(hi[1] >= 30.0 - 1e-6 && hi[1] <= 30.0 + 0.5, "{}", hi[1]);
+    // Wider than the ramp by the overhang on both sides.
+    let (zlo, zhi) = (lo[2], hi[2]);
+    assert!(close(zhi - zlo, 36.0 + 8.0), "{}", zhi - zlo);
+}
+
+#[test]
+fn a_curved_ramp_takes_the_same_options() {
+    let o = RampOptions {
+        open_underneath: false,
+        has_surface: true,
+        surface_overhang: 2.0,
+        ..RampOptions::default()
+    };
+    let st = Stair {
+        params: StairParams {
+            ramp: o,
+            ..curved_ramp(24.0, Turn::Left).params
+        },
+        ..curved_ramp(24.0, Turn::Left)
+    };
+    let parts = tagged_meshes(&st);
+    assert!(count(&parts, StairPart::Tread) > 0);
+    let (lo, _) = bounds(&only(&parts, StairPart::Ramp));
+    let (open_lo, _) = bounds(&only(
+        &tagged_meshes(&curved_ramp(24.0, Turn::Left)),
+        StairPart::Ramp,
+    ));
+    assert!(lo[1] > open_lo[1] + 2.0, "{} vs {}", lo[1], open_lo[1]);
+}
+
+#[test]
+fn a_stair_saved_before_the_ramp_options_loads_with_the_old_look() {
+    let st = ramp_with(RampOptions {
+        has_surface: true,
+        open_underneath: false,
+        ..RampOptions::default()
+    });
+    let mut json: serde_json::Value = serde_json::to_value(&st.params).unwrap();
+    json.as_object_mut().unwrap().remove("ramp");
+    let back: StairParams = serde_json::from_value(json).unwrap();
+    assert_eq!(back.ramp, RampOptions::default());
+    let round: StairParams =
+        serde_json::from_value(serde_json::to_value(&st.params).unwrap()).unwrap();
+    assert_eq!(round.ramp, st.params.ramp);
+}
+
+#[test]
+fn arc_centers_and_ends_mark_a_curved_section_only_when_asked() {
+    let curved = |on: bool| {
+        stair(StairParams {
+            shape: StairShape::Curved { inner_radius: 30.0 },
+            plan: PlanOptions {
+                show_arc_centers: on,
+                ..PlanOptions::default()
+            },
+            ..params(100.0)
+        })
+    };
+    let (off, on) = (
+        plan_symbol(&curved(false), None),
+        plan_symbol(&curved(true), None),
+    );
+    // A two-line cross and a line out to each end of the walking line.
+    assert_eq!(on.len(), off.len() + 4);
+    let centre = on.iter().filter_map(|s| match s {
+        Stroke::Line(a, b) if (a.x - b.x).abs() < 1e-9 || (a.y - b.y).abs() < 1e-9 => Some(()),
+        _ => None,
+    });
+    assert!(centre.count() >= 2);
+    // A curved ramp takes the marks too; a straight stair has no arc.
+    let ramp = |on: bool| {
+        stair(StairParams {
+            shape: StairShape::Ramp { slope_1_in: 12.0 },
+            ramp_curve: Some(60.0),
+            plan: PlanOptions {
+                show_arc_centers: on,
+                ..PlanOptions::default()
+            },
+            ..params(24.0)
+        })
+    };
+    assert_eq!(
+        plan_symbol(&ramp(true), None).len(),
+        plan_symbol(&ramp(false), None).len() + 4
+    );
+    let straight = |on: bool| {
+        stair(StairParams {
+            plan: PlanOptions {
+                show_arc_centers: on,
+                ..PlanOptions::default()
+            },
+            ..params(100.0)
+        })
+    };
+    assert_eq!(
+        plan_symbol(&straight(true), None).len(),
+        plan_symbol(&straight(false), None).len()
+    );
+}
+
+#[test]
+fn a_closed_ramp_with_a_surface_never_dips_below_the_floor_except_the_plate_tip() {
+    let parts = tagged_meshes(&ramp_with(RampOptions {
+        open_underneath: false,
+        has_surface: true,
+        surface_thickness: 1.5,
+        max_thickness: 40.0,
+        ..RampOptions::default()
+    }));
+    let (lo, hi) = bounds(&only(&parts, StairPart::Ramp));
+    assert!(lo[1] >= -1e-6, "the slab stops at the floor: {}", lo[1]);
+    // The slab's top sits one surface thickness under the walking height.
+    assert!(close(hi[1], 28.5), "{}", hi[1]);
+}

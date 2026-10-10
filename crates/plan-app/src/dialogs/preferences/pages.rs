@@ -525,6 +525,10 @@ pub struct ArchitecturalPrefs {
     pub seed_code_defaults: bool,
     /// Plan Check re-runs the rule groups an edit touched and shows the count.
     pub check_while_drawing: bool,
+    /// Residential-template behaviour (RF-164): the moment exterior walls
+    /// close, a roof is built (Build Roof with the Roof Defaults). Off, as
+    /// in Daniel's template, the roof waits for Build Roof.
+    pub build_roof_when_room_closes: bool,
 }
 
 impl Default for ArchitecturalPrefs {
@@ -537,6 +541,7 @@ impl Default for ArchitecturalPrefs {
             delete_unused_roof_planes: false,
             seed_code_defaults: true,
             check_while_drawing: true,
+            build_roof_when_room_closes: false,
         }
     }
 }
@@ -551,6 +556,9 @@ pub struct CadPrefs {
     pub end_caps: EndCap,
     /// Setting name to weight; Daniel's X18 values at first.
     pub line_weights: BTreeMap<String, u32>,
+    /// The Arc Creation Mode last used (`ArcMode::command`); empty is the
+    /// first mode. Chief remembers it between sessions (CAD-7).
+    pub arc_mode: String,
 }
 
 impl Default for CadPrefs {
@@ -559,6 +567,7 @@ impl Default for CadPrefs {
             show_arc_centers: true,
             end_caps: EndCap::Flat,
             line_weights: plan_config::daniel_x18().line_weights.into_iter().collect(),
+            arc_mode: String::new(),
         }
     }
 }

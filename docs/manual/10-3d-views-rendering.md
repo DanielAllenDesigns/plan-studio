@@ -494,3 +494,41 @@ Lights are used by the **ray tracer** (Ray Trace... and the recorded walkthrough
 **Undo Zoom.** 3D > Undo Zoom steps back to the camera before the last zoom, pan, orbit or move (50 steps). Opening another view clears the steps; "Nothing to undo in the 3D view" says there are none. View > Undo Zoom still undoes the plan's zoom.
 
 **Refresh** redraws the 3D view and a vector elevation from the plan; **Rebuild 3D** throws the scene away and builds it again.
+
+## 10.15 Scene clipping, annotations and navigation steps of section cameras
+
+Open a section or elevation camera's specification (double-click its symbol in the plan, or Edit Camera) and look at the Camera tab.
+
+**Scene Clipping** (under Clipping). Poche switches the dark fill of cut walls on or off. Clip Sides keeps the view as wide as the cutting line; unchecked, the whole width of the model is drawn. Clip Elevation keeps only the heights between a Bottom and a Top elevation. Clip to Room (on for a new Wall Elevation) fits the view to the room the camera stands in, with Ignore Railings and Invisible Walls and Ignore Walls Above. Framing Back Clip is stored with its distance; it is not yet applied to framing in the drawing.
+
+**Stepped cutting plane.** Add Break splits the cutting line in two at the middle of its widest piece. Each piece has an Offset: how far ahead of the base line it cuts. Piece by piece, the drawing shows what each piece of the plane cuts, and nothing is drawn to join the pieces at a step. Make Parallel and Make Perpendicular square up the first break; Remove Break joins the pieces again.
+
+**Annotations saved with the view.** Text, notes, leader lines, dimensions and CAD drawn on a section belong to the view, not to a floor. They come back when the view is opened again, and they are in the drawing when it is sent to layout or exported to DXF.
+
+**Navigation.** Incremental Move Distance (24 in to begin with) and Incremental Rotate Angle (15 degrees) belong to each camera. The 3D menu commands Move Camera, Orbit Camera and Tilt Camera take those steps for the view you are in; a tilt step is a third of the rotate angle.
+
+New cameras start at 60 in eye height and a 55 degree field of view, with shadows on in Full Camera views.
+
+## 10.16 The Camera Specification panels, Depth Cue and the Cross Section Slider
+
+The Camera Specification has Chief's eight panels: **Camera**, **Positioning**, **Below Grade**, **Selected Defaults**, **Plan Display**, **Backdrop**, **Layer** and **Label**.
+
+**Camera** holds, in order, General (Name, Show Color, Show Watermark), Clipping and Scene Clipping, Depth Cue (a section or elevation), Floors Displayed, Rendering (technique, quality, shadows, Ray Casted Sun Shadows, Reflections, Animate Water, Light Bloom, Ambient Occlusion), Upscaling (Sharpening, Super Resolution), Depth of Field (Enabled, F-Stop, Focus Distance), Lighting (Use Sunlight, Automatic with a Maximum Number or a Light Set) and Options (Field of View, Clip Surfaces Within, Hide Camera-Facing Exterior Walls). A cross section or elevation shows the shorter list of the manual's Cross Section/Elevation panel. Ambient Occlusion, Use Sunlight, Clip Surfaces Within, Maximum Number, Show Color, Show Watermark and Hide Camera-Facing Exterior Walls change the view at once; Depth of Field sets the lens of the Ray Trace window; Reflections, Animate Water, Light Bloom, Sharpening and Super Resolution are kept with the camera and no renderer reads them yet.
+
+**Positioning** has the camera's X and Y, its angle, height and tilt (a section: centre, direction and length) and the Navigation group, whose Incremental Move Distance and Incremental Rotate Angle drive every step of that camera.
+
+**Below Grade** restyles the lines of a Vector View that lie under the terrain at the camera or under a height: a colour, a line style (any style but Solid draws dashed) and a weight in points.
+
+**Selected Defaults** is the Active Defaults panel for the view: the Default Set, the saved default of each annotation kind and the layers. A view that chooses what the plan already uses keeps following the plan.
+
+**Plan Display** controls the symbol in the plan: Display on All Floors, Display as Callout with Placement (Center, Left Side, Right Side, Both Sides, Custom), Callout Label, Text Below Line, Callout Size, the arrow, the Cross Section Line style and weight, the symbol size and the field of view indicators. **Layer** picks the layer of the symbol (the symbol hides with that layer) and a Drawing Group number.
+
+**Depth Cue** (a section or elevation) fogs what is far from the camera. Keep Start/End in Sync makes the two distances one, a sharp border; otherwise the fog grows from Start to End. A line drawing shows the fog as lighter line weights; text, dimensions and CAD are not changed.
+
+**Cross Section Lines and Point Markers.** A section draws thin lines where its plane cuts a wall (a line on each face, the top and the bottom) while the locked "Cross Section Lines" layer is on; they are not sent to layout. A dimension that meets one of them is attached to it through a Point Marker, so it follows the wall when the view is drawn again.
+
+**Stepped planes in the plan.** A selected section with breaks shows a diamond at each break (drag along the line to move the step) and a handle on each piece (drag square to the line to step it back). The "CAD, Clip Lines" layer, off to begin with, shows the side clip lines of a clipped section.
+
+**Cross Section Slider.** In a camera view or overview, 3D > Camera View Options > Cross Section Slider opens a dialog with six cutting planes (Left, Right, Front, Back, Top, Bottom). Check a plane and move its Position, measured from the edge of the model it reaches first; keep working in the view; Done saves the planes with the camera.
+
+**Overviews.** A saved overview has a symbol in the plan at its eye, looking toward its target; select it to move, aim, stretch or copy the view. 3D > Create Orthographic View opens the Full, Floor and Framing Overviews in parallel projection and the four Isometric Views (SW, SE, NE, NW; 45 degrees round, 30 degrees down). 3D > Create Auto Elevations has Front, Back, Left and Right Elevation for one side at a time.

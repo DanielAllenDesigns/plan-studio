@@ -9,10 +9,13 @@ use serde::{Deserialize, Serialize};
 
 /// Length of the view cone drawn in plan when no clip distance is set, inches.
 pub const DEFAULT_CONE_LENGTH: f64 = 240.0;
-/// Default eye height above the floor, inches (C-5).
-pub const DEFAULT_EYE_HEIGHT: f64 = 66.0;
+/// Default eye height above the floor, inches: 60 in per the manual (C-5,
+/// DECISIONS CS1).
+pub const DEFAULT_EYE_HEIGHT: f64 = 60.0;
 /// Default horizontal angle of view, degrees (C-7).
-pub const DEFAULT_FOV_DEG: f64 = 60.0;
+pub const DEFAULT_FOV_DEG: f64 = 55.0;
+/// Eye height of a new walkthrough node, inches; DECISIONS CS1 leaves it.
+pub const DEFAULT_WALK_HEIGHT: f64 = 66.0;
 /// Size of the camera triangle in plan, inches.
 const GLYPH_LENGTH: f64 = 18.0;
 const GLYPH_HALF_WIDTH: f64 = 7.0;
@@ -73,7 +76,7 @@ pub struct WalkNode {
 impl Default for WalkNode {
     fn default() -> Self {
         Self {
-            height: DEFAULT_EYE_HEIGHT,
+            height: DEFAULT_WALK_HEIGHT,
             look_deg: None,
             tilt_deg: 0.0,
             hold_s: 0.0,
@@ -224,7 +227,10 @@ impl CameraObject {
             walk_speed: DEFAULT_WALK_SPEED,
             vector: VectorOptions::default(),
             callout: CalloutOptions::default(),
-            view: crate::camera_view::CameraView::default(),
+            view: crate::camera_view::CameraView {
+                clip: crate::camera_view::SectionClip::for_kind(kind),
+                ..crate::camera_view::CameraView::default()
+            },
         }
     }
 
@@ -419,13 +425,12 @@ impl CameraObject {
     pub fn triangle_points(&self) -> [Point; 3] {
         let d = self.direction();
         let n = d.perp();
-        let tip = self.position + d * (GLYPH_LENGTH * 0.5);
-        let back = self.position - d * (GLYPH_LENGTH * 0.5);
-        [
-            tip,
-            back + n * GLYPH_HALF_WIDTH,
-            back - n * GLYPH_HALF_WIDTH,
-        ]
+        // Plan Display's Camera Symbol Size is the glyph's length.
+        let len = self.view.plan.symbol_size.map_or(GLYPH_LENGTH, |s| s.max(1.0));
+        let half_width = GLYPH_HALF_WIDTH * len / GLYPH_LENGTH;
+        let tip = self.position + d * (len * 0.5);
+        let back = self.position - d * (len * 0.5);
+        [tip, back + n * half_width, back - n * half_width]
     }
 
     /// The view cone: `[apex, left far corner, right far corner]`, with the
@@ -437,6 +442,28 @@ impl CameraObject {
         let base = self.direction_deg.to_radians();
         let edge = |a: f64| self.position + Point::new(a.cos(), a.sin()) * (len / half.cos());
         [self.position, edge(base + half), edge(base - half)]
+    }
+
+    /// The eye and target an overview restores (C-14). With a plan symbol
+    /// (`ViewPose::symbol`) the symbol's position and line of sight place them
+    /// in plan: the eye is the camera, the target the end of its line of
+    /// sight; the pose keeps the heights.
+    pub fn overview_pose(&self) -> Option<crate::camera_view::ViewPose> {
+        let p = self.view.pose?;
+        if !p.symbol {
+            return Some(p);
+        }
+        let d = self.direction();
+        let len = self.clip_distance.unwrap_or(DEFAULT_CONE_LENGTH);
+        Some(crate::camera_view::ViewPose {
+            eye: [self.position.x, p.eye[1], -self.position.y],
+            target: [
+                self.position.x + d.x * len,
+                p.target[1],
+                -(self.position.y + d.y * len),
+            ],
+            symbol: true,
+        })
     }
 
     /// The plan symbol (C-24): the three triangle points followed by the three
@@ -481,9 +508,12 @@ impl Project {
         self.cameras.iter().find(|c| c.id == id)
     }
 
-    /// Cameras placed on `floor`.
+    /// Cameras shown on `floor`: those placed on it and those whose Plan
+    /// Display says Display on All Floors (manual pp. 1191, 1198).
     pub fn cameras_on(&self, floor: usize) -> impl Iterator<Item = &CameraObject> {
-        self.cameras.iter().filter(move |c| c.floor == floor)
+        self.cameras
+            .iter()
+            .filter(move |c| c.view.plan.shows_on(c.floor, floor))
     }
 }
 
@@ -515,6 +545,16 @@ impl CameraKind {
                 | CameraKind::GlassHouse
                 | CameraKind::FramingOverview
         )
+    }
+}
+
+/// The back clip of a section-like camera: a cross section keeps its own, an
+/// elevation the one stored on its cut line; `None` means unlimited.
+pub fn back_clip_of(c: &CameraObject) -> Option<f64> {
+    match (&c.section, c.kind) {
+        (Some(s), _) => s.back_clip,
+        (None, CameraKind::CrossSection { back_clip }) => back_clip,
+        _ => None,
     }
 }
 

@@ -378,8 +378,11 @@ fn store_polyline(cx: &mut EditorContext, id: Id, l: &Logical) {
             closed: l.closed,
         };
     }
+    let edges = l.edge_count();
     cx.project.edit_cad_attrs(fl, id, |a: &mut CadAttrs| {
         a.arc_edges = arcs;
+        // Edges that no longer exist cannot stay hidden.
+        a.hidden_edges.retain(|e| *e < edges);
     });
 }
 
@@ -660,6 +663,369 @@ impl CadTool {
         }
         Self::arc_done(cx, label)
     }
+}
+
+// ----- Disconnect Edges and Hide / Show Edge (CAD-117) -----
+
+/// One part of a polyline after an edge was disconnected.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Piece {
+    /// A single edge: a line or an arc object.
+    Edge(CadItem),
+    /// Two or more edges that stay one polyline.
+    Chain(Logical),
+}
+
+/// The object an edge becomes on its own: a line, or an arc object.
+pub fn edge_item(l: &Logical, i: usize) -> CadItem {
+    let n = l.pts.len();
+    let (a, b) = (l.pts[i], l.pts[(i + 1) % n]);
+    if let Some(bu) = l.bulge[i] {
+        if let Some((center, radius)) = arc_center(a, b, bu) {
+            let (sa, ea) = (a.sub(center).angle(), b.sub(center).angle());
+            let (start_angle, end_angle) = if bu > 0.0 { (sa, ea) } else { (ea, sa) };
+            return CadItem::Arc {
+                center,
+                radius,
+                start_angle,
+                end_angle,
+            };
+        }
+    }
+    CadItem::Line { a, b }
+}
+
+/// `count` edges of `l` from edge `first` on (wrapping on a closed
+/// polyline) as one piece.
+fn chain(l: &Logical, first: usize, count: usize) -> Piece {
+    let n = l.pts.len();
+    if count == 1 {
+        return Piece::Edge(edge_item(l, first));
+    }
+    let mut pts = Vec::with_capacity(count + 1);
+    let mut bulge = Vec::with_capacity(count + 1);
+    for j in 0..count {
+        pts.push(l.pts[(first + j) % n]);
+        bulge.push(l.bulge[(first + j) % n]);
+    }
+    pts.push(l.pts[(first + count) % n]);
+    bulge.push(None);
+    Piece::Chain(Logical {
+        pts,
+        bulge,
+        closed: false,
+    })
+}
+
+/// The polyline `l` with edge `e` disconnected: the edge itself first, then
+/// what is left of the polyline, in order (nothing if there is nothing
+/// else, so a lone line cannot be disconnected).
+pub fn disconnect_pieces(l: &Logical, e: usize) -> Option<Vec<Piece>> {
+    let (n, edges) = (l.pts.len(), l.edge_count());
+    if e >= edges || edges < 2 {
+        return None;
+    }
+    let mut out = vec![Piece::Edge(edge_item(l, e))];
+    if l.closed {
+        out.push(chain(l, (e + 1) % n, n - 1));
+    } else {
+        if e >= 1 {
+            out.push(chain(l, 0, e));
+        }
+        let after = edges - 1 - e;
+        if after >= 1 {
+            out.push(chain(l, e + 1, after));
+        }
+    }
+    Some(out)
+}
+
+impl CadTool {
+    /// Disconnect Edges (CAD-117): the clicked edge of a polyline becomes an
+    /// object of its own; the rest stays together.
+    pub(super) fn disconnect_click(
+        &mut self,
+        cx: &mut EditorContext,
+        p: &PointerEvent,
+    ) -> ToolResult {
+        let label = "Disconnect Edges";
+        let Some(obj) = self.arc_target(cx, p) else {
+            cx.status = format!("{label}: click an edge of a polyline");
+            return ToolResult::consumed();
+        };
+        let Some(l) = logical_of(cx, obj.id) else {
+            cx.status = format!("{label}: click an edge of a polyline");
+            return ToolResult::consumed();
+        };
+        let Some((e, _)) = l
+            .nearest_edge(p.world)
+            .filter(|(_, d)| *d <= cx.pick_tol() * 3.0)
+        else {
+            cx.status = format!("{label}: click closer to an edge");
+            return ToolResult::consumed();
+        };
+        let Some(pieces) = disconnect_pieces(&l, e) else {
+            cx.status = format!("{label}: a single edge has nothing to disconnect from");
+            return ToolResult::consumed();
+        };
+        if !cx.check_unlocked(ObjectRef::Cad(obj.id)) {
+            return ToolResult::consumed();
+        }
+        cx.begin_change(label);
+        let fl = cx.floor;
+        let look = cx.floor().cad_attrs(obj.id).unwrap_or_default();
+        let mut edge_id = obj.id;
+        for (k, piece) in pieces.into_iter().enumerate() {
+            // The first piece (the edge) keeps the object's identity.
+            let (item, arcs) = match piece {
+                Piece::Edge(item) => (item, Vec::new()),
+                Piece::Chain(c) => {
+                    let (points, arcs) = c.rebuild();
+                    (
+                        CadItem::Polyline {
+                            points,
+                            closed: false,
+                        },
+                        arcs,
+                    )
+                }
+            };
+            let id = if k == 0 {
+                if let Some(slot) = cx.project.floors[fl]
+                    .cad
+                    .iter_mut()
+                    .find(|c| c.id == obj.id)
+                {
+                    slot.item = item;
+                }
+                obj.id
+            } else {
+                cx.project.add_cad(fl, &obj.layer, item)
+            };
+            let mut a = look.clone();
+            a.target = id;
+            a.arc_edges = arcs;
+            a.hidden_edges.clear();
+            cx.project.set_cad_attrs(fl, a);
+            if k == 0 {
+                edge_id = id;
+            }
+        }
+        cx.selection.set(ObjectRef::Cad(edge_id));
+        Self::arc_done(cx, label)
+    }
+
+    /// Hide / Show Selected Edge (CAD-117): the clicked edge of a polyline
+    /// stops drawing, or draws again.
+    pub(super) fn edge_visibility_click(
+        &mut self,
+        cx: &mut EditorContext,
+        p: &PointerEvent,
+    ) -> ToolResult {
+        let label = "Hide/Show Edge";
+        let Some(obj) = self.arc_target(cx, p) else {
+            cx.status = format!("{label}: click an edge of a polyline");
+            return ToolResult::consumed();
+        };
+        let Some(l) = logical_of(cx, obj.id) else {
+            cx.status = format!("{label}: click an edge of a polyline");
+            return ToolResult::consumed();
+        };
+        let Some((e, _)) = l
+            .nearest_edge(p.world)
+            .filter(|(_, d)| *d <= cx.pick_tol() * 3.0)
+        else {
+            cx.status = format!("{label}: click closer to an edge");
+            return ToolResult::consumed();
+        };
+        if !cx.check_unlocked(ObjectRef::Cad(obj.id)) {
+            return ToolResult::consumed();
+        }
+        cx.begin_change(label);
+        let fl = cx.floor;
+        let mut now_hidden = false;
+        cx.project.edit_cad_attrs(fl, obj.id, |a: &mut CadAttrs| {
+            if let Some(i) = a.hidden_edges.iter().position(|h| *h == e) {
+                a.hidden_edges.remove(i);
+            } else {
+                a.hidden_edges.push(e);
+                a.hidden_edges.sort_unstable();
+                now_hidden = true;
+            }
+        });
+        let result = Self::arc_done(cx, label);
+        cx.status = if now_hidden {
+            "Edge hidden; click it again to show it".into()
+        } else {
+            "Edge shown".into()
+        };
+        result
+    }
+}
+
+// ----- Input Arc (CAD-8, Round 16 brief 06) -----
+
+/// Which side of its direction of travel an Input Arc curves to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Curve {
+    /// Counter-clockwise: the center is to the left of the direction.
+    Left,
+    /// Clockwise: the center is to the right.
+    Right,
+}
+
+/// How far an Input Arc runs from its start.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Extent {
+    /// The arc angle, in degrees (above 0, up to 360).
+    Angle(f64),
+    /// The length measured along the arc (inches).
+    ArcLength(f64),
+    /// The straight distance from start to end (inches); the shorter arc
+    /// (up to a half circle) has that chord.
+    ChordLength(f64),
+}
+
+/// The arc an Input Arc dialog describes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InputArc {
+    /// The arc object (stored counter-clockwise, whichever way it curves).
+    pub item: CadItem,
+    pub start: Point,
+    pub end: Point,
+    /// The direction of travel at the end, degrees counter-clockwise from
+    /// east: where a following arc or line continues.
+    pub end_dir: f64,
+    /// The arc angle in degrees.
+    pub sweep: f64,
+}
+
+/// Builds the arc that leaves `start` heading `dir_deg` (degrees
+/// counter-clockwise from east), curves to `curve` with `radius` and runs
+/// for `extent`.
+pub fn input_arc(
+    start: Point,
+    dir_deg: f64,
+    radius: f64,
+    curve: Curve,
+    extent: Extent,
+) -> Result<InputArc, &'static str> {
+    use std::f64::consts::TAU;
+    if !(radius > 1e-6) {
+        return Err("The radius needs a distance above zero");
+    }
+    let sweep = match extent {
+        Extent::Angle(deg) => deg.to_radians(),
+        Extent::ArcLength(len) => len / radius,
+        Extent::ChordLength(chord) => {
+            if !(chord > 1e-9) {
+                return Err("The chord length needs a distance above zero");
+            }
+            if chord > 2.0 * radius + 1e-9 {
+                return Err("The chord is longer than the diameter");
+            }
+            2.0 * (chord / (2.0 * radius)).min(1.0).asin()
+        }
+    };
+    if !(sweep > 1e-9) {
+        return Err("The arc needs a length or angle above zero");
+    }
+    if sweep > TAU + 1e-9 {
+        return Err("The arc runs more than a full circle");
+    }
+    let sweep = sweep.min(TAU);
+    let dir = dir_deg.to_radians();
+    let heading = Point::new(dir.cos(), dir.sin());
+    let (center, a_start, a_end, end_dir) = match curve {
+        Curve::Left => {
+            let center = start.add(heading.perp().scale(radius));
+            let a0 = dir - std::f64::consts::FRAC_PI_2;
+            (center, a0, a0 + sweep, dir + sweep)
+        }
+        Curve::Right => {
+            let center = start.sub(heading.perp().scale(radius));
+            let a0 = dir + std::f64::consts::FRAC_PI_2;
+            (center, a0, a0 - sweep, dir - sweep)
+        }
+    };
+    let at = |a: f64| center.add(Point::new(a.cos(), a.sin()).scale(radius));
+    let end = at(a_end);
+    // The object turns counter-clockwise from its start angle to its end
+    // angle, so a right-curving arc is stored from its end back to its start.
+    let (start_angle, end_angle) = match curve {
+        Curve::Left => (a_start, a_end),
+        Curve::Right => (a_end, a_start),
+    };
+    Ok(InputArc {
+        item: CadItem::Arc {
+            center,
+            radius,
+            start_angle: start_angle.rem_euclid(TAU),
+            end_angle: end_angle.rem_euclid(TAU),
+        },
+        start,
+        end,
+        end_dir: end_dir.to_degrees().rem_euclid(360.0),
+        sweep: sweep.to_degrees(),
+    })
+}
+
+/// Like [`input_arc`], but the direction is that of the arc's chord (the
+/// straight line from the start to the end) rather than the tangent at the
+/// start (New CAD Arc: Chord Direction).
+pub fn input_arc_chord(
+    start: Point,
+    chord_dir_deg: f64,
+    radius: f64,
+    curve: Curve,
+    extent: Extent,
+) -> Result<InputArc, &'static str> {
+    let probe = input_arc(start, chord_dir_deg, radius, curve, extent)?;
+    // The chord lies half the arc angle off the tangent, toward the center.
+    let half = probe.sweep / 2.0;
+    let tangent = match curve {
+        Curve::Left => chord_dir_deg - half,
+        Curve::Right => chord_dir_deg + half,
+    };
+    input_arc(start, tangent, radius, curve, extent)
+}
+
+/// Free Form arc: the arc through the ends of a dragged path and the point
+/// of the path farthest from the chord (Free Form mode, CAD-7).
+pub fn free_form_arc(path: &[Point]) -> Option<CadItem> {
+    let (a, b) = (*path.first()?, *path.last()?);
+    let chord = b.sub(a);
+    if chord.length() < 1e-6 {
+        return None;
+    }
+    let n = chord.normalized().perp();
+    let m = path
+        .iter()
+        .copied()
+        .max_by(|p, q| n.dot(p.sub(a)).abs().total_cmp(&n.dot(q.sub(a)).abs()))?;
+    arc_three_point(a, m, b)
+}
+
+/// Arc About Center: the arc about `center` from `start` to the angle of
+/// `end`, taking the shorter way round (Arc About Center mode, CAD-7).
+pub fn arc_about_center(center: Point, start: Point, end: Point) -> Option<CadItem> {
+    let radius = center.dist(start);
+    if radius < 1e-6 || center.dist(end) < 1e-6 {
+        return None;
+    }
+    let (a0, a1) = (start.sub(center).angle(), end.sub(center).angle());
+    let ccw = (a1 - a0).rem_euclid(std::f64::consts::TAU);
+    let (start_angle, end_angle) = if ccw <= std::f64::consts::PI {
+        (a0, a1)
+    } else {
+        (a1, a0)
+    };
+    Some(CadItem::Arc {
+        center,
+        radius,
+        start_angle,
+        end_angle,
+    })
 }
 
 #[cfg(test)]
@@ -1035,5 +1401,221 @@ mod tests {
         assert!(start.dist(p(100.0, 0.0)) < 1e-6);
         let tangent = p(-start_angle.sin(), start_angle.cos());
         assert!(tangent.dot(p(1.0, 1.0).normalized()) > 0.999);
+    }
+
+    #[test]
+    fn input_arc_left_and_right_quarter_circles() {
+        // Heading east, curving left (up) a quarter circle of radius 100.
+        let l = input_arc(p(0.0, 0.0), 0.0, 100.0, Curve::Left, Extent::Angle(90.0)).unwrap();
+        assert!(near(l.end, p(100.0, 100.0)), "{:?}", l.end);
+        assert!((l.end_dir - 90.0).abs() < 1e-9 && (l.sweep - 90.0).abs() < 1e-9);
+        let CadItem::Arc { center, radius, .. } = l.item else {
+            panic!()
+        };
+        assert!(near(center, p(0.0, 100.0)) && (radius - 100.0).abs() < 1e-9);
+        // Curving right (down).
+        let r = input_arc(p(0.0, 0.0), 0.0, 100.0, Curve::Right, Extent::Angle(90.0)).unwrap();
+        assert!(near(r.end, p(100.0, -100.0)), "{:?}", r.end);
+        assert!((r.end_dir - 270.0).abs() < 1e-9);
+        // Stored counter-clockwise: the same points are on the object.
+        let CadItem::Arc {
+            center,
+            radius,
+            start_angle,
+            end_angle,
+        } = r.item
+        else {
+            panic!()
+        };
+        let sweep = (end_angle - start_angle).rem_euclid(std::f64::consts::TAU);
+        assert!((sweep - std::f64::consts::FRAC_PI_2).abs() < 1e-9);
+        let first = center.add(Point::new(start_angle.cos(), start_angle.sin()).scale(radius));
+        assert!(near(first, r.end), "stored from the end back to the start");
+    }
+
+    #[test]
+    fn input_arc_by_chord_direction_ends_on_the_chord() {
+        for curve in [Curve::Left, Curve::Right] {
+            let a = input_arc_chord(p(0.0, 0.0), 30.0, 100.0, curve, Extent::Angle(70.0)).unwrap();
+            let chord = a.end.sub(a.start).angle().to_degrees();
+            assert!((chord - 30.0).abs() < 1e-6, "{curve:?} {chord}");
+            assert!((a.sweep - 70.0).abs() < 1e-9);
+        }
+    }
+
+    #[test]
+    fn input_arc_extents_agree() {
+        let by_angle = input_arc(p(5.0, 5.0), 30.0, 120.0, Curve::Left, Extent::Angle(60.0)).unwrap();
+        let len = 120.0 * 60f64.to_radians();
+        let by_len = input_arc(p(5.0, 5.0), 30.0, 120.0, Curve::Left, Extent::ArcLength(len)).unwrap();
+        let by_chord = input_arc(p(5.0, 5.0), 30.0, 120.0, Curve::Left, Extent::ChordLength(120.0)).unwrap();
+        // A 60 degree arc has a chord equal to its radius.
+        assert!(near(by_angle.end, by_len.end) && near(by_angle.end, by_chord.end));
+        assert!((by_chord.sweep - 60.0).abs() < 1e-9);
+        assert!(by_angle.start.dist(by_angle.end) - 120.0 < 1e-9);
+    }
+
+    #[test]
+    fn input_arc_refuses_impossible_input() {
+        let go = |r, e| input_arc(p(0.0, 0.0), 0.0, r, Curve::Left, e);
+        assert!(go(0.0, Extent::Angle(10.0)).is_err());
+        assert!(go(10.0, Extent::ChordLength(21.0)).is_err());
+        assert!(go(10.0, Extent::Angle(0.0)).is_err());
+        assert!(go(10.0, Extent::Angle(400.0)).is_err());
+        assert!(go(10.0, Extent::ArcLength(-1.0)).is_err());
+        assert!(go(10.0, Extent::ChordLength(20.0)).is_ok());
+    }
+
+    #[test]
+    fn free_form_and_about_center_arcs() {
+        // A dragged path bulging up from (0,0) to (100,0).
+        let path = [p(0.0, 0.0), p(25.0, 30.0), p(50.0, 40.0), p(75.0, 30.0), p(100.0, 0.0)];
+        let CadItem::Arc { center, radius, .. } = free_form_arc(&path).unwrap() else {
+            panic!()
+        };
+        for q in [path[0], path[2], path[4]] {
+            assert!((q.dist(center) - radius).abs() < 1e-6);
+        }
+        assert!(free_form_arc(&[p(1.0, 1.0)]).is_none());
+        assert!(free_form_arc(&[p(1.0, 1.0), p(1.0, 1.0)]).is_none());
+        // About a center, the short way round whichever way it is dragged.
+        let ccw = arc_about_center(p(0.0, 0.0), p(10.0, 0.0), p(0.0, 10.0)).unwrap();
+        let cw = arc_about_center(p(0.0, 0.0), p(0.0, 10.0), p(10.0, 0.0)).unwrap();
+        assert_eq!(ccw, cw);
+        assert!(arc_about_center(p(0.0, 0.0), p(0.0, 0.0), p(1.0, 0.0)).is_none());
+    }
+
+    fn square() -> Logical {
+        Logical {
+            pts: vec![p(0.0, 0.0), p(100.0, 0.0), p(100.0, 100.0), p(0.0, 100.0)],
+            bulge: vec![None, Some(0.5), None, None],
+            closed: true,
+        }
+    }
+
+    #[test]
+    fn disconnecting_an_edge_of_a_closed_polyline_leaves_an_open_chain() {
+        let l = square();
+        let pieces = disconnect_pieces(&l, 2).unwrap();
+        assert_eq!(pieces.len(), 2);
+        assert_eq!(
+            pieces[0],
+            Piece::Edge(CadItem::Line {
+                a: p(100.0, 100.0),
+                b: p(0.0, 100.0)
+            })
+        );
+        let Piece::Chain(rest) = &pieces[1] else {
+            panic!()
+        };
+        // Starts where the removed edge ended and runs round to where it began.
+        assert_eq!(rest.pts, vec![p(0.0, 100.0), p(0.0, 0.0), p(100.0, 0.0), p(100.0, 100.0)]);
+        assert_eq!(rest.bulge, vec![None, None, Some(0.5), None]);
+        assert!(!rest.closed);
+        // The arc edge on its own is an arc object.
+        let arc = disconnect_pieces(&l, 1).unwrap();
+        assert!(matches!(arc[0], Piece::Edge(CadItem::Arc { .. })));
+    }
+
+    #[test]
+    fn disconnecting_in_an_open_polyline_splits_it_in_up_to_three() {
+        let open = Logical {
+            pts: vec![p(0.0, 0.0), p(10.0, 0.0), p(10.0, 10.0), p(0.0, 10.0), p(0.0, 20.0)],
+            bulge: vec![None; 5],
+            closed: false,
+        };
+        let mid = disconnect_pieces(&open, 1).unwrap();
+        assert_eq!(mid.len(), 3);
+        assert!(matches!(&mid[1], Piece::Edge(CadItem::Line { b, .. }) if *b == p(10.0, 0.0)));
+        assert!(matches!(&mid[2], Piece::Chain(c) if c.pts.len() == 3));
+        assert_eq!(disconnect_pieces(&open, 0).unwrap().len(), 2);
+        assert_eq!(disconnect_pieces(&open, 3).unwrap().len(), 2);
+        assert!(disconnect_pieces(&open, 4).is_none());
+        let lone = Logical {
+            pts: vec![p(0.0, 0.0), p(1.0, 0.0)],
+            bulge: vec![None, None],
+            closed: false,
+        };
+        assert!(disconnect_pieces(&lone, 0).is_none());
+    }
+
+    fn lshape(cx: &mut EditorContext) -> Id {
+        cx.project.add_cad(
+            0,
+            CAD_LAYER,
+            CadItem::Polyline {
+                points: vec![p(0.0, 0.0), p(100.0, 0.0), p(100.0, 100.0), p(0.0, 100.0)],
+                closed: true,
+            },
+        )
+    }
+
+    #[test]
+    fn disconnect_edges_makes_the_clicked_edge_its_own_object() {
+        let mut cx = new_cx();
+        cx.px_per_in = 2.0;
+        let id = lshape(&mut cx);
+        let mut t = tool(CadMode::DisconnectEdges);
+        let res = click(&mut t, &mut cx, 100.0, 50.0);
+        assert_eq!(res.commit.as_deref(), Some("Disconnect Edges"));
+        let cad = &cx.floor().cad;
+        assert_eq!(cad.len(), 2, "the edge and the rest");
+        let edge = cad.iter().find(|c| c.id == id).unwrap();
+        assert_eq!(
+            edge.item,
+            CadItem::Line {
+                a: p(100.0, 0.0),
+                b: p(100.0, 100.0)
+            }
+        );
+        let rest = cad.iter().find(|c| c.id != id).unwrap();
+        let CadItem::Polyline { points, closed } = &rest.item else {
+            panic!()
+        };
+        assert!(!closed);
+        assert_eq!(points, &vec![p(100.0, 100.0), p(0.0, 100.0), p(0.0, 0.0), p(100.0, 0.0)]);
+        // The edge is selected on its own; one undo puts the polyline back.
+        assert!(cx.selection.contains(ObjectRef::Cad(id)));
+        cx.undo();
+        assert_eq!(cx.floor().cad.len(), 1);
+        assert!(matches!(
+            cx.floor().cad[0].item,
+            CadItem::Polyline { closed: true, .. }
+        ));
+        // A lone line has nothing to disconnect from.
+        let mut cx = new_cx();
+        cx.px_per_in = 2.0;
+        cx.project.add_cad(
+            0,
+            CAD_LAYER,
+            CadItem::Line {
+                a: p(0.0, 0.0),
+                b: p(50.0, 0.0),
+            },
+        );
+        let res = click(&mut tool(CadMode::DisconnectEdges), &mut cx, 25.0, 0.0);
+        assert!(res.commit.is_none());
+    }
+
+    #[test]
+    fn hide_show_edge_toggles_one_edge_and_undoes() {
+        let mut cx = new_cx();
+        cx.px_per_in = 2.0;
+        let id = lshape(&mut cx);
+        let mut t = tool(CadMode::HideShowEdge);
+        click(&mut t, &mut cx, 50.0, 100.0);
+        assert_eq!(cx.floor().cad_attrs(id).unwrap().hidden_edges, vec![2]);
+        click(&mut t, &mut cx, 0.0, 50.0);
+        assert_eq!(cx.floor().cad_attrs(id).unwrap().hidden_edges, vec![2, 3]);
+        // The same edge again shows it.
+        click(&mut t, &mut cx, 50.0, 100.0);
+        assert_eq!(cx.floor().cad_attrs(id).unwrap().hidden_edges, vec![3]);
+        cx.undo();
+        assert_eq!(cx.floor().cad_attrs(id).unwrap().hidden_edges, vec![2, 3]);
+        // Deleting a vertex forgets a hidden edge that is gone.
+        let mut dt = tool(CadMode::DeleteBreak);
+        click(&mut dt, &mut cx, 0.0, 100.0);
+        let hidden = cx.floor().cad_attrs(id).map(|a| a.hidden_edges).unwrap_or_default();
+        assert!(hidden.iter().all(|e| *e < 3), "{hidden:?}");
     }
 }

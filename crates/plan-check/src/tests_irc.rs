@@ -368,6 +368,7 @@ fn separation(layers: Vec<WallLayer>, ext_side_right: bool, typed: bool) -> Vec<
     let (mut p, shared) = two_rooms("Garage", "Living Room");
     if typed {
         p.register_wall_type(WallTypeDef {
+            props: Default::default(),
             name: "Test-4".into(),
             layers,
             kind: WallKind::Interior,

@@ -1049,6 +1049,7 @@ mod tests {
     fn wall_r_values_come_from_the_wall_type_layers() {
         use plan_core::defaults::{WallLayer, WallTypeDef};
         let def = WallTypeDef {
+            props: Default::default(),
             name: "Insulated-6".into(),
             kind: WallKind::Exterior,
             layers: vec![
@@ -1060,6 +1061,7 @@ mod tests {
         assert_eq!(wall_r_values(Some(&def), 0.0), (19.25, 5.0));
         assert_eq!(wall_r_values(None, 13.0), (13.0, 0.0));
         let plain = WallTypeDef {
+            props: Default::default(),
             layers: vec![WallLayer::new("Framing", 5.5, true, "Fir Framing")],
             ..def
         };

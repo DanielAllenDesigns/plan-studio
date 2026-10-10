@@ -183,7 +183,7 @@ impl FoundationTool {
     }
 
     fn snapped(&self, cx: &EditorContext, p: &PointerEvent) -> Point {
-        cx.snap_at(p.world, self.points.last().copied(), p.modifiers.alt, &[])
+        cx.snap_at(p.world, self.points.last().copied(), p.overrides(), &[])
             .point
     }
 
@@ -386,7 +386,7 @@ impl Tool for FoundationTool {
         }
         if let Some(m) = &mut self.moving {
             if p.down {
-                let to = cx.snap_at(p.world, None, p.modifiers.alt, &[]).point;
+                let to = cx.snap_at(p.world, None, p.overrides(), &[]).point;
                 let d = to - m.start;
                 if d.length() > 1e-6 {
                     let mut layer = m.base.clone();
@@ -408,7 +408,7 @@ impl Tool for FoundationTool {
         if let (Some(a), true) = (self.press, p.down) {
             let slop = DRAG_PX / cx.px_per_in.max(1e-6);
             if self.rect.is_some() || p.world.dist(a) > slop {
-                let corner = cx.snap_at(p.world, None, p.modifiers.alt, &[]).point;
+                let corner = cx.snap_at(p.world, None, p.overrides(), &[]).point;
                 self.rect = Some((a, corner));
             }
         }
@@ -486,7 +486,7 @@ impl Tool for FoundationTool {
         }
         self.press = None;
         if let Some((a, _)) = self.rect.take() {
-            let corner = cx.snap_at(p.world, None, p.modifiers.alt, &[]).point;
+            let corner = cx.snap_at(p.world, None, p.overrides(), &[]).point;
             self.points.clear();
             return self.create(cx, rect_outline(a, corner));
         }

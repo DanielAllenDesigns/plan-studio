@@ -533,6 +533,14 @@ fn add_wall(
     let mut holes: Vec<_> = hosted.iter().map(|(_, h)| *h).collect();
     // A fireplace built into the wall takes its stretch of wall (CB-87).
     holes.extend(fireplace::wall_holes(floor, &drawn));
+    // A mulled unit with Single Wall Hole cuts one box around its components.
+    holes.extend(floor.single_hole_boxes(wall.id).into_iter().map(|u| wall::Hole {
+        s0: u.s0,
+        s1: u.s1,
+        h0: u.h0,
+        h1: u.h1,
+        niche_depth: None,
+    }));
     let interior = interior_sign(wall, rooms);
     // A wall standing on a roof below it is cut along the roof (Roof Cuts
     // Wall at Bottom): it reaches down to the roof or is cut up to it.

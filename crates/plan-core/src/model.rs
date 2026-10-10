@@ -33,6 +33,10 @@ pub enum WallKind {
     Interior,
 }
 
+fn dim_layers_unset(l: &[String; 2]) -> bool {
+    l.iter().all(String::is_empty)
+}
+
 /// Layer new walls are placed on.
 pub const DEFAULT_WALL_LAYER: &str = "Walls, Normal";
 
@@ -604,6 +608,18 @@ pub struct Project {
         skip_serializing_if = "crate::drawing_group::DrawingGroupTable::is_default"
     )]
     pub drawing_group_defaults: crate::drawing_group::DrawingGroupTable,
+    /// Layer Set Defaults: the layer set each kind of new view starts with
+    /// (LAY-70); see [`crate::layer_sets::LayerSetDefaults`].
+    #[serde(
+        default,
+        skip_serializing_if = "crate::layer_sets::LayerSetDefaults::is_default"
+    )]
+    pub layer_set_defaults: crate::layer_sets::LayerSetDefaults,
+    /// The layers new Manual and Automatic dimensions are drawn on (the
+    /// Dimension Defaults' Layer panel, copied here by the editor so every
+    /// way of adding a dimension reads it); empty is Chief's own name.
+    #[serde(default, skip_serializing_if = "dim_layers_unset")]
+    pub dimension_layers: [String; 2],
     /// Materials List data: object information and component changes, the
     /// saved lists and the Materials List Polylines; see
     /// [`crate::materials_data`].
@@ -655,6 +671,13 @@ pub struct Project {
         skip_serializing_if = "crate::assemblies::AssemblyLibrary::is_empty"
     )]
     pub assemblies: crate::assemblies::AssemblyLibrary,
+    /// The Number Style and Angle Style of the plan (Preferences and Default
+    /// Settings > Number Style); see [`crate::bearing::NumberStyle`].
+    #[serde(
+        default,
+        skip_serializing_if = "crate::bearing::NumberStyle::is_default"
+    )]
+    pub number_style: crate::bearing::NumberStyle,
 }
 
 fn default_project_name() -> String {
@@ -704,6 +727,8 @@ impl Project {
             electrical_defaults: None,
             props: crate::props::PropTable::default(),
             drawing_group_defaults: crate::drawing_group::DrawingGroupTable::default(),
+            layer_set_defaults: crate::layer_sets::LayerSetDefaults::default(),
+            dimension_layers: Default::default(),
             materials: crate::materials_data::MaterialsData::default(),
             print_setup: crate::drawing_sheet::PrintSetup::default(),
             construction: crate::construction::ConstructionSettings::default(),
@@ -711,6 +736,7 @@ impl Project {
             styles: crate::fill_styles::StyleBook::default(),
             schedule_setup: crate::schedules::ScheduleSetup::default(),
             assemblies: crate::assemblies::AssemblyLibrary::default(),
+            number_style: crate::bearing::NumberStyle::default(),
         }
     }
 
@@ -781,6 +807,15 @@ impl Project {
     pub fn add_dimension(&mut self, floor: usize, mut dim: Dimension) -> Id {
         let id = self.alloc_id();
         dim.id = id;
+        // The Layer panel's choice for a new dimension (DIM-57); one the
+        // dimension already carries wins.
+        if dim.look.layer.is_none() {
+            let auto = dim.kind == crate::dimension::DimensionKind::AutoExterior;
+            let named = &self.dimension_layers[usize::from(auto)];
+            if !named.is_empty() {
+                dim.look.layer = Some(named.clone());
+            }
+        }
         self.floors[floor].dimensions.push(dim);
         id
     }

@@ -41,7 +41,8 @@
 
 use super::{KeyEvent, PointerEvent, Tool, ToolId, ToolResult};
 use crate::dialogs::roof::{
-    AllPlanesDialog, BuildRoofDialog, DormerDialog, ReturnDialog, RoofPlaneDialog,
+    AllPlanesDialog, BaselineHeightDialog, BuildRoofDialog, DormerDialog, ReturnDialog,
+    RoofPlaneDialog,
 };
 use crate::dialogs::Outcome;
 use crate::editor::roof_view::{
@@ -83,10 +84,20 @@ pub enum RoofMode {
     Ceiling,
     Explode,
     Return,
+    /// Move to be Coplanar (RF-113): pick the plane to move, then the plane
+    /// to match.
+    Coplanar,
+    /// Place Roof Plane Intersection Point (RF-111): pick an edge, then the
+    /// plane it should meet.
+    IntersectionPoint,
+    /// Make Parallel / Make Perpendicular for a plane (RF-108): pick the
+    /// plane, then a wall, line or plane edge.
+    MakeParallel,
+    MakePerpendicular,
 }
 
 impl RoofMode {
-    const ALL: [RoofMode; 13] = [
+    const ALL: [RoofMode; 17] = [
         RoofMode::Plane,
         RoofMode::Edit,
         RoofMode::EditAll,
@@ -100,6 +111,10 @@ impl RoofMode {
         RoofMode::FloatingDormer,
         RoofMode::Explode,
         RoofMode::Return,
+        RoofMode::Coplanar,
+        RoofMode::IntersectionPoint,
+        RoofMode::MakeParallel,
+        RoofMode::MakePerpendicular,
     ];
 
     /// Chief's names.
@@ -118,6 +133,10 @@ impl RoofMode {
             RoofMode::Ceiling => "Ceiling Plane",
             RoofMode::Explode => "Explode Dormer",
             RoofMode::Return => "Roof Return",
+            RoofMode::Coplanar => "Move to be Coplanar",
+            RoofMode::IntersectionPoint => "Place Roof Plane Intersection Point",
+            RoofMode::MakeParallel => "Make Parallel",
+            RoofMode::MakePerpendicular => "Make Perpendicular",
         }
     }
 
@@ -154,6 +173,18 @@ impl RoofMode {
             RoofMode::Return => {
                 "Roof Return: click an eave corner (Shift: half return, Alt: boxed return)"
             }
+            RoofMode::Coplanar => {
+                "Move to be Coplanar: click the plane to move, then the plane to match"
+            }
+            RoofMode::IntersectionPoint => {
+                "Roof Plane Intersection Point: click an edge, then the plane it should meet"
+            }
+            RoofMode::MakeParallel => {
+                "Make Parallel: click the plane, then a wall, line or plane edge"
+            }
+            RoofMode::MakePerpendicular => {
+                "Make Perpendicular: click the plane, then a wall, line or plane edge"
+            }
         }
     }
 }
@@ -179,6 +210,19 @@ enum Cmd {
     /// Roof Return dialog OK: the type and length of the next returns.
     ApplyReturn(ReturnSpec),
     OpenReturn,
+    /// Set Baseline Height OK: the pending plane (baseline, side, plane it
+    /// lies on) and where its baseline sits.
+    ApplyBaseline(Point, Point, Point, Id, plan_roof::BaselineOver),
+}
+
+/// A plane drawn over an existing one, waiting for the Set Baseline Height
+/// answer (RF-114).
+struct PendingBaseline {
+    a: Point,
+    b: Point,
+    toward: Point,
+    under: Id,
+    dialog: BaselineHeightDialog,
 }
 
 enum Gesture {
@@ -248,6 +292,10 @@ pub struct RoofTool {
     hover: Option<Point>,
     /// Join Roof Planes: the first plane and its picked edge.
     join_first: Option<(Id, usize)>,
+    /// Move to be Coplanar, Make Parallel / Perpendicular: the first plane.
+    pick_first: Option<Id>,
+    /// Set Baseline Height (RF-114).
+    baseline_dialog: RefCell<Option<PendingBaseline>>,
 }
 
 /// `Gesture` with a `Default` of `None`.
@@ -268,6 +316,7 @@ impl RoofTool {
         self.mode.set(mode);
         self.gesture.0 = Gesture::None;
         self.join_first = None;
+        self.pick_first = None;
     }
 
     /// The plane selected in Edit Roof Planes mode.
@@ -281,6 +330,7 @@ impl RoofTool {
             || self.plane_dialog.borrow().is_some()
             || self.dormer_dialog.borrow().is_some()
             || self.return_dialog.borrow().is_some()
+            || self.baseline_dialog.borrow().is_some()
     }
 
     /// The type and length the Roof Return tool makes now.
@@ -299,6 +349,7 @@ impl RoofTool {
         if self.reset.take() {
             self.gesture.0 = Gesture::None;
             self.join_first = None;
+            self.pick_first = None;
         }
         let mut label = None;
         let cmds: Vec<Cmd> = self.cmds.borrow_mut().drain(..).collect();
@@ -344,6 +395,9 @@ impl RoofTool {
                             Some(ReturnDialog::new(self.return_settings()));
                     }
                     None
+                }
+                Cmd::ApplyBaseline(a, b, toward, under, choice) => {
+                    self.apply_baseline(cx, (a, b, toward, under), choice)
                 }
             };
             label = l.or(label);
@@ -520,7 +574,9 @@ impl RoofTool {
             let (settings, _) = Self::current_settings(cx);
             *self.plane_dialog.borrow_mut() = Some((
                 id,
-                RoofPlaneDialog::new(rec, layers).with_detail(&settings.detail),
+                RoofPlaneDialog::new(rec, layers)
+                    .with_detail(&settings.detail)
+                    .with_heights(settings.heights.clone()),
             ));
         } else if let Some(d) = set.dormer(id) {
             *self.dormer_dialog.borrow_mut() =
@@ -620,10 +676,154 @@ impl RoofTool {
 
     // ----- gestures -----
 
-    /// Roof Plane (RF-35): the rectangle on baseline `a -> b` toward `toward`.
-    fn create_plane(&mut self, cx: &mut EditorContext, a: Point, b: Point, toward: Point) -> bool {
+    /// The plane the next pick starts from: the one already picked, else the
+    /// one selected on the Edit toolbar or in Edit mode.
+    fn first_plane(&self, cx: &EditorContext) -> Option<Id> {
+        let set = load(cx.floor());
+        let selected = match cx.selection.single() {
+            Some(crate::editor::ObjectRef::RoofPlane(id)) if set.plane(id).is_some() => Some(id),
+            _ => None,
+        };
+        self.pick_first
+            .filter(|id| set.plane(*id).is_some())
+            .or(selected)
+            .or(self.selected.filter(|id| set.plane(*id).is_some()))
+    }
+
+    /// A click of Move to be Coplanar, Place Roof Plane Intersection Point,
+    /// Make Parallel or Make Perpendicular. Returns the undo label when the
+    /// click finished the command.
+    fn pick_click(&mut self, cx: &mut EditorContext, at: Point) -> Option<&'static str> {
+        let mode = self.mode.get();
+        let set = load(cx.floor());
+        let tol = cx.pick_tol() * 2.0;
         let fi = cx.floor;
-        let mut set = load(&cx.project.floors[fi]);
+        if mode == RoofMode::IntersectionPoint {
+            let Some((a, edge)) = self.join_first else {
+                let preferred = self.first_plane(cx);
+                let found = preferred
+                    .and_then(|id| roof_view::edge_near(&set, at, tol, Some(id)))
+                    .or_else(|| roof_view::edge_near(&set, at, tol, None));
+                match found {
+                    Some((id, e)) => {
+                        self.join_first = Some((id, e));
+                        self.selected = Some(id);
+                        cx.status = "Intersection Point: now click the plane the edge meets".into();
+                    }
+                    None => cx.status = "Intersection Point: click an edge of a roof plane".into(),
+                }
+                return None;
+            };
+            let Some(b) = set.plane_at(at).filter(|b| *b != a) else {
+                cx.status = "Intersection Point: click a different roof plane".into();
+                return None;
+            };
+            self.join_first = None;
+            cx.begin_change(RoofMode::IntersectionPoint.label());
+            return match roof_view::place_intersection_point(&mut cx.project, fi, a, edge, b) {
+                Ok((_, z)) => {
+                    cx.mark_dirty();
+                    cx.status = format!("Temporary point placed at elevation {}", cx.fmt_dim(z));
+                    Some("Place Roof Plane Intersection Point")
+                }
+                Err(e) => {
+                    cx.cancel_change();
+                    cx.status = format!("Intersection Point: {e}");
+                    None
+                }
+            };
+        }
+        let name = mode.label();
+        let Some(first) = self.first_plane(cx) else {
+            match set.plane_at(at) {
+                Some(id) => {
+                    self.pick_first = Some(id);
+                    self.selected = Some(id);
+                    cx.status = format!("{name}: now pick what to match");
+                }
+                None => cx.status = format!("{name}: click a roof plane"),
+            }
+            return None;
+        };
+        match mode {
+            RoofMode::Coplanar => {
+                let Some(target) = set.plane_at(at).filter(|t| *t != first) else {
+                    cx.status = format!("{name}: click the plane to match");
+                    return None;
+                };
+                cx.begin_change(name);
+                match roof_view::move_coplanar(&mut cx.project, fi, first, target) {
+                    Ok(shift) => {
+                        self.pick_first = None;
+                        cx.mark_dirty();
+                        cx.status = format!("Plane moved {} to be coplanar", cx.fmt_dim(shift));
+                        Some("Move to be Coplanar")
+                    }
+                    Err(e) => {
+                        cx.cancel_change();
+                        cx.status = format!("{name}: {e}");
+                        None
+                    }
+                }
+            }
+            _ => {
+                let perpendicular = mode == RoofMode::MakePerpendicular;
+                let Some(dir) = roof_view::reference_direction(cx.floor(), Some(first), at, tol)
+                else {
+                    cx.status = format!("{name}: click a wall, a line or the edge of another plane");
+                    return None;
+                };
+                cx.begin_change(name);
+                match roof_view::align_plane(&mut cx.project, fi, first, dir, perpendicular) {
+                    Ok(deg) => {
+                        self.pick_first = None;
+                        cx.mark_dirty();
+                        cx.status = format!("Plane turned {deg:.1} degrees");
+                        Some(if perpendicular {
+                            "Make Perpendicular"
+                        } else {
+                            "Make Parallel"
+                        })
+                    }
+                    Err(e) => {
+                        cx.cancel_change();
+                        cx.status = format!("{name}: {e}");
+                        None
+                    }
+                }
+            }
+        }
+    }
+
+    /// Roof Plane (RF-35): the rectangle on baseline `a -> b` toward `toward`.
+    /// The baseline snaps to the outside of a parallel wall nearby (RF-107);
+    /// one that starts on an existing roof plane asks where it sits first
+    /// (Set Baseline Height, RF-114).
+    fn create_plane(&mut self, cx: &mut EditorContext, a: Point, b: Point, toward: Point) -> bool {
+        let (a, b) = roof_view::snap_baseline(cx.floor(), a, b);
+        let set = load(cx.floor());
+        if let Some(under) = set.plane_at(a) {
+            let plate = self.plate_elevation(cx, &set);
+            let here = set
+                .plane(under)
+                .and_then(|r| r.to_roof_plane(0).height_at(a));
+            if let Some(here) = here.filter(|h| (h - plate).abs() > 0.5) {
+                *self.baseline_dialog.borrow_mut() = Some(PendingBaseline {
+                    a,
+                    b,
+                    toward,
+                    under,
+                    dialog: BaselineHeightDialog::new(plate, here),
+                });
+                cx.status = "Set Baseline Height: choose where the baseline sits".into();
+                return false;
+            }
+        }
+        self.place_plane(cx, a, b, toward, None)
+    }
+
+    /// Elevation of the top of the exterior walls of the current floor.
+    fn plate_elevation(&self, cx: &EditorContext, set: &roof_view::RoofSet) -> f64 {
         let settings = set
             .settings
             .clone()
@@ -640,7 +840,44 @@ impl RoofTool {
         } else {
             cx.wall_height(WallKind::Exterior)
         };
-        let elev = cx.floor().elevation + top + settings.raise_off_plate;
+        cx.floor().elevation + top + settings.plate_raise()
+    }
+
+    /// Set Baseline Height OK: places the pending plane.
+    fn apply_baseline(
+        &mut self,
+        cx: &mut EditorContext,
+        pending: (Point, Point, Point, Id),
+        choice: plan_roof::BaselineOver,
+    ) -> Option<String> {
+        let (a, b, toward, under) = pending;
+        self.gesture.0 = Gesture::None;
+        let set = load(cx.floor());
+        let plate = self.plate_elevation(cx, &set);
+        let elev = set
+            .plane(under)
+            .map(|r| plan_roof::baseline_height_over(choice, plate, &r.to_roof_plane(0), a))
+            .unwrap_or(plate);
+        self.place_plane(cx, a, b, toward, Some(elev))
+            .then(|| "Draw Roof Plane".to_string())
+    }
+
+    /// Makes the plane; `elev` is its baseline height, else the wall top.
+    fn place_plane(
+        &mut self,
+        cx: &mut EditorContext,
+        a: Point,
+        b: Point,
+        toward: Point,
+        elev: Option<f64>,
+    ) -> bool {
+        let fi = cx.floor;
+        let mut set = load(&cx.project.floors[fi]);
+        let settings = set
+            .settings
+            .clone()
+            .unwrap_or_else(|| RoofSettings::from_defaults(&cx.defaults));
+        let elev = elev.unwrap_or_else(|| self.plate_elevation(cx, &set));
         let Some((baseline, poly)) = manual_plane_geometry(a, b, toward, elev, settings.pitch)
         else {
             cx.status = "Click away from the baseline, on the side the roof rises to".into();
@@ -980,7 +1217,12 @@ impl RoofTool {
         } = &mut self.gesture.0
         {
             let d = roof_view::drag_handle(orig, *handle, *start, to, &|v| cx.fmt_dim(v));
-            let (rec, label, readout) = (d.record, d.label, d.readout);
+            let (mut rec, label, readout) = (d.record, d.label, d.readout);
+            // Use Special Snapping: a dragged edge lands on the outside of a
+            // parallel wall nearby (RF-107).
+            if let PlaneHandle::Edge(i) = *handle {
+                roof_view::snap_edge_to_walls(&mut rec, cx.floor(), i);
+            }
             if !*began {
                 cx.begin_change(label);
             }
@@ -1083,6 +1325,7 @@ impl Tool for RoofTool {
     fn activate(&mut self, cx: &mut EditorContext) {
         self.gesture.0 = Gesture::None;
         self.join_first = None;
+        self.pick_first = None;
         self.selected = None;
         let before = cx.status.clone();
         self.begin_event(cx);
@@ -1101,6 +1344,8 @@ impl Tool for RoofTool {
         *self.plane_dialog.borrow_mut() = None;
         *self.dormer_dialog.borrow_mut() = None;
         *self.return_dialog.borrow_mut() = None;
+        *self.baseline_dialog.borrow_mut() = None;
+        self.pick_first = None;
         cx.readout = None;
     }
 
@@ -1169,6 +1414,14 @@ impl Tool for RoofTool {
             RoofMode::Join => {
                 if self.join_click(cx, p.world) {
                     res = ToolResult::committed("Join Roof Planes");
+                }
+            }
+            RoofMode::Coplanar
+            | RoofMode::IntersectionPoint
+            | RoofMode::MakeParallel
+            | RoofMode::MakePerpendicular => {
+                if let Some(label) = self.pick_click(cx, p.world) {
+                    res = ToolResult::committed(label);
                 }
             }
             RoofMode::Dormer | RoofMode::FloatingDormer => {
@@ -1321,11 +1574,14 @@ impl Tool for RoofTool {
             // The dialogs take Esc / Enter themselves.
             return Self::with_pre(pre, ToolResult::consumed());
         }
-        let busy = !matches!(self.gesture.0, Gesture::None) || self.join_first.is_some();
+        let busy = !matches!(self.gesture.0, Gesture::None)
+            || self.join_first.is_some()
+            || self.pick_first.is_some();
         if k.is(egui::Key::Escape) {
             if busy || self.selected.is_some() {
                 self.gesture.0 = Gesture::None;
                 self.join_first = None;
+                self.pick_first = None;
                 self.selected = None;
                 cx.readout = None;
                 return Self::with_pre(pre, ToolResult::consumed());
@@ -1629,6 +1885,24 @@ impl RoofTool {
             }
             ctx.request_repaint();
         }
+        let mut baseline_done = None;
+        if let Some(pending) = self.baseline_dialog.borrow_mut().as_mut() {
+            match pending.dialog.show(ctx) {
+                Outcome::Ok => baseline_done = Some(Some(pending.dialog.choice())),
+                Outcome::Cancel => baseline_done = Some(None),
+                Outcome::Open => {}
+            }
+        }
+        if let Some(done) = baseline_done {
+            // OK queues the plane; Cancel leaves the draft for another click.
+            let pending = self.baseline_dialog.borrow_mut().take();
+            if let (Some(choice), Some(p)) = (done, pending) {
+                self.cmds
+                    .borrow_mut()
+                    .push(Cmd::ApplyBaseline(p.a, p.b, p.toward, p.under, choice));
+            }
+            ctx.request_repaint();
+        }
         let mut plane_done = None;
         if let Some((id, d)) = self.plane_dialog.borrow_mut().as_mut() {
             match d.show(ctx) {
@@ -1861,7 +2135,21 @@ mod tests {
         t.set_mode(RoofMode::Plane);
         drag(t, cx, (0.0, 0.0), (240.0, 0.0));
         click(t, cx, 120.0, 120.0);
+        answer_baseline(t, cx, plan_roof::BaselineOver::WallTop);
         assert_eq!(planes(cx).len(), before + 1);
+    }
+
+    /// OK in the Set Baseline Height dialog, if a plane drawn over the roof
+    /// opened it.
+    fn answer_baseline(t: &mut RoofTool, cx: &mut EditorContext, choice: plan_roof::BaselineOver) {
+        let pending = t.baseline_dialog.borrow_mut().take();
+        if let Some(p) = pending {
+            t.cmds
+                .borrow_mut()
+                .push(Cmd::ApplyBaseline(p.a, p.b, p.toward, p.under, choice));
+            let e = PointerEvent::at(cx, Point::new(1.0, 1.0));
+            t.pointer_move(cx, e);
+        }
     }
 
     /// The plane made by `with_plane`, selected in Edit mode.
@@ -2982,4 +3270,248 @@ mod tests {
         });
         assert_eq!(cx.project.floors[0].roofs, before.floors[0].roofs);
     }
+
+    // ---- Round 16 brief 18b: placing planes against each other ----
+
+    fn set_up_roofed_house() -> (EditorContext, RoofTool) {
+        let mut cx = new_cx();
+        house(&mut cx);
+        let mut t = RoofTool::default();
+        build_default(&mut t, &mut cx);
+        (cx, t)
+    }
+
+    #[test]
+    fn a_plane_drawn_over_the_roof_asks_where_its_baseline_sits() {
+        let (mut cx, mut t) = set_up_roofed_house();
+        let plate = cx.floor().elevation + 109.0;
+        t.set_mode(RoofMode::Plane);
+        drag(&mut t, &mut cx, (100.0, 100.0), (200.0, 100.0));
+        click(&mut t, &mut cx, 150.0, 160.0);
+        assert!(t.baseline_dialog.borrow().is_some(), "{}", cx.status);
+        assert_eq!(planes(&cx).len(), 4, "nothing made until it is answered");
+        // Over the existing roof plane: the baseline takes the roof's height.
+        answer_baseline(&mut t, &mut cx, plan_roof::BaselineOver::ExistingPlane);
+        let on_roof = planes(&cx).into_iter().find(|r| !r.auto).expect("new plane");
+        assert!(on_roof.baseline_height() > plate + 1.0, "{}", on_roof.baseline_height());
+        assert_eq!(cx.undo_label(), Some("Draw Roof Plane"));
+        cx.undo();
+        assert_eq!(planes(&cx).len(), 4);
+        // Over the wall top: the baseline is the plate height.
+        t.set_mode(RoofMode::Plane);
+        drag(&mut t, &mut cx, (100.0, 100.0), (200.0, 100.0));
+        click(&mut t, &mut cx, 150.0, 160.0);
+        answer_baseline(&mut t, &mut cx, plan_roof::BaselineOver::WallTop);
+        let on_wall = planes(&cx).into_iter().find(|r| !r.auto).expect("new plane");
+        assert!((on_wall.baseline_height() - plate).abs() < 1e-6);
+    }
+
+    #[test]
+    fn cancelling_set_baseline_height_makes_nothing() {
+        let (mut cx, mut t) = set_up_roofed_house();
+        t.set_mode(RoofMode::Plane);
+        drag(&mut t, &mut cx, (100.0, 100.0), (200.0, 100.0));
+        click(&mut t, &mut cx, 150.0, 160.0);
+        assert!(t.baseline_dialog.borrow_mut().take().is_some());
+        assert_eq!(planes(&cx).len(), 4);
+    }
+
+    #[test]
+    fn a_baseline_drawn_near_a_wall_lands_on_its_outside_surface() {
+        let mut cx = new_cx();
+        house(&mut cx);
+        let mut t = RoofTool::default();
+        t.set_mode(RoofMode::Plane);
+        // 2" off the south wall's outside face (y = -3), a hair out of parallel.
+        drag(&mut t, &mut cx, (40.0, -5.0), (300.0, -4.0));
+        click(&mut t, &mut cx, 170.0, 100.0);
+        let r = planes(&cx).pop().expect("plane made");
+        assert!((r.baseline.0.y + 3.0).abs() < 1e-6, "{:?}", r.baseline);
+        assert!((r.baseline.1.y + 3.0).abs() < 1e-6, "{:?}", r.baseline);
+        // Far from any wall: left where it was drawn.
+        t.set_mode(RoofMode::Plane);
+        drag(&mut t, &mut cx, (40.0, 140.0), (300.0, 140.0));
+        click(&mut t, &mut cx, 170.0, 200.0);
+        let r = planes(&cx).pop().unwrap();
+        assert!((r.baseline.0.y - 140.0).abs() < 1e-6);
+    }
+
+    /// Two parallel 8:12 planes, the second lower, side by side in y.
+    fn two_parallel_planes(cx: &mut EditorContext, second_pitch: f64) -> (Id, Id) {
+        let fi = cx.floor;
+        let mut set = load(cx.floor());
+        let ids = [cx.project.alloc_id(), cx.project.alloc_id()];
+        for (id, y, elev, pitch) in [(ids[0], 200.0, 140.0, 8.0), (ids[1], 0.0, 100.0, second_pitch)] {
+            let (base, poly) = manual_plane_geometry(
+                Point::new(0.0, y),
+                Point::new(240.0, y),
+                Point::new(120.0, y + 60.0),
+                elev,
+                pitch,
+            )
+            .unwrap();
+            set.planes.push(RoofPlaneRecord::new(id, poly, pitch, base));
+        }
+        store(&mut cx.project, fi, &mut set);
+        cx.mark_dirty();
+        cx.refresh();
+        (ids[0], ids[1])
+    }
+
+    #[test]
+    fn move_to_be_coplanar_lifts_the_first_plane_into_the_second_in_one_undo_step() {
+        let mut cx = new_cx();
+        let (back, front) = two_parallel_planes(&mut cx, 8.0);
+        let mut t = RoofTool::default();
+        t.set_mode(RoofMode::Coplanar);
+        // Pick the front plane to move, then the back plane to match.
+        click(&mut t, &mut cx, 120.0, 30.0);
+        assert_eq!(t.pick_first, Some(front));
+        let before = load(cx.floor()).plane(front).unwrap().baseline_height();
+        click(&mut t, &mut cx, 120.0, 230.0);
+        let set = load(cx.floor());
+        let moved = set.plane(front).unwrap();
+        assert!(!moved.auto);
+        // The back plane at y = 0 is 140 + (0 - 200) * 8/12 = 6.67".
+        let want = set
+            .plane(back)
+            .unwrap()
+            .to_roof_plane(0)
+            .height_at(Point::new(0.0, 0.0))
+            .unwrap();
+        assert!((moved.baseline_height() - want).abs() < 1e-6);
+        assert!((moved.baseline_height() - before).abs() > 1.0);
+        assert_eq!(cx.undo_label(), Some("Move to be Coplanar"));
+        cx.undo();
+        assert!((load(cx.floor()).plane(front).unwrap().baseline_height() - before).abs() < 1e-9);
+    }
+
+    #[test]
+    fn move_to_be_coplanar_refuses_planes_of_another_pitch() {
+        let mut cx = new_cx();
+        let (_, front) = two_parallel_planes(&mut cx, 12.0);
+        let mut t = RoofTool::default();
+        t.set_mode(RoofMode::Coplanar);
+        click(&mut t, &mut cx, 120.0, 30.0);
+        assert_eq!(t.pick_first, Some(front));
+        click(&mut t, &mut cx, 120.0, 230.0);
+        assert!(cx.status.contains("pitch"), "{}", cx.status);
+        assert_ne!(cx.undo_label(), Some("Move to be Coplanar"));
+    }
+
+    #[test]
+    fn the_intersection_point_drops_a_temporary_cad_point_where_the_edge_meets_the_plane() {
+        let mut cx = new_cx();
+        let (_back, front) = two_parallel_planes(&mut cx, 8.0);
+        // A level reference plane 80" up, over the second plane's side.
+        let fi = cx.floor;
+        let mut set = load(cx.floor());
+        let lid = cx.project.alloc_id();
+        let (base, poly) = manual_plane_geometry(
+            Point::new(300.0, 0.0),
+            Point::new(400.0, 0.0),
+            Point::new(350.0, 50.0),
+            80.0,
+            0.0001,
+        )
+        .unwrap();
+        set.planes.push(RoofPlaneRecord::new(lid, poly, 0.0001, base));
+        store(&mut cx.project, fi, &mut set);
+        cx.refresh();
+        let cad_before = cx.floor().cad.len();
+        let mut t = RoofTool::default();
+        t.set_mode(RoofMode::IntersectionPoint);
+        // The front plane's right side edge (x = 240) climbs from y = 0 to 60.
+        click(&mut t, &mut cx, 240.0, 30.0);
+        assert!(t.join_first.is_some(), "{}", cx.status);
+        click(&mut t, &mut cx, 350.0, 25.0);
+        assert!(cx.floor().cad.len() > cad_before, "{}", cx.status);
+        assert!(cx
+            .floor()
+            .cad
+            .iter()
+            .any(|c| c.layer == "CAD, Temporary Points"));
+        assert_eq!(cx.undo_label(), Some("Place Roof Plane Intersection Point"));
+        let _ = front;
+    }
+
+    #[test]
+    fn make_parallel_turns_a_plane_to_a_wall_and_make_perpendicular_squares_it() {
+        let mut cx = new_cx();
+        house(&mut cx);
+        let fi = cx.floor;
+        let mut set = load(cx.floor());
+        let id = cx.project.alloc_id();
+        // A baseline tilted 20 degrees from the south wall.
+        let a = Point::new(100.0, 120.0);
+        let b = Point::new(100.0 + 200.0 * 20f64.to_radians().cos(), 120.0 + 200.0 * 20f64.to_radians().sin());
+        let toward = Point::lerp(a, b, 0.5).add(Point::new(-30.0, 90.0));
+        let (base, poly) = manual_plane_geometry(a, b, toward, 100.0, 8.0).unwrap();
+        set.planes.push(RoofPlaneRecord::new(id, poly, 8.0, base));
+        store(&mut cx.project, fi, &mut set);
+        cx.refresh();
+        let mut t = RoofTool::default();
+        t.set_mode(RoofMode::MakeParallel);
+        click(&mut t, &mut cx, 200.0, 160.0);
+        assert_eq!(t.pick_first, Some(id), "{}", cx.status);
+        // Click the south wall (y = 0).
+        click(&mut t, &mut cx, 300.0, 0.0);
+        let r = load(cx.floor()).plane(id).cloned().unwrap();
+        let d = r.baseline.1.sub(r.baseline.0);
+        assert!(d.y.abs() < 1e-6, "{d:?}");
+        assert_eq!(cx.undo_label(), Some("Make Parallel"));
+        // Now square to the same wall.
+        t.set_mode(RoofMode::MakePerpendicular);
+        click(&mut t, &mut cx, 200.0, 120.0);
+        assert_eq!(t.pick_first, Some(id), "{}", cx.status);
+        click(&mut t, &mut cx, 300.0, 0.0);
+        let r = load(cx.floor()).plane(id).cloned().unwrap();
+        let d = r.baseline.1.sub(r.baseline.0);
+        assert!(d.x.abs() < 1e-6, "{d:?}");
+        assert_eq!(cx.undo_label(), Some("Make Perpendicular"));
+    }
+
+    #[test]
+    fn a_plane_shows_on_the_floor_above_or_below_in_one_undo_step() {
+        let mut cx = new_cx();
+        let (a, _) = two_parallel_planes(&mut cx, 8.0);
+        // One floor only: there is nowhere to go.
+        let fi = cx.floor;
+        assert!(roof_view::move_display(&mut cx.project, fi, a, 1).is_err());
+        cx.project.build_new_floor(false);
+        cx.begin_change("Display on Floor Above");
+        let to = roof_view::move_display(&mut cx.project, fi, a, 1).unwrap();
+        assert_eq!(to, fi + 1);
+        assert!(load(&cx.project.floors[fi]).plane(a).is_none());
+        let moved = load(&cx.project.floors[to]).plane(a).cloned().unwrap();
+        assert!(!moved.auto);
+        // Its heights are absolute: the 3D roof does not move.
+        assert_eq!(moved.polygon3d[0][1], 140.0);
+        cx.undo();
+        assert!(load(&cx.project.floors[fi]).plane(a).is_some());
+    }
+
+    #[test]
+    fn the_edit_toolbar_offers_the_plane_placement_commands() {
+        let mut cx = new_cx();
+        let (a, _) = two_parallel_planes(&mut cx, 8.0);
+        cx.selection.set(crate::editor::ObjectRef::RoofPlane(a));
+        let labels: Vec<String> = cx
+            .extra_edit_actions()
+            .into_iter()
+            .map(|x| x.label.to_string())
+            .collect();
+        for want in [
+            "Join Roof Planes",
+            "Move to be Coplanar",
+            "Place Roof Plane Intersection Point",
+            "Make Parallel",
+            "Make Perpendicular",
+            "Display on Floor Above",
+            "Display on Floor Below",
+        ] {
+            assert!(labels.iter().any(|l| l == want), "{want} in {labels:?}");
+        }
+    }
+
 }

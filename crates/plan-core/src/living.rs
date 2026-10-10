@@ -916,6 +916,7 @@ mod tests {
         // A wall type of siding 1, main 4, drywall 1: the main layer's
         // outside is 1 in from the outside surface, so 2 in from the center.
         let ty = WallTypeDef {
+            props: Default::default(),
             name: "Frame".into(),
             kind: WallKind::Exterior,
             layers: vec![

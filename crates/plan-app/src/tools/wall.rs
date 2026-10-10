@@ -11,7 +11,7 @@
 //!   wall's endpoint, intersection, midpoint, perpendicular foot, centerline,
 //!   the axes through the chain's first point, alignment with the previous
 //!   wall (collinear or perpendicular), the 15 degree angle and the grid;
-//!   Alt suspends every snap (S-74, W-17) and Shift holds the angle snap
+//!   Ctrl/Cmd suspends every snap (S-74, W-17, DT2) and Shift holds the angle snap
 //!   increment (W-18, `editing.angle_snap_deg`) even where angle snaps are off;
 //! * dashed guides show when the pointer lines up with a wall end, midpoint or
 //!   face corner, or sits on a 45 degree direction from the start, and the
@@ -546,7 +546,7 @@ impl WallTool {
         chain: Chain,
     ) -> (SnapResult, bool) {
         let raw = p.world;
-        let alt = p.modifiers.alt;
+        let alt = p.overrides();
         let tol = cx.snap_tol();
         // Closing the loop on the first wall's start point.
         if let (Some(first), false) = (chain.first, alt) {
@@ -568,20 +568,11 @@ impl WallTool {
                 false,
             );
         };
-        // Shift holds the angle increment (W-18), over the object snaps.
+        // Shift restricts the angle to 90 or 45 degrees (W-18, manual p. 193),
+        // over the object snaps.
         if p.modifiers.shift && !alt {
-            let inc = cx.defaults.editing.angle_snap_deg;
-            let inc = if inc >= 1.0 { inc } else { 15.0 };
-            let held = if cx.defaults.editing.snap_angles.is_empty() {
-                snap::angle_snap(start, raw, cx.defaults.grid.snap, inc)
-            } else {
-                snap::angle_snap_list(
-                    start,
-                    raw,
-                    cx.defaults.grid.snap,
-                    &cx.defaults.editing.snap_angles,
-                )
-            };
+            let set = snap::restrictive_angles(&cx.defaults.editing);
+            let held = snap::angle_snap_list(start, raw, cx.defaults.grid.snap, &set);
             if let Some(point) = held {
                 let r = SnapResult {
                     point,
@@ -650,7 +641,7 @@ impl WallTool {
     /// `base` pulled onto the alignment guides (W-14): the pointer lined up
     /// with a wall end, midpoint or face corner in x or y, or on a 45 degree
     /// direction from `origin`. Object snaps and the Shift angle hold win
-    /// (`hold`: Shift or Alt is down).
+    /// (`hold`: Shift or Ctrl/Cmd is down).
     fn aligned(
         &self,
         cx: &EditorContext,
@@ -688,7 +679,7 @@ impl WallTool {
         }
     }
 
-    /// The guides the point `to` is on (empty with Alt or Shift held).
+    /// The guides the point `to` is on (empty with Ctrl/Cmd or Shift held).
     fn guides_at(
         &self,
         cx: &EditorContext,
@@ -696,7 +687,7 @@ impl WallTool {
         to: Point,
         p: &PointerEvent,
     ) -> Vec<Guide> {
-        if p.modifiers.alt || p.modifiers.shift {
+        if p.overrides() || p.modifiers.shift {
             return Vec::new();
         }
         let anchors = snap::alignment_anchors(cx.floor(), cx.layers(), &[]);
@@ -913,12 +904,22 @@ impl Tool for WallTool {
         self.variant.tool_id()
     }
 
+    /// After the first click: the wall's start, so Tab or Enter can ask for
+    /// the end location (manual p. 196).
+    fn coordinate_origin(&self, cx: &EditorContext) -> Option<Point> {
+        if cx.typed_input.is_armed() {
+            self.pending
+        } else {
+            None
+        }
+    }
+
     fn name(&self) -> &'static str {
         self.variant.name()
     }
 
     fn hint(&self) -> String {
-        "Wall: click to place points; type a length, Tab, an angle, Enter; Shift holds the angle; Alt disables snaps; Spacebar reverses the layers; double-click or Esc ends"
+        "Wall: click to place points; type a length, Tab, an angle, Enter; Shift holds the angle to 90 or 45 degrees; Ctrl/Cmd disables snaps; Tab or Enter with nothing typed asks for coordinates; Spacebar reverses the layers; double-click or Esc ends"
             .into()
     }
 
@@ -1155,6 +1156,7 @@ impl Tool for WallTool {
             painter.extend(Shape::dashed_line(&pts, stroke, 6.0, 4.0));
         }
         if let Some(start) = self.drag_from.or(self.pending) {
+            snap::draw_angle_rays(painter, cam, cx, start);
             let len = start.dist(to);
             if len > 0.01 {
                 let mut ghost = make_wall(0, start, to, spec.thickness, spec.height, spec.kind);
@@ -1315,7 +1317,7 @@ mod tests {
         let mut t2 = WallTool::default();
         click(&mut t2, &mut cx2, 0.0, 0.0);
         let alt = Modifiers {
-            alt: true,
+            ctrl: true,
             ..Modifiers::NONE
         };
         let p = PointerEvent::at(&cx2, raw).with_modifiers(alt);
@@ -1856,7 +1858,7 @@ mod tests {
     }
 
     #[test]
-    fn shift_holds_the_angle_increment_even_with_angle_snaps_off() {
+    fn shift_holds_the_angle_to_90_or_45_even_with_angle_snaps_off() {
         let shift = Modifiers {
             shift: true,
             ..Modifiers::NONE
@@ -1864,7 +1866,7 @@ mod tests {
         let draw = |shift_held: bool| {
             let mut cx = new_cx();
             cx.defaults.editing.angle_snaps = false;
-            cx.defaults.editing.angle_snap_deg = 45.0;
+            cx.defaults.editing.restrictive_angle_deg = 45.0;
             let mut t = WallTool::default();
             click(&mut t, &mut cx, 0.0, 0.0);
             let mut p = PointerEvent::at(&cx, Point::new(100.0, 60.0));
@@ -1878,7 +1880,7 @@ mod tests {
         assert_eq!(draw(false), Point::new(100.0, 60.0));
         let held = draw(true);
         assert!((held.x - held.y).abs() < 1e-9 && held.x > 50.0, "{held:?}");
-        // 15 degrees by default.
+        // 90 degrees by default: 12 degrees falls to the horizontal.
         let mut cx = new_cx();
         cx.defaults.editing.angle_snaps = false;
         let mut t = WallTool::default();
@@ -1888,13 +1890,13 @@ mod tests {
         t.pointer_up(&mut cx, p);
         let e = cx.floor().walls[0].end;
         let deg = angle_deg(Point::ZERO, e);
-        assert!((deg - 15.0).abs() < 1e-6, "{deg}");
+        assert!(deg.abs() < 1e-6, "{deg}");
     }
 
     #[test]
-    fn alt_suspends_every_snap_while_drawing() {
+    fn ctrl_suspends_every_snap_while_drawing() {
         let alt = Modifiers {
-            alt: true,
+            ctrl: true,
             ..Modifiers::NONE
         };
         let start_with = |alt_held: bool| {

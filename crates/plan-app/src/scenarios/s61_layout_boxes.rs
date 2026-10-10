@@ -380,7 +380,6 @@ fn plot_lines_are_selected_edited_drawn_and_replaced_by_an_update() {
 }
 
 #[test]
-#[ignore = "R16-02 in progress"]
 fn a_linked_saved_plan_view_is_followed_and_can_be_unlinked() {
     let (mut sim, mut v, _) = house();
     let page = first_page(&v);
@@ -413,24 +412,19 @@ fn a_linked_saved_plan_view_is_followed_and_can_be_unlinked() {
     assert!(first_floor.0 > 400.0, "the house: {first_floor:?}");
     // Change the saved view: it shows the (empty) second floor now, and the
     // box follows without being sent again.
-    sim.app.cx.project.plan_views[0].floor = Some(1);
-    let second_floor = size_of(&v, &sim.app.cx.project);
-    eprintln!(
-        "DEBUG floors={:?} views={:?} src={:?} saved={:?}",
-        sim.app
-            .cx
-            .project
-            .floors
+    // (The project already carries Chief's default saved views: find ours.)
+    let at = |p: &plan_core::Project| {
+        p.plan_views
             .iter()
-            .map(|f| (f.name.clone(), f.walls.len()))
-            .collect::<Vec<_>>(),
-        sim.app.cx.project.plan_views,
-        the_box(&v, id).source,
-        the_box(&v, id).view.saved_view
-    );
+            .position(|v| v.name == "Main Plan")
+            .unwrap()
+    };
+    let i = at(&sim.app.cx.project);
+    sim.app.cx.project.plan_views[i].floor = Some(1);
+    let second_floor = size_of(&v, &sim.app.cx.project);
     assert!(second_floor.0 < first_floor.0, "{second_floor:?}");
     // Delete the saved view: the box is flagged as a missing view.
-    let saved = sim.app.cx.project.plan_views.remove(0);
+    let saved = sim.app.cx.project.plan_views.remove(i);
     assert!(plan_layout::missing_view(&the_box(&v, id), &sim.app.cx.project).is_some());
     let rcx = lw::render_context(&sim.app.cx.project);
     let art = plan_layout::render_box_artwork(&the_box(&v, id), &rcx);

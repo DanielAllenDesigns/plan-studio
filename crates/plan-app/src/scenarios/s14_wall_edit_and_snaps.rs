@@ -179,7 +179,7 @@ fn turning_a_snap_off_changes_what_the_pointer_gets() {
         sim.app.cx.snap_at(raw, None, false, &[]).kind,
         SnapKind::Endpoint
     );
-    // Alt returns the raw point whatever is on.
+    // Ctrl/Cmd (override) returns the raw point whatever is on.
     sim.app.cx.defaults.editing.snap_endpoint = true;
     assert_eq!(sim.app.cx.snap_at(raw, None, true, &[]).point, raw);
 }

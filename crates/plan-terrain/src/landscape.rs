@@ -17,6 +17,8 @@ use crate::plants::{Distribution, GrassBlades, GrassLook, PlantImage};
 use crate::spec::ObjectExtras;
 
 /// Default layer of the terrain features (rectangular, kidney, spline).
+/// The terrain's own layer (the Terrain Perimeter's fill).
+pub const LAYER_PERIMETER: &str = "Terrain";
 pub const LAYER_FEATURES: &str = "Terrain, Features";
 pub const LAYER_WALLS: &str = "Terrain, Walls";
 pub const LAYER_BREAKS: &str = "Terrain, Breaks";

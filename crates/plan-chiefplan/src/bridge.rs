@@ -194,6 +194,7 @@ fn stack_to_layers(stack: &WallStack) -> Vec<WallLayer> {
         .iter()
         .enumerate()
         .map(|(i, &t)| WallLayer {
+            spec: Default::default(),
             name: if i == main {
                 "Main".into()
             } else {
@@ -211,6 +212,7 @@ fn stack_to_layers(stack: &WallStack) -> Vec<WallLayer> {
 /// material. The kind is guessed from the wall type's name.
 pub fn wall_type_def(t: &TemplateWallType) -> WallTypeDef {
     WallTypeDef {
+        props: Default::default(),
         name: t.name.clone(),
         layers: t
             .layers
@@ -306,8 +308,10 @@ fn approximate_type(name: &str) -> WallTypeDef {
     let thickness =
         thickness_hint(name).map_or(FALLBACK_WALL_THICKNESS, |n| n + NAME_NUMBER_ALLOWANCE);
     WallTypeDef {
+        props: Default::default(),
         name: name.to_string(),
         layers: vec![WallLayer {
+            spec: Default::default(),
             name: "Main (approximate)".into(),
             thickness,
             is_main: true,
@@ -647,6 +651,7 @@ pub fn seed_defaults(inv: &TemplateInventory, base: PlanDefaults) -> TemplateSee
         }
         let def = match inv.wall_stacks.iter().find(|s| s.name == e.name) {
             Some(stack) => WallTypeDef {
+                props: Default::default(),
                 name: e.name.clone(),
                 layers: stack_to_layers(stack),
                 kind: guess_kind(&e.name),

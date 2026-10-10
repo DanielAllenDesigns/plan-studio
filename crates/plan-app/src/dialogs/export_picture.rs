@@ -728,7 +728,7 @@ fn window(ctx: &egui::Context, cx: &mut EditorContext, w: &mut ExportWindow) -> 
                                             None,
                                             "Fit to the paper",
                                         );
-                                        for s in Scale::ALL {
+                                        for s in Scale::choices() {
                                             ui.selectable_value(&mut w.o.scale, Some(s), s.label());
                                         }
                                     });

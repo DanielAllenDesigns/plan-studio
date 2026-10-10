@@ -262,6 +262,76 @@ fn a_door_type_has_its_own_default_and_interior_and_exterior_are_apart() {
     assert_eq!(pocket.name(), "Pocket Door");
 }
 
+#[test]
+fn a_double_click_on_a_tool_button_opens_the_defaults_of_its_type() {
+    use crate::dialogs::OpeningTarget;
+    let mut sim = house();
+    let pocket = DefaultKey::new(OpeningKind::Door, OpeningStyle::Pocket, false);
+    // The double-click of the Pocket Door button, the way the toolbar asks.
+    let tool = OpeningVariant::door(OpeningStyle::Pocket).tool_id();
+    assert_eq!(
+        crate::tools::opening::defaults_key_for_tool(tool),
+        Some(pocket)
+    );
+    sim.tool(tool);
+    sim.click(150.0, 0.5);
+    let id = openings(&sim)[0].id;
+    assert_eq!(get(&sim, id).style, OpeningStyle::Pocket);
+    crate::dialogs::request_type_defaults(pocket);
+    sim.app.process_requests();
+    let Some(ActiveDialog::Opening(d)) = &mut sim.app.dialog else {
+        panic!("the Pocket Door Defaults dialog");
+    };
+    assert_eq!(d.target(), OpeningTarget::DefaultType(pocket));
+    assert_eq!(d.draft().style, OpeningStyle::Pocket);
+    d.draft_mut().extras.spec.hardware.hinges = 5;
+    sim.ok();
+    assert!(!sim.app.has_dialog());
+    let v = &sim.app.cx.defaults.opening_variants;
+    let t = v.type_default(pocket).expect("the type's own default");
+    assert_eq!(t.template.extras.spec.hardware.hinges, 5);
+    // Doors of the type using the default follow it.
+    sim.app.cx.begin_change("noop");
+    crate::editor::opening_edit::follow_defaults(&mut sim.app.cx);
+    assert_eq!(get(&sim, id).extras.spec.hardware.hinges, 5);
+    // The Hinged Door button keeps the Interior Hinged Door dialog.
+    assert_eq!(
+        crate::tools::opening::defaults_key_for_tool(ToolId::Door),
+        Some(DefaultKey::new(
+            OpeningKind::Door,
+            OpeningStyle::Hinged,
+            false
+        ))
+    );
+}
+
+#[test]
+fn every_door_and_window_type_has_a_leaf_in_the_default_settings_tree() {
+    use crate::dialogs::defaults::{all_leaves, DefaultsEntry, Leaf};
+    let keys: Vec<DefaultKey> = all_leaves()
+        .into_iter()
+        .filter_map(|(_, name, leaf)| match leaf {
+            Leaf::Entry(DefaultsEntry::OpeningType(k)) => {
+                assert_eq!(name, k.name(), "the leaf is named like its type");
+                Some(k)
+            }
+            _ => None,
+        })
+        .collect();
+    // The Interior and Exterior Hinged Door, the Window and the Garage Door
+    // have leaves of their own.
+    for k in DefaultKey::doors().into_iter().chain(DefaultKey::windows()) {
+        let own = matches!(
+            (k.kind, k.style),
+            (
+                OpeningKind::Door,
+                OpeningStyle::Hinged | OpeningStyle::Garage
+            ) | (OpeningKind::Window, OpeningStyle::Window)
+        );
+        assert_eq!(keys.contains(&k), !own, "{}", k.name());
+    }
+}
+
 // ----- Make Mulled Unit, components, levels, Caution -----
 
 #[test]
@@ -363,6 +433,41 @@ fn a_window_level_other_than_zero_draws_light_grey() {
 }
 
 #[test]
+fn a_click_picks_level_0_first_and_tab_walks_the_stack() {
+    use crate::editor::selection::hit_test_cx;
+    use crate::tools::KeyEvent;
+    use eframe::egui::Key;
+    let mut sim = house();
+    let wall = top_wall(&sim);
+    // Two windows in one place: the lower one is level 1, the higher level 0.
+    let low = push_window(&mut sim, wall, 120.0, 30.0, 48.0);
+    let high = push_window(&mut sim, wall, 120.0, 40.0, 48.0);
+    sim.app.cx.project.floors[0]
+        .openings
+        .iter_mut()
+        .find(|o| o.id == low)
+        .unwrap()
+        .extras
+        .spec
+        .level = 1;
+    let hits = hit_test_cx(&sim.app.cx, Point::new(120.0, 0.5), 5.0);
+    let order: Vec<Id> = hits
+        .iter()
+        .filter_map(|h| match h {
+            ObjectRef::Opening(id) => Some(*id),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(order, vec![high, low], "level 0 comes first");
+    // Tab with the pointer off the plan steps to the next one in the stack.
+    sim.tool(ToolId::Select);
+    select(&mut sim, &[high]);
+    sim.app.cx.cursor_world = None;
+    sim.key(KeyEvent::key(Key::Tab));
+    assert_eq!(sim.app.cx.selection.items, vec![ObjectRef::Opening(low)]);
+}
+
+#[test]
 fn four_openings_in_one_place_raise_a_caution_and_delete_duplicate_thins_them() {
     let mut sim = house();
     let wall = top_wall(&sim);
@@ -444,6 +549,92 @@ fn a_bay_window_is_a_wall_section_unit_with_a_hip_roof_a_foundation_and_dimensio
             .depth_for(OpeningStyle::BayWindow),
         20.0
     );
+}
+
+#[test]
+fn dragging_the_depth_handle_sets_how_far_the_unit_projects_in_one_undo_step() {
+    use crate::editor::opening_edit::bay_depth_handle;
+    let mut sim = house();
+    sim.tool(bay_tool(OpeningStyle::BayWindow));
+    sim.click(240.0, 0.5);
+    let id = openings(&sim)[0].id;
+    sim.tool(ToolId::Select);
+    select(&mut sim, &[id]);
+    let at = bay_depth_handle(&sim.app.cx, id).expect("a depth handle");
+    // The Select tool lists it among the handles of the selected unit.
+    let handles = crate::editor::handles::handles_for(&sim.app.cx, 1.0);
+    assert!(handles
+        .iter()
+        .any(|h| h.kind == crate::editor::handles::HandleKind::BayDepth));
+    let depth = |sim: &Sim| {
+        get(sim, id)
+            .extras
+            .spec
+            .bay
+            .depth_for(OpeningStyle::BayWindow)
+    };
+    assert_eq!(depth(&sim), 12.0);
+    // Drag it 18 in further out, away from the wall.
+    let out = if at.y < 0.0 { -1.0 } else { 1.0 };
+    sim.drag((at.x, at.y), (at.x, at.y + out * 18.0));
+    assert!((depth(&sim) - 30.0).abs() < 1.0, "depth {}", depth(&sim));
+    assert_eq!(label(&sim).as_deref(), Some("Change Bay Depth"));
+    sim.undo();
+    assert_eq!(depth(&sim), 12.0);
+}
+
+#[test]
+fn extend_existing_roof_over_has_the_main_roof_follow_the_unit() {
+    let mut sim = house();
+    sim.tool(bay_tool(OpeningStyle::BayWindow));
+    sim.click(240.0, 0.5);
+    let id = openings(&sim)[0].id;
+    let roof = |sim: &Sim| roof_plane_count_of(&get(sim, id));
+    // The unit builds a hip of its own to start with: five planes.
+    assert_eq!(roof(&sim), 5);
+    {
+        let o = sim.app.cx.project.floors[0]
+            .openings
+            .iter_mut()
+            .find(|o| o.id == id)
+            .unwrap();
+        o.extras.spec.bay.roof.extend_existing = true;
+    }
+    // ... and none once the main roof comes down over it, in 3D too.
+    assert_eq!(roof(&sim), 0);
+    let scene = build_scene(&sim.app.cx.project);
+    assert!(!scene
+        .meshes
+        .iter()
+        .any(|m| m.object_id == Some(id) && m.material == Material::Roof));
+    // A lowered ceiling spoils it: the unit gets a lower hip of its own.
+    sim.app.cx.project.floors[0].openings[0]
+        .extras
+        .spec
+        .bay
+        .lowered_ceiling = Some(Default::default());
+    assert_eq!(roof(&sim), 5);
+}
+
+fn roof_plane_count_of(o: &Opening) -> usize {
+    roof_plane_count(o.style, &o.extras.spec.bay, &o.extras.spec.bay_roof)
+}
+
+#[test]
+fn build_foundation_walls_in_the_sections_of_a_bay_on_the_first_floor() {
+    let mut sim = house();
+    sim.tool(bay_tool(OpeningStyle::BayWindow));
+    sim.click(240.0, 0.5);
+    let before = {
+        let mut p = sim.app.cx.project.clone();
+        p.floors[0].openings.clear();
+        p.build_foundation(plan_core::FoundationKind::StemWall { height: 36.0 });
+        p.floors[0].walls.len()
+    };
+    let mut p = sim.app.cx.project.clone();
+    p.build_foundation(plan_core::FoundationKind::StemWall { height: 36.0 });
+    assert_eq!(p.floors[0].walls.len(), before + 3);
+    assert!(p.floors[0].walls.iter().all(|w| w.flags.foundation));
 }
 
 #[test]

@@ -58,6 +58,10 @@ pub const MULTIPLE_COPY: &str = "cadops.multiple_copy";
 pub const MULTIPLE_COPY_DRAG: &str = "cadops.multiple_copy_drag";
 pub const DG_FRONT: &str = "cadops.dg_front";
 pub const DG_BACK: &str = "cadops.dg_back";
+/// Bring Forward: the selection moves up exactly one drawing group.
+pub const DG_FORWARD: &str = "cadops.dg_forward";
+/// Send Backward: the selection moves down exactly one drawing group.
+pub const DG_BACKWARD: &str = "cadops.dg_backward";
 /// Opens the Set Drawing Group window.
 pub const DG_SET: &str = "cadops.dg_set";
 /// Opens Default Settings > Drawing Groups.
@@ -830,6 +834,35 @@ pub fn drawing_group_order(cx: &mut EditorContext, front: bool) -> Result<usize,
     Ok(n)
 }
 
+/// Bring Forward (`forward`) or Send Backward: every selected object moves
+/// one drawing group (stopping at the ends of the range). One undo step.
+pub fn drawing_group_step(cx: &mut EditorContext, forward: bool) -> Result<usize, String> {
+    let refs = core_refs(cx);
+    if refs.is_empty() {
+        return Err("Select objects first".into());
+    }
+    let label = if forward {
+        "Bring Forward"
+    } else {
+        "Send Backward"
+    };
+    cx.begin_change(label);
+    let fl = cx.floor;
+    let n = cx
+        .project
+        .drawing_group_step(fl, &refs, if forward { 1 } else { -1 });
+    if n == 0 {
+        cx.cancel_change();
+        return Err(format!(
+            "{label}: the selection is already {}",
+            if forward { "in front" } else { "at the back" }
+        ));
+    }
+    cx.mark_dirty();
+    cx.status = format!("{label}: {n} object{}", if n == 1 { "" } else { "s" });
+    Ok(n)
+}
+
 /// Set Drawing Group: `group` for the selection (`None` puts each object back
 /// in its kind's group). One undo step.
 pub fn set_drawing_group(cx: &mut EditorContext, group: Option<i32>) -> Result<usize, String> {
@@ -1185,6 +1218,10 @@ pub fn run_command(cx: &mut EditorContext, id: &str) -> bool {
             let r = drawing_group_order(cx, false).map(|_| ());
             report(cx, r);
         }
+        DG_FORWARD | DG_BACKWARD => {
+            let r = drawing_group_step(cx, id == DG_FORWARD).map(|_| ());
+            report(cx, r);
+        }
         DG_SET => {
             if cx.selection.is_empty() {
                 cx.status = "Select objects first".into();
@@ -1235,6 +1272,11 @@ pub fn edit_actions(cx: &EditorContext) -> Vec<EditAction> {
     }
     if !cx.selection.is_empty() {
         v.push(button(MULTIPLE_COPY, "Multiple Copy"));
+        // The View Drawing Group Edit Tools (manual p. 218).
+        v.push(button(DG_BACK, "Send to Back"));
+        v.push(button(DG_BACKWARD, "Send Backward"));
+        v.push(button(DG_FORWARD, "Bring Forward"));
+        v.push(button(DG_FRONT, "Bring to Front"));
     }
     v
 }
@@ -1674,6 +1716,30 @@ mod tests {
         assert_eq!(set_drawing_group(&mut cx, Some(5)).unwrap(), 1);
         assert_eq!(set_drawing_group(&mut cx, None).unwrap(), 1);
         assert!(set_drawing_group(&mut cx, None).is_err());
+    }
+
+    #[test]
+    fn bring_forward_and_send_backward_move_the_selection_one_group() {
+        let mut cx = cx();
+        let a = rect(&mut cx, 0.0, 0.0, 10.0, 10.0);
+        select(&mut cx, &[a]);
+        let table = cx.project.drawing_group_defaults.clone();
+        let before = cx.floor().drawing_group(&table, plan_core::ObjectRef::Cad(a));
+        assert_eq!(drawing_group_step(&mut cx, true).unwrap(), 1);
+        assert_eq!(cx.undo_label(), Some("Bring Forward"));
+        let table = cx.project.drawing_group_defaults.clone();
+        assert_eq!(
+            cx.floor().drawing_group(&table, plan_core::ObjectRef::Cad(a)),
+            before + 1
+        );
+        assert_eq!(drawing_group_step(&mut cx, false).unwrap(), 1);
+        assert_eq!(cx.undo_label(), Some("Send Backward"));
+        cx.undo();
+        cx.undo();
+        let table = cx.project.drawing_group_defaults.clone();
+        assert_eq!(cx.floor().drawing_group(&table, plan_core::ObjectRef::Cad(a)), before);
+        assert!(run_command(&mut cx, DG_FORWARD));
+        assert!(edit_actions(&cx).len() >= 4);
     }
 
     #[test]

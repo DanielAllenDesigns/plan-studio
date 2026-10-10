@@ -23,8 +23,10 @@ mod gable;
 mod geom;
 mod group;
 mod halfhip;
+mod heights;
 mod hole;
 mod join;
+mod placement;
 mod retain;
 mod skeleton;
 mod spec;
@@ -64,7 +66,18 @@ pub use hole::{
     shape_outline, CeilingHole, HoleKind, HoleRim, RimWall, RoofHole, RoofPolygonWithHoles,
     Skylight, SkylightOptions, SkylightShape, SkylightSpec, DEFAULT_SKYLIGHT_SIZE, SKYLIGHT_FACETS,
 };
+pub use heights::{
+    actual_length, birdsmouth_cut_for_seat, birdsmouth_seat_for_cut, independent_edges,
+    projected_length, seated_eave_elevation, vertical_structure_depth, HeightLock,
+    HeightSettings, PlaneHeights, RoofFraming, NO_BIRDSMOUTH_RAISE,
+};
 pub use join::join_planes;
+pub use placement::{
+    baseline_height_over, baseline_lies_on, coplanar_shift, edge_length, edge_plane_point,
+    in_from_baseline_for_start_height, perimeter, plan_length_for_entry, snap_to_wall_surface,
+    start_height_for_in_from_baseline, turn_to_align, up_slope, BaselineOver, LengthEntry,
+    PlacementError, WallSurface, WALL_SNAP_ANGLE, WALL_SNAP_DISTANCE,
+};
 pub use retain::{drop_replaced, replaces as retained_plane_replaces};
 pub use spec::{
     build_roof_at_plate, build_roof_at_plate_with_faces, build_roof_with_faces,

@@ -154,7 +154,7 @@ pub fn renumber_schedule(cx: &mut EditorContext, floor: usize, id: Id) -> bool {
     }
     edit_floor(cx, floor, "Renumber Schedule", |l| {
         if let Some(s) = l.find_mut(id) {
-            s.numbers = numbers;
+            s.record_numbers(numbers);
         }
     });
     cx.status = "Renumbered the schedule".into();
@@ -182,7 +182,7 @@ pub fn renumber_kinds(cx: &mut EditorContext, kinds: &[ScheduleKind]) -> usize {
     for (fi, id, numbers) in todo {
         let mut layer = ScheduleLayer::load(&cx.project.floors[fi]);
         if let Some(s) = layer.find_mut(id) {
-            s.numbers = numbers;
+            s.record_numbers(numbers);
         }
         super::save(&mut cx.project, fi, &layer);
     }
@@ -235,7 +235,7 @@ fn do_move_row(
         return false;
     };
     let mut def = def;
-    def.numbers = numbers;
+    def.record_numbers(numbers);
     // The numbers follow the new order, so grouping would undo the move.
     super::replace_as(cx, floor, def, "Move Schedule Row");
     select_row(floor, id, to);
@@ -710,7 +710,8 @@ pub fn create_from_room(
         s.title = format!("{} {}", name, kind.title());
     }
     let rooms = rooms_for(cx, cx.floor);
-    s.numbers = schedule_kinds::snapshot_numbers(&cx.project, &s, rooms);
+    let recorded = schedule_kinds::snapshot_numbers(&cx.project, &s, rooms);
+    s.record_numbers(recorded);
     let id = s.id;
     let fl = cx.floor;
     edit_floor(cx, fl, "Create Schedule from Room", |l| {

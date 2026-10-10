@@ -131,7 +131,7 @@ fn guides_pull_a_start_onto_a_wall_end_and_a_midpoint_and_shift_overrides_them()
     // Alt suspends every snap, guides included.
     sim.tool(exterior());
     let alt = Modifiers {
-        alt: true,
+        ctrl: true,
         ..Modifiers::NONE
     };
     sim.move_to(0.0, 0.0);

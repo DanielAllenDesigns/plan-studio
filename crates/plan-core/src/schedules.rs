@@ -1045,6 +1045,11 @@ pub struct Schedule {
     pub label: LabelOptions,
     /// The numbers given to objects so far.
     pub numbers: Vec<NumRec>,
+    /// The schedule keeps a number record (a schedule made before Round 16
+    /// has none and numbers by position until its first Renumber or move).
+    /// A new schedule keeps one even while it lists nothing, so an object
+    /// placed later goes below the last number and a deleted one leaves a gap.
+    pub numbers_recorded: bool,
 }
 
 impl Default for Schedule {
@@ -1101,7 +1106,14 @@ impl Schedule {
             header_style: String::new(),
             label: LabelOptions::default(),
             numbers: Vec::new(),
+            numbers_recorded: false,
         }
+    }
+
+    /// Keeps `numbers` as the schedule's record of its objects' numbers.
+    pub fn record_numbers(&mut self, numbers: Vec<NumRec>) {
+        self.numbers = numbers;
+        self.numbers_recorded = true;
     }
 
     /// The title row text.
@@ -1171,6 +1183,7 @@ impl Schedule {
         self.group_by.clear();
         self.categories.clear();
         self.numbers.clear();
+        self.numbers_recorded = false;
         self.new_types_included = kind != ScheduleKind::Note;
         if was_default_prefix {
             self.label_prefix = kind.default_prefix().to_string();
@@ -1355,6 +1368,7 @@ impl ScheduleSetup {
                 s.id = 0;
                 s.position = position;
                 s.numbers.clear();
+                s.numbers_recorded = false;
                 s.rooms.clear();
                 s.reconcile_columns();
                 s
@@ -1368,6 +1382,7 @@ impl ScheduleSetup {
         def.id = 0;
         def.position = Point::ZERO;
         def.numbers.clear();
+        def.numbers_recorded = false;
         def.rooms.clear();
         match self.defaults.iter_mut().find(|d| d.kind == def.kind) {
             Some(slot) => *slot = def,

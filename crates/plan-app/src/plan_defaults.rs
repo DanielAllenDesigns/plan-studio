@@ -118,6 +118,7 @@ pub fn resolve_wall_type(
     let name = format!("Custom-{thickness}");
     if d.wall_type(&name).is_none() {
         let layer = |n: &str, t: f64, main: bool| WallLayer {
+            spec: Default::default(),
             name: n.into(),
             thickness: t,
             is_main: main,
@@ -133,6 +134,7 @@ pub fn resolve_wall_type(
             vec![layer("Drywall", thickness, true)]
         };
         d.wall_types.push(WallTypeDef {
+            props: Default::default(),
             name: name.clone(),
             layers,
             kind,

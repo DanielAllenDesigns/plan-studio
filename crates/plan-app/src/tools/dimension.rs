@@ -781,7 +781,7 @@ fn locate_with(
     origin: Option<Point>,
     tool: LocateTool,
 ) -> Located {
-    if p.modifiers.alt {
+    if p.overrides() {
         return Located {
             point: p.world,
             what: "Free point",
@@ -1217,6 +1217,19 @@ impl DimensionTool {
     }
 
     fn lock_check(&self, cx: &mut EditorContext, layer: &str) -> bool {
+        // The Layer panel's names stand in for Chief's own (DIM-57).
+        let setup = &cx.defaults.dimensions.setup;
+        let named = match layer {
+            MANUAL_LAYER => &setup.layer_manual,
+            AUTO_LAYER => &setup.layer_automatic,
+            _ => &String::new(),
+        };
+        let layer = if named.is_empty() {
+            layer.to_string()
+        } else {
+            named.clone()
+        };
+        let layer = layer.as_str();
         if cx.layers().is_locked(layer) {
             cx.status = format!("The layer \"{layer}\" is locked");
             false
@@ -1349,6 +1362,26 @@ impl DimensionTool {
 
     fn auto_exterior(&mut self, cx: &mut EditorContext) -> ToolResult {
         cx.refresh();
+        let dims = Self::exterior_dims(cx);
+        if dims.is_empty() {
+            cx.status = "No exterior walls to dimension".into();
+            return ToolResult::consumed();
+        }
+        if !self.lock_check(cx, AUTO_LAYER) {
+            return ToolResult::consumed();
+        }
+        let inner: Vec<Vec<Point>> = cx.rooms.iter().map(|r| r.inner_polygon.clone()).collect();
+        cx.begin_change("Auto Exterior Dimensions");
+        // DIM-25: a new run replaces the previous exterior strings.
+        Self::clear_run(cx, AutoGroup::Exterior, &inner);
+        let n = Self::add_run(cx, dims);
+        cx.mark_dirty();
+        cx.status = format!("Added {n} exterior dimensions");
+        ToolResult::committed("Auto Exterior Dimensions")
+    }
+
+    /// The strings Auto Exterior Dimensions would make now.
+    fn exterior_dims(cx: &EditorContext) -> Vec<Dimension> {
         let walls: Vec<Wall> = cx
             .floor()
             .walls
@@ -1363,7 +1396,7 @@ impl DimensionTool {
             .filter(|o| walls.iter().any(|w| w.id == o.wall_id))
             .cloned()
             .collect();
-        let dims = {
+        {
             let set = &cx.defaults.dimensions;
             let tl = set.tool_locate(LocateTool::AutoExterior);
             // Setup Automatic: which strings, and where the first line
@@ -1381,22 +1414,7 @@ impl DimensionTool {
                 main_span: &main,
             };
             auto_exterior_set(&walls, &openings, &setup)
-        };
-        if dims.is_empty() {
-            cx.status = "No exterior walls to dimension".into();
-            return ToolResult::consumed();
         }
-        if !self.lock_check(cx, AUTO_LAYER) {
-            return ToolResult::consumed();
-        }
-        let inner: Vec<Vec<Point>> = cx.rooms.iter().map(|r| r.inner_polygon.clone()).collect();
-        cx.begin_change("Auto Exterior Dimensions");
-        // DIM-25: a new run replaces the previous exterior strings.
-        Self::clear_run(cx, AutoGroup::Exterior, &inner);
-        let n = Self::add_run(cx, dims);
-        cx.mark_dirty();
-        cx.status = format!("Added {n} exterior dimensions");
-        ToolResult::committed("Auto Exterior Dimensions")
     }
 
     /// Auto NKBA Dimensions: strings along every kitchen and bath cabinet
@@ -1561,6 +1579,25 @@ impl DimensionTool {
 
     fn auto_interior(&mut self, cx: &mut EditorContext) -> ToolResult {
         cx.refresh();
+        let (dims, inner) = Self::interior_dims(cx);
+        if dims.is_empty() {
+            cx.status = "No rooms to dimension".into();
+            return ToolResult::consumed();
+        }
+        if !self.lock_check(cx, AUTO_LAYER) {
+            return ToolResult::consumed();
+        }
+        cx.begin_change("Auto Interior Dimensions");
+        Self::clear_run(cx, AutoGroup::Interior, &inner);
+        let n = Self::add_run(cx, dims);
+        cx.mark_dirty();
+        cx.status = format!("Added {n} interior dimensions");
+        ToolResult::committed("Auto Interior Dimensions")
+    }
+
+    /// The strings Auto Room Dimensions would make now, and the rooms'
+    /// inner outlines.
+    fn interior_dims(cx: &EditorContext) -> (Vec<Dimension>, Vec<Vec<Point>>) {
         let sep = Self::separation(cx);
         let setup = cx.defaults.dimensions.setup.clone();
         // Setup Automatic, room: the smallest room, the lines inside or
@@ -1633,20 +1670,8 @@ impl DimensionTool {
             let mut seen = std::collections::HashSet::new();
             dims.retain(|d| seen.insert(key(d)));
         }
-        if dims.is_empty() {
-            cx.status = "No rooms to dimension".into();
-            return ToolResult::consumed();
-        }
-        if !self.lock_check(cx, AUTO_LAYER) {
-            return ToolResult::consumed();
-        }
         let inner: Vec<Vec<Point>> = rooms.iter().map(|r| r.inner_polygon.clone()).collect();
-        cx.begin_change("Auto Interior Dimensions");
-        Self::clear_run(cx, AutoGroup::Interior, &inner);
-        let n = Self::add_run(cx, dims);
-        cx.mark_dirty();
-        cx.status = format!("Added {n} interior dimensions");
-        ToolResult::committed("Auto Interior Dimensions")
+        (dims, inner)
     }
 
     // ----- elevation and story pole dimensions -----
@@ -1881,6 +1906,32 @@ impl DimensionTool {
             }
             // One string per row of the pole.
             cx.project.floors[fl].join_string(&ids);
+        }
+        // Elevation Markers (DIM-64): one per mark on the pole line, from the
+        // Saved Marker Defaults, pointing at the mark. A new run replaces the last run's markers on this line.
+        use plan_core::callout::{AnnotRef, MarkerKind};
+        let stale: Vec<usize> = cx.project.floors[fl]
+            .annots
+            .markers
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| m.kind == MarkerKind::Elevation && (m.center.x - x).abs() < 1e-6)
+            .map(|(i, _)| i)
+            .collect();
+        for i in stale.into_iter().rev() {
+            cx.project.remove_annot(fl, AnnotRef::Marker(i));
+        }
+        let saved = cx.project.annot_defaults.marker.clone();
+        for (_, elevation, left) in &labels {
+            let mut m = saved.clone();
+            m.kind = MarkerKind::Elevation;
+            m.center = Point::new(x, *elevation);
+            m.angle = if *left { 0.0 } else { 180.0 };
+            // The name and height stay in the CAD text beside the line.
+            m.label.text.clear();
+            m.below.text.clear();
+            m.height_z = elevation - datum;
+            cx.project.add_marker(fl, m);
         }
         let mut texts = Vec::new();
         for (text, elevation, left) in labels {
@@ -2166,7 +2217,7 @@ impl DimensionTool {
             drag.changed = true;
         }
         if let Some(pt) = offset_to {
-            let snap = (!p.modifiers.alt).then_some(unit);
+            let snap = (!p.overrides()).then_some(unit);
             cx.project.floors[fl].drag_dimension_line(drag_id, pt, snap);
         }
         cx.mark_dirty();
@@ -3098,7 +3149,7 @@ impl DimensionTool {
 
     fn locate_for(&self, cx: &EditorContext, p: &PointerEvent) -> Located {
         if self.mode == DimMode::PointToPoint {
-            if p.modifiers.alt {
+            if p.overrides() {
                 return Located {
                     point: p.world,
                     what: "Free point",
@@ -3154,6 +3205,59 @@ impl DimensionTool {
             _ => None,
         };
     }
+}
+
+/// Auto Refresh (Setup Automatic, DIM-52): with the box checked, the
+/// automatic strings of a kind that was generated are deleted and replaced
+/// whenever the model changes what they measure. A run that would come out
+/// the same is left alone, so refreshing twice changes nothing. Returns
+/// whether anything was replaced. Elevation strings have no plan object to
+/// refresh (DIM-61).
+pub fn auto_refresh(cx: &mut EditorContext) -> bool {
+    let st = &cx.defaults.dimensions.setup;
+    let (ext, room) = (st.exterior_auto_refresh, st.room_auto_refresh);
+    let mut changed = false;
+    if ext {
+        changed |= refresh_run(cx, AutoGroup::Exterior);
+    }
+    if room {
+        changed |= refresh_run(cx, AutoGroup::Interior);
+    }
+    changed
+}
+
+fn refresh_run(cx: &mut EditorContext, group: AutoGroup) -> bool {
+    let fl = cx.floor;
+    let have: Vec<(Point, Point, f64)> = cx.project.floors[fl]
+        .dimensions
+        .iter()
+        .filter(|d| d.kind == DimensionKind::AutoExterior && d.auto_group == group)
+        .map(|d| (d.start, d.end, d.offset))
+        .collect();
+    // Nothing was ever generated: there is nothing to refresh.
+    if have.is_empty() || cx.layers().is_locked(AUTO_LAYER) {
+        return false;
+    }
+    let (dims, inner) = if group == AutoGroup::Exterior {
+        let inner = cx.rooms.iter().map(|r| r.inner_polygon.clone()).collect();
+        (DimensionTool::exterior_dims(cx), inner)
+    } else {
+        DimensionTool::interior_dims(cx)
+    };
+    let near = |a: Point, b: Point| a.dist(b) < 0.01;
+    let same = dims.len() == have.len()
+        && dims.iter().all(|d| {
+            have.iter().any(|h| {
+                (near(h.0, d.start) && near(h.1, d.end) || near(h.0, d.end) && near(h.1, d.start))
+                    && (h.2 - d.offset).abs() < 0.01
+            })
+        });
+    if same {
+        return false;
+    }
+    DimensionTool::clear_run(cx, group, &inner);
+    DimensionTool::add_run(cx, dims);
+    true
 }
 
 impl Tool for DimensionTool {
@@ -3795,11 +3899,11 @@ mod tests {
         let l = locate(&cx, &p, false, None);
         assert_eq!(l.what, "Opening center");
         assert!(l.point.dist(Point::new(120.0, 0.0)) < 1e-9);
-        let alt = p.with_modifiers(egui::Modifiers {
-            alt: true,
+        let ctrl = p.with_modifiers(egui::Modifiers {
+            ctrl: true,
             ..egui::Modifiers::NONE
         });
-        assert_eq!(locate(&cx, &alt, false, None).what, "Free point");
+        assert_eq!(locate(&cx, &ctrl, false, None).what, "Free point");
         // No Locate walls are skipped (DIM-5).
         cx.project.floors[0].walls[0].flags.no_locate = true;
         let l = locate(

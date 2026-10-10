@@ -780,9 +780,7 @@ fn a_story_pole_locates_the_roof_marks_and_names_them() {
         .dimensions
         .setup
         .pole
-        .marks
-        .iter()
-        .any(|m| m.kind == MarkKind::Ridge));
+        .locates(MarkKind::Ridge));
 }
 
 #[test]

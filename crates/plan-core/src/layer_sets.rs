@@ -867,6 +867,7 @@ impl Project {
         for v in self.plan_views.iter_mut().filter(|v| v.layer_set == old) {
             v.layer_set = new_name.to_string();
         }
+        self.layer_set_defaults.repoint(old, Some(new_name));
         true
     }
 
@@ -880,7 +881,115 @@ impl Project {
         for v in self.plan_views.iter_mut().filter(|v| v.layer_set == name) {
             v.layer_set = active.clone();
         }
+        self.layer_set_defaults.repoint(name, None);
         true
+    }
+
+    /// The layer set a new view of `kind` starts with (Layer Set Defaults,
+    /// LAY-70): the chosen set while it exists, else the active one.
+    pub fn initial_layer_set(&self, kind: ViewKind) -> String {
+        self.layer_set_defaults.initial_set(kind, &self.layer_sets)
+    }
+}
+
+/// The view kinds the Layer Set Defaults dialog lists (manual p. 213 says
+/// nine, including the reference floor; the kinds are our best reading, see
+/// DECISIONS LS1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum ViewKind {
+    FloorPlan,
+    ReferenceFloor,
+    CeilingPlan,
+    FramingPlan,
+    RoofPlan,
+    ElectricalPlan,
+    Section,
+    Elevation,
+    CadDetail,
+}
+
+impl ViewKind {
+    pub const ALL: [ViewKind; 9] = [
+        ViewKind::FloorPlan,
+        ViewKind::ReferenceFloor,
+        ViewKind::CeilingPlan,
+        ViewKind::FramingPlan,
+        ViewKind::RoofPlan,
+        ViewKind::ElectricalPlan,
+        ViewKind::Section,
+        ViewKind::Elevation,
+        ViewKind::CadDetail,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ViewKind::FloorPlan => "Floor Plan",
+            ViewKind::ReferenceFloor => "Reference Floor",
+            ViewKind::CeilingPlan => "Ceiling Plan",
+            ViewKind::FramingPlan => "Framing Plan",
+            ViewKind::RoofPlan => "Roof Plan",
+            ViewKind::ElectricalPlan => "Electrical Plan",
+            ViewKind::Section => "Cross Section",
+            ViewKind::Elevation => "Elevation",
+            ViewKind::CadDetail => "CAD Detail",
+        }
+    }
+}
+
+/// The text of the drop-down entry that follows whatever layer set is
+/// active in the new view.
+pub const USE_ACTIVE_LAYER_SET: &str = "Use Active Layer Set";
+
+/// The initial layer set of each view kind (LAY-70). A kind without an
+/// entry uses the active layer set, so a plan from before this changes
+/// nothing.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LayerSetDefaults {
+    pub sets: BTreeMap<ViewKind, String>,
+}
+
+impl LayerSetDefaults {
+    pub fn is_default(&self) -> bool {
+        self.sets.is_empty()
+    }
+
+    /// The chosen set of `kind`; `None` is "Use Active Layer Set".
+    pub fn choice(&self, kind: ViewKind) -> Option<&str> {
+        self.sets.get(&kind).map(String::as_str)
+    }
+
+    /// Chooses a set for `kind`; `None` or [`USE_ACTIVE_LAYER_SET`] clears it.
+    pub fn set(&mut self, kind: ViewKind, set: Option<&str>) {
+        match set {
+            Some(s) if s != USE_ACTIVE_LAYER_SET && !s.is_empty() => {
+                self.sets.insert(kind, s.to_string());
+            }
+            _ => {
+                self.sets.remove(&kind);
+            }
+        }
+    }
+
+    /// The set a new view of `kind` starts with: the chosen set while it
+    /// exists in `sets`, else the active one.
+    pub fn initial_set(&self, kind: ViewKind, sets: &LayerSets) -> String {
+        self.choice(kind)
+            .filter(|n| sets.get(n).is_some())
+            .map_or_else(|| sets.active.clone(), str::to_string)
+    }
+
+    /// A set was renamed (`Some(new)`) or deleted (`None`, the kinds go back
+    /// to "Use Active Layer Set").
+    pub fn repoint(&mut self, old: &str, new_name: Option<&str>) {
+        match new_name {
+            Some(n) => {
+                for v in self.sets.values_mut().filter(|v| *v == old) {
+                    *v = n.to_string();
+                }
+            }
+            None => self.sets.retain(|_, v| v != old),
+        }
     }
 }
 
@@ -1417,5 +1526,43 @@ mod tests {
         assert_eq!(sets.len(), 19);
         // All 20 views of the template are covered.
         assert_eq!(views.matches('`').count(), 40);
+    }
+
+    #[test]
+    fn layer_set_defaults_choose_the_initial_set_per_view_kind() {
+        let mut p = Project::new("d");
+        p.layer_sets.add_set(LayerSetDef::new("Framing"));
+        p.layer_sets.add_set(LayerSetDef::new("Electrical"));
+        let active = p.layer_sets.active.clone();
+        for k in ViewKind::ALL {
+            assert_eq!(
+                p.initial_layer_set(k),
+                active,
+                "no choice uses the active set"
+            );
+        }
+        assert_eq!(ViewKind::ALL.len(), 9);
+        p.layer_set_defaults
+            .set(ViewKind::FramingPlan, Some("Framing"));
+        p.layer_set_defaults
+            .set(ViewKind::ReferenceFloor, Some("Electrical"));
+        assert_eq!(p.initial_layer_set(ViewKind::FramingPlan), "Framing");
+        assert_eq!(p.initial_layer_set(ViewKind::FloorPlan), active);
+        // A renamed set is followed; a deleted one falls back to Use Active.
+        assert!(p.rename_layer_set("Framing", "Framing 2"));
+        assert_eq!(p.initial_layer_set(ViewKind::FramingPlan), "Framing 2");
+        assert!(p.delete_layer_set("Electrical"));
+        assert_eq!(p.layer_set_defaults.choice(ViewKind::ReferenceFloor), None);
+        // "Use Active Layer Set" clears the choice.
+        p.layer_set_defaults
+            .set(ViewKind::FramingPlan, Some(USE_ACTIVE_LAYER_SET));
+        assert!(p.layer_set_defaults.is_default());
+        // A choice naming a set the plan lacks reads as the active set.
+        p.layer_set_defaults.set(ViewKind::Section, Some("Ghost"));
+        assert_eq!(p.initial_layer_set(ViewKind::Section), p.layer_sets.active);
+        // Save and load.
+        let json = serde_json::to_string(&p).unwrap();
+        let back: Project = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.layer_set_defaults, p.layer_set_defaults);
     }
 }

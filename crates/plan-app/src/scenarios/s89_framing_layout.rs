@@ -7,7 +7,8 @@
 
 use super::{draw_shell, Sim};
 use crate::dialogs::{defaults, framing as framing_dialog};
-use crate::editor::framing_view::{self, cmd, FramingSettings, Record, Target};
+use crate::editor::framing_view::selected::{build_targets, set_planes_retained, Target};
+use crate::editor::framing_view::{self, cmd, details, trusses, FramingSettings, Record};
 use crate::editor::{EditActionKind, ObjectRef};
 use crate::shell::docks::{browser_nodes, BrowserNode};
 use crate::toolbar::{Action, FramingCommand};
@@ -195,7 +196,7 @@ fn build_framing_for_selected_rebuilds_a_wall_and_a_roof_plane_apart() {
         .unwrap();
     assert!(!b.enabled);
     assert!(matches!(
-        framing_view::build_targets(sim.cx(), &[Target::Wall(wall)], None),
+        build_targets(sim.cx(), &[Target::Wall(wall)], None),
         framing_view::Outcome::Refused(_)
     ));
 }
@@ -222,9 +223,9 @@ fn a_roof_plane_builds_its_own_framing() {
     assert_eq!(count(&sim, 0, MemberKind::Rafter), rafters);
     assert_eq!(count(&sim, 0, MemberKind::Stud), studs);
     // Retaining the plane stops the button.
-    framing_view::set_planes_retained(sim.cx(), &[plane], true);
+    set_planes_retained(sim.cx(), &[plane], true);
     assert!(matches!(
-        framing_view::build_targets(sim.cx(), &[Target::RoofPlane(plane)], None),
+        build_targets(sim.cx(), &[Target::RoofPlane(plane)], None),
         framing_view::Outcome::Refused(_)
     ));
 }
@@ -241,9 +242,9 @@ fn retain_wall_framing_protects_a_member_edited_in_the_wall_detail() {
     assert_eq!(label, "W2");
     assert_eq!(sim.app.cx.project.floors[di].name, "W2");
     // Open it, select a stud's box and turn it flat to the outside.
-    assert!(framing_view::open_wall_detail(sim.cx(), w));
+    assert!(details::open_wall_detail(sim.cx(), w));
     assert_eq!(sim.app.cx.floor, di);
-    let map = framing_view::load_map(sim.app.cx.floor());
+    let map = details::load_map(sim.app.cx.floor());
     let members = members_of(&sim, 0, wall);
     let all = framing_view::load(&sim.app.cx.project.floors[0]);
     let stud_index = all
@@ -290,7 +291,6 @@ fn retain_wall_framing_protects_a_member_edited_in_the_wall_detail() {
 }
 
 #[test]
-#[ignore = "R16-30 in progress"]
 fn the_wall_detail_opens_from_the_edit_button_and_is_listed_in_the_project_browser() {
     let mut sim = house();
     let wall = sim.wall_ids()[0];
@@ -346,14 +346,14 @@ fn the_wall_detail_opens_from_the_edit_button_and_is_listed_in_the_project_brows
     sim.app.cx.floor = 0;
     sim.app.cx.reset_view_state();
     sim.action(Action::Framing(FramingCommand::Build));
-    let di = framing_view::wall_detail_floor(&sim.app.cx.project, wall).unwrap();
+    let di = details::wall_detail_floor(&sim.app.cx.project, wall).unwrap();
     assert!(sim.app.cx.project.floors[di]
         .cad
         .iter()
         .any(|o| o.id == note));
     // Deleting a member from the detail takes it out of the wall's framing.
-    framing_view::open_wall_detail(sim.cx(), wall);
-    let map = framing_view::load_map(sim.app.cx.floor());
+    details::open_wall_detail(sim.cx(), wall);
+    let map = details::load_map(sim.app.cx.floor());
     let all = framing_view::load(&sim.app.cx.project.floors[0]);
     let n = all.iter().filter(|m| m.wall_id == Some(wall)).count();
     sim.app.cx.selection.set(ObjectRef::Cad(map.members[0].0));
@@ -362,7 +362,6 @@ fn the_wall_detail_opens_from_the_edit_button_and_is_listed_in_the_project_brows
 }
 
 #[test]
-#[ignore = "R16-30 in progress"]
 fn a_framing_group_separates_platforms_and_the_question_is_asked() {
     let mut sim = house();
     // A partition splits the house in two rooms; only the exterior walls bear.
@@ -380,11 +379,14 @@ fn a_framing_group_separates_platforms_and_the_question_is_asked() {
     });
     sim.action(Action::Framing(FramingCommand::Build));
     let one_platform = count(&sim, 0, MemberKind::Joist);
+
     assert!(one_platform > 10);
-    // Joists cross the partition: no joist ends at x = 240 on both sides.
+    // Joists cross the partition: no joist that runs along x ends at x = 240. (The
+    // joists span the short side, y, so one standing beside the partition at
+    // x = 240.75 runs parallel to it and does not end there.)
     let ends_at_partition = framing_view::load(sim.app.cx.floor())
         .iter()
-        .filter(|m| m.kind == MemberKind::Joist)
+        .filter(|m| m.kind == MemberKind::Joist && m.transform.axis_x[0].abs() > 0.5)
         .filter(|m| {
             let a = m.transform.origin[0];
             let b = a + m.transform.axis_x[0] * m.length;
@@ -420,7 +422,7 @@ fn a_framing_group_separates_platforms_and_the_question_is_asked() {
     // Joists now stop at the partition (the platforms are separate).
     let ends_at_partition = framing_view::load(sim.app.cx.floor())
         .iter()
-        .filter(|m| m.kind == MemberKind::Joist)
+        .filter(|m| m.kind == MemberKind::Joist && m.transform.axis_x[0].abs() > 0.5)
         .filter(|m| {
             let a = m.transform.origin[0];
             let b = a + m.transform.axis_x[0] * m.length;
@@ -431,7 +433,6 @@ fn a_framing_group_separates_platforms_and_the_question_is_asked() {
 }
 
 #[test]
-#[ignore = "R16-30 in progress"]
 fn a_bearing_wall_and_a_bearing_beam_lap_or_butt_the_joists_over_them() {
     let mut sim = house();
     sim.tool(crate::tools::ToolId::Wall {
@@ -439,7 +440,17 @@ fn a_bearing_wall_and_a_bearing_beam_lap_or_butt_the_joists_over_them() {
     });
     sim.drag((240.0, 0.0), (240.0, H));
     sim.app.cx.refresh();
-    let partition = *sim.wall_ids().last().unwrap();
+    // Drawing the partition splits the north and south walls at its ends, and the
+    // pieces are appended after it: pick the partition by its kind, not by order.
+    let partition = sim
+        .app
+        .cx
+        .floor()
+        .walls
+        .iter()
+        .find(|w| w.kind == plan_core::WallKind::Interior)
+        .map(|w| w.id)
+        .unwrap();
     change(&mut sim, |st| {
         st.walls.bearing = BearingMode::ExteriorAndBearingLines;
         st.build.build = GroupFlags {
@@ -623,7 +634,7 @@ fn identical_trusses_share_a_label_the_truss_detail_draws_each_once_and_the_sche
     truss(&mut sim, 64.0, 288.0);
     truss(&mut sim, 88.0, 288.0);
     let d = truss(&mut sim, 112.0, 240.0);
-    let labels_now = framing_view::truss_labels(&sim.app.cx.project);
+    let labels_now = trusses::truss_labels(&sim.app.cx.project);
     let label = |id: Id| {
         labels_now
             .iter()
@@ -634,7 +645,7 @@ fn identical_trusses_share_a_label_the_truss_detail_draws_each_once_and_the_sche
     assert_eq!(label(d).as_deref(), Some("TR-2"));
     assert_eq!(labels_now.iter().filter(|(_, l)| l == "TR-1").count(), 3);
     // The Truss Detail exists and has one diagram per configuration, with the quantity.
-    let td = framing_view::truss_detail_floor(&sim.app.cx.project).expect("a Truss Detail");
+    let td = details::truss_detail_floor(&sim.app.cx.project).expect("a Truss Detail");
     let f = &sim.app.cx.project.floors[td];
     let texts: Vec<String> = f
         .cad
@@ -650,7 +661,7 @@ fn identical_trusses_share_a_label_the_truss_detail_draws_each_once_and_the_sche
     framing_view::select(sim.cx(), vec![a]);
     assert!(labels(&sim).contains(&"Open Truss Detail"));
     sim.app.cx.run_custom(cmd::OPEN_TRUSS_DETAIL);
-    assert!(framing_view::in_truss_detail(&sim.app.cx));
+    assert!(details::in_truss_detail(&sim.app.cx));
     assert!(labels(&sim).contains(&"Find Trusses"));
     sim.app.cx.run_custom(cmd::FIND_TRUSSES);
     assert_eq!(sim.app.cx.floor, 0);
@@ -668,7 +679,7 @@ fn identical_trusses_share_a_label_the_truss_detail_draws_each_once_and_the_sche
         .map(|m| m.id)
         .collect();
     framing_view::delete_records(sim.cx(), &ids);
-    assert!(framing_view::truss_detail_floor(&sim.app.cx.project).is_none());
+    assert!(details::truss_detail_floor(&sim.app.cx.project).is_none());
 }
 
 #[test]

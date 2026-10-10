@@ -9,6 +9,9 @@ use plan_core::geometry::Point;
 use plan_core::{Id, WallEnd};
 use std::cell::Cell;
 
+pub mod icons;
+pub use icons::{draw as draw_icons, select_for_icon};
+
 /// Custom command ids (the `id` of `EditActionKind::Custom`).
 pub const BREAK_WALL: &str = "wall.break";
 pub const REMOVE_BREAK: &str = "wall.remove_break";
@@ -16,20 +19,35 @@ pub const REVERSE_LAYERS: &str = "wall.reverse_layers";
 pub const CHANGE_LINE_ARC: &str = "wall.line_arc";
 pub const ARC_TANGENT: &str = "wall.arc_tangent";
 pub const CONVERT_POLYLINE: &str = "wall.to_polyline";
+pub const MAKE_INVISIBLE: &str = "wall.make_invisible";
+pub const MAKE_VISIBLE: &str = "wall.make_visible";
+pub const FIX_OFF_ANGLE: &str = "wall.fix_off_angle";
+pub const IGNORE_ICON: &str = "wall.ignore_icon";
+pub const IGNORE_ALL: &str = "wall.ignore_all_icons";
+pub const RESET_ICONS: &str = "wall.reset_icons";
+pub const CONNECT_WALLS: &str = "wall.connect_walls";
+pub const LOCK_START: &str = "wall.lock_start";
+pub const LOCK_END: &str = "wall.lock_end";
+pub const ALIGN_ABOVE: &str = "wall.align_above";
+pub const ALIGN_BELOW: &str = "wall.align_below";
 
 thread_local! {
     /// Break Wall was picked and waits for the click that sets the point.
     static BREAK_PENDING: Cell<bool> = const { Cell::new(false) };
+    /// Connect Walls has its first wall and waits for the click on the second
+    /// (W-136). It shares the click and Esc path of Break Wall.
+    static CONNECT_PENDING: Cell<Option<Id>> = const { Cell::new(None) };
 }
 
 /// Is Break Wall waiting for its click?
 pub fn break_pending() -> bool {
-    BREAK_PENDING.with(Cell::get)
+    BREAK_PENDING.with(Cell::get) || CONNECT_PENDING.with(Cell::get).is_some()
 }
 
 /// Drops a pending Break Wall; true when there was one (Esc).
 pub fn cancel_break() -> bool {
-    BREAK_PENDING.with(|b| b.replace(false))
+    let connect = CONNECT_PENDING.with(|c| c.replace(None)).is_some();
+    BREAK_PENDING.with(|b| b.replace(false)) || connect
 }
 
 /// Two straight walls that cross in the middle and were left whole (Walls
@@ -102,6 +120,20 @@ pub fn edit_actions(cx: &EditorContext) -> Vec<super::EditAction> {
     };
     let mut v = vec![button(REVERSE_LAYERS, "Reverse Layers", "", true)];
     v.push(button(CONVERT_POLYLINE, "Convert to Polyline", "", true));
+    let all_hidden = walls
+        .iter()
+        .all(|i| cx.floor().wall(*i).is_some_and(|w| w.flags.invisible));
+    if all_hidden {
+        v.push(button(MAKE_VISIBLE, "Make Wall(s) Visible", "", true));
+    } else {
+        v.push(button(MAKE_INVISIBLE, "Make Wall(s) Invisible", "", true));
+    }
+    v.push(button(ALIGN_ABOVE, "Align With Wall Above", "", true));
+    v.push(button(ALIGN_BELOW, "Align With Wall Below", "", true));
+    v.push(button(RESET_ICONS, "Reset Notification Icons", "", true));
+    if walls.len() == 2 {
+        v.push(button(CONNECT_WALLS, "Connect Walls", "", true));
+    }
     if let (1, Some(w)) = (walls.len(), cx.floor().wall(walls[0])) {
         let single = cx.selection.single().is_some();
         v.push(button(BREAK_WALL, "Break Wall", "wall_break", single));
@@ -118,12 +150,55 @@ pub fn edit_actions(cx: &EditorContext) -> Vec<super::EditAction> {
             "",
             single && w.is_curved(),
         ));
+        let (allowed, inc) = angle_rules(cx);
+        let icons = plan_core::wall_repair::off_angle(w, &allowed, inc).is_some()
+            || !cx.project.unconnected_ends(cx.floor, w.id).is_empty();
+        v.push(button(CONNECT_WALLS, "Connect Walls", "", single));
+        v.push(button(
+            FIX_OFF_ANGLE,
+            "Fix Off Angle Wall",
+            "",
+            single && plan_core::wall_repair::off_angle(w, &allowed, inc).is_some(),
+        ));
+        let only_loose = plan_core::wall_repair::off_angle(w, &allowed, inc).is_none();
+        v.push(button(
+            IGNORE_ICON,
+            if only_loose {
+                "Ignore Unconnected Wall"
+            } else {
+                "Ignore"
+            },
+            "",
+            single && icons,
+        ));
+        v.push(button(IGNORE_ALL, "Ignore All", "", icons));
+        let (ls, le) = (w.flags.lock_start, w.flags.lock_end);
+        v.push(button(
+            LOCK_START,
+            if ls {
+                "Enable Auto Connect (Start)"
+            } else {
+                "Lock Auto Connect (Start)"
+            },
+            "",
+            single,
+        ));
+        v.push(button(
+            LOCK_END,
+            if le {
+                "Enable Auto Connect (End)"
+            } else {
+                "Lock Auto Connect (End)"
+            },
+            "",
+            single,
+        ));
     }
     v
 }
 
 /// Where a dragged wall end lands (W-15..W-18): the snapped point, held to
-/// the angle increment by Shift, or replaced by the typed length and angle.
+/// 90 or 45 degrees by Shift, or replaced by the typed length and angle.
 /// Also sets the status readout while typing.
 pub fn drag_end(
     cx: &mut EditorContext,
@@ -135,17 +210,8 @@ pub fn drag_end(
 ) -> Point {
     let mut to = snapped;
     if shift && !alt {
-        let e = &cx.defaults.editing;
-        let inc = if e.angle_snap_deg >= 1.0 {
-            e.angle_snap_deg
-        } else {
-            15.0
-        };
-        let held = if e.snap_angles.is_empty() {
-            super::snap::angle_snap(fixed, raw, cx.defaults.grid.snap, inc)
-        } else {
-            super::snap::angle_snap_list(fixed, raw, cx.defaults.grid.snap, &e.snap_angles)
-        };
+        let set = super::snap::restrictive_angles(&cx.defaults.editing);
+        let held = super::snap::angle_snap_list(fixed, raw, cx.defaults.grid.snap, &set);
         if let Some(p) = held {
             to = p;
         }
@@ -213,9 +279,290 @@ pub fn run_command(cx: &mut EditorContext, id: &str) -> bool {
         CONVERT_POLYLINE => {
             convert_to_polyline(cx);
         }
+        MAKE_INVISIBLE => {
+            set_invisible(cx, true);
+        }
+        MAKE_VISIBLE => {
+            set_invisible(cx, false);
+        }
+        FIX_OFF_ANGLE => {
+            if let Some(ObjectRef::Wall(id)) = cx.selection.single() {
+                crate::dialogs::fix_connections::open(cx, id);
+            }
+        }
+        IGNORE_ICON => {
+            ignore_icons(cx, false);
+        }
+        IGNORE_ALL => {
+            ignore_icons(cx, true);
+        }
+        RESET_ICONS => {
+            reset_icons(cx);
+        }
+        CONNECT_WALLS => {
+            connect_selected(cx);
+        }
+        LOCK_START => {
+            toggle_auto_connect_lock(cx, WallEnd::Start);
+        }
+        LOCK_END => {
+            toggle_auto_connect_lock(cx, WallEnd::End);
+        }
+        ALIGN_ABOVE => {
+            align_with(cx, 1);
+        }
+        ALIGN_BELOW => {
+            align_with(cx, -1);
+        }
         _ => return false,
     }
     true
+}
+
+/// The allowed angles and the increment of the plan defaults.
+fn angle_rules(cx: &EditorContext) -> (Vec<f64>, f64) {
+    (
+        cx.defaults.editing.snap_angles.clone(),
+        cx.defaults.editing.angle_snap_deg,
+    )
+}
+
+/// The angle wall `id` should have when it carries the off-angle icon.
+pub fn off_angle_target(cx: &EditorContext, id: Id) -> Option<f64> {
+    let (allowed, inc) = angle_rules(cx);
+    let w = cx.floor().wall(id)?;
+    if w.flags.ignore_off_angle {
+        return None;
+    }
+    plan_core::wall_repair::off_angle(w, &allowed, inc)
+}
+
+/// Make Wall(s) Invisible / Visible (W-130): sets the Invisible flag of every
+/// selected wall. One undo step; returns how many walls changed.
+pub fn set_invisible(cx: &mut EditorContext, invisible: bool) -> usize {
+    let ids = selected_walls(cx);
+    if ids.is_empty() || ids.iter().any(|i| !cx.check_unlocked(ObjectRef::Wall(*i))) {
+        return 0;
+    }
+    cx.begin_change(if invisible {
+        "Make Walls Invisible"
+    } else {
+        "Make Walls Visible"
+    });
+    let fl = cx.floor;
+    let mut n = 0;
+    for id in ids {
+        if let Some(w) = cx.project.floors[fl].wall_mut(id) {
+            if w.flags.invisible != invisible {
+                w.flags.invisible = invisible;
+                n += 1;
+            }
+        }
+    }
+    if n == 0 {
+        cx.cancel_change();
+        return 0;
+    }
+    cx.project.sync_platform_walls();
+    cx.mark_dirty();
+    cx.refresh();
+    cx.status = format!(
+        "{n} wall{} made {}",
+        if n == 1 { "" } else { "s" },
+        if invisible { "invisible" } else { "visible" }
+    );
+    n
+}
+
+/// Fix Off Angle Wall (W-133): turns wall `id` to `angle` degrees around the
+/// start, center or end; walls joined to the moved ends follow. One undo step.
+pub fn fix_off_angle(
+    cx: &mut EditorContext,
+    id: Id,
+    angle: f64,
+    lock: plan_core::wall_repair::FixLock,
+) -> bool {
+    if !cx.check_unlocked(ObjectRef::Wall(id)) {
+        return false;
+    }
+    let fl = cx.floor;
+    let Some(before) = cx.project.floors[fl].wall(id).cloned() else {
+        return false;
+    };
+    cx.begin_change("Fix Off Angle Wall");
+    if cx.project.fix_off_angle(fl, id, angle, lock).is_none() {
+        cx.cancel_change();
+        return false;
+    }
+    follow_moved_ends(cx, id, &before);
+    cx.project.sync_platform_walls();
+    cx.mark_dirty();
+    cx.refresh();
+    cx.status = format!("Wall turned to {angle:.2} degrees");
+    true
+}
+
+/// Ignore (the selected walls) or Ignore All (every wall of the floor): the
+/// off-angle and unconnected icons go away until Reset Notification Icons.
+pub fn ignore_icons(cx: &mut EditorContext, all: bool) -> usize {
+    let ids = selected_walls(cx);
+    let fl = cx.floor;
+    cx.begin_change(if all { "Ignore All" } else { "Ignore" });
+    let n = cx
+        .project
+        .ignore_wall_icons(fl, (!all).then_some(&ids[..]), true, true);
+    if n == 0 {
+        cx.cancel_change();
+        return 0;
+    }
+    cx.mark_dirty();
+    cx.status = format!(
+        "Ignoring the icons of {n} wall{}",
+        if n == 1 { "" } else { "s" }
+    );
+    n
+}
+
+/// Reset Notification Icons (W-132): every ignored icon of the floor returns.
+pub fn reset_icons(cx: &mut EditorContext) -> usize {
+    let fl = cx.floor;
+    cx.begin_change("Reset Notification Icons");
+    let n = cx.project.reset_notification_icons(fl);
+    if n == 0 {
+        cx.cancel_change();
+        cx.status = "No notification icon was ignored".into();
+        return 0;
+    }
+    cx.mark_dirty();
+    cx.status = format!(
+        "Notification icons of {n} wall{} are back",
+        if n == 1 { "" } else { "s" }
+    );
+    n
+}
+
+/// Auto Connect lock on one end of the selected wall (W-135): a locked end
+/// never snaps to other walls and carries no unconnected symbol.
+pub fn toggle_auto_connect_lock(cx: &mut EditorContext, end: WallEnd) -> Option<bool> {
+    let Some(ObjectRef::Wall(id)) = cx.selection.single() else {
+        cx.status = "Select one wall to lock or unlock Auto Connect".into();
+        return None;
+    };
+    if !cx.check_unlocked(ObjectRef::Wall(id)) {
+        return None;
+    }
+    cx.begin_change("Auto Connect Lock");
+    let fl = cx.floor;
+    let w = cx.project.floors[fl].wall_mut(id)?;
+    let flag = match end {
+        WallEnd::Start => &mut w.flags.lock_start,
+        WallEnd::End => &mut w.flags.lock_end,
+    };
+    *flag = !*flag;
+    let now = *flag;
+    cx.mark_dirty();
+    cx.status = if now {
+        "Auto Connect is locked on that end".into()
+    } else {
+        "Auto Connect is on for that end".into()
+    };
+    Some(now)
+}
+
+/// Connect Walls (W-136) with two walls selected connects them now; with one
+/// selected it waits for the click on the second wall.
+pub fn connect_selected(cx: &mut EditorContext) {
+    match selected_walls(cx)[..] {
+        [a, b] => {
+            connect_walls(cx, a, b);
+        }
+        [a] => {
+            CONNECT_PENDING.with(|c| c.set(Some(a)));
+            cx.status = "Connect Walls: click the wall to join (Esc cancels)".into();
+        }
+        _ => cx.status = "Select a wall (or two) to connect".into(),
+    }
+}
+
+/// Joins the close ends of walls `a` and `b`. One undo step; returns the
+/// number of edits (0 when they are too far apart or an end is locked).
+pub fn connect_walls(cx: &mut EditorContext, a: Id, b: Id) -> usize {
+    if a == b || !cx.check_unlocked(ObjectRef::Wall(a)) || !cx.check_unlocked(ObjectRef::Wall(b)) {
+        return 0;
+    }
+    cx.begin_change("Connect Walls");
+    let opts = super::connect::ConnectOptions::from_defaults(&cx.defaults);
+    let n = super::connect::connect_walls_project(&mut cx.project, cx.floor, a, b, &opts);
+    if n == 0 {
+        cx.cancel_change();
+        cx.status =
+            "Connect Walls: those walls are already connected, too far apart or locked".into();
+        return 0;
+    }
+    cx.mark_dirty();
+    cx.refresh();
+    cx.status = format!("Connect Walls: {n} edit{}", if n == 1 { "" } else { "s" });
+    n
+}
+
+/// The click that names the second wall of Connect Walls. Stays pending when
+/// the click misses every wall; ends the mode otherwise.
+fn connect_click(cx: &mut EditorContext, first: Id, world: Point) -> bool {
+    let tol = cx.pick_tol();
+    let hit = hit_test_cx(cx, world, tol)
+        .into_iter()
+        .find_map(|h| match h {
+            ObjectRef::Wall(id) if id != first => Some(id),
+            _ => None,
+        });
+    let Some(second) = hit else {
+        cx.status = "Connect Walls: click another wall (Esc cancels)".into();
+        return false;
+    };
+    CONNECT_PENDING.with(|c| c.set(None));
+    connect_walls(cx, first, second) > 0
+}
+
+/// Align With Wall Above (`dir` 1) / Below (-1) (W-145): each selected
+/// straight wall slides sideways until its main-layer outer edge lines up
+/// with that of the overlapping wall one floor over; joined walls follow.
+/// One undo step; returns how many walls moved.
+pub fn align_with(cx: &mut EditorContext, dir: isize) -> usize {
+    let ids = selected_walls(cx);
+    if ids.is_empty() || ids.iter().any(|i| !cx.check_unlocked(ObjectRef::Wall(*i))) {
+        return 0;
+    }
+    let fl = cx.floor;
+    let label = if dir > 0 {
+        "Align With Wall Above"
+    } else {
+        "Align With Wall Below"
+    };
+    let moves: Vec<(Id, Point)> = ids
+        .iter()
+        .filter_map(|id| {
+            cx.project
+                .align_candidate(fl, *id, dir, cx.wall_types())
+                .map(|(_, shift)| (*id, shift))
+        })
+        .collect();
+    if moves.is_empty() {
+        cx.status = format!("{label}: no overlapping wall to line up with");
+        return 0;
+    }
+    cx.begin_change(label);
+    for (id, shift) in &moves {
+        super::ops::translate_walls_with_followers(&mut cx.project, fl, &[*id], *shift);
+    }
+    cx.project.sync_platform_walls();
+    cx.mark_dirty();
+    cx.refresh();
+    cx.status = format!(
+        "{label}: {} wall{} moved",
+        moves.len(),
+        if moves.len() == 1 { "" } else { "s" }
+    );
+    moves.len()
 }
 
 /// Reverse Layers on every selected wall (W-23): one undo step.
@@ -417,6 +764,9 @@ pub fn break_wall_at(cx: &mut EditorContext, id: Id, point: Point) -> Option<(Id
 /// selected wall wins). Stays pending when the click misses every wall or the
 /// break is refused. Returns whether the wall was broken.
 pub fn break_click(cx: &mut EditorContext, world: Point) -> bool {
+    if let Some(first) = CONNECT_PENDING.with(Cell::get) {
+        return connect_click(cx, first, world);
+    }
     let tol = cx.pick_tol();
     let hits = hit_test_cx(cx, world, tol);
     let selected = cx.selection.single();
@@ -811,10 +1161,10 @@ mod tests {
         }
 
         #[test]
-        fn shift_holds_the_angle_and_alt_frees_the_stretched_end() {
+        fn shift_holds_the_angle_and_ctrl_frees_the_stretched_end() {
             let (mut cx, id) = cx_with_wall();
             cx.defaults.editing.angle_snaps = false;
-            cx.defaults.editing.angle_snap_deg = 45.0;
+            cx.defaults.editing.restrictive_angle_deg = 45.0;
             let mut tool = SelectTool::default();
             press(&mut tool, &mut cx, Point::new(240.0, 0.0));
             let shift = Modifiers {
@@ -825,9 +1175,9 @@ mod tests {
             let w = cx.floor().wall(id).unwrap();
             let v = w.end - w.start;
             assert!((v.x - v.y).abs() < 1e-9 && v.x > 100.0, "{v:?}");
-            // Alt: no snap at all, so the end sits exactly at the pointer.
+            // Ctrl: no snap at all, so the end sits exactly at the pointer.
             let alt = Modifiers {
-                alt: true,
+                ctrl: true,
                 ..Modifiers::NONE
             };
             drag_to(&mut tool, &mut cx, Point::new(200.3, 140.7), alt);

@@ -233,11 +233,24 @@ impl Default for SectionClip {
 }
 
 impl SectionClip {
+    /// The clipping of a view saved before Scene Clipping existed: it was
+    /// always cut off at its line.
+    pub fn legacy() -> Self {
+        Self {
+            clip_sides: true,
+            ..Self::default()
+        }
+    }
+
     /// Chief's settings for a new camera of `kind`: a Wall Elevation clips to
     /// its room (C-138), everything else shows the whole model.
     pub fn for_kind(kind: CameraKind) -> Self {
         Self {
             clip_to_room: kind == CameraKind::WallElevation,
+            clip_sides: matches!(
+                kind,
+                CameraKind::CrossSection { .. } | CameraKind::WallElevation
+            ),
             ..Self::default()
         }
     }
@@ -303,10 +316,16 @@ impl ClipVolume {
     /// Is the point `(x, depth, y)` kept? `depth` is measured from the base
     /// cut line.
     pub fn contains(&self, x: f64, depth: f64, y: f64) -> bool {
-        if self.x.is_some_and(|(lo, hi)| x < lo - 1e-6 || x > hi + 1e-6) {
+        if self
+            .x
+            .is_some_and(|(lo, hi)| x < lo - 1e-6 || x > hi + 1e-6)
+        {
             return false;
         }
-        if self.y.is_some_and(|(lo, hi)| y < lo - 1e-6 || y > hi + 1e-6) {
+        if self
+            .y
+            .is_some_and(|(lo, hi)| y < lo - 1e-6 || y > hi + 1e-6)
+        {
             return false;
         }
         let front = self.plane.depth_at(x);
@@ -436,6 +455,7 @@ impl Project {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::field_reassign_with_default)]
     use super::*;
 
     fn stepped() -> StepPlane {
@@ -474,7 +494,11 @@ mod tests {
         assert_eq!(p.offsets, vec![0.0, 24.0, 0.0]);
         assert_eq!(p.depth_at(-40.0), 0.0);
         assert_eq!(p.depth_at(0.0), 24.0);
-        assert_eq!(p.depth_at(30.0), 0.0, "a break belongs to the piece after it");
+        assert_eq!(
+            p.depth_at(30.0),
+            0.0,
+            "a break belongs to the piece after it"
+        );
         assert_eq!(
             p.spans(-50.0, 50.0),
             vec![(-50.0, -20.0, 0.0), (-20.0, 30.0, 24.0), (30.0, 50.0, 0.0)]
@@ -533,15 +557,28 @@ mod tests {
         assert!(v.contains(0.0, 30.0, 50.0));
         assert!(!v.contains(41.0, 30.0, 50.0), "past the right clip line");
         assert!(!v.contains(0.0, 30.0, 97.0), "above the top clip");
-        assert!(!v.contains(0.0, 10.0, 50.0), "in front of the stepped plane");
-        assert!(v.contains(-30.0, 10.0, 50.0), "the left piece is not stepped");
-        assert!(v.contains(0.0, 24.0 + 60.0, 50.0), "back plane follows the step");
+        assert!(
+            !v.contains(0.0, 10.0, 50.0),
+            "in front of the stepped plane"
+        );
+        assert!(
+            v.contains(-30.0, 10.0, 50.0),
+            "the left piece is not stepped"
+        );
+        assert!(
+            v.contains(0.0, 24.0 + 60.0, 50.0),
+            "back plane follows the step"
+        );
         assert!(!v.contains(0.0, 24.0 + 61.0, 50.0));
         // Framing stops sooner.
         assert!(v.contains_framing(0.0, 24.0 + 30.0, 50.0));
         assert!(!v.contains_framing(0.0, 24.0 + 31.0, 50.0));
         // Unclipped sides keep the whole width.
-        let open = ClipVolume { x: None, y: None, ..v };
+        let open = ClipVolume {
+            x: None,
+            y: None,
+            ..v
+        };
         assert!(open.contains(900.0, 30.0, 500.0));
     }
 

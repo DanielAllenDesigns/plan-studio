@@ -923,6 +923,11 @@ impl Project {
         let floor_h = opts.floor_height(platform).max(1.0);
         let gap = opts.top_gap(platform);
         let mut planned = plan_walls(&self.floors[first_normal], &rooms, opts, platform, floor_h);
+        // A bay, box or bow window on Floor 1 gets foundation wall sections
+        // under its sections, as high as the foundation under its wall.
+        let room_list: Vec<Room> = rooms.iter().map(|r| r.room.clone()).collect();
+        let unit_walls = bay_walls(&self.floors[first_normal], &room_list, &planned);
+        planned.extend(unit_walls);
         if beams {
             // Grade beams stand on piers at one height.
             for w in &mut planned {
@@ -988,7 +993,7 @@ impl Project {
         } else {
             FOUNDATION_WALL_THICKNESS
         };
-        let mut made_walls: Vec<(Id, Id)> = Vec::new();
+        let mut made_walls: Vec<Id> = Vec::new();
         for pw in &planned {
             let id = self.alloc_id();
             let mut wall = Wall {
@@ -1020,7 +1025,7 @@ impl Project {
             }
             wall.spec.foundation.create_below = pw.create_below;
             floor.walls.push(wall);
-            made_walls.push((pw.source, id));
+            made_walls.push(id);
         }
         if s.vertical_step_footings && !mono {
             let steps = crate::foundation::step_markers(&floor);
@@ -1041,22 +1046,21 @@ impl Project {
         if s.garage_floor && rooms.iter().any(|r| r.slab) {
             let src = &self.floors[first_normal];
             let mut cuts: Vec<Opening> = Vec::new();
-            for pw in planned.iter().filter(|w| w.slab_edge) {
-                let Some(&(_, fid)) = made_walls.iter().find(|(sid, _)| *sid == pw.source) else {
-                    continue;
-                };
+            for (pw, &fid) in planned.iter().zip(&made_walls).filter(|(w, _)| w.slab_edge) {
                 let Some(fw) = floor.walls.iter().find(|w| w.id == fid) else {
                     continue;
                 };
-                for op in src
-                    .openings
-                    .iter()
-                    .filter(|o| o.wall_id == pw.source && o.kind == OpeningKind::Door)
-                {
+                // The door belongs to the piece of the wall it stands in.
+                let here = pw.offset0..=pw.offset0 + pw.len;
+                for op in src.openings.iter().filter(|o| {
+                    o.wall_id == pw.source
+                        && o.kind == OpeningKind::Door
+                        && here.contains(&o.center_offset)
+                }) {
                     let width = crate::foundation::garage_cut_width(op);
                     let mut cut = Opening::new(
                         fid,
-                        op.center_offset,
+                        op.center_offset - pw.offset0,
                         OpeningKind::Door,
                         width,
                         fw.height.max(1.0),
@@ -1455,6 +1459,11 @@ fn source_rooms(
 /// which wall of Floor 1 it is under.
 struct PlannedWall {
     source: Id,
+    /// Distance along the source wall to `start`, and the piece's length:
+    /// a wall is cut where interior walls end on it, so the heights can
+    /// step there (manual p. 746).
+    offset0: f64,
+    len: f64,
     start: Point,
     end: Point,
     curve: Option<crate::walls::WallCurve>,
@@ -1474,16 +1483,148 @@ fn plan_walls(
     platform: f64,
     floor_h: f64,
 ) -> Vec<PlannedWall> {
+    let mut out: Vec<PlannedWall> = Vec::new();
+    for w in &floor.walls {
+        if w.flags.foundation || w.flags.attic || w.length() < 1.0 {
+            continue;
+        }
+        let mut bounds = vec![0.0];
+        bounds.extend(t_junctions(floor, w));
+        bounds.push(w.path_length());
+        let mut pieces: Vec<PlannedWall> = Vec::new();
+        for pair in bounds.windows(2) {
+            let (d0, d1) = (pair[0], pair[1]);
+            let (start, end) = if bounds.len() == 2 {
+                (w.start, w.end)
+            } else {
+                let len = w.length();
+                (
+                    Point::lerp(w.start, w.end, d0 / len),
+                    Point::lerp(w.start, w.end, d1 / len),
+                )
+            };
+            pieces.extend(plan_piece(
+                w,
+                (d0, d1),
+                (start, end),
+                rooms,
+                opts,
+                platform,
+                floor_h,
+            ));
+        }
+        // Neighbouring pieces that came out alike are one wall again.
+        for p in pieces {
+            match out.last_mut() {
+                Some(a)
+                    if a.source == p.source
+                        && (a.offset0 + a.len - p.offset0).abs() < 1e-6
+                        && (a.top - p.top).abs() < 1e-6
+                        && (a.bottom - p.bottom).abs() < 1e-6
+                        && a.slab_edge == p.slab_edge
+                        && a.create_below == p.create_below =>
+                {
+                    a.end = p.end;
+                    a.len += p.len;
+                }
+                _ => out.push(p),
+            }
+        }
+    }
+    out
+}
+
+/// The foundation walls under the bay, box and bow windows of `floor`: one
+/// per section of the unit's outer face, as high as the foundation wall under
+/// the unit's wall (manual p. 634: the foundation is built under the unit on
+/// Floor 1). Nothing is planned where the wall itself has no foundation.
+fn bay_walls(floor: &Floor, rooms: &[Room], planned: &[PlannedWall]) -> Vec<PlannedWall> {
+    let exterior = |w: &Wall| crate::openings::exterior_sign(w, rooms);
+    let mut out = Vec::new();
+    for (id, wall_id, pts) in floor.bay_foundation_outlines(&exterior) {
+        let Some(center) = floor
+            .openings
+            .iter()
+            .find(|o| o.id == id)
+            .map(|o| o.center_offset)
+        else {
+            continue;
+        };
+        let Some(host) = planned.iter().find(|p| {
+            p.source == wall_id && p.offset0 - 1e-6 <= center && center <= p.offset0 + p.len + 1e-6
+        }) else {
+            continue;
+        };
+        for pair in pts.windows(2) {
+            let len = pair[0].dist(pair[1]);
+            if len < 1.0 {
+                continue;
+            }
+            out.push(PlannedWall {
+                source: wall_id,
+                offset0: 0.0,
+                len,
+                start: pair[0],
+                end: pair[1],
+                curve: None,
+                top: host.top,
+                bottom: host.bottom,
+                slab_edge: false,
+                create_below: false,
+            });
+        }
+    }
+    out
+}
+
+/// Distances along the straight wall `w` at which other walls of the floor
+/// end on it (a T-junction), so the foundation under it can change at the
+/// room boundary there. Curved walls are not cut.
+fn t_junctions(floor: &Floor, w: &Wall) -> Vec<f64> {
+    if w.curve.is_some() {
+        return Vec::new();
+    }
+    let len = w.length();
+    let dir = w.direction();
+    let mut out: Vec<f64> = Vec::new();
+    for o in &floor.walls {
+        if o.id == w.id || o.flags.foundation || o.flags.attic || o.flags.invisible {
+            continue;
+        }
+        for p in [o.start, o.end] {
+            let rel = p.sub(w.start);
+            let d = rel.dot(dir);
+            let off = rel.cross(dir).abs();
+            if off <= w.thickness * 0.5 + 1.0
+                && d > 1.0
+                && d < len - 1.0
+                && !out.iter().any(|x| (x - d).abs() < 1.0)
+            {
+                out.push(d);
+            }
+        }
+    }
+    out.sort_by(f64::total_cmp);
+    out
+}
+
+/// The foundation under the piece `span` (distances along `w`) of wall `w`
+/// that runs from `ends.0` to `ends.1`, or `None` when it gets none.
+fn plan_piece(
+    w: &Wall,
+    span: (f64, f64),
+    ends: (Point, Point),
+    rooms: &[SourceRoom],
+    opts: &FoundationOptions,
+    platform: f64,
+    floor_h: f64,
+) -> Option<PlannedWall> {
     use crate::walls::WallClass;
     let s = opts.settings;
     let mono = matches!(opts.kind, FoundationKind::MonolithicSlab);
     let gap = opts.top_gap(platform);
     let natural = -floor_h;
-    let mut out = Vec::new();
-    for w in &floor.walls {
-        if w.flags.foundation || w.flags.attic || w.length() < 1.0 {
-            continue;
-        }
+    {
         let hidden = w.flags.invisible
             || w.flags.railing
             || w.flags.room_divider
@@ -1495,7 +1636,7 @@ fn plan_walls(
                     | WallClass::Fencing { .. }
                     | WallClass::RoomDivider
             );
-        let along = w.path_length() * 0.5;
+        let along = (span.0 + span.1) * 0.5;
         let mid = w.point_along(along);
         let reach = w.thickness * 0.5 + 1.5;
         let n = w.normal_along(along);
@@ -1522,7 +1663,7 @@ fn plan_walls(
             (create_below || bearing || separates_slab || steps) && (!all_declined || create_below)
         };
         if !wanted {
-            continue;
+            return None;
         }
         let (mut top, mut bottom) = (f64::NEG_INFINITY, f64::INFINITY);
         for &i in &adj {
@@ -1559,18 +1700,19 @@ fn plan_walls(
             top = if mono { 0.0 } else { -gap };
             bottom = natural;
         }
-        out.push(PlannedWall {
+        Some(PlannedWall {
             source: w.id,
-            start: w.start,
-            end: w.end,
+            offset0: span.0,
+            len: span.1 - span.0,
+            start: ends.0,
+            end: ends.1,
             curve: w.curve,
             top,
             bottom,
             slab_edge: adj.iter().any(|&i| rooms[i].slab),
             create_below,
-        });
+        })
     }
-    out
 }
 
 /// The block under a masonry fireplace on Floor 1: the same footprint,
@@ -1976,6 +2118,36 @@ mod tests {
         assert_eq!(f.elevation, -48.0);
         assert!(f.room_names.iter().any(|n| n.name == "Wine Cellar"));
         assert!(f.room_names.len() >= kept, "{} rooms", f.room_names.len());
+    }
+
+    #[test]
+    fn build_foundation_walls_a_bay_window_on_floor_1_unless_it_is_raised() {
+        use crate::openings::bay::{BayUnit, RaisedFloor};
+        let mut p = house();
+        let wall = p.floors[0].walls[0].id;
+        let id = p.add_opening(0, wall, 60.0, OpeningKind::Window).unwrap();
+        {
+            let o = p.floors[0].openings.iter_mut().find(|o| o.id == id).unwrap();
+            o.style = OpeningStyle::BayWindow;
+            o.width = 50.0;
+            o.extras.spec.bay = BayUnit::for_style(OpeningStyle::BayWindow);
+            // A bench seat raises the unit from the ground: nothing under it.
+            o.extras.spec.bay.raised_floor = Some(RaisedFloor::default());
+        }
+        p.build_foundation(FoundationKind::StemWall { height: 36.0 });
+        let before = p.floors[0].walls.len();
+        p.floors[1].openings.iter_mut().find(|o| o.id == id).unwrap().extras.spec.bay.raised_floor =
+            None;
+        p.build_foundation(FoundationKind::StemWall { height: 36.0 });
+        // Three more walls, one per section, standing outside the first wall.
+        let f = &p.floors[0];
+        assert_eq!(f.walls.len(), before + 3);
+        let out = f
+            .walls
+            .iter()
+            .filter(|w| w.start.y < -5.0 || w.end.y < -5.0)
+            .count();
+        assert_eq!(out, 3);
     }
 
     #[test]

@@ -81,6 +81,12 @@ Select a dimension by clicking its line, extension or text. Its handles:
   - **Align Dimensions** (two or more selected) moves the dimension lines of the dimensions parallel to the first one selected onto its line.
   - **Distribute Dimensions** (three or more) spaces the dimension lines of the dimensions parallel to the first one evenly between the two outermost; the two ends stay.
   The status bar says how many changed, or "nothing to change" (for example when none of the others is parallel).
+- Dimensions that belong to a string also offer **Join Into One Dimension String** (two or more selected), **Select Dimension String** and **Take Out of Dimension String**; each is one undo step.
+- **Default Settings > Dimension** now drives more of the program (Round 16):
+  - **Layer**: the Manual and Automatic layer names are given to every new dimension of that kind; dimensions already drawn keep their layer.
+  - **Setup Automatic > Auto Refresh** (Exterior and Room): after any change to the model, a run you made with Auto Exterior or Auto Room Dimensions is deleted and made again; a run that would come out the same is left alone. The change and the refresh are one undo step. Elevation Auto Refresh waits for section views.
+  - **Setup Temporary**: Dimension Row Limit is the most gap lines shown on each side of a selected wall; Reach limits the extra rows (the nearest gap always shows); the exterior and interior wall options choose which faces of the other walls the gaps run to, and a kind with no box checked is left out.
+  - **Auto Story Pole Dimensions** puts an Elevation Marker (from the Saved Marker Defaults) on every mark; the name and height are written beside the line.
 
 ### Associative dimensions
 
@@ -286,7 +292,7 @@ that still carry those layers are converted when opened.
 **Active Layer Display Options** (view bar, View menu, Tools > Layer Settings > Display
 Options...) shows the plan's layers as a table. The dock and the window are the same widget.
 
-- **Columns**: Name, Used (object count), **Disp**, **Lock**, **Ref** (does the layer show on the Reference Display floor, 4.5), Color,
+- **Columns**: Name, Used (object count), **Disp**, **Lock**, **Ref** (does the layer show on the Reference Display floor, 4.5), Color, **Fill**,
   **Weight**, **Line Style** and **Text Style**. A cell edits the layer in the layer set that is shown. A name filter narrows the rows,
   and the table can be sorted by name, Used, Disp, Lock, Ref or weight.
 - **Disp** off hides the layer: its objects are not drawn, picked or snapped to, but they
@@ -318,6 +324,27 @@ layers all take the base layers' look), **Copy...**, **Rename...** (the plan vie
 
 **Tools > Layer Settings > Active Layers by Tool...** lists the layer each tool draws on, with a drop-down per tool (walls, doors,
 cabinets, dimensions and so on) and the **Current CAD Layer** new CAD objects go on; **Reset to Default Layers** puts them back.
+
+### Managing layers (Round 16)
+
+The buttons under the layer table keep the list itself tidy. Each is one undo step.
+
+- **New** asks for a name. Names are unique (capitals do not count), and the new layer is shown in the layer set you are working in and hidden in every other set, so existing views do not suddenly show it.
+- **Copy** makes a copy under the selected layer with the same look in every set (and the same fill style). **Merge** folds the other selected layers into the first one in the list: their objects, and any default that named them, move to it, and the emptied layers go. **Delete** removes the selected layers, but never a system layer (one the program ships) and never one that is in use. **Delete Unused Layers** removes every layer nothing uses. **Reset Names** brings back any system layer the plan has lost, and the wall display layers below.
+- The **Used** column shows where a layer is in use: a dot with a count when objects sit on it, a half dot when only a defaults page names it, a ring when it is merely a system layer. Hover for the details.
+- **Fill** is a small swatch of the layer's fill style. Click it to open the Fill Style window for the layer; in the properties below the table the same fill appears as a preview, with **Fill Style...** and **Remove Fill**. When several selected layers have different values, the properties say **No Change** for that attribute and leave it alone unless you set it.
+- **Wall Layers** adds the display layers that control how walls draw: Walls, Layers (the thin lines between a wall's layers); Walls, Main Layer Only; Walls, Through Wall Lines; Footings; Brick Ledge Lines; Walls, No Locate; Walls, Attic. Turning "Walls, Layers" off draws plain wall outlines; turning "Walls, Main Layer Only" on draws just the main layer of each wall. The other five are switches for features that do not draw on them yet. A plan that never adds them draws walls as always.
+- Right-click a layer name and choose **Find Objects on Layer(s)**: the objects on the chosen layers are selected, on the floor that has them. If they are on several floors a small window lists the floors with a count and you pick one. Objects on a hidden or locked layer cannot be selected, and the status line says so.
+
+**Primary and secondary layers.** Every object has one primary layer, the one that decides whether it shows. Some also use secondary layers that only change its look: a cabinet's labels and module lines, a door's label, the wall display layers. A secondary layer shows nothing while the object's primary layer is off. Select an object and click **Object Layer Properties** on the Edit toolbar to see both kinds in the layer table, or tick **Show All Layers** to see the whole list. While objects are selected the Active Layer Display Options dock does the same on its own; tick Show All Layers there to get the full table back.
+
+**Layer Hider** (Tools > Layer Painter > Layer Hider, or its CAD toolbar button): click an object to turn off its primary layer in the layer set you are working in. The status line names the layer as you hover. Undo shows it again.
+
+**Layer Painter bar.** Besides the layer drop-down it has **Use Default Layer**, which sends each clicked object to its own system default layer (walls, CAD and text for now), and **Define...**, which opens Layer Display Options so you can pick, change or add a layer without leaving the tool.
+
+**Layer Set Defaults** (Tools > Layer Settings) says which layer set a new view starts with, for nine kinds of view; "Use Active Layer Set" means the set you are in. A new plan view, a CAD detail opened as a tab, and the reference floor read their choice.
+
+**Drawing groups.** The Edit toolbar and Edit > Drawing Group have four buttons: **Send to Back** and **Bring to Front** put the selection behind or in front of everything; **Send Backward** and **Bring Forward** move it exactly one drawing group. Set Drawing Group shows "Multiple Values" when the selected objects are in different groups and leaves them alone until you type a number.
 
 **Tools > Plan Views** manages the saved plan views:
 

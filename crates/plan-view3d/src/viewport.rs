@@ -76,6 +76,9 @@ pub struct Viewport3d {
     pub ground: crate::backdrop::Ground,
     /// Distance haze over the model (and the edge lines).
     pub fog: crate::backdrop::Fog,
+    /// Scales the ambient occlusion of the look: a camera's Ambient
+    /// Occlusion amount (1 is the look's own strength).
+    pub ao_scale: f32,
     /// Point lights of the plan; the nearest few light the view.
     lights: Vec<ViewLight>,
     gpu: Arc<Mutex<GpuScene>>,
@@ -146,6 +149,7 @@ impl Viewport3d {
             backdrop: None,
             ground: crate::backdrop::Ground::default(),
             fog: crate::backdrop::Fog::default(),
+            ao_scale: 1.0,
             lights: Vec::new(),
             prefetching: Arc::clone(&gpu.prefetching),
             gpu: Arc::new(Mutex::new(gpu)),
@@ -407,6 +411,7 @@ impl Viewport3d {
             backdrop: self.backdrop.clone(),
             ground: self.ground,
             fog: self.fog,
+            ao_scale: self.ao_scale,
             lights: nearest_lights(&self.lights, self.camera.eye(), MAX_POINT_LIGHTS),
             bounds: self.bounds,
             pixels_per_point: ui.ctx().pixels_per_point(),

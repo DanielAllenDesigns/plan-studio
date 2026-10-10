@@ -109,7 +109,6 @@ fn the_tree_has_chiefs_29_groups_and_every_leaf_is_named() {
 }
 
 #[test]
-#[ignore = "QA-32: story pole marks model presence as inclusion; template reload re-adds default marks"]
 fn every_field_of_every_generic_page_round_trips_through_the_template() {
     let ids = default_pages::all_ids();
     assert!(ids.len() >= 60, "only {} pages", ids.len());

@@ -6859,8 +6859,12 @@ impl LayoutView {
                 let handle = self
                     .selected_box()
                     .and_then(|b| handle_at(bounds(b), x, y, tol).map(|h| (b.id, bounds(b), h)));
+                // Resize handles belong to a drawing selected on its own; in a
+                // mixed selection a press on it drags the whole group.
+                let alone = self.cad_selection_ids().len() == 1 && self.selection_ids().is_empty();
                 let cad_handle = self
                     .selected_cad
+                    .filter(|_| alone)
                     .zip(self.selected_cad_bounds())
                     .and_then(|(id, r)| handle_at(r, x, y, tol).map(|h| (id, r, h)));
                 let cad_hit = self
@@ -9530,7 +9534,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "R16-02 in progress: group drag of page CAD"]
     fn dragging_a_selected_page_drawing_moves_the_boxes_selected_with_it() {
         let (ctx, mut v, mut cx, id) = interactive();
         let (a, b) = line_clear_of(&v, id);

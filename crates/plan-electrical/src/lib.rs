@@ -47,9 +47,9 @@ pub use layer::{
 pub use mesh3d::{electrical_meshes, finish_material, meshes};
 pub use options::{DeviceOptions, HeightTo, Mount, Recess};
 pub use place::{
-    auto_place_exterior_outlets, auto_place_outlets, auto_place_room_light, auto_place_switch,
-    face_is_exterior, kind_for_setting, place_free, place_on_wall, AutoOutletOptions, RoomFunction,
-    WallSide,
+    auto_place_exterior_outlets, auto_place_outlets, auto_place_outlets_by_rules,
+    auto_place_room_light, auto_place_switch, face_is_exterior, kind_for_setting, place_free,
+    place_on_wall, AutoOutletOptions, RoomFunction, WallSide,
 };
 pub use rope::{light_positions, RopeLightPath, RopeReference, RopeSpec};
 pub use symbol::Stroke;

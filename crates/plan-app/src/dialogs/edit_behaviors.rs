@@ -1,8 +1,11 @@
 //! Edit > Edit Behaviors (S-65): what dragging does in the Select tool.
-//! Default moves; Resize scales a CAD selection from the opposite corner;
-//! Concentric adds offset copies of a polyline, line or round; Fillet rounds
-//! a polyline corner you drag; Alternate moves along one axis; Replicate
-//! leaves the originals and places copies. The mode and its parameters live in
+//! Default moves square to an object's edges and reshapes a corner alone;
+//! Alternate keeps the angles beside a dragged corner, moves at the allowed
+//! angles and draws continuously; Move turns every resize handle into a move
+//! handle; Resize scales a CAD selection from the opposite corner;
+//! Concentric moves every edge the same distance (and adds offset copies on a
+//! body drag); Fillet rounds a polyline corner you drag; Replicate leaves the
+//! originals and places copies. The mode and its parameters live in
 //! `PlanDefaults::editing.behavior` (see `editor::behaviors`).
 
 use crate::editor::EditorContext;
@@ -22,14 +25,19 @@ pub fn describe(mode: EditBehavior) -> &'static str {
     match mode {
         EditBehavior::Default => "Dragging moves objects and reshapes them in place.",
         EditBehavior::Resize => {
-            "Dragging a CAD selection scales it from the corner opposite the one you grab."
+            "Dragging a CAD selection or a polyline corner scales it in proportion (hold X or . for it once)."
         }
         EditBehavior::Concentric => {
-            "Dragging a polyline, line, circle or arc leaves it and adds offset copies."
+            "Dragging a polyline handle moves every edge the same distance; a body drag adds offset copies (hold C for it once)."
         }
         EditBehavior::Fillet => "Dragging a polyline corner handle rounds that corner.",
         EditBehavior::Chamfer => "Dragging a polyline corner handle cuts that corner off.",
-        EditBehavior::Alternate => "Dragging moves along the dominant axis only.",
+        EditBehavior::Alternate => {
+            "A dragged corner keeps the angles beside it; moves follow the allowed angles; lines and arcs chain by clicking. Hold Alt for it once."
+        }
+        EditBehavior::Move => {
+            "Dragging any resize handle moves the object instead (hold Z or / for it once)."
+        }
         EditBehavior::Replicate => {
             "Dragging leaves the originals and places copies, each one more drag along; or hands the drag to Transform/Replicate Object."
         }
@@ -43,6 +51,7 @@ pub fn apply(cx: &mut EditorContext, draft: &EditBehaviorSettings) {
     b.concentric_copies = b.concentric_copies.clamp(1, MAX_COPIES);
     b.replicate_copies = b.replicate_copies.clamp(1, MAX_COPIES);
     b.concentric_distance = b.concentric_distance.max(0.0);
+    b.concentric_jump = b.concentric_jump.max(0.0);
     b.fillet_radius = b.fillet_radius.max(0.0);
     b.chamfer_distance = b.chamfer_distance.max(0.0);
     cx.status = format!("Edit behavior: {}", b.mode.label());
@@ -83,6 +92,11 @@ impl EditBehaviorsDialog {
                         );
                     }
                     EditBehavior::Concentric => {
+                        super::row(ui, "Concentric Jump", |ui| {
+                            self.fields
+                                .length(ui, "concentric_jump", &mut b.concentric_jump)
+                        });
+                        ui.weak("0 uses the Snap Unit.");
                         super::row(ui, "Offset Distance", |ui| {
                             self.fields.length(
                                 ui,
@@ -113,8 +127,12 @@ impl EditBehaviorsDialog {
                         ui.weak("0 follows the drag.");
                     }
                     EditBehavior::Alternate => {
-                        ui.checkbox(&mut b.alternate_lock_axis, "Lock to the dominant axis");
+                        ui.checkbox(
+                            &mut b.stop_when_connected,
+                            "Stop continuous drawing when a shape closes",
+                        );
                     }
+                    EditBehavior::Move => {}
                     EditBehavior::Replicate => {
                         super::row(ui, "Copies", |ui| {
                             ui.add(
@@ -127,6 +145,12 @@ impl EditBehaviorsDialog {
                         );
                     }
                 }
+                ui.separator();
+                ui.checkbox(&mut b.movement_polar, "Move at the allowed angles (Polar)");
+                ui.checkbox(
+                    &mut b.behavior_indicators,
+                    "Show the behavior icon at the pointer",
+                );
                 ui.horizontal(|ui| {
                     let valid = !self.fields.any_invalid();
                     ok = ui.add_enabled(valid, egui::Button::new("OK")).clicked();

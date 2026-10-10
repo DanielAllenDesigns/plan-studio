@@ -1094,7 +1094,8 @@ fn frame_set(
                     }
                     let mut breaks = vec![lo, hi];
                     let mut found = false;
-                    for o in openings {
+                    // Dimension lines locate only Window Level 0 (manual p. 611).
+                    for o in openings.iter().filter(|o| o.extras.spec.level == 0) {
                         let Some(w) = on_side.iter().find(|w| w.id == o.wall_id && !w.is_curved())
                         else {
                             continue;
@@ -1714,6 +1715,22 @@ mod tests {
 
     fn full(w: &Wall) -> (f64, f64) {
         (-w.thickness * 0.5, w.thickness * 0.5)
+    }
+
+    #[test]
+    fn dimension_lines_locate_only_window_level_zero() {
+        let (walls, mut openings) = shell_40x30();
+        let s = setup(
+            &DEFAULT_AUTO_STRINGS,
+            WallLocate::Surfaces,
+            OpeningLocate::Sides,
+            &full,
+        );
+        let count = |o: &[Opening]| auto_exterior_set(&walls, o, &s).len();
+        let with = count(&openings);
+        // Stacked above the window on the bottom wall: not located.
+        openings[0].extras.spec.level = 1;
+        assert!(count(&openings) < with);
     }
 
     #[test]

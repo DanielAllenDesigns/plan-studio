@@ -24,6 +24,8 @@
 //! dependency-free software depth-buffer test, described in [`Options`] and
 //! the crate README.
 
+mod belowgrade;
+mod cutlines;
 mod dims;
 mod drawing;
 mod dxf;
@@ -37,15 +39,17 @@ mod shadow;
 mod styles;
 mod view;
 
+pub use belowgrade::{override_below, weight_class, BelowGradeStyle};
+pub use cutlines::{cross_section_lines, find_cut, CutLine};
 pub use dims::{DimKind, DimOptions, ElevDim};
-pub use drawing::{Drawing, EdgeKind, Line2, LineWeight, Region, RegionKind};
+pub use drawing::{Drawing, EdgeKind, Line2, LineWeight, Region, RegionKind, StyledLine};
 pub use hatch::{poche_hatch_lines, without_poche, DEFAULT_HATCH_SCALE, MAX_POCHE_LINES};
 pub use labels::{annotate, annotate_view, annotate_with, AnnotateOptions};
 pub use mlabels::{interior_point, material_label};
 pub use projection::{Projection, ViewDir};
 pub use shadow::SunDir;
 pub use styles::{pen_class, ObjectWeights, HEAVY_PEN, MEDIUM_PEN};
-pub use view::{clip_x, elevation_free, render_free, section_free, view_scene, FreeView};
+pub use view::{clip_x, clip_y, elevation_free, render_free, section_free, view_scene, FreeView};
 
 use plan_3d::{build_scene, Scene};
 use plan_core::Project;
@@ -96,6 +100,10 @@ pub struct Options {
     /// Approximation of Chief's "line weight by distance": lines more than 12"
     /// behind the nearest drawn line step down one weight class (default false).
     pub depth_weights: bool,
+    /// Depth Cue (C-140): `(start, end, opacity)`, distances behind the
+    /// nearest drawn line in inches and the fog opacity 0..1 reached at
+    /// `end`; lines fade to lighter weights through the ramp. `None` is off.
+    pub depth_cue: Option<(f64, f64, f64)>,
 }
 
 impl Default for Options {
@@ -111,6 +119,7 @@ impl Default for Options {
             section_depth: None,
             shadows: None,
             depth_weights: false,
+            depth_cue: None,
         }
     }
 }

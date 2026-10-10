@@ -20,6 +20,7 @@
 #![allow(dead_code)]
 
 pub mod blocks;
+pub mod locks;
 
 use super::{
     fmt_short, on, pv_text, row, section, Fields, Outcome, SpecDialog, SpecPages, Tab, PV_ACCENT,
@@ -28,6 +29,7 @@ use super::{
 use crate::editor::selection::cad_by_id;
 use crate::editor::{EditorContext, ObjectRef};
 use crate::tools::cad::{apply_hatch, plan_hatch, HATCHES};
+use self::locks::{ArcEdit, ArcLock, ArcShape, LineEdit, LineLock};
 use eframe::egui::{self, Align2, Color32, Painter, Pos2, Rect, Shape, Stroke, Ui, Vec2};
 use plan_core::cad::{ArrowStyle, CadAttrs, CadItem, FillAttr};
 use plan_core::geometry::{polygon_area, Point};
@@ -64,6 +66,9 @@ struct CadForm {
     attrs: CadAttrs,
     layers: Vec<LayerLook>,
     fields: Fields,
+    /// What a line / an arc keeps fixed while a value changes (CAD-116).
+    line_lock: LineLock,
+    arc_lock: ArcLock,
 }
 
 impl CadDialog {
@@ -84,6 +89,8 @@ impl CadDialog {
                 draft: obj,
                 layers,
                 fields: Fields::default(),
+                line_lock: LineLock::default(),
+                arc_lock: ArcLock::default(),
             },
         }
     }
@@ -256,13 +263,32 @@ impl CadForm {
 
     fn general(&mut self, ui: &mut Ui) {
         let fields = &mut self.fields;
+        let (line_lock, arc_lock) = (&mut self.line_lock, &mut self.arc_lock);
         match &mut self.draft.item {
             CadItem::Line { a, b } => {
                 section(ui, "Line");
-                fields.length_row(ui, "Start X", "start_x", &mut a.x);
-                fields.length_row(ui, "Start Y", "start_y", &mut a.y);
-                fields.length_row(ui, "End X", "end_x", &mut b.x);
-                fields.length_row(ui, "End Y", "end_y", &mut b.y);
+                let lock = *line_lock;
+                row(ui, "Lock", |ui| {
+                    for l in LineLock::ALL {
+                        ui.radio_value(line_lock, l, l.label());
+                    }
+                });
+                let mut edit = None;
+                let (mut sp, mut ep) = (*a, *b);
+                ui.add_enabled_ui(lock.start_free(), |ui| {
+                    let x = fields.length_row(ui, "Start X", "start_x", &mut sp.x);
+                    let y = fields.length_row(ui, "Start Y", "start_y", &mut sp.y);
+                    if x || y {
+                        edit = Some(LineEdit::Start(sp));
+                    }
+                });
+                ui.add_enabled_ui(lock.end_free(), |ui| {
+                    let x = fields.length_row(ui, "End X", "end_x", &mut ep.x);
+                    let y = fields.length_row(ui, "End Y", "end_y", &mut ep.y);
+                    if x || y {
+                        edit = Some(LineEdit::End(ep));
+                    }
+                });
                 section(ui, "Length and Angle");
                 let mut len = a.dist(*b);
                 let mut deg = if len > 1e-9 {
@@ -270,11 +296,16 @@ impl CadForm {
                 } else {
                     0.0
                 };
-                if fields.length_row(ui, "Length", "len", &mut len) && len > 0.0 {
-                    *b = a.add(polar(len, deg));
-                }
-                if fields.degrees_row(ui, "Angle", "deg_angle", &mut deg) {
-                    *b = a.add(polar(len, deg));
+                ui.add_enabled_ui(lock.length_angle_free(), |ui| {
+                    if fields.length_row(ui, "Length", "len", &mut len) && len > 0.0 {
+                        edit = Some(LineEdit::Length(len));
+                    }
+                    if fields.degrees_row(ui, "Angle", "deg_angle", &mut deg) {
+                        edit = Some(LineEdit::Angle(deg));
+                    }
+                });
+                if let Some(e) = edit {
+                    (*a, *b) = locks::line_edit(*a, *b, lock, e);
                 }
             }
             CadItem::Circle { center, radius } => {
@@ -294,17 +325,67 @@ impl CadForm {
                 end_angle,
             } => {
                 section(ui, "Arc");
-                fields.length_row(ui, "Center X", "cx", &mut center.x);
-                fields.length_row(ui, "Center Y", "cy", &mut center.y);
-                fields.length_row(ui, "Radius", "radius", radius);
+                let lock = *arc_lock;
+                row(ui, "Lock", |ui| {
+                    for l in ArcLock::ALL {
+                        ui.radio_value(arc_lock, l, l.label());
+                    }
+                });
+                let shape = ArcShape {
+                    center: *center,
+                    radius: *radius,
+                    a0: *start_angle,
+                    a1: *end_angle,
+                };
+                let mut edit = None;
+                let mut c = *center;
+                ui.add_enabled_ui(lock.center_free(), |ui| {
+                    let x = fields.length_row(ui, "Center X", "cx", &mut c.x);
+                    let y = fields.length_row(ui, "Center Y", "cy", &mut c.y);
+                    if x || y {
+                        edit = Some(ArcEdit::Center(c));
+                    }
+                });
+                let mut r = *radius;
+                ui.add_enabled_ui(lock.radius_free(), |ui| {
+                    if fields.length_row(ui, "Radius", "radius", &mut r) && r > 0.0 {
+                        edit = Some(ArcEdit::Radius(r));
+                    }
+                });
                 let mut s = start_angle.to_degrees();
                 let mut e = end_angle.to_degrees();
-                if fields.degrees_row(ui, "Start Angle", "deg_start", &mut s) {
-                    *start_angle = s.to_radians();
+                ui.add_enabled_ui(lock.angles_free(), |ui| {
+                    if fields.degrees_row(ui, "Start Angle", "deg_start", &mut s) {
+                        edit = Some(ArcEdit::StartAngle(s.to_radians()));
+                    }
+                    if fields.degrees_row(ui, "End Angle", "deg_end", &mut e) {
+                        edit = Some(ArcEdit::EndAngle(e.to_radians()));
+                    }
+                });
+                if let Some(ed) = edit {
+                    let after = locks::arc_edit(shape, lock, ed);
+                    *center = after.center;
+                    *radius = after.radius;
+                    *start_angle = after.a0;
+                    *end_angle = after.a1;
                 }
-                if fields.degrees_row(ui, "End Angle", "deg_end", &mut e) {
-                    *end_angle = e.to_radians();
-                }
+                let after = ArcShape {
+                    center: *center,
+                    radius: *radius,
+                    a0: *start_angle,
+                    a1: *end_angle,
+                };
+                let (chord_len, chord_deg) = locks::chord(&after);
+                let (d0, d1) = locks::directions(&after);
+                row(ui, "Chord Length", |ui| {
+                    ui.label(fmt_short(chord_len));
+                });
+                row(ui, "Chord Angle", |ui| {
+                    ui.label(format!("{:.1}\u{b0}", chord_deg.rem_euclid(360.0)));
+                });
+                row(ui, "Start / End Direction", |ui| {
+                    ui.label(format!("{d0:.1}\u{b0} / {d1:.1}\u{b0}"));
+                });
                 let sweep = (*end_angle - *start_angle).rem_euclid(TAU);
                 row(ui, "Sweep", |ui| {
                     ui.label(format!("{:.1}\u{b0}", sweep.to_degrees()));
@@ -345,6 +426,33 @@ impl CadForm {
             CadItem::Text { .. } => {
                 ui.label("Text objects use the Text Specification.");
             }
+        }
+        self.label_boxes(ui);
+    }
+
+    /// Show Length, Show Angle (Radius on an arc), All Angles and Reverse
+    /// Angle (CAD-118): live labels on the edges, in the Number Style.
+    fn label_boxes(&mut self, ui: &mut Ui) {
+        let (arc, poly, drawn) = match self.draft.item {
+            CadItem::Line { .. } => (false, false, true),
+            CadItem::Polyline { .. } => (false, true, true),
+            CadItem::Arc { .. } => (true, false, true),
+            _ => (false, false, false),
+        };
+        if !drawn {
+            return;
+        }
+        section(ui, "Labels");
+        let l = &mut self.attrs.labels;
+        ui.checkbox(&mut l.show_length, "Show Length");
+        if arc {
+            ui.checkbox(&mut l.show_radius, "Show Radius");
+        } else {
+            ui.checkbox(&mut l.show_angle, "Show Angle");
+            if poly {
+                ui.checkbox(&mut l.all_angles, "All Angles");
+            }
+            ui.checkbox(&mut l.reverse_angle, "Reverse Angle");
         }
     }
 

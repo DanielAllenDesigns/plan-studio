@@ -21,7 +21,8 @@ use crate::walls::MIN_WALL_THICKNESS;
 use serde::{Deserialize, Serialize};
 
 /// Smallest a main layer may be squeezed to by a thickness edit, inches.
-pub const MIN_MAIN_LAYER: f64 = MIN_WALL_THICKNESS;
+/// The thinnest a Main layer may be (manual p. 399; DECISIONS 47): 1/16 in.
+pub const MIN_MAIN_LAYER: f64 = crate::wall_types::MIN_MAIN_LAYER;
 
 /// The Ceiling Platform choice of the Structure tab: how the wall meets the
 /// ceiling and floor platforms above it.
@@ -83,6 +84,40 @@ pub struct WallStructure {
     /// roof above. Stored with the wall; the framing builder does not read
     /// it yet (docs/integration-queue.md).
     pub bearing_wall: bool,
+    /// Double Wall (W-149): how this wall behaves beside a parallel wall it
+    /// touches. Not for curved walls.
+    pub double: DoubleWall,
+}
+
+/// How a wall frames beside a parallel wall it touches (manual pp. 412-413).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum DoubleWall {
+    /// The basic double wall: both walls frame through, platforms and walls
+    /// they meet are not split.
+    #[default]
+    FrameThrough,
+    /// Platforms and the walls they meet split at the boundary between the two
+    /// walls (modular units): no framing member crosses it.
+    SplitFraming,
+    /// The inner wall's layers count as extra layers of the primary wall;
+    /// rooms come from the primary wall only, so a furred wall defines none.
+    Furred,
+}
+
+impl DoubleWall {
+    pub const ALL: [DoubleWall; 3] = [
+        DoubleWall::FrameThrough,
+        DoubleWall::SplitFraming,
+        DoubleWall::Furred,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            DoubleWall::FrameThrough => "Frame Through",
+            DoubleWall::SplitFraming => "Split Framing",
+            DoubleWall::Furred => "Furred Wall",
+        }
+    }
 }
 
 impl Default for WallStructure {
@@ -96,6 +131,7 @@ impl Default for WallStructure {
             through_at_start: false,
             through_at_end: false,
             bearing_wall: false,
+            double: DoubleWall::FrameThrough,
         }
     }
 }
@@ -364,6 +400,10 @@ pub struct WallSpec {
     /// Layer tab's Drawing Group; `None` is the default group
     /// ([`crate::walls::spec_tabs::DEFAULT_DRAWING_GROUP`]).
     pub drawing_group: Option<u32>,
+    /// Stepped and raked top and bottom edges (W-141).
+    pub profile: crate::walls::profile::WallProfile,
+    /// Layers slid along the wall by Edit Wall Intersections (W-144).
+    pub layer_joins: Vec<crate::walls::intersect::LayerJoin>,
 }
 
 /// How a wall's platform options move its top and bottom, inches.
@@ -477,16 +517,21 @@ pub fn fixed_layers_thickness(ty: &WallTypeDef) -> f64 {
         .sum()
 }
 
-/// The thinnest `wall` may be made: the layers of its type that are not the
-/// main layer, plus [`MIN_MAIN_LAYER`] for the main layer (or just the sum of
+/// The thinnest `wall` may be made: the layers of its type other than the
+/// outermost main layer, plus [`MIN_MAIN_LAYER`] for that layer (or just the sum of
 /// all layers for a type with no main layer). A wall with no type may be as
 /// thin as [`MIN_WALL_THICKNESS`].
 pub fn min_thickness(ty: Option<&WallTypeDef>) -> f64 {
     match ty {
         None => MIN_WALL_THICKNESS,
         Some(t) if t.layers.is_empty() => MIN_WALL_THICKNESS,
+        // A Room Divider type is 0 in thick.
+        Some(t) if t.props.room_divider => 0.0,
+        // The total cannot drop below the old total less the outermost Main
+        // layer, plus that layer at its least (1/16 in; DECISIONS 47).
         Some(t) if t.layers.iter().any(|l| l.is_main) => {
-            (fixed_layers_thickness(t) + MIN_MAIN_LAYER).max(MIN_WALL_THICKNESS)
+            let outer = t.main_layer().map_or(0.0, |l| l.thickness);
+            t.thickness() - outer + MIN_MAIN_LAYER
         }
         Some(t) => t.thickness().max(MIN_WALL_THICKNESS),
     }
@@ -655,6 +700,7 @@ mod tests {
     #[test]
     fn the_minimum_thickness_is_the_fixed_layers_plus_a_sliver() {
         let ty = WallTypeDef {
+            props: Default::default(),
             name: "T".into(),
             layers: vec![
                 WallLayer::new("Siding", 0.75, false, "Siding"),
@@ -666,6 +712,7 @@ mod tests {
         assert!((min_thickness(Some(&ty)) - (1.25 + MIN_MAIN_LAYER)).abs() < 1e-9);
         assert_eq!(min_thickness(None), MIN_WALL_THICKNESS);
         let no_main = WallTypeDef {
+            props: Default::default(),
             layers: vec![
                 WallLayer::new("A", 2.0, false, "A"),
                 WallLayer::new("B", 1.0, false, "B"),

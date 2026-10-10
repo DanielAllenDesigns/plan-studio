@@ -546,6 +546,54 @@ fn depth_weights_step_far_lines_down_one_class() {
 }
 
 #[test]
+fn depth_cue_fades_lines_by_distance_behind_the_nearest() {
+    let scene = scene_of(vec![
+        cuboid((0.0, 100.0), (0.0, 100.0), (0.0, 20.0), Material::Stucco, 1),
+        cuboid(
+            (200.0, 300.0),
+            (0.0, 100.0),
+            (-300.0, -280.0),
+            Material::Stucco,
+            2,
+        ),
+    ]);
+    let score = |d: &Drawing, far: bool| -> usize {
+        d.lines
+            .iter()
+            .filter(|l| (l.a.x > 190.0) == far)
+            .map(|l| match l.weight {
+                LineWeight::Heavy => 2,
+                LineWeight::Medium => 1,
+                LineWeight::Light => 0,
+            })
+            .sum()
+    };
+    let flat = elevation(&scene, ViewDir::Front, &opts());
+    let cued = elevation(
+        &scene,
+        ViewDir::Front,
+        &Options {
+            // Sharp border 100 in behind the nearest line, full fog.
+            depth_cue: Some((100.0, 100.0, 1.0)),
+            ..opts()
+        },
+    );
+    assert!(score(&flat, true) > 0);
+    assert_eq!(score(&cued, true), 0, "the far box is all Light");
+    assert_eq!(score(&cued, false), score(&flat, false), "the near box is untouched");
+    // Half-opaque fog never gets past one class.
+    let half = elevation(
+        &scene,
+        ViewDir::Front,
+        &Options {
+            depth_cue: Some((100.0, 100.0, 0.5)),
+            ..opts()
+        },
+    );
+    assert!(score(&half, true) > score(&cued, true) && score(&half, true) < score(&flat, true));
+}
+
+#[test]
 fn labels_title_levels_and_grade() {
     let d = elevation_with_labels(&wall_project(false), ViewDir::Front, &opts());
     let texts: Vec<&str> = d.texts.iter().map(|(_, t)| t.as_str()).collect();

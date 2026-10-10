@@ -312,7 +312,7 @@ pub fn apply_drag(
     p: &PointerEvent,
 ) -> PlacedSymbol {
     let mut s = orig.clone();
-    let alt = p.modifiers.alt;
+    let alt = p.overrides();
     let unit = cx.snap_unit();
     let (u, v) = symbol_axes(orig);
     match op {
@@ -322,7 +322,7 @@ pub fn apply_drag(
                 snap_to(orig.position.x + delta.x, unit, alt),
                 snap_to(orig.position.y + delta.y, unit, alt),
             );
-            let ctrl = p.modifiers.command || p.modifiers.ctrl;
+            let ctrl = p.overrides();
             if !ctrl && placed::symbol_placement(orig) == Placement::WallMounted {
                 s.auto_rotate_to_wall(&cx.floor().walls);
             }

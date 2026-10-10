@@ -31,9 +31,9 @@ use eframe::egui::{self, Align2, Painter, Pos2, Rect, Shape, Stroke, Ui};
 use plan_core::geometry::Point;
 use plan_core::Id;
 use plan_stairs::{
-    solve, ArrowStyle, BreakStyle, Bullnose, DisplayRule, EdgeRail, PostProfile, RadiusRef,
-    RailStyle, RailingParams, SideKind, StairParams, StairShape, Starter, StringerStyle, Turn,
-    ViewMode,
+    solve, ArrowStyle, BreakStyle, Bullnose, DisplayRule, EdgeRail, LockEnd, PostProfile,
+    RadiusRef, RailStyle, RailingParams, SideKind, StairParams, StairShape, Starter, StringerStyle,
+    TreadMode, Turn, ViewMode,
 };
 
 /// The Staircase Specification (and Ramp Specification) of Chief X18. The
@@ -213,19 +213,89 @@ impl StairForm {
                 self.draft.set_landing_depth(depth);
             }
         }
-        self.fields.length_row(
+        if self.fields.length_row(
             ui,
             "Height",
             "landing_height",
             &mut self.draft.stair.params.total_rise,
+        ) {
+            // A typed height holds, whatever the stairs do.
+            self.draft.stair.params.landing_auto_height = false;
+        }
+        ui.checkbox(
+            &mut self.draft.stair.params.landing_auto_height,
+            "Auto Adjust Height",
         );
-        self.fields.length_row(
+        if self.fields.length_row(
             ui,
             "Thickness",
             "landing_thickness",
             &mut self.draft.stair.params.slab_thickness,
+        ) {
+            self.draft.stair.params.landing_auto_thickness = false;
+        }
+        ui.checkbox(
+            &mut self.draft.stair.params.landing_auto_thickness,
+            "Auto Adjust Thickness",
         );
         ui.weak("A stair section that arrives on the landing sets its height; one that starts on it begins there.");
+    }
+
+    /// The Staircase Information read-outs and Make Best Fit.
+    fn staircase_information(&mut self, ui: &mut Ui) {
+        section(ui, "Staircase Information");
+        let p = &self.draft.stair.params;
+        let sol = self.draft.solution();
+        let info = plan_stairs::info(p.total_rise, sol.risers, p.tread_depth, true);
+        ui.label(&info.reach);
+        ui.label(&info.best_fit);
+        let sections = plan_stairs::spec_rows(&[&self.draft.stair])
+            .iter()
+            .map(|r| r.number.split('-').next().unwrap_or("").to_string())
+            .collect::<std::collections::BTreeSet<_>>()
+            .len();
+        ui.label(format!(
+            "Sections: {sections}   Risers: {}   Rise Angle: {:.1} deg",
+            sol.risers, info.rise_angle
+        ));
+        if ui
+            .add_enabled(info.can_make_best_fit, egui::Button::new("Make Best Fit"))
+            .clicked()
+        {
+            view::best_fit_draft(&mut self.draft);
+        }
+    }
+
+    /// The table of sections and subsections (ten lines at most).
+    fn specifications(&mut self, ui: &mut Ui) {
+        section(ui, "Specifications");
+        let rows = plan_stairs::spec_rows(&[&self.draft.stair]);
+        egui::Grid::new("stair_specs").striped(true).show(ui, |ui| {
+            for h in [
+                "Section",
+                "Length",
+                "Width",
+                "Tread Depth",
+                "Treads",
+                "Bottom",
+                "Top",
+                "Riser",
+            ] {
+                ui.strong(h);
+            }
+            ui.end_row();
+            for r in &rows {
+                ui.label(&r.number);
+                ui.label(super::fmt_short(r.length));
+                ui.label(super::fmt_short(r.width));
+                ui.label(super::fmt_short(r.tread_depth));
+                ui.label(r.treads.to_string());
+                ui.label(super::fmt_short(r.bottom_height));
+                ui.label(super::fmt_short(r.top_height));
+                ui.label(super::fmt_short(r.riser_height));
+                ui.end_row();
+            }
+        });
     }
 
     fn general(&mut self, ui: &mut Ui) {
@@ -313,13 +383,36 @@ impl StairForm {
             });
         }
         if !ramp {
-            section(ui, "Lock Settings");
-            row(ui, "Lock", |ui| {
-                ui.checkbox(&mut self.draft.x.lock_tread, "Tread depth");
-                ui.checkbox(&mut self.draft.x.lock_riser, "Riser height");
-                ui.checkbox(&mut self.draft.x.lock_count, "Number of treads");
+            self.staircase_information(ui);
+            section(ui, "Advanced Options");
+            let mut mode = view::tread_mode(&self.draft);
+            row(ui, "Tread Depth", |ui| {
+                for m in TreadMode::ALL {
+                    ui.selectable_value(&mut mode, m, m.name());
+                }
             });
-            ui.weak("Locked values stay put when the heights or the number of risers change.");
+            if mode != view::tread_mode(&self.draft) {
+                if let Some((depth, count)) = mode.locks() {
+                    self.draft.x.lock_tread = depth;
+                    self.draft.x.lock_count = count;
+                }
+            }
+            row(ui, "Lock", |ui| {
+                ui.checkbox(&mut self.draft.x.lock_riser, "Riser height");
+            });
+            let mut len = view::section_length(&self.draft);
+            if self
+                .fields
+                .length_row(ui, "Length", "section_length", &mut len)
+            {
+                view::set_length(&mut self.draft, len);
+            }
+            row(ui, "Lock End", |ui| {
+                ui.selectable_value(&mut self.draft.x.lock_end, LockEnd::Top, "Lock Top");
+                ui.selectable_value(&mut self.draft.x.lock_end, LockEnd::Bottom, "Lock Bottom");
+            });
+            ui.weak("Locked values stay put when the heights or the number of risers change; the Lock End says which end of the section stays when its length changes.");
+            self.specifications(ui);
         }
         self.fields.length_row(
             ui,
@@ -502,6 +595,44 @@ impl StairForm {
                 "landing",
                 &mut self.draft.stair.params.landing_depth,
             );
+        }
+
+        if self.draft.is_ramp() {
+            let p = &mut self.draft.stair.params;
+            section(ui, "Options");
+            ui.checkbox(
+                &mut p.railing_openings,
+                "Automatic railing openings (a doorway is cut in a railing the ramp meets)",
+            );
+            ui.checkbox(&mut p.ramp.open_underneath, "Open underneath");
+            if !p.ramp.open_underneath {
+                self.fields.length_row(
+                    ui,
+                    "Max Thickness",
+                    "ramp_max_t",
+                    &mut p.ramp.max_thickness,
+                );
+                p.ramp.max_thickness = p.ramp.max_thickness.max(p.slab_thickness);
+                ui.weak("A closed ramp is filled down to the floor, no deeper than this.");
+            }
+            section(ui, "Tread Surface");
+            ui.checkbox(&mut p.ramp.has_surface, "Has tread surface");
+            if p.ramp.has_surface {
+                self.fields.length_row(
+                    ui,
+                    "Tread Overhang",
+                    "ramp_surf_oh",
+                    &mut p.ramp.surface_overhang,
+                );
+                self.fields.length_row(
+                    ui,
+                    "Tread Thickness",
+                    "ramp_surf_t",
+                    &mut p.ramp.surface_thickness,
+                );
+                p.ramp.surface_overhang = p.ramp.surface_overhang.max(0.0);
+                p.ramp.surface_thickness = p.ramp.surface_thickness.clamp(0.0, p.slab_thickness);
+            }
         }
 
         ui.checkbox(
@@ -1027,6 +1158,17 @@ impl StairForm {
                 EdgeRail::name,
             );
         }
+        let mut all = None;
+        row(ui, "Apply to All Edges", |ui| {
+            for e in EdgeRail::ALL {
+                if ui.button(e.name()).clicked() {
+                    all = Some(e);
+                }
+            }
+        });
+        if let Some(e) = all {
+            rails.iter_mut().for_each(|r| *r = e);
+        }
         // Back to the shorter list when nothing is forced.
         if rails.iter().all(|e| *e == EdgeRail::Automatic) {
             rails.clear();
@@ -1084,6 +1226,10 @@ impl StairForm {
                 &DisplayRule::ALL,
                 DisplayRule::name,
             );
+            ui.checkbox(
+                &mut self.draft.x.apply_display_all,
+                "Apply to All Connected Sections",
+            );
             combo(
                 ui,
                 "Floor Above Display",
@@ -1102,6 +1248,12 @@ impl StairForm {
             );
             ui.weak("Floor Above Display is the part of the stair before the break line as the floor above sees it; Current Floor Display is the part beyond the break line on the stair's own floor.");
             ui.checkbox(&mut p.plan.number_treads, "Number the treads");
+            if matches!(p.shape, StairShape::Curved { .. }) || p.ramp_curve.is_some() {
+                ui.checkbox(
+                    &mut p.plan.show_arc_centers,
+                    "Show arc centers and ends (a cross at the centre, lines to the ends)",
+                );
+            }
             section(ui, "Break Line");
             combo(
                 ui,
@@ -1736,6 +1888,9 @@ mod tests {
         d.draft_mut().set_landing_depth(72.0);
         d.draft_mut().stair.params.total_rise = 54.0;
         d.draft_mut().stair.params.slab_thickness = 5.5;
+        // Typing a height or thickness turns its Auto Adjust off (ST21-4).
+        d.draft_mut().stair.params.landing_auto_height = false;
+        d.draft_mut().stair.params.landing_auto_thickness = false;
         assert!(view::apply_edit(&mut cx, d.draft()));
         let back = view::find(cx.floor(), id).unwrap();
         assert_eq!(back.landing_depth(), Some(72.0));
@@ -1793,6 +1948,34 @@ mod tests {
             texts(&c.shape, &mut all);
         }
         all
+    }
+
+    #[test]
+    fn a_ramp_specification_general_tab_has_the_options_and_tread_surface_rows() {
+        let (_, o) = cx_with_stair();
+        let mut d = StairDialog::new(o);
+        set_shape(d.draft_mut(), ShapeSel::Ramp);
+        let t = page_texts(&mut d, "General");
+        for want in [
+            "Options",
+            "Open underneath",
+            "Tread Surface",
+            "Has tread surface",
+        ] {
+            assert!(t.iter().any(|x| x.contains(want)), "{want} in {t:?}");
+        }
+        assert!(!t.iter().any(|x| x.contains("Max Thickness")), "{t:?}");
+        d.draft_mut().stair.params.ramp.open_underneath = false;
+        d.draft_mut().stair.params.ramp.has_surface = true;
+        let t = page_texts(&mut d, "General");
+        for want in ["Max Thickness", "Tread Overhang", "Tread Thickness"] {
+            assert!(t.iter().any(|x| x.contains(want)), "{want} in {t:?}");
+        }
+        // A stair has none of these rows.
+        let (_, o) = cx_with_stair();
+        let mut s = StairDialog::new(o);
+        let t = page_texts(&mut s, "General");
+        assert!(!t.iter().any(|x| x.contains("Tread Surface")), "{t:?}");
     }
 
     #[test]

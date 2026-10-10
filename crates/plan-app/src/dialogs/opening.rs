@@ -36,6 +36,9 @@ pub const OPENING_MARGIN: f64 = 2.0;
 const DEFAULT_DOOR_KEY: Id = Id::MAX - 2;
 const DEFAULT_WINDOW_KEY: Id = Id::MAX - 3;
 const DEFAULT_EXTERIOR_DOOR_KEY: Id = Id::MAX - 4;
+/// Keys of the Defaults dialogs of the door and window types count down from
+/// here.
+const TYPE_KEY_BASE: Id = Id::MAX - 1000;
 
 /// The index of `t` in the Window Type list ([`WindowType::ALL`]).
 fn type_index(t: WindowType) -> usize {
@@ -105,6 +108,10 @@ pub enum OpeningTarget {
     /// Edit > Default Settings > Doors > Exterior Door.
     DefaultExteriorDoor,
     DefaultWindow,
+    /// The Defaults dialog of one door or window type (Default Settings, or
+    /// a double-click on the tool's button): the opening that type places
+    /// (manual pp. 103, 571, 603).
+    DefaultType(DefaultKey),
 }
 
 impl OpeningTarget {
@@ -115,8 +122,42 @@ impl OpeningTarget {
             OpeningTarget::DefaultDoor => DEFAULT_DOOR_KEY,
             OpeningTarget::DefaultExteriorDoor => DEFAULT_EXTERIOR_DOOR_KEY,
             OpeningTarget::DefaultWindow => DEFAULT_WINDOW_KEY,
+            OpeningTarget::DefaultType(k) => {
+                let slot = DefaultKey::doors()
+                    .into_iter()
+                    .chain(DefaultKey::windows())
+                    .position(|d| d == k)
+                    .unwrap_or(0);
+                TYPE_KEY_BASE - slot as Id
+            }
         }
     }
+
+    /// The Window Defaults (the main one, or a window type's): they hold the
+    /// Minimum Separation and the Mulled Unit Defaults.
+    pub fn is_window_defaults(self) -> bool {
+        match self {
+            OpeningTarget::DefaultWindow => true,
+            OpeningTarget::DefaultType(k) => k.kind == OpeningKind::Window,
+            _ => false,
+        }
+    }
+}
+
+thread_local! {
+    static TYPE_DEFAULTS: std::cell::Cell<Option<DefaultKey>> = const { std::cell::Cell::new(None) };
+}
+
+/// Asks for the Defaults dialog of a door or window type (the double-click
+/// on a Door or Window Tools button, manual p. 603). The app opens it in its
+/// next frame.
+pub fn request_type_defaults(key: DefaultKey) {
+    TYPE_DEFAULTS.with(|c| c.set(Some(key)));
+}
+
+/// The type whose Defaults dialog was asked for, once.
+pub fn take_type_defaults_request() -> Option<DefaultKey> {
+    TYPE_DEFAULTS.with(|c| c.take())
 }
 
 /// Door and window dialog values. The style name, thickness, swing angle,
@@ -698,11 +739,17 @@ impl OpeningDialog {
             OpeningTarget::DefaultExteriorDoor => {
                 DefaultKey::new(OpeningKind::Door, f.draft.style, true)
             }
+            OpeningTarget::DefaultType(k) => k,
             _ => DefaultKey::main_window(),
         };
-        // Only once the dialog changed something, or the type already has a
-        // default: opening and closing it leaves the plan defaults alone.
-        if f.draft != f.original || v.type_default(key).is_some() {
+        // Only once the dialog changed something (the opening, or the
+        // settings kept beside it such as Minimum Separation and the Mulled
+        // Unit Defaults), or the type already has a default: opening and
+        // closing it leaves the plan defaults alone.
+        if f.draft != f.original
+            || f.extras != OpeningExtras::default()
+            || v.type_default(key).is_some()
+        {
             v.set_type_default(key, f.draft.clone());
         }
     }
@@ -933,7 +980,7 @@ impl OpeningForm {
                 ui.radio_value(e, Some(true), "Exterior");
             });
         }
-        if self.target == OpeningTarget::DefaultWindow {
+        if self.target.is_window_defaults() {
             row(ui, "Minimum Separation", |ui| {
                 ui.add(
                     egui::DragValue::new(&mut self.extras.min_separation)
@@ -2758,7 +2805,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "R16-22 in progress: per-type window defaults"]
     fn the_window_defaults_hold_the_separation_and_make_the_main_window_default() {
         let d = plan_core::PlanDefaults::chief_x18_daniel();
         let mut e = OpeningExtras::from_window_defaults(&d.window);

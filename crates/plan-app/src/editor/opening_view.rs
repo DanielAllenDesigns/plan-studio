@@ -680,9 +680,9 @@ mod tests {
         assert!(schedule_view::replace(&mut cx, 0, def));
         let l = labels_of(&mut cx);
         let get = |id| l.iter().find(|x| x.opening == id).unwrap().clone();
-        // Marks run in reading order across the plan: the door at 60" first.
-        assert_eq!((get(d2).text.as_str(), get(d2).is_mark), ("D01", true));
-        assert_eq!((get(d1).text.as_str(), get(d1).is_mark), ("D02", true));
+        // Alike doors are numbered in the order they were placed (p. 715).
+        assert_eq!((get(d1).text.as_str(), get(d1).is_mark), ("D01", true));
+        assert_eq!((get(d2).text.as_str(), get(d2).is_mark), ("D02", true));
         // The window has no schedule: still its size.
         assert_eq!((get(win).text.as_str(), get(win).is_mark), ("3050", false));
         // A new door goes to the bottom of the schedule, wherever it is
@@ -692,7 +692,7 @@ mod tests {
             .add_opening(0, w, 10.0, OpeningKind::Door)
             .unwrap();
         let l = labels_of(&mut cx);
-        let marks: Vec<String> = [d3, d2, d1]
+        let marks: Vec<String> = [d3, d1, d2]
             .iter()
             .map(|id| l.iter().find(|x| x.opening == *id).unwrap().text.clone())
             .collect();
@@ -700,8 +700,8 @@ mod tests {
         // Removing it releases the numbers again.
         cx.project.floors[0].openings.retain(|o| o.id != d3);
         let l = labels_of(&mut cx);
-        assert_eq!(l.iter().find(|x| x.opening == d2).unwrap().text, "D01");
-        assert_eq!(l.iter().find(|x| x.opening == d1).unwrap().text, "D02");
+        assert_eq!(l.iter().find(|x| x.opening == d1).unwrap().text, "D01");
+        assert_eq!(l.iter().find(|x| x.opening == d2).unwrap().text, "D02");
     }
 
     #[test]

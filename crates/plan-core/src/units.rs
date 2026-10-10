@@ -58,6 +58,13 @@ pub fn parse_ft_in(s: &str) -> Option<f64> {
     if s.is_empty() {
         return None;
     }
+    // Inches alone with a leading minus (`-6`, `-3 1/2"`) are negative; after
+    // a feet mark the dash is only a separator (`12'-6"`).
+    if !s.contains('\'') {
+        if let Some(rest) = s.strip_prefix('-') {
+            return parse_ft_in(rest.trim_start()).map(|v| -v);
+        }
+    }
     let (feet_part, inch_part) = match s.find('\'') {
         Some(i) => (Some(&s[..i]), &s[i + 1..]),
         None => (None, s),
@@ -266,12 +273,31 @@ fn metric(v: f64, f: &LengthFormat, suffix: &str) -> String {
 /// Parse a length to inches. A unit suffix (`mm`, `cm`, `m`, `ft`, `in`, `'`,
 /// `"`) overrides `default_unit`; otherwise a bare number is read in
 /// `default_unit` (bare feet-inches / inches input is inches).
+///
+/// One or more `+ - * /` operations between lengths are evaluated first
+/// (`0 + 3"`, `92 5/8 - 3"`; see [`crate::calc`]).
 pub fn parse_length(s: &str, default_unit: LengthUnit) -> Option<f64> {
+    if crate::calc::has_operator(s) {
+        let atom = |t: &str| parse_length_atom(t, default_unit);
+        let unit_len = parse_length_atom("1", default_unit)?;
+        return crate::calc::eval_with(s, &atom, unit_len);
+    }
+    parse_length_atom(s, default_unit)
+}
+
+/// One length without operators (see [`parse_length`]).
+fn parse_length_atom(s: &str, default_unit: LengthUnit) -> Option<f64> {
     let t = s.trim();
     if t.is_empty() {
         return None;
     }
     if t.contains('\'') || t.contains('"') {
+        // A leading minus negates the whole length: `-6"` is minus six
+        // inches and `-12'-6"` minus twelve feet six (the dash after a foot
+        // mark is a separator, not a sign).
+        if let Some(rest) = t.strip_prefix('-') {
+            return parse_ft_in(rest.trim_start()).map(|v| -v);
+        }
         return parse_ft_in(t);
     }
     let lower = t.to_ascii_lowercase();
@@ -332,6 +358,28 @@ pub fn format_area(sq_in: f64, system: UnitSystem) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_leading_minus_negates_a_marked_length() {
+        let ft = LengthUnit::FeetInches;
+        assert!(close(parse_length("-6\"", ft).unwrap(), -6.0));
+        assert!(close(parse_length("-12'", ft).unwrap(), -144.0));
+        assert!(close(parse_length("-12'-6\"", ft).unwrap(), -150.0));
+        assert!(close(parse_length("12'-6\"", ft).unwrap(), 150.0));
+        assert!(close(parse_length("5' - -6\"", ft).unwrap(), 66.0));
+    }
+
+    #[test]
+    fn bare_negative_inches_stay_negative() {
+        let ft = LengthUnit::FeetInches;
+        assert!(close(parse_length("-6", ft).unwrap(), -6.0));
+        assert!(close(parse_length("-3 1/2", ft).unwrap(), -3.5));
+        assert!(close(parse_length("-6", LengthUnit::Inches).unwrap(), -6.0));
+        assert!(close(parse_length("-2", LengthUnit::DecimalFeet).unwrap(), -24.0));
+        assert!(close(parse_length("-6in", ft).unwrap(), -6.0));
+        assert!(close(parse_length("-5mm", ft).unwrap(), -5.0 / MM_PER_INCH));
+        assert!(close(parse_length("10 + -6", ft).unwrap(), 4.0));
+    }
 
     #[test]
     fn formats_common_values() {

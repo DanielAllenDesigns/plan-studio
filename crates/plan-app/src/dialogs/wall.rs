@@ -439,6 +439,9 @@ struct WallForm {
     /// Wall types edited or created in that dialog (to store with the plan
     /// and the defaults on OK).
     edited_types: Vec<WallTypeDef>,
+    /// An attic wall stands above this wall: Combine with Above Wall is
+    /// offered (manual p. 429).
+    attic_above: bool,
 }
 
 impl WallDialog {
@@ -489,8 +492,15 @@ impl WallDialog {
                 types,
                 define: None,
                 edited_types: Vec::new(),
+                attic_above: false,
             },
         }
+    }
+
+    /// Tells the dialog an attic wall stands above the wall, so Combine with
+    /// Above Wall on the Roof tab can be used.
+    pub fn set_attic_above(&mut self, above: bool) {
+        self.form.attic_above = above;
     }
 
     /// A dialog for one of the default wall settings; `type_name` is the
@@ -1978,6 +1988,7 @@ impl WallForm {
         use plan_core::defaults::RoofWallKind as K;
         section(ui, "Roof Options");
         let r = &mut self.draft.roof;
+        let kind_before = r.kind;
         for (kind, label) in [
             (K::Hip, "Hip Wall"),
             (K::FullGable, "Full Gable Wall"),
@@ -1988,6 +1999,30 @@ impl WallForm {
         ] {
             ui.radio_value(&mut r.kind, kind, label);
         }
+        // A Full Gable Wall checks Include Automatic End Truss Above for you.
+        if r.kind == K::FullGable && kind_before != K::FullGable {
+            r.end_truss_above = true;
+        }
+        let mut cuts = r.cuts_wall_at_bottom.unwrap_or(true);
+        if ui
+            .checkbox(&mut cuts, "Roof Cuts Wall at Bottom")
+            .on_hover_text("The part of the wall below an intersecting roof plane is not built")
+            .changed()
+        {
+            r.cuts_wall_at_bottom = Some(cuts);
+        }
+        ui.checkbox(&mut r.include_frieze, "Include Frieze")
+            .on_hover_text("The frieze molding of Build Roof runs along this wall at the roof line");
+        ui.checkbox(
+            &mut r.end_truss_above,
+            "Include Automatic End Truss Above",
+        )
+        .on_hover_text("An attic wall above gets a Reduced Gable End Truss with automatic trusses");
+        ui.add_enabled(
+            self.attic_above,
+            egui::Checkbox::new(&mut r.combine_with_above, "Combine with Above Wall"),
+        )
+        .on_hover_text("Balloon-frame this wall with the attic wall above it");
         if r.kind == K::ExtendSlopeDownward {
             let mut drop = r.extend_drop.unwrap_or(ROOF_EXTEND_DEFAULT);
             if self
@@ -2040,7 +2075,18 @@ impl WallForm {
             }
             self.fields
                 .length_row(ui, "Starts at Height", "roof_upper_start", start);
-            ui.weak("Height above the floor of this wall.");
+            // In From Baseline is the same break measured in plan from the
+            // baseline; the two follow each other (manual p. 429).
+            let lower = r.pitch_in_12.unwrap_or(ROOF_PITCH_DEFAULT);
+            let wall_h = self.draft.height;
+            let mut inward = plan_roof::in_from_baseline_for_start_height(wall_h, lower, *start);
+            if self
+                .fields
+                .length_row(ui, "In From Baseline", "roof_in_from_baseline", &mut inward)
+            {
+                *start = plan_roof::start_height_for_in_from_baseline(wall_h, lower, inward);
+            }
+            ui.weak("Starts at Height is above the floor of this wall; In From Baseline is the plan distance from the baseline. Each updates the other.");
         }
 
         section(ui, "Overhang");
@@ -2424,6 +2470,7 @@ mod tests {
             types: plan_core::PlanDefaults::chief_x18_daniel().wall_types,
             define: None,
             edited_types: Vec::new(),
+            attic_above: false,
         }
     }
 

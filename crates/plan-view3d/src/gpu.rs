@@ -374,6 +374,9 @@ pub(crate) struct FrameParams {
     /// Framebuffer the window is drawn to (`None` is the default one).
     pub target_fbo: Option<glow::Framebuffer>,
     pub pixels_per_point: f32,
+    /// Scales the ambient occlusion strength of the look (a camera's Ambient
+    /// Occlusion amount; 1 keeps the look's own).
+    pub ao_scale: f32,
 }
 
 impl FrameParams {
@@ -385,7 +388,7 @@ impl FrameParams {
             view_proj: camera.view_projection(aspect),
             eye: camera.eye(),
             view_dir: camera.forward(),
-            ortho: camera.mode.is_orthographic(),
+            ortho: camera.is_parallel(),
             lighting: Lighting::default(),
             show_edges: true,
             hide_ceiling_roof: camera.mode.hides_ceiling_and_roof(),
@@ -402,6 +405,7 @@ impl FrameParams {
             viewport,
             target_fbo: None,
             pixels_per_point: 1.0,
+            ao_scale: 1.0,
         }
     }
 }
@@ -1110,7 +1114,8 @@ impl GpuScene {
             self.upload_material_textures(gl);
         }
         self.ensure_passes(gl);
-        let look = frame.look.params();
+        let mut look = frame.look.params();
+        look.ao_strength *= frame.ao_scale.max(0.0);
         let key_dir = math::normalize(frame.lighting.key_dir);
         // Fill light: weak, from the opposite horizontal side, a bit lower.
         let fill_dir = math::normalize([-key_dir[0], key_dir[1] * 0.4, -key_dir[2]]);

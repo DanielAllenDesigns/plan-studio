@@ -12,6 +12,9 @@ use std::collections::BTreeMap;
 /// present in, Daniel's toolbar sets). Kept short on purpose: only ids that
 /// are directly evidenced, never guessed from neighbouring numbers.
 pub const KNOWN_IDS: &[(&str, &str)] = &[
+    // Daniel's own hotkey `2` (docs/chief-config-raw/UserHotkeys.xml) is the
+    // Join Roof Planes edit button (Round 16 brief 18b).
+    ("231", "Join Roof Planes"),
     ("586", "Structural Member Reporting"),
     ("23912", "Tool Search"),
 ];

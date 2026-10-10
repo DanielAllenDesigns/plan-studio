@@ -291,7 +291,7 @@ impl DetailsTool {
     }
 
     fn snapped(&self, cx: &EditorContext, p: &PointerEvent) -> Point {
-        cx.snap_at(p.world, self.points.last().copied(), p.modifiers.alt, &[])
+        cx.snap_at(p.world, self.points.last().copied(), p.overrides(), &[])
             .point
     }
 
@@ -569,7 +569,7 @@ impl DetailsTool {
             cx.status = self.hint();
             return ToolResult::consumed();
         };
-        let at = cx.snap_at(p.world, None, p.modifiers.alt, &[]).point;
+        let at = cx.snap_at(p.world, None, p.overrides(), &[]).point;
         match components::place(cx, &c, at) {
             Some(_) => ToolResult::committed("Place Detail Component"),
             None => ToolResult::consumed(),
@@ -748,7 +748,7 @@ impl Tool for DetailsTool {
         }
         if let Some(m) = &mut self.moving {
             if p.down {
-                let to = cx.snap_at(p.world, None, p.modifiers.alt, &[]).point;
+                let to = cx.snap_at(p.world, None, p.overrides(), &[]).point;
                 let d = to - m.start;
                 if d.length() > 1e-6 {
                     let mut layer = m.base.clone();
@@ -765,7 +765,7 @@ impl Tool for DetailsTool {
         let draw = self.variant.draw();
         self.hover = Some(match draw {
             Draw::Corner | Draw::Wall | Draw::Hatch | Draw::Auto | Draw::Replace => p.world,
-            Draw::Component => cx.snap_at(p.world, None, p.modifiers.alt, &[]).point,
+            Draw::Component => cx.snap_at(p.world, None, p.overrides(), &[]).point,
             _ if self.points.is_empty() => p.snapped,
             _ => self.snapped(cx, &p),
         });
@@ -787,7 +787,7 @@ impl Tool for DetailsTool {
             if (draw == Draw::Polygon || molding_rect)
                 && (self.rect.is_some() || p.world.dist(a) > slop)
             {
-                let corner = cx.snap_at(p.world, None, p.modifiers.alt, &[]).point;
+                let corner = cx.snap_at(p.world, None, p.overrides(), &[]).point;
                 self.rect = Some((a, corner));
             }
         }
@@ -922,7 +922,7 @@ impl Tool for DetailsTool {
         }
         let press = self.press.take();
         if let Some((a, _)) = self.rect.take() {
-            let corner = cx.snap_at(p.world, None, p.modifiers.alt, &[]).point;
+            let corner = cx.snap_at(p.world, None, p.overrides(), &[]).point;
             self.points.clear();
             if self.variant == DetailsVariant::MoldingPolyline {
                 return self.finish_molding_rect(cx, a, corner);
@@ -933,7 +933,7 @@ impl Tool for DetailsTool {
         if let (Some(a), 1) = (press, self.points.len()) {
             let slop = DRAG_PX / cx.px_per_in.max(1e-6);
             if p.world.dist(a) > slop {
-                let end = cx.snap_at(p.world, None, p.modifiers.alt, &[]).point;
+                let end = cx.snap_at(p.world, None, p.overrides(), &[]).point;
                 match self.variant.draw() {
                     Draw::Line => {
                         self.points.push(end);

@@ -348,8 +348,9 @@ fn add_floor(
     scene: &mut Scene,
 ) {
     let rooms = detect_rooms(&floor.walls, ROOM_TOLERANCE);
+    let joins = FloorJoins::new(floor, types);
     for wall in &floor.walls {
-        add_wall(floor, wall, &rooms, opts, types, scene);
+        add_wall(floor, wall, &rooms, opts, types, &joins, scene);
     }
     // Rooms with the same floor offset and ceiling height share a platform
     // mesh; a named room's overrides (R-23, R-24) split it from the rest.
@@ -469,6 +470,7 @@ fn add_wall(
     rooms: &[Room],
     opts: &SceneOptions,
     types: &TypeLookup,
+    joins: &FloorJoins,
     scene: &mut Scene,
 ) {
     if wall.flags.invisible {
@@ -484,6 +486,7 @@ fn add_wall(
             opts,
             &info,
             types.cover,
+            &joins.whole_cuts(wall),
             &mut scene.meshes,
         );
         scene.meshes.extend(wall::spec_meshes(
@@ -572,15 +575,20 @@ fn add_wall(
         top: raised_top.as_ref(),
         bottom: cut.as_ref().map(|c| &c.profile),
         split: split.as_ref(),
+        ..Shape::default()
     };
     let cuts = curved_neighbour_cuts(floor, wall);
-    scene.meshes.extend(wall::build_wall_shaped_cut(
+    // Each layer is its own slab, joined to the neighbours as the plan joins
+    // it (brief 40).
+    scene.meshes.extend(wall::build_layers(
         &body,
         floor.elevation,
         &holes,
         interior,
         look,
         &shape,
+        &joins.layers,
+        joins.type_of(wall),
         &cuts,
     ));
     scene.meshes.extend(wall::spec_meshes(
@@ -607,6 +615,52 @@ fn add_wall(
             opts,
             &hosted,
         ));
+    }
+}
+
+/// How the walls of one floor join in the plan: the wall types (project
+/// first, then the defaults), every layer's outline and every wall's whole
+/// outline.
+struct FloorJoins {
+    types: Vec<WallTypeDef>,
+    layers: Vec<plan_core::joins::WallLayerOutline>,
+    whole: Vec<plan_core::joins::WallOutline>,
+}
+
+impl FloorJoins {
+    fn new(floor: &Floor, types: &TypeLookup) -> Self {
+        const JOIN_TOL: f64 = 0.5;
+        let defs: Vec<WallTypeDef> = types
+            .project
+            .iter()
+            .chain(types.defaults)
+            .cloned()
+            .collect();
+        Self {
+            layers: plan_core::joins::wall_layer_outlines(&floor.walls, &defs, JOIN_TOL),
+            whole: plan_core::joins::wall_outlines(&floor.walls, JOIN_TOL),
+            types: defs,
+        }
+    }
+
+    fn type_of(&self, wall: &Wall) -> Option<&WallTypeDef> {
+        wall.wall_type
+            .as_deref()
+            .and_then(|n| self.types.iter().find(|t| t.name == n))
+    }
+
+    /// The cuts the joined whole-wall outline gives a straight wall, square
+    /// ends left alone.
+    fn whole_cuts(&self, wall: &Wall) -> wall::EndCuts {
+        if wall.is_curved() {
+            return wall::EndCuts::NONE;
+        }
+        self.whole
+            .iter()
+            .find(|o| o.wall_id == wall.id)
+            .map_or(wall::EndCuts::NONE, |o| {
+                wall::natural_cuts(wall, &o.polygon)
+            })
     }
 }
 

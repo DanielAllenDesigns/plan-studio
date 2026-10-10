@@ -1,6 +1,7 @@
 //! Wall solids: a box per wall with rectangular holes cut through both faces.
 
 mod arc;
+mod layers;
 
 use crate::builder::{cross, sub, MeshBuilder, MeshSet, V3};
 use crate::clip::{area, Piece, Side, TopProfile, P2};
@@ -8,6 +9,7 @@ use crate::frame::{Axis, Frame};
 use crate::mesh::{Material, Mesh};
 pub use arc::EndCuts;
 pub(crate) use arc::WallFrame;
+pub(crate) use layers::{build_layers, natural_cuts};
 use plan_core::walls::PlatformAdjust;
 use plan_core::{Opening, OpeningStyle, Wall, WallKind};
 
@@ -277,6 +279,12 @@ pub struct Shape<'a> {
     pub top: Option<&'a TopProfile>,
     pub bottom: Option<&'a TopProfile>,
     pub split: Option<&'a Split>,
+    /// One material for every face and cap (a layer slab, brief 40).
+    pub solid: Option<Material>,
+    /// The start / end face is hidden against another wall's layer and is
+    /// not drawn.
+    pub open_start: bool,
+    pub open_end: bool,
 }
 
 /// The rectangle `s0..s1` x `h0..h1` cut to the region between the bottom
@@ -322,7 +330,10 @@ pub fn build_wall_shaped_cut(
     };
     let top = shape.top.filter(|t| !t.is_flat_at(height));
     let shape = Shape { top, ..*shape };
-    let (left, right, trim) = wall_materials(wall, interior, look.exterior);
+    let (left, right, trim) = match shape.solid {
+        Some(m) => (m, m, m),
+        None => wall_materials(wall, interior, look.exterior),
+    };
     let mut set = MeshSet::default();
 
     // Niches only break the face on the interior side.
@@ -372,8 +383,12 @@ pub fn build_wall_shaped_cut(
     let t = (-half, half);
     let cap = set.material(trim);
     if shape.top.is_none() && shape.bottom.is_none() {
-        frame.face(cap, Axis::S, -1.0, 0.0, t, (0.0, height));
-        frame.face(cap, Axis::S, 1.0, length, t, (0.0, height));
+        if !shape.open_start {
+            frame.face(cap, Axis::S, -1.0, 0.0, t, (0.0, height));
+        }
+        if !shape.open_end {
+            frame.face(cap, Axis::S, 1.0, length, t, (0.0, height));
+        }
         frame.face(cap, Axis::H, 1.0, height, (0.0, length), t);
         frame.face(cap, Axis::H, -1.0, 0.0, (0.0, length), t);
     } else {
@@ -465,10 +480,10 @@ fn add_shaped_caps(
     let bot_at = |s: f64, side: Side| shape.bottom.map_or(0.0, |p| p.at(s, side));
     let (b0, t0) = (bot_at(0.0, Side::After), top_at(0.0, Side::After));
     let (b1, t1) = (bot_at(length, Side::Before), top_at(length, Side::Before));
-    if t0 - b0 > EPS {
+    if t0 - b0 > EPS && !shape.open_start {
         frame.face(cap, Axis::S, -1.0, 0.0, t, (b0, t0));
     }
-    if t1 - b1 > EPS {
+    if t1 - b1 > EPS && !shape.open_end {
         frame.face(cap, Axis::S, 1.0, length, t, (b1, t1));
     }
     match shape.top {

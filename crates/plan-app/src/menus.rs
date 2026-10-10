@@ -2144,6 +2144,14 @@ fn tools_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
         live(ui, "Plan Check", "", false, Action::PlanCheck, out);
         live(
             ui,
+            "Reset Notification Icons",
+            "",
+            false,
+            Action::Custom(crate::editor::wall_edit::RESET_ICONS),
+            out,
+        );
+        live(
+            ui,
             "Plan Check Settings\u{2026}",
             "",
             false,

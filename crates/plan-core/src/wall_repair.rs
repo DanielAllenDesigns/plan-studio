@@ -328,6 +328,67 @@ impl Project {
     }
 }
 
+/// Distance from `p` to the segment `a`-`b`.
+fn seg_dist(p: Point, a: Point, b: Point) -> f64 {
+    let ab = b - a;
+    let len2 = ab.dot(ab);
+    if len2 < 1e-12 {
+        return p.dist(a);
+    }
+    let t = ((p - a).dot(ab) / len2).clamp(0.0, 1.0);
+    p.dist(a + ab * t)
+}
+
+impl Project {
+    /// Auto Reverse Wall Layers (W-131, manual p. 385): when walls close a
+    /// room, every exterior wall along that room whose exterior layers face
+    /// into it (and nothing else) is turned so they face out. Meant to run
+    /// once, right after the wall `new_wall` made the room close, so a later
+    /// manual Reverse Layers is never undone. Returns how many walls turned.
+    pub fn auto_reverse_enclosed(&mut self, floor: usize, new_wall: Id) -> usize {
+        let Some(f) = self.floors.get(floor) else {
+            return 0;
+        };
+        let Some(nw) = f.wall(new_wall) else {
+            return 0;
+        };
+        let nmid = Point::lerp(nw.start, nw.end, 0.5);
+        let rooms = crate::rooms::detect_rooms(&f.walls, 0.5);
+        let along = |poly: &[Point], p: Point, slack: f64| {
+            (0..poly.len()).any(|i| seg_dist(p, poly[i], poly[(i + 1) % poly.len()]) <= slack)
+        };
+        let mut flip: Vec<Id> = Vec::new();
+        for room in &rooms {
+            if !along(&room.polygon, nmid, nw.thickness) {
+                continue;
+            }
+            for w in &f.walls {
+                if w.kind != crate::model::WallKind::Exterior
+                    || !w.class.is_standard()
+                    || w.is_curved()
+                    || flip.contains(&w.id)
+                {
+                    continue;
+                }
+                let mid = Point::lerp(w.start, w.end, 0.5);
+                if !along(&room.polygon, mid, w.thickness) {
+                    continue;
+                }
+                let n = w.exterior_normal();
+                let reach = w.thickness * 0.5 + 2.0;
+                let out = mid + n * reach;
+                let inside = mid - n * reach;
+                if room.contains(out) && !rooms.iter().any(|r| r.contains(inside)) {
+                    flip.push(w.id);
+                }
+            }
+        }
+        flip.iter()
+            .filter(|id| self.reverse_wall_layers(floor, **id))
+            .count()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

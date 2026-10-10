@@ -283,3 +283,127 @@ fn an_l_and_a_t_join_layer_by_layer_in_3d_and_a_slid_layer_reaches_in_3d() {
         "{before} {after} {shift}"
     );
 }
+
+// ---- R17-02: wall edit tail (W-120, W-121, W-131) ----
+
+fn exterior(cx: &mut EditorContext, a: (f64, f64), b: (f64, f64)) -> Id {
+    cx.project.add_wall(
+        0,
+        Point::new(a.0, a.1),
+        Point::new(b.0, b.1),
+        6.0,
+        96.0,
+        WallKind::Exterior,
+    )
+}
+
+#[test]
+fn connect_walls_merges_collinear_walls_when_the_switch_is_on() {
+    let mut cx = cx();
+    let a = add(&mut cx, 0, (0.0, 0.0), (100.0, 0.0));
+    let b = add(&mut cx, 0, (108.0, 0.0), (200.0, 0.0));
+    let before = cx.floor().walls.len();
+    assert_eq!(wall_edit::connect_walls(&mut cx, a, b), 1);
+    assert_eq!(cx.floor().walls.len(), before - 1, "merged into one wall");
+    assert!(cx.floor().wall(a).is_some_and(|w| w.length() > 199.0));
+    assert_eq!(cx.undo_label(), Some("Connect Walls"));
+    cx.undo();
+    assert_eq!(cx.floor().walls.len(), before);
+    // Switch off: the two walls stay two.
+    cx.defaults.walls_connect.auto_merge_collinear = false;
+    assert_eq!(wall_edit::connect_walls(&mut cx, a, b), 1);
+    assert_eq!(cx.floor().walls.len(), before);
+}
+
+#[test]
+fn merge_collinear_at_leaves_a_corner_and_different_walls_alone() {
+    let mut cx = cx();
+    let a = add(&mut cx, 0, (0.0, 0.0), (100.0, 0.0));
+    let _b = add(&mut cx, 0, (100.0, 0.0), (100.0, 100.0));
+    assert_eq!(wall_edit::merge_collinear_at(&mut cx, a), 0);
+    let c = exterior(&mut cx, (0.0, 0.0), (-100.0, 0.0));
+    assert_eq!(wall_edit::merge_collinear_at(&mut cx, a), 0, "kinds differ");
+    assert!(cx.floor().wall(c).is_some());
+}
+
+fn faces_out(cx: &EditorContext, id: Id, centre: Point) -> bool {
+    let w = cx.floor().wall(id).unwrap();
+    let mid = Point::lerp(w.start, w.end, 0.5);
+    (mid + w.exterior_normal() * 10.0).dist(centre)
+        > (mid - w.exterior_normal() * 10.0).dist(centre)
+}
+
+#[test]
+fn closing_a_room_turns_the_exterior_layers_out_once_and_reverse_stays_manual() {
+    let centre = Point::new(100.0, 100.0);
+    for clockwise in [false, true] {
+        let mut cx = cx();
+        cx.defaults.walls_connect.auto_reverse_layers = true;
+        let mut pts = [
+            (0.0, 0.0),
+            (200.0, 0.0),
+            (200.0, 200.0),
+            (0.0, 200.0),
+            (0.0, 0.0),
+        ];
+        if clockwise {
+            pts.reverse();
+        }
+        let mut ids = Vec::new();
+        for pair in pts.windows(2) {
+            let before = wall_edit::room_count(&cx);
+            let id = exterior(&mut cx, pair[0], pair[1]);
+            crate::editor::connect::auto_connect(&mut cx, id);
+            ids.push(id);
+            wall_edit::auto_reverse_if_closed(&mut cx, id, before);
+        }
+        for id in &ids {
+            assert!(faces_out(&cx, *id, centre), "clockwise={clockwise}");
+        }
+        // A manual Reverse Layers is not undone by a later pass.
+        select(&mut cx, &[ids[0]]);
+        wall_edit::reverse_layers(&mut cx);
+        assert!(!faces_out(&cx, ids[0], centre));
+        let now = wall_edit::room_count(&cx);
+        assert_eq!(wall_edit::auto_reverse_if_closed(&mut cx, ids[0], now), 0);
+        // The switch off leaves a closing room alone.
+        let mut off = self::cx();
+        off.defaults.walls_connect.auto_reverse_layers = false;
+        let before = wall_edit::room_count(&off);
+        let w = exterior(&mut off, (0.0, 0.0), (10.0, 0.0));
+        assert_eq!(wall_edit::auto_reverse_if_closed(&mut off, w, before), 0);
+    }
+}
+
+#[test]
+fn reset_walls_to_defaults_restores_type_thickness_and_height_in_one_undo_step() {
+    let mut cx = cx();
+    let a = exterior(&mut cx, (0.0, 0.0), (100.0, 0.0));
+    let b = add(&mut cx, 0, (0.0, 50.0), (100.0, 50.0));
+    let want_h = cx.defaults.exterior_wall.height;
+    for id in [a, b] {
+        let w = cx.project.floors[0].wall_mut(id).unwrap();
+        w.height = 77.0;
+        w.thickness = 13.0;
+    }
+    select(&mut cx, &[a]);
+    assert_eq!(wall_edit::reset_wall_values(&mut cx), 1);
+    assert_eq!(cx.undo_label(), Some("Reset Walls to Defaults"));
+    let wa = cx.floor().wall(a).unwrap();
+    assert_eq!(wa.height, want_h);
+    assert_ne!(wa.thickness, 13.0);
+    assert_eq!(
+        cx.floor().wall(b).unwrap().height,
+        77.0,
+        "unselected wall kept"
+    );
+    cx.undo();
+    assert_eq!(cx.floor().wall(a).unwrap().height, 77.0);
+    // Nothing selected: every wall of the floor.
+    cx.selection.clear();
+    assert_eq!(wall_edit::reset_wall_values(&mut cx), 2);
+    assert_eq!(
+        cx.floor().wall(b).unwrap().height,
+        cx.defaults.interior_wall.height
+    );
+}

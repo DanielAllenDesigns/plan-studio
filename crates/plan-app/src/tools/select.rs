@@ -1487,7 +1487,12 @@ impl SelectTool {
         // Chief auto-connects a wall whose end or body was dragged near other
         // walls (W-31..W-36); run inside the drag's own undo step.
         if let Op::WallEnd(id, _) | Op::WallMove(id) = a.op {
+            let rooms_before = wall_edit::room_count(cx);
             crate::editor::connect::auto_connect(cx, id);
+            if matches!(a.op, Op::WallEnd(..)) {
+                wall_edit::merge_collinear_at(cx, id);
+            }
+            wall_edit::auto_reverse_if_closed(cx, id, rooms_before);
             // Joining may have moved the wall again: trim follows it.
             details_view::follow_walls(&mut cx.project, fl, &a.original.floors[fl].walls);
         }

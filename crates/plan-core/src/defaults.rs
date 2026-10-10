@@ -1109,6 +1109,14 @@ pub struct WallConnectDefaults {
     pub split_on_tee: bool,
     /// Minimum connect distance, inches.
     pub connect_distance_min: f64,
+    /// General Wall Defaults > Auto Merge Collinear Walls (W-120): two
+    /// walls of one specification that end up in a line (a wall end dragged
+    /// onto another, Connect Walls) become one wall.
+    pub auto_merge_collinear: bool,
+    /// General Wall Defaults > Auto Reverse Wall Layers (W-131): when walls
+    /// close a room, each exterior wall is turned so its exterior layers
+    /// face out. Reverse Layers stays a manual button.
+    pub auto_reverse_layers: bool,
 }
 
 impl Default for WallConnectDefaults {
@@ -1116,6 +1124,8 @@ impl Default for WallConnectDefaults {
         Self {
             split_on_tee: true,
             connect_distance_min: 6.0,
+            auto_merge_collinear: true,
+            auto_reverse_layers: false,
         }
     }
 }

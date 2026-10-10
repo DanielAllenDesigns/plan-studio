@@ -787,6 +787,10 @@ impl WallTool {
             cx.selection.set(ObjectRef::Wall(id));
         }
         let rooms_after = detect_rooms(&cx.project.floors[fl].walls, 0.5).len();
+        // Auto Reverse Wall Layers (W-131): the room just closed.
+        if rooms_after > rooms_before {
+            crate::editor::wall_edit::auto_reverse_if_closed(cx, id, rooms_before);
+        }
         cx.mark_dirty();
         Some((id, next, rooms_after > rooms_before))
     }

@@ -1843,6 +1843,10 @@ fn cad_menu(ui: &mut egui::Ui, state: &BarState, out: &mut Vec<Action>) {
             CadMode::ConvertToPolyline,
             CadMode::ConvertToSpline,
             CadMode::PolylineToLines,
+            CadMode::JoinTwoLines,
+            CadMode::ClosePolyline,
+            CadMode::SimplifyPolyline,
+            CadMode::FilletAllCorners,
         ] {
             cad_mode(ui, m.name(), m, out);
         }

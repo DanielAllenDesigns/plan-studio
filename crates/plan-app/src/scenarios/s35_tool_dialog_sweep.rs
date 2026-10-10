@@ -566,6 +566,10 @@ fn role(id: ToolId) -> Role {
             | CadMode::ConvertToPolyline
             | CadMode::ConvertToSpline
             | CadMode::PolylineToLines
+            | CadMode::JoinTwoLines
+            | CadMode::ClosePolyline
+            | CadMode::SimplifyPolyline
+            | CadMode::FilletAllCorners
             | CadMode::Hatch => NoObject("modifier: edits existing CAD objects"),
         },
         ToolId::Cabinet => Creates(Fx::Shell, IN_ROOM),

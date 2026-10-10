@@ -1376,6 +1376,131 @@ pub fn detail_items(
     out
 }
 
+// ===== Close, Simplify and Fillet All Corners =====
+
+/// An open polyline closed: its last point joins back to its first. A last
+/// point already on the first is dropped. `None` below three points.
+pub fn close_polyline(points: &[Point]) -> Option<Vec<Point>> {
+    if points.len() < 3 {
+        return None;
+    }
+    let mut out = points.to_vec();
+    if out.len() > 3 && out[0].dist(out[out.len() - 1]) <= EPS {
+        out.pop();
+    }
+    Some(out)
+}
+
+/// A polyline with its short edges and straight-through vertices removed:
+/// a vertex closer than `min_len` to the one kept before it goes, then a
+/// vertex within `tol` of the line between its neighbours (and between them)
+/// goes. Open polylines keep their ends; a closed one keeps three points.
+pub fn simplify_polyline(points: &[Point], closed: bool, min_len: f64, tol: f64) -> Vec<Point> {
+    let mut out: Vec<Point> = Vec::with_capacity(points.len());
+    for (k, p) in points.iter().enumerate() {
+        let last = k + 1 == points.len();
+        match out.last() {
+            Some(q) if q.dist(*p) < min_len.max(EPS) => {
+                // The closer pair collapses onto the kept point, except that
+                // an open polyline's end stays where it is.
+                if last && !closed && out.len() > 1 {
+                    *out.last_mut().unwrap() = *p;
+                }
+            }
+            _ => out.push(*p),
+        }
+    }
+    if closed && out.len() > 1 && out[0].dist(out[out.len() - 1]) < min_len.max(EPS) {
+        out.pop();
+    }
+    loop {
+        let n = out.len();
+        let floor = if closed { 3 } else { 2 };
+        if n <= floor {
+            break;
+        }
+        let range = if closed { 0..n } else { 1..n - 1 };
+        let hit = range.into_iter().find(|&i| {
+            let (a, b, c) = (out[(i + n - 1) % n], out[i], out[(i + 1) % n]);
+            let ac = c.sub(a);
+            let len2 = ac.dot(ac);
+            if len2 <= EPS {
+                return false;
+            }
+            let t = b.sub(a).dot(ac) / len2;
+            let foot = a.add(ac.scale(t));
+            t > 0.0 && t < 1.0 && foot.dist(b) <= tol
+        });
+        match hit {
+            Some(i) => {
+                out.remove(i);
+            }
+            None => break,
+        }
+    }
+    out
+}
+
+/// Every corner of a polyline rounded by an arc of `radius` (0 = none). A
+/// corner whose arc would run into its neighbour's stays sharp. `None` when
+/// the radius is zero or no corner took an arc.
+pub fn fillet_all_corners(
+    points: &[Point],
+    closed: bool,
+    radius: f64,
+    step_deg: f64,
+) -> Option<Vec<Point>> {
+    let n = points.len();
+    if radius <= EPS || n < 3 {
+        return None;
+    }
+    let mut fil: Vec<Option<Fillet>> = (0..n)
+        .map(|i| {
+            if !closed && (i == 0 || i == n - 1) {
+                return None;
+            }
+            let (prev, next) = neighbours(points, closed, i)?;
+            fillet_corner(prev, points[i], next, radius)
+        })
+        .collect();
+    let tl = |f: &[Option<Fillet>], i: usize| f[i].as_ref().map_or(0.0, |x| x.t0.dist(points[i]));
+    let segs = if closed { n } else { n - 1 };
+    for i in 0..segs {
+        let j = (i + 1) % n;
+        let len = points[i].dist(points[j]);
+        if tl(&fil, i) + tl(&fil, j) > len + EPS {
+            fil[j] = None;
+        }
+    }
+    let mut out = Vec::new();
+    let mut any = false;
+    for i in 0..n {
+        let Some(f) = fil[i].as_ref() else {
+            out.push(points[i]);
+            continue;
+        };
+        any = true;
+        let a0 = f.t0.sub(f.center).angle();
+        let a1 = f.t1.sub(f.center).angle();
+        let mut delta = (a1 - a0).rem_euclid(TAU);
+        if delta > PI {
+            delta -= TAU;
+        }
+        let steps = ((delta.abs().to_degrees() / step_deg.max(1.0)).ceil() as usize).max(2);
+        for k in 0..=steps {
+            let a = a0 + delta * k as f64 / steps as f64;
+            out.push(Point::new(
+                f.center.x + radius * a.cos(),
+                f.center.y + radius * a.sin(),
+            ));
+        }
+        let m = out.len();
+        out[m - steps - 1] = f.t0;
+        out[m - 1] = f.t1;
+    }
+    any.then_some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1964,5 +2089,47 @@ mod tests {
         );
         assert!(pr.layers.get(LEGACY_DATA_LAYER).is_none());
         assert!(!migrate_legacy(&mut pr), "second run changes nothing");
+    }
+
+    #[test]
+    fn close_and_simplify_polylines() {
+        let open = [p(0.0, 0.0), p(10.0, 0.0), p(10.0, 10.0)];
+        assert_eq!(close_polyline(&open).unwrap().len(), 3);
+        assert!(close_polyline(&open[..2]).is_none());
+        let back = [p(0.0, 0.0), p(10.0, 0.0), p(10.0, 10.0), p(0.0, 0.0)];
+        assert_eq!(close_polyline(&back).unwrap().len(), 3);
+        // Collinear and tiny edges go; the ends of an open line stay.
+        let line = [
+            p(0.0, 0.0),
+            p(50.0, 0.1),
+            p(100.0, 0.0),
+            p(100.2, 0.0),
+            p(100.0, 80.0),
+        ];
+        let s = simplify_polyline(&line, false, 1.0, 0.5);
+        assert_eq!(s, vec![p(0.0, 0.0), p(100.0, 0.0), p(100.0, 80.0)]);
+        // Nothing to drop in a square; a tight tolerance keeps the wobble.
+        let sq = [p(0.0, 0.0), p(10.0, 0.0), p(10.0, 10.0), p(0.0, 10.0)];
+        assert_eq!(simplify_polyline(&sq, true, 1.0, 0.5), sq.to_vec());
+        assert_eq!(simplify_polyline(&line, false, 1.0, 0.01).len(), 4);
+    }
+
+    #[test]
+    fn fillet_all_corners_rounds_each_and_skips_what_does_not_fit() {
+        let sq = [p(0.0, 0.0), p(100.0, 0.0), p(100.0, 100.0), p(0.0, 100.0)];
+        assert!(fillet_all_corners(&sq, true, 0.0, 15.0).is_none());
+        let r = fillet_all_corners(&sq, true, 10.0, 15.0).unwrap();
+        assert!(r.len() > 8 && r.iter().all(|q| q.x >= -1e-9 && q.x <= 100.0 + 1e-9));
+        assert!(r.iter().any(|q| close(*q, p(10.0, 0.0))));
+        assert!(r.iter().any(|q| close(*q, p(100.0, 90.0))));
+        assert!(!r.iter().any(|q| close(*q, p(0.0, 0.0))));
+        // Too big for neighbouring corners: some stay sharp.
+        let big = fillet_all_corners(&sq, true, 60.0, 15.0).unwrap();
+        assert!(big.iter().any(|q| close(*q, p(100.0, 0.0))));
+        assert!(big.iter().any(|q| close(*q, p(0.0, 100.0))));
+        // An open polyline keeps its ends.
+        let o = fillet_all_corners(&sq[..3], false, 10.0, 15.0).unwrap();
+        assert_eq!(o[0], sq[0]);
+        assert_eq!(*o.last().unwrap(), sq[2]);
     }
 }

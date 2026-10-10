@@ -1417,6 +1417,7 @@ impl PlanApp {
         dialogs::drawing_sheet::paint_overlays(&self.cx, &painter, &self.camera);
         // The Off Angle and unconnected-wall icons (W-132).
         editor::wall_edit::draw_icons(&self.cx, &painter, &self.camera);
+        editor::wall_edit::draw_layer_handles(&self.cx, &painter, &self.camera);
         self.tools
             .active()
             .draw_overlay(&self.cx, &painter, &self.camera);

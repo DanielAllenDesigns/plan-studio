@@ -178,3 +178,29 @@ fn a_wall_aligns_with_the_wall_below_and_its_joined_wall_follows() {
     cx.undo();
     assert!((cx.floor().wall(up).unwrap().start.y - 4.0).abs() < 1e-9);
 }
+
+#[test]
+fn a_layer_slides_to_the_other_walls_line_and_reset_puts_it_back_in_one_step_each() {
+    let mut cx = cx();
+    let a = add(&mut cx, 0, (0.0, 0.0), (120.0, 0.0));
+    let _b = add(&mut cx, 0, (120.0, 0.0), (120.0, 120.0));
+    cx.refresh();
+    // 4.4 inches asked, the other wall's face is at 2.25: it snaps there.
+    let shift = wall_edit::slide_layer(&mut cx, a, WallEnd::End, 0, 2.0).unwrap();
+    assert!((shift - 2.25).abs() < 1e-6, "{shift}");
+    assert_eq!(cx.undo_label(), Some("Edit Wall Intersections"));
+    assert_eq!(cx.floor().wall(a).unwrap().spec.layer_joins.len(), 1);
+    select(&mut cx, &[a]);
+    assert_eq!(wall_edit::reset_layer_joins(&mut cx), 1);
+    assert!(cx.floor().wall(a).unwrap().spec.layer_joins.is_empty());
+    assert_eq!(cx.undo_label(), Some("Reset Wall Layer Intersections"));
+    // Nothing slid any more: no undo step.
+    assert_eq!(wall_edit::reset_layer_joins(&mut cx), 0);
+    cx.undo();
+    assert_eq!(cx.floor().wall(a).unwrap().spec.layer_joins.len(), 1);
+    let labels: Vec<_> = wall_edit::edit_actions(&cx)
+        .iter()
+        .map(|e| e.label)
+        .collect();
+    assert!(labels.contains(&"Reset Wall Layer Intersections"));
+}

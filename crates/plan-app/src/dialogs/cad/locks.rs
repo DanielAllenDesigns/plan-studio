@@ -164,6 +164,11 @@ impl ArcLock {
     pub fn angles_free(self) -> bool {
         !matches!(self, ArcLock::Arc | ArcLock::Chord)
     }
+
+    /// Can the chord length and angle be typed?
+    pub fn chord_free(self) -> bool {
+        !matches!(self, ArcLock::Arc | ArcLock::Chord)
+    }
 }
 
 /// An arc as the model keeps it: counter-clockwise from `a0` to `a1` (radians).
@@ -201,6 +206,12 @@ pub enum ArcEdit {
     Radius(f64),
     StartAngle(f64),
     EndAngle(f64),
+    /// Straight distance from start to end (inches).
+    ChordLength(f64),
+    /// Direction of the chord (radians, counter-clockwise from east).
+    ChordAngle(f64),
+    /// Length along the arc (inches).
+    ArcLength(f64),
 }
 
 /// The arc after `edit` under `lock`.
@@ -326,6 +337,114 @@ pub fn arc_edit(arc: ArcShape, lock: ArcLock, edit: ArcEdit) -> ArcShape {
             },
             ArcLock::Start | ArcLock::Center => ArcShape { a1: a, ..arc },
         },
+        ArcEdit::ChordLength(l) => {
+            let sweep = arc.sweep();
+            if l <= 1e-6 || sweep < 1e-9 || matches!(lock, ArcLock::Arc | ArcLock::Chord) {
+                return arc;
+            }
+            let (s, e) = (arc.start(), arc.end());
+            let cd = e.sub(s);
+            if cd.length() < 1e-9 {
+                return arc;
+            }
+            let u = cd.normalized();
+            match lock {
+                ArcLock::Start => from_chord(s, s.add(u.scale(l)), sweep),
+                ArcLock::End => from_chord(e.sub(u.scale(l)), e, sweep),
+                // The center and radius stay: the arc opens or closes
+                // evenly about the middle of its sweep.
+                _ => {
+                    if l > 2.0 * radius {
+                        return arc;
+                    }
+                    let half = 2.0 * (l / (2.0 * radius)).asin() / 2.0;
+                    let mid = a0 + sweep / 2.0;
+                    ArcShape {
+                        a0: mid - half,
+                        a1: mid + half,
+                        ..arc
+                    }
+                }
+            }
+        }
+        ArcEdit::ChordAngle(a) => {
+            if matches!(lock, ArcLock::Arc | ArcLock::Chord) {
+                return arc;
+            }
+            let (s, e) = (arc.start(), arc.end());
+            let cd = e.sub(s);
+            if cd.length() < 1e-9 {
+                return arc;
+            }
+            let delta = a - cd.angle();
+            let spin = |p: Point, about: Point| {
+                let v = p.sub(about);
+                let (sn, cs) = delta.sin_cos();
+                about.add(Point::new(v.x * cs - v.y * sn, v.x * sn + v.y * cs))
+            };
+            let about = match lock {
+                ArcLock::Start => s,
+                ArcLock::End => e,
+                _ => center,
+            };
+            ArcShape {
+                center: spin(center, about),
+                a0: a0 + delta,
+                a1: a1 + delta,
+                ..arc
+            }
+        }
+        ArcEdit::ArcLength(len) => {
+            if len <= 1e-6 || radius <= 1e-9 || lock == ArcLock::Arc {
+                return arc;
+            }
+            if lock == ArcLock::Chord {
+                let (s, e) = (arc.start(), arc.end());
+                let c = s.dist(e);
+                // The arc is at least as long as its chord and shorter than
+                // a full circle on it; arc length rises with the sweep.
+                if c < 1e-9 || len <= c {
+                    return arc;
+                }
+                let (mut lo, mut hi) = (1e-6, TAU - 1e-6);
+                for _ in 0..80 {
+                    let th = (lo + hi) / 2.0;
+                    if c * th / (2.0 * (th / 2.0).sin()) < len {
+                        lo = th;
+                    } else {
+                        hi = th;
+                    }
+                }
+                return from_chord(s, e, (lo + hi) / 2.0);
+            }
+            let th = (len / radius).min(TAU - 1e-6);
+            match lock {
+                ArcLock::Start => ArcShape { a1: a0 + th, ..arc },
+                ArcLock::End => ArcShape { a0: a1 - th, ..arc },
+                _ => {
+                    let mid = a0 + arc.sweep() / 2.0;
+                    ArcShape {
+                        a0: mid - th / 2.0,
+                        a1: mid + th / 2.0,
+                        ..arc
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The counter-clockwise arc from `s` to `e` that sweeps `sweep` radians.
+fn from_chord(s: Point, e: Point, sweep: f64) -> ArcShape {
+    let cd = e.sub(s);
+    let half = sweep / 2.0;
+    let r = cd.length() / (2.0 * half.sin());
+    let c = Point::lerp(s, e, 0.5).add(cd.normalized().perp().scale(r * half.cos()));
+    ArcShape {
+        center: c,
+        radius: r,
+        a0: s.sub(c).angle(),
+        a1: s.sub(c).angle() + sweep,
     }
 }
 
@@ -470,5 +589,40 @@ mod tests {
         assert!((len - 100.0 * 2f64.sqrt()).abs() < 1e-9 && (ang - 135.0).abs() < 1e-9);
         let (d0, d1) = directions(&quarter());
         assert!((d0 - 90.0).abs() < 1e-9 && (d1 - 180.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn typed_chord_and_arc_length_follow_the_lock() {
+        use std::f64::consts::{FRAC_PI_2, PI};
+        let arc = ArcShape {
+            center: p(0.0, 0.0),
+            radius: 100.0,
+            a0: 0.0,
+            a1: FRAC_PI_2,
+        };
+        let c = 100.0 * 2f64.sqrt();
+        // Chord Length with Start locked: start stays, the sweep is kept.
+        let a = arc_edit(arc, ArcLock::Start, ArcEdit::ChordLength(c / 2.0));
+        assert!(near(a.start(), arc.start()));
+        assert!((a.radius - 50.0).abs() < 1e-6 && (a.sweep() - FRAC_PI_2).abs() < 1e-9);
+        // Center locked: radius stays, the sweep opens to a half circle.
+        let a = arc_edit(arc, ArcLock::Center, ArcEdit::ChordLength(200.0));
+        assert!((a.sweep() - PI).abs() < 1e-9 && (a.radius - 100.0).abs() < 1e-9);
+        // Locked chord or arc: nothing moves.
+        assert_eq!(
+            arc_edit(arc, ArcLock::Chord, ArcEdit::ChordLength(50.0)),
+            arc
+        );
+        // Chord Angle with Start locked: the end swings round the start.
+        let a = arc_edit(arc, ArcLock::Start, ArcEdit::ChordAngle(PI));
+        assert!(near(a.start(), arc.start()));
+        assert!(near(a.end(), p(100.0 - c, 0.0)), "{:?}", a.end());
+        // Arc Length: Start locked keeps the radius and moves the end.
+        let a = arc_edit(arc, ArcLock::Start, ArcEdit::ArcLength(100.0 * PI));
+        assert!((a.sweep() - PI).abs() < 1e-9 && near(a.start(), arc.start()));
+        // Chord locked: the arc bulges until it is that long.
+        let a = arc_edit(arc, ArcLock::Chord, ArcEdit::ArcLength(c * PI / 2.0));
+        assert!((a.sweep() - PI).abs() < 1e-6, "{}", a.sweep());
+        assert!(near(a.start(), arc.start()) && near(a.end(), arc.end()));
     }
 }

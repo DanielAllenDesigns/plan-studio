@@ -375,24 +375,57 @@ impl CadForm {
                     a0: *start_angle,
                     a1: *end_angle,
                 };
-                let (chord_len, chord_deg) = locks::chord(&after);
-                let (d0, d1) = locks::directions(&after);
-                row(ui, "Chord Length", |ui| {
-                    ui.label(fmt_short(chord_len));
+                let (mut chord_len, chord_deg) = locks::chord(&after);
+                let (mut d0, mut d1) = locks::directions(&after);
+                let mut chord_deg = chord_deg.rem_euclid(360.0);
+                let mut arc_len = *radius * (*end_angle - *start_angle).rem_euclid(TAU);
+                let mut edit = None;
+                // The chord, its direction, the directions of travel and the
+                // length along the arc can be typed too (CAD-116).
+                ui.add_enabled_ui(lock.chord_free(), |ui| {
+                    if fields.length_row(ui, "Chord Length", "chord", &mut chord_len)
+                        && chord_len > 0.0
+                    {
+                        edit = Some(ArcEdit::ChordLength(chord_len));
+                    }
+                    if fields.degrees_row(ui, "Chord Angle", "deg_chord", &mut chord_deg) {
+                        edit = Some(ArcEdit::ChordAngle(chord_deg.to_radians()));
+                    }
                 });
-                row(ui, "Chord Angle", |ui| {
-                    ui.label(format!("{:.1}\u{b0}", chord_deg.rem_euclid(360.0)));
-                });
-                row(ui, "Start / End Direction", |ui| {
-                    ui.label(format!("{d0:.1}\u{b0} / {d1:.1}\u{b0}"));
+                ui.add_enabled_ui(lock.angles_free(), |ui| {
+                    if fields.degrees_row(ui, "Start Direction", "deg_dir0", &mut d0) {
+                        edit = Some(ArcEdit::StartAngle((d0 - 90.0).to_radians()));
+                    }
+                    if fields.degrees_row(ui, "End Direction", "deg_dir1", &mut d1) {
+                        edit = Some(ArcEdit::EndAngle((d1 - 90.0).to_radians()));
+                    }
                 });
                 let sweep = (*end_angle - *start_angle).rem_euclid(TAU);
                 row(ui, "Sweep", |ui| {
                     ui.label(format!("{:.1}\u{b0}", sweep.to_degrees()));
                 });
-                row(ui, "Arc Length", |ui| {
-                    ui.label(fmt_short(*radius * sweep));
+                ui.add_enabled_ui(lock != ArcLock::Arc, |ui| {
+                    if fields.length_row(ui, "Arc Length", "arclen", &mut arc_len) && arc_len > 0.0
+                    {
+                        edit = Some(ArcEdit::ArcLength(arc_len));
+                    }
                 });
+                if let Some(ed) = edit {
+                    let after = locks::arc_edit(
+                        ArcShape {
+                            center: *center,
+                            radius: *radius,
+                            a0: *start_angle,
+                            a1: *end_angle,
+                        },
+                        lock,
+                        ed,
+                    );
+                    *center = after.center;
+                    *radius = after.radius;
+                    *start_angle = after.a0;
+                    *end_angle = after.a1;
+                }
             }
             CadItem::Polyline { points, closed } => {
                 section(ui, "Polyline");

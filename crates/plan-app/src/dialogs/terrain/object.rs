@@ -632,14 +632,24 @@ impl Form {
     fn layer(&mut self, ui: &mut Ui) {
         if let TerrainObject::Road(r) = &mut self.draft {
             section(ui, "Layer");
-            row(ui, "Layer", |ui| ui.text_edit_singleline(&mut r.layer));
+            row(ui, "Layer", |ui| {
+                ui.text_edit_singleline(&mut r.layer);
+                if ui.small_button("Define\u{2026}").clicked() {
+                    crate::dialogs::layer_display::open_define();
+                }
+            });
             ui.weak("Empty draws it on the terrain's own layer.");
             return;
         }
         let default = self.default_layer();
         let Some(st) = self.style_mut() else { return };
         section(ui, "Layer");
-        row(ui, "Layer", |ui| ui.text_edit_singleline(&mut st.layer));
+        row(ui, "Layer", |ui| {
+            ui.text_edit_singleline(&mut st.layer);
+            if ui.small_button("Define\u{2026}").clicked() {
+                crate::dialogs::layer_display::open_define();
+            }
+        });
         ui.weak(format!("Empty puts it on \"{default}\"."));
     }
 }

@@ -268,6 +268,13 @@ impl OpeningForm {
                         }
                     }
                 });
+            if ui
+                .small_button("Define\u{2026}")
+                .on_hover_text("Open Layer Display Options")
+                .clicked()
+            {
+                crate::dialogs::layer_display::open_define();
+            }
         });
         row(ui, "Other Layer", |ui| {
             let mut text = spec.layer.clone().unwrap_or_default();

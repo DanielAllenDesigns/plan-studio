@@ -779,13 +779,12 @@ fn materials_page(ui: &mut Ui, salt: &str, material: &mut String) {
 fn layer_page(ui: &mut Ui, layers: &[String], layer: &mut String) {
     section(ui, "Layer");
     row(ui, "Layer", |ui| {
-        egui::ComboBox::from_id_salt("foundation_layer")
-            .selected_text(layer.clone())
-            .show_ui(ui, |ui| {
-                for name in layers {
-                    ui.selectable_value(layer, name.clone(), name);
-                }
-            });
+        super::select_layer::layer_field(
+            ui,
+            "foundation_layer",
+            layer,
+            layers.iter().map(String::as_str),
+        );
     });
 }
 

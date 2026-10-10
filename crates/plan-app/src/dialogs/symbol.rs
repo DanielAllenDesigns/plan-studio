@@ -777,13 +777,12 @@ impl SymbolForm {
                 dis_combo(ui, "sym_layer", &d.layer);
                 return;
             }
-            egui::ComboBox::from_id_salt("sym_layer")
-                .selected_text(d.layer.clone())
-                .show_ui(ui, |ui| {
-                    for l in &self.layers {
-                        ui.selectable_value(&mut d.layer, l.clone(), l);
-                    }
-                });
+            super::select_layer::layer_field(
+                ui,
+                "sym_layer",
+                &mut d.layer,
+                self.layers.iter().map(String::as_str),
+            );
         });
     }
 

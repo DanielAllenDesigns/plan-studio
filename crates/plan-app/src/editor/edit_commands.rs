@@ -495,6 +495,16 @@ impl EditorContext {
                         n += 1;
                     }
                 }
+                ObjectRef::Cabinet(id) => {
+                    if let Some(mut c) =
+                        crate::editor::placed::cabinet_by_id(&self.project.floors[fl], id)
+                    {
+                        c.layer = Some(layer.to_string());
+                        if crate::editor::placed::replace_cabinet(&mut self.project, fl, &c) {
+                            n += 1;
+                        }
+                    }
+                }
                 _ => {}
             }
         }

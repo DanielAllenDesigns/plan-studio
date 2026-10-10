@@ -818,13 +818,12 @@ impl TextForm {
     fn layer(&mut self, ui: &mut Ui) {
         section(ui, "Layer");
         row(ui, "Layer", |ui| {
-            egui::ComboBox::from_id_salt("text_layer")
-                .selected_text(self.draft.layer.clone())
-                .show_ui(ui, |ui| {
-                    for name in &self.layers {
-                        ui.selectable_value(&mut self.draft.layer, name.clone(), name.as_str());
-                    }
-                });
+            super::select_layer::layer_field(
+                ui,
+                "text_layer",
+                &mut self.draft.layer,
+                self.layers.iter().map(String::as_str),
+            );
         });
     }
 }

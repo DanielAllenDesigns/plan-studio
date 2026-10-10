@@ -471,13 +471,13 @@ pub fn line_style_page(ui: &mut Ui, look: &mut LineLook, layer: &mut String, lay
     color_row(ui, "Color", &mut look.color);
     crate::dialogs::section(ui, "Layer");
     row(ui, "Layer", |ui| {
-        egui::ComboBox::from_id_salt(("annot_layer", ui.id()))
-            .selected_text(layer.clone())
-            .show_ui(ui, |ui| {
-                for n in layers {
-                    ui.selectable_value(layer, n.clone(), n.as_str());
-                }
-            });
+        let salt = ("annot_layer", ui.id());
+        crate::dialogs::select_layer::layer_field(
+            ui,
+            salt,
+            layer,
+            layers.iter().map(String::as_str),
+        );
     });
 }
 

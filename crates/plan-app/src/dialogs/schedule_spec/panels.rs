@@ -922,13 +922,12 @@ impl Form {
     pub(super) fn layer(&mut self, ui: &mut Ui) {
         section(ui, "Layer");
         row(ui, "Layer", |ui| {
-            egui::ComboBox::from_id_salt("schedule_layer")
-                .selected_text(self.def.layer.clone())
-                .show_ui(ui, |ui| {
-                    for name in &self.layers {
-                        ui.selectable_value(&mut self.def.layer, name.clone(), name);
-                    }
-                });
+            crate::dialogs::select_layer::layer_field(
+                ui,
+                "schedule_layer",
+                &mut self.def.layer,
+                self.layers.iter().map(String::as_str),
+            );
         });
     }
 
@@ -1125,13 +1124,12 @@ impl Form {
             };
         }
         if let CalloutLayer::Custom(name) = &mut o.layer {
-            egui::ComboBox::from_id_salt("schedule_callout_layer")
-                .selected_text(name.clone())
-                .show_ui(ui, |ui| {
-                    for l in &self.layers {
-                        ui.selectable_value(name, l.clone(), l);
-                    }
-                });
+            crate::dialogs::select_layer::layer_field(
+                ui,
+                "schedule_callout_layer",
+                name,
+                self.layers.iter().map(String::as_str),
+            );
         }
     }
 

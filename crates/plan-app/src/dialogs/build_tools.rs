@@ -796,6 +796,8 @@ pub fn show_all(ctx: &egui::Context, cx: &mut EditorContext, cam: &mut Camera) {
     super::schedule_spec::show_extras(ctx, cx, cam);
     // Fix Off Angle Wall (W-133).
     super::fix_connections::show(ctx, cx);
+    // Place at Allowed Angles (S-179).
+    super::place_angles::show(ctx, cx);
 }
 
 /// Tools > Checks > Plan Check Settings: opens the Plan Check window (running

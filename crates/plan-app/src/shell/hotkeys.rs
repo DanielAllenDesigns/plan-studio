@@ -250,6 +250,11 @@ fn extra_commands() -> Vec<Command> {
             Action::Custom(ids::POINT_TO_POINT),
         ),
         c("Edit", "Center Object", Action::Custom(ids::CENTER)),
+        c(
+            "Edit",
+            "Point to Point Center",
+            Action::Custom(ids::POINT_TO_POINT_CENTER),
+        ),
         c("Edit", "Make Parallel", Action::Custom(ids::PARALLEL)),
         c(
             "Edit",
@@ -364,7 +369,36 @@ pub fn collect_commands() -> Vec<Command> {
     for c in extra_commands() {
         add(&c.group, &c.name, c.action);
     }
+    cad_edit_commands(&mut out);
     out
+}
+
+/// The CAD edit commands (`cad.fillet`, `cad.close_polyline`, ...) and the
+/// Survey Entry commands (`cad.survey.*`), so each can take a hotkey. A name
+/// the toolbar already uses for the drawing tool gets " (Edit)" added.
+fn cad_edit_commands(out: &mut Vec<Command>) {
+    use crate::tools::cad::{survey, EDIT_COMMANDS};
+    let mut push = |name: String, id: &'static str| {
+        if out.iter().any(|c| matches!(c.action, Action::Custom(x) if x == id)) {
+            return;
+        }
+        let name = if out.iter().any(|c| c.name == name) {
+            format!("{name} (Edit)")
+        } else {
+            name
+        };
+        out.push(Command {
+            name,
+            group: "CAD".to_string(),
+            action: Action::Custom(id),
+        });
+    };
+    for (mode, id) in EDIT_COMMANDS {
+        push(mode.name().to_string(), id);
+    }
+    for (label, id) in survey::MENU {
+        push(label.trim_end_matches('\u{2026}').to_string(), id);
+    }
 }
 
 fn canonical(name: &str) -> &str {

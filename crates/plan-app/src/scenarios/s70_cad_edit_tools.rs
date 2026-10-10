@@ -516,3 +516,28 @@ mod r17_edit_area {
         assert!(at("Align/Distribute") < at("Make Parallel"));
     }
 }
+
+#[test]
+fn customize_hotkeys_lists_the_cad_edit_survey_and_point_to_point_center_commands() {
+    use crate::editor::edit_commands::ids;
+    use crate::shell::hotkeys::collect_commands;
+    use crate::toolbar::Action;
+    let cmds = collect_commands();
+    let has = |id: &str| {
+        cmds.iter()
+            .any(|c| matches!(c.action, Action::Custom(x) if x == id))
+    };
+    assert!(has(ids::POINT_TO_POINT_CENTER));
+    for (_, id) in EDIT_COMMANDS {
+        assert!(has(id), "{id} can take a hotkey");
+    }
+    for (_, id) in crate::tools::cad::survey::MENU {
+        assert!(has(id), "{id} can take a hotkey");
+    }
+    // Names stay unique so a binding finds one command.
+    let mut names: Vec<&str> = cmds.iter().map(|c| c.name.as_str()).collect();
+    names.sort_unstable();
+    let n = names.len();
+    names.dedup();
+    assert_eq!(names.len(), n);
+}

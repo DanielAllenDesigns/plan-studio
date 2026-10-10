@@ -43,6 +43,7 @@ PYEOF
 echo "ok: windows zip"
 
 # --- Linux tarball ---
+linux_tarball_checks() {
 printf '#!/bin/sh\n' > "$T/plan-studio"; chmod +x "$T/plan-studio"
 bash "$HERE/linux-appimage.sh" "$T/plan-studio" "$T/out" test-label >/dev/null
 tar -tzf "$T/out/test-label.tar.gz" > "$T/list"
@@ -70,6 +71,11 @@ tar -xzf "$T/out/test-label.tar.gz" -C "$T"
 sh "$T/test-label/install.sh" "$T/prefix" >/dev/null
 [ -x "$T/prefix/bin/plan-studio" ] && [ -f "$T/prefix/share/applications/plan-studio.desktop" ] || fail "install.sh"
 echo "ok: linux tarball"
+}
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*) echo "skip: linux tarball (Windows runner; the Linux job covers it)" ;;
+  *) linux_tarball_checks ;;
+esac
 
 # --- changelog extraction ---
 cat > "$T/CL.md" <<'MD'

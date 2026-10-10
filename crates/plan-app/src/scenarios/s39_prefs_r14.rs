@@ -638,7 +638,10 @@ fn the_keys_export_as_chiefs_user_hotkeys_xml_and_import_back() {
     // Another dialog reading it gets the same keys on the commands it names.
     let mut other = dialog();
     let r = other.import_chief_xml(&xml).unwrap();
-    assert!(r.commands >= 100, "{r:?}");
+    // Off macOS, Control and Command fold to one key, so fewer of Daniel's
+    // commands keep a distinct binding (see hotkeys::Chord::normalized).
+    let min_commands = if cfg!(target_os = "macos") { 100 } else { 60 };
+    assert!(r.commands >= min_commands, "{r:?}");
     assert_eq!(other.draft_hotkeys("Zoom Out"), "F11");
     for name in ["Hinged Door", "Zoom In", "Cut"] {
         let first = |dlg: &HotkeyDialog| {
